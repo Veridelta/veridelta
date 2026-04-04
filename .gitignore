@@ -22,7 +22,7 @@ dist/
 htmlcov/
 coverage.xml
 
-# OS & Editor (Note: .vscode is intentionally NOT ignored to share settings)
+# OS & Editor
 .DS_Store
 .idea/
 *.swp
