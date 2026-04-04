@@ -62,16 +62,23 @@ select = [
     "TCH", 
     "N",
     "PT",
+    "D",
 ]
 ignore = [
     "E501",
     "B008",
+    "D100",
+    "D104",
+    "D106",
 ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = [
-    "S101",     # Allow 'assert' in tests
-    "FBT001",   # Allow boolean positional arguments in test fixtures
+    "S101",
+    "FBT001",
 ]
 
 [tool.ruff.format]
