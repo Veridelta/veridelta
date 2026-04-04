@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 
 import polars as pl
 
-from veridelta.models import DiffConfig, SourceConfig, SourceType
+from veridelta.models import DiffConfig, DiffSummary, SourceConfig, SourceType
 
 
 class BaseLoader(ABC):
@@ -133,3 +133,61 @@ class DataIngestor:
         target_df = self._align_columns(target_df, is_source=False)
 
         return source_df, target_df
+
+
+class DiffEngine:
+    """The core mathematical engine that calculates differences."""
+
+    def __init__(
+        self, config: DiffConfig, source_df: pl.DataFrame, target_df: pl.DataFrame
+    ) -> None:
+        """Initialize the DiffEngine.
+
+        Args:
+            config: The comparison configuration.
+            source_df: The aligned source DataFrame.
+            target_df: The aligned target DataFrame.
+        """
+        self.config = config
+        self.source = source_df
+        self.target = target_df
+
+    def run(self) -> DiffSummary:
+        """Executes the comparison logic.
+
+        Returns:
+            A DiffSummary object containing the counts of changes.
+        """
+        combined = self.source.join(
+            self.target, on=self.config.primary_keys, how="full", suffix="_target"
+        )
+
+        pk = self.config.primary_keys[0]
+
+        # Rows where the primary key is missing from source = Added
+        added = combined.filter(pl.col(pk).is_null())
+        # Rows where the primary key is missing from target = Removed
+        removed = combined.filter(pl.col(f"{pk}_target").is_null())
+        common = combined.filter(pl.col(pk).is_not_null() & pl.col(f"{pk}_target").is_not_null())
+
+        # For now, count a row as 'changed' if ANY non-PK column differs
+        changed_count = 0
+        if not common.is_empty():
+            # Simple check for now
+            for column in self.source.columns:
+                if column in self.config.primary_keys:
+                    continue
+
+                diff_mask = common.filter(pl.col(column) != pl.col(f"{column}_target"))
+                if not diff_mask.is_empty():
+                    changed_count = diff_mask.height
+                    break  # Optimization: one change makes the whole row 'changed'
+
+        return DiffSummary(
+            total_rows_source=self.source.height,
+            total_rows_target=self.target.height,
+            added_count=added.height,
+            removed_count=removed.height,
+            changed_count=changed_count,
+            is_match=(added.height == 0 and removed.height == 0 and changed_count == 0),
+        )

@@ -52,8 +52,12 @@ class ColumnRule(BaseModel):
     """
 
     name: str = Field(..., description="The name of the column in the source.")
-    tolerance: float | None = Field(None, description="Absolute tolerance for numeric diffs.")
-    ignore: bool = Field(False, description="If True, column is excluded from comparison.")
+    tolerance: float | None = Field(
+        default=None, description="Absolute tolerance for numeric differences (e.g., 0.001)."
+    )
+    ignore: bool = Field(
+        default=False, description="If True, this column will be excluded from the comparison."
+    )
     rename_to: str | None = Field(None, description="Name in target dataset if different.")
 
 
@@ -74,4 +78,26 @@ class DiffConfig(BaseModel):
     primary_keys: list[str] = Field(..., description="Columns used to join datasets.")
     rules: list[ColumnRule] = Field(default_factory=list, description="Column overrides.")
     threshold: float = Field(0.0, description="Allowed mismatch percentage (0.0 to 1.0).")
-    output_path: str | None = Field(None, description="Path to save the diff report.")
+    output_path: str | None = Field(
+        default=None, description="Optional path to save the detailed diff report."
+    )
+
+
+class DiffSummary(BaseModel):
+    """The high-level results of a Veridelta comparison.
+
+    Attributes:
+        total_rows_source: Number of rows in the source dataset.
+        total_rows_target: Number of rows in the target dataset.
+        added_count: Rows found only in the target.
+        removed_count: Rows found only in the source.
+        changed_count: Rows present in both but with value differences.
+        is_match: Boolean indicating if the diff is within the threshold.
+    """
+
+    total_rows_source: int
+    total_rows_target: int
+    added_count: int
+    removed_count: int
+    changed_count: int
+    is_match: bool
