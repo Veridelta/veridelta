@@ -1,0 +1,87 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "veridelta"
+version = "0.1.0"
+description = "Semantic diffing for mission-critical data pipelines."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "Veridelta Maintainers", email = "veridelta.labs@gmail.com" }
+]
+dependencies = [
+    "polars>=0.20.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0.1"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "pre-commit>=3.6.0"
+]
+
+[tool.uv]
+managed = true
+dev-dependencies = ["veridelta[dev]"]
+
+[tool.mypy]
+files = ["src/veridelta", "tests"]
+strict = true
+enable_error_code = [
+    "redundant-expr",
+    "truthy-bool",
+    "ignore-without-code",
+]
+warn_return_any = false
+disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = ["polars.*", "yaml.*"]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+fix = true
+
+[tool.ruff.lint]
+select = [
+    "E", "W",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "TCH", 
+    "N",
+    "PT",
+    "D",
+]
+ignore = [
+    "E501",
+    "B008",
+    "D100",
+    "D104",
+    "D106",
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",
+    "FBT001",
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true

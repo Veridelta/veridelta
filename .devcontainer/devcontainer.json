@@ -1,0 +1,32 @@
+{
+  "name": "Veridelta",
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.10-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/git:1": {}
+  },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+        "python.analysis.typeCheckingMode": "strict",
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.ruff": "explicit",
+          "source.organizeImports.ruff": "explicit"
+        },
+        "editor.rulers": [100],
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      },
+      "extensions": [
+        "charliermarsh.ruff",
+        "ms-python.mypy-type-checker",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  },
+  "updateContentCommand": "curl -LsSf https://astral.sh/uv/install.sh | sh",
+  "postCreateCommand": "~/.local/bin/uv sync --all-extras",
+  "postAttachCommand": "git config --global --add safe.directory ${workspaceFolder}"
+}
