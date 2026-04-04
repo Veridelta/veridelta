@@ -18,27 +18,24 @@ dependencies = [
     "pyyaml>=6.0.1"
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.3.0",
     "mypy>=1.9.0",
-    "pre-commit>=3.6.0"
+    "pre-commit>=3.6.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.24.0",
 ]
 
 [tool.uv]
 managed = true
-dev-dependencies = ["veridelta[dev]"]
 
 [tool.mypy]
 files = ["src/veridelta", "tests"]
 strict = true
-enable_error_code = [
-    "redundant-expr",
-    "truthy-bool",
-    "ignore-without-code",
-]
+enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
 warn_return_any = false
 disallow_untyped_decorators = false
 
@@ -52,34 +49,14 @@ target-version = "py310"
 fix = true
 
 [tool.ruff.lint]
-select = [
-    "E", "W",
-    "F",
-    "I",
-    "UP",
-    "B",
-    "SIM",
-    "TCH", 
-    "N",
-    "PT",
-    "D",
-]
-ignore = [
-    "E501",
-    "B008",
-    "D100",
-    "D104",
-    "D106",
-]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "TCH", "N", "PT", "D"]
+ignore = ["E501", "B008", "D104", "D106"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = [
-    "S101",
-    "FBT001",
-]
+"tests/**/*.py" = ["S101", "FBT001"]
 
 [tool.ruff.format]
 quote-style = "double"
