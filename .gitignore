@@ -26,3 +26,6 @@ coverage.xml
 .DS_Store
 .idea/
 *.swp
+
+# Documentation build artifacts
+site/
