@@ -25,48 +25,53 @@ class SourceType(str, Enum):
 
 
 class SourceConfig(BaseModel):
-    """Configuration for a specific data source (Source or Target)."""
+    """Configuration for a specific data source.
+
+    Attributes:
+        path: File system path or URI to the data.
+        format: The format of the file (e.g., CSV, Parquet).
+        options: Format-specific kwargs passed to the loader.
+    """
 
     path: str = Field(..., description="File system path or URI to the data.")
-    format: SourceType = Field(
-        SourceType.CSV, description="The format of the file. Defaults to CSV."
-    )
+    format: SourceType = Field(SourceType.CSV, description="The format of the file.")
     options: dict[str, Any] = Field(
         default_factory=dict,
-        description="Format-specific options (e.g., {'separator': ';', 'has_header': True}).",
+        description="Format-specific options (e.g., {'separator': ';'}).",
     )
 
 
 class ColumnRule(BaseModel):
-    """Rules for comparing a specific column across datasets."""
+    """Rules for comparing a specific column across datasets.
 
-    name: str = Field(..., description="The name of the column in the source dataset.")
-    tolerance: float | None = Field(
-        None, description="Absolute tolerance for numeric differences (e.g., 0.001)."
-    )
-    ignore: bool = Field(
-        False, description="If True, this column will be excluded from the comparison."
-    )
-    rename_to: str | None = Field(
-        None, description="The name of the corresponding column in the target dataset if different."
-    )
+    Attributes:
+        name: The name of the column in the source dataset.
+        tolerance: Absolute tolerance for numeric differences.
+        ignore: Whether to skip this column during comparison.
+        rename_to: The name in the target dataset if it differs from the source.
+    """
+
+    name: str = Field(..., description="The name of the column in the source.")
+    tolerance: float | None = Field(None, description="Absolute tolerance for numeric diffs.")
+    ignore: bool = Field(False, description="If True, column is excluded from comparison.")
+    rename_to: str | None = Field(None, description="Name in target dataset if different.")
 
 
 class DiffConfig(BaseModel):
-    """The master configuration for a Veridelta comparison run."""
+    """The master configuration for a Veridelta comparison run.
 
-    source: SourceConfig = Field(..., description="Configuration for the 'Left' (Source) dataset.")
-    target: SourceConfig = Field(..., description="Configuration for the 'Right' (Target) dataset.")
-    primary_keys: list[str] = Field(
-        ..., description="List of columns used to join and align the datasets."
-    )
-    rules: list[ColumnRule] = Field(
-        default_factory=list, description="Specific per-column comparison overrides."
-    )
-    threshold: float = Field(
-        0.0,
-        description="The percentage (0.0 to 1.0) of mismatch allowed before the run fails.",
-    )
-    output_path: str | None = Field(
-        None, description="Optional path to save the detailed diff report."
-    )
+    Attributes:
+        source: Configuration for the 'Left' dataset.
+        target: Configuration for the 'Right' dataset.
+        primary_keys: Columns used to join and align the datasets.
+        rules: List of per-column comparison overrides.
+        threshold: Allowed mismatch percentage (0.0 to 1.0) before failure.
+        output_path: Path to save the resulting diff report.
+    """
+
+    source: SourceConfig = Field(..., description="Config for the 'Left' dataset.")
+    target: SourceConfig = Field(..., description="Config for the 'Right' dataset.")
+    primary_keys: list[str] = Field(..., description="Columns used to join datasets.")
+    rules: list[ColumnRule] = Field(default_factory=list, description="Column overrides.")
+    threshold: float = Field(0.0, description="Allowed mismatch percentage (0.0 to 1.0).")
+    output_path: str | None = Field(None, description="Path to save the diff report.")
