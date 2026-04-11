@@ -1,0 +1,40 @@
+name: License Header Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify License Headers
+        run: |
+          MISSING_HEADERS=0
+          # Scan all .py files in src and tests, excluding __pycache__
+          FILES=$(find src tests -name "*.py" -not -path "*/__pycache__/*")
+          
+          for file in $FILES; do
+            if ! grep -q "Copyright 2026 Nicholas Harder" "$file"; then
+              echo "Missing license header in: $file"
+              MISSING_HEADERS=$((MISSING_HEADERS + 1))
+            fi
+          done
+
+          if [ $MISSING_HEADERS -gt 0 ]; then
+            echo "--------------------------------------------------"
+            echo "Error: $MISSING_HEADERS file(s) are missing the required license header."
+            echo "Please add the following to the top of the files listed above:"
+            echo ""
+            echo "# Copyright 2026 Nicholas Harder"
+            echo "# SPDX-License-Identifier: Apache-2.0"
+            echo "--------------------------------------------------"
+            exit 1
+          else
+            echo "SUCCESS: All files have valid license headers."
+          fi
