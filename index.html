@@ -16,7 +16,7 @@
       
       
       
-        <link rel="next" href="api/">
+        <link rel="next" href="configuration/">
       
       
         
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#veridelta" class="md-skip">
+        <a href="#welcome-to-veridelta" class="md-skip">
           Skip to content
         </a>
       
@@ -246,6 +246,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="configuration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="api/" class="md-tabs__link">
         
   
@@ -373,6 +392,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#key-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Features
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#installation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -383,10 +413,59 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick Start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#explore-the-docs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Explore the Docs
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
       
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -438,16 +517,41 @@
   
 
 
-<h1 id="veridelta">Veridelta</h1>
+<h1 id="welcome-to-veridelta">Welcome to Veridelta</h1>
 <p><strong>Semantic diffing for mission-critical data pipelines.</strong></p>
-<p>Veridelta is a high-performance Python engine.</p>
+<p>Veridelta is a high-performance data comparison engine designed to validate changes between datasets. Built on top of <a href="https://pola.rs/">Polars</a>, it allows you to define explicit rules for expected variance, like floating-point jitter or casing differences, so you can ignore the noise and focus on real regressions.</p>
+<hr />
+<h2 id="key-features">Key Features</h2>
+<ul>
+<li><strong>Blazing Fast:</strong> Powered by a Rust-backed Polars engine for massive dataset handling.</li>
+<li><strong>Declarative Rules:</strong> Define tolerances, string normalization, and null handling in simple YAML.</li>
+<li><strong>Dual-Entry:</strong> Use it as a CLI tool in CI/CD pipelines or as a Python library in Airflow/Notebooks.</li>
+<li><strong>Flexible Schema Modes:</strong> Handle evolving datasets with support for additions, removals, and strict matching.</li>
+</ul>
 <h2 id="installation">Installation</h2>
-<p>Install the stable version from PyPI:</p>
-<pre><code class="language-bash">pip install veridelta
-</code></pre>
-<p>Or, if you are using uv:</p>
+<p>Install via <code>uv</code> (recommended):</p>
 <pre><code class="language-bash">uv add veridelta
+````
+
+Or using `pip`:
+
+```bash
+pip install veridelta
 </code></pre>
+<h2 id="quick-start">Quick Start</h2>
+<ol>
+<li><strong>Define your rules</strong> in a <code>veridelta.yaml</code> file.</li>
+<li><strong>Run the comparison</strong>:
+    <code>bash
+    veridelta run --config veridelta.yaml</code></li>
+<li><strong>Review the summary</strong> in your terminal or check the <code>output_path</code> for detailed Parquet diffs.</li>
+</ol>
+<hr />
+<h2 id="explore-the-docs">Explore the Docs</h2>
+<ul>
+<li><a href="configuration/"><strong>Configuration Guide</strong></a>: Learn how to write rules for tolerances, strings, and schemas.</li>
+<li><a href="api/"><strong>API Reference</strong></a>: Detailed documentation of the Python classes and methods.</li>
+</ul>
 
 
 
