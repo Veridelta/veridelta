@@ -19,7 +19,7 @@ Install via `uv` (recommended):
 
 ```bash
 uv add veridelta
-````
+```
 
 Or using `pip`:
 
