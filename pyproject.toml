@@ -13,31 +13,38 @@ authors = [
     { name = "Veridelta Maintainers", email = "veridelta.labs@gmail.com" }
 ]
 dependencies = [
-    "polars>=0.20.0",
-    "pydantic>=2.5.0",
-    "pyyaml>=6.0.1"
+    "polars>=1.39.3",
+    "pydantic>=2.12.5",
+    "pyyaml>=6.0.3"
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=4.1.0",
-    "ruff>=0.3.0",
-    "mypy>=1.9.0",
-    "pre-commit>=3.6.0",
-    "mkdocs-material>=9.5.0",
-    "mkdocstrings[python]>=0.24.0",
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.10",
+    "mypy>=1.20.0",
+    "pre-commit>=4.5.1",
+    "mkdocs-material>=9.7.6",
+    "mkdocstrings[python]>=1.0.3",
 ]
 
 [tool.uv]
 managed = true
 
 [tool.mypy]
+python_version = "3.10"
 files = ["src/veridelta", "tests"]
 strict = true
+plugins = ["pydantic.mypy"]
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
 warn_return_any = false
 disallow_untyped_decorators = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
 
 [[tool.mypy.overrides]]
 module = ["polars.*", "yaml.*"]

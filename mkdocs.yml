@@ -40,4 +40,5 @@ plugins:
 
 nav:
   - Home: index.md
+  - Configuration: configuration.md
   - API Reference: api.md
