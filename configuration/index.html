@@ -466,6 +466,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#string-normalization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        String Normalization
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#value-mapping-crosswalks" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -578,14 +589,10 @@
   - column_names: [&quot;total_amount&quot;]
     absolute_tolerance: 0.01
     relative_tolerance: 0.005
-````
-
-### String Normalization
-
-Handle messy text data by cleaning it before the comparison.
-
-```yaml
-rules:
+</code></pre>
+<h3 id="string-normalization">String Normalization</h3>
+<p>Handle messy text data by cleaning it before the comparison.</p>
+<pre><code class="language-yaml">rules:
   - column_names: [&quot;user_email&quot;]
     case_insensitive: true
     whitespace_mode: &quot;both&quot;
