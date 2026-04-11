@@ -222,10 +222,12 @@ class DiffConfig(BaseModel):
         rules: List of per-column comparison overrides.
         threshold: Allowed mismatch percentage (0.0 to 1.0) before failure.
         output_path: Path to save the resulting diff report and artifacts.
+        output_format: Format for exporting diff artifacts (e.g., parquet, csv).
     """
 
     source: SourceConfig = Field(..., description="Config for the 'Left' dataset.")
     target: SourceConfig = Field(..., description="Config for the 'Right' dataset.")
+
     primary_keys: list[str] = Field(..., description="Columns used to join datasets.")
 
     schema_mode: SchemaMode = Field(
@@ -258,11 +260,17 @@ class DiffConfig(BaseModel):
     )
 
     rules: list[ColumnRule] = Field(default_factory=list, description="Column overrides.")
+
     threshold: float = Field(
         default=0.0, ge=0.0, le=1.0, description="Allowed mismatch percentage (0.0 to 1.0)."
     )
+
     output_path: str | None = Field(
         default=None, description="Optional path to save the detailed diff report."
+    )
+    output_format: SourceType = Field(
+        default=SourceType.PARQUET,
+        description="Format for exporting diff artifacts (e.g., parquet, csv).",
     )
 
     @model_validator(mode="after")

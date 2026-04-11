@@ -3,15 +3,17 @@
 
 """Veridelta: Semantic diffing for mission-critical data pipelines."""
 
+from veridelta.config import load_config
 from veridelta.engine import DataIngestor, DiffEngine
-from veridelta.models import ColumnRule, DiffConfig, DiffSummary, SourceConfig
+from veridelta.models import ColumnRule, DiffConfig, DiffSummary, SchemaMode, SourceConfig
 
-__version__ = "0.1.0"
 __all__ = [
-    "DiffConfig",
-    "SourceConfig",
-    "ColumnRule",
-    "DiffSummary",
+    "load_config",
     "DiffEngine",
     "DataIngestor",
+    "DiffConfig",
+    "DiffSummary",
+    "SchemaMode",
+    "SourceConfig",
+    "ColumnRule",
 ]

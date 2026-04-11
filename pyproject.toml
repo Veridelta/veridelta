@@ -29,6 +29,9 @@ dev = [
     "mkdocstrings[python]>=1.0.3",
 ]
 
+[project.scripts]
+veridelta = "veridelta.cli:main"
+
 [tool.uv]
 managed = true
 

@@ -5,6 +5,7 @@
 
 import re
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -353,6 +354,31 @@ class DiffEngine:
             self.source.height, 1
         )
         is_match = mismatch_ratio <= self.config.threshold
+
+        if self.config.output_path:
+            out_dir = Path(self.config.output_path)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            fmt = self.config.output_format
+            ext = fmt.value
+
+            def _export_artifact(df: pl.DataFrame, name: str) -> None:
+                if df.height == 0:
+                    return
+
+                file_path = out_dir / f"{name}.{ext}"
+                if fmt == SourceType.CSV:
+                    df.write_csv(file_path)
+                elif fmt == SourceType.PARQUET:
+                    df.write_parquet(file_path)
+                else:
+                    raise NotImplementedError(
+                        f"Export support for format '{fmt.value}' is not yet implemented."
+                    )
+
+            _export_artifact(added, "added_rows")
+            _export_artifact(removed, "removed_rows")
+            _export_artifact(changed_rows, "changed_rows")
 
         return DiffSummary(
             total_rows_source=self.source.height,
