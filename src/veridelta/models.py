@@ -34,6 +34,9 @@ class SchemaMode(str, Enum):
     EXACT = "exact"
     """Strict 1:1 mapping. Columns must be identical and in the exact same order."""
 
+    RELAXED_ORDER = "relaxed_order"
+    """Strict 1:1 mapping, but order-agnostic. Columns must be identical, but sequence does not matter."""
+
     ALLOW_ADDITIONS = "allow_additions"
     """Target can have new columns, but must contain every column present in the Source."""
 

@@ -278,6 +278,14 @@ class DiffEngine:
                     f"EXACT schema match failed.\nSource: {self.source.columns}\nTarget: {self.target.columns}"
                 )
 
+        elif self.config.schema_mode == SchemaMode.RELAXED_ORDER:
+            if source_cols != target_cols:
+                missing = source_cols - target_cols
+                extra = target_cols - source_cols
+                raise ConfigError(
+                    f"RELAXED_ORDER schema match failed.\nMissing in Target: {missing}\nExtra in Target: {extra}"
+                )
+
         elif self.config.schema_mode == SchemaMode.ALLOW_ADDITIONS:
             missing_in_target = source_cols - target_cols
             if missing_in_target:
