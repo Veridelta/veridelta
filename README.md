@@ -8,6 +8,8 @@
 
 Veridelta is a Rust-backed (via Polars) data comparison engine designed for large-scale datasets. It enables data engineers to define precise mathematical and semantic rules for comparing datasets, ensuring that expected differences (such as floating-point variance or controlled schema evolution) are ignored while unintended regressions are caught immediately.
 
+**[Read the Documentation](https://veridelta.github.io/veridelta)**
+
 ---
 
 ## Quick Start
@@ -85,11 +87,24 @@ if not summary.is_match:
     print(f"Pipeline regression detected: {summary.changed_count} rows differ.")
 ```
 
-## Documentation
+## Documentation & Advanced Features
 
-For full configuration details, API reference, and advanced rule definitions (including schema evolution, whitespace handling, and type coercion), refer to the documentation:
+The examples above just scratch the surface. For full configuration details, the Python API reference, and advanced rule definitions—including schema evolution, whitespace handling, and type coercion—visit the official documentation:
 
-**[https://veridelta.github.io/veridelta](https://veridelta.github.io/veridelta)**
+**[veridelta.github.io/veridelta](https://veridelta.github.io/veridelta)**
+
+---
+
+## Roadmap & What's Next
+
+Veridelta is in active development. While the core diffing engine is stable for file-based workflows (CSV, Parquet), we are rapidly expanding the ecosystem. Upcoming priorities include:
+
+- **Warehouse Pushdown:** Direct SQL integrations for Snowflake and Databricks.
+- **Lakehouse Native:** First-class support for Delta Lake and Apache Iceberg.
+- **Advanced Heuristics:** Fuzzy string matching and ML-driven schema evolution mapping.
+- **Reporting:** Interactive HTML diff dashboards and native GitHub Action integrations.
+
+For a detailed look at planned features, check out the [Full Roadmap](https://veridelta.github.io/veridelta/roadmap/) in our official documentation.
 
 ---
 

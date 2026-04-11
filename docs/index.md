@@ -42,3 +42,4 @@ pip install veridelta
 
   * [**Configuration Guide**](configuration.md): Learn how to write rules for tolerances, strings, and schemas.
   * [**API Reference**](api.md): Detailed documentation of the Python classes and methods.
+  * [**Roadmap**](roadmap.md): Discover upcoming features like warehouse pushdown, Lakehouse support, and advanced ML heuristics.
