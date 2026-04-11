@@ -27,12 +27,13 @@ Rules allow you to define tolerances for specific columns or patterns.
 
 ### Numeric Tolerances
 Use these to ignore floating-point jitter in financial or scientific data.
+
 ```yaml
 rules:
   - column_names: ["total_amount"]
     absolute_tolerance: 0.01
     relative_tolerance: 0.005
-````
+```
 
 ### String Normalization
 
