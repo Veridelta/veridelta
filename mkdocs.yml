@@ -30,6 +30,7 @@ theme:
 
 plugins:
   - search
+  - mkdocs-jupyter
   - mkdocstrings:
       handlers:
         python:
@@ -38,7 +39,19 @@ plugins:
             show_source: true
             show_root_heading: true
 
+markdown_extensions:
+  - admonition
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+
 nav:
   - Home: index.md
+  - Tutorials:
+    - Quickstart: examples/quickstart.ipynb
+    - Advanced Rules: examples/advanced_rules.ipynb
+    - CI/CD Workflows: examples/yaml_config.ipynb
   - Configuration: configuration.md
   - API Reference: api.md
+  - Roadmap: roadmap.md

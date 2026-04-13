@@ -29,3 +29,5 @@ coverage.xml
 
 # Documentation build artifacts
 site/
+.cache/mkdocs/
+.cache/mkdocs-jupyter/

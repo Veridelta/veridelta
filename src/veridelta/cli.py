@@ -10,7 +10,7 @@ from pathlib import Path
 from veridelta.config import load_config
 from veridelta.engine import DataIngestor, DiffEngine
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffSummary
+from veridelta.models import DiffConfig, DiffSummary, SourceConfig
 
 
 def print_summary(summary: DiffSummary) -> None:
@@ -39,20 +39,24 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         print(f"Loading configuration from {config_path}...")
-        config = load_config(config_path)
+
+        diff_config: DiffConfig
+        source_config: SourceConfig
+        target_config: SourceConfig
+        diff_config, source_config, target_config = load_config(config_path)
 
         print("Ingesting and aligning datasets...")
-        ingestor = DataIngestor(config)
+        ingestor = DataIngestor(diff_config, source_config, target_config)
         source_df, target_df = ingestor.get_dataframes()
 
         print("Executing semantic diff...")
-        engine = DiffEngine(config, source_df, target_df)
+        engine = DiffEngine(diff_config, source_df, target_df)
         summary = engine.run()
 
         print_summary(summary)
 
-        if config.output_path and not summary.is_match:
-            print(f"Artifacts saved to: {Path(config.output_path).absolute()}\n")
+        if diff_config.output_path and not summary.is_match:
+            print(f"Artifacts saved to: {Path(diff_config.output_path).absolute()}\n")
 
         return 0 if summary.is_match else 1
 
