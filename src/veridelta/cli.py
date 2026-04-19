@@ -1,4 +1,4 @@
-# Copyright 2026 Nicholas Harder
+# Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Command-line interface for Veridelta."""

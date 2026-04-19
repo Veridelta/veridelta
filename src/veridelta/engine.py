@@ -1,4 +1,4 @@
-# Copyright 2026 Nicholas Harder
+# Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Core engine for data ingestion and alignment."""

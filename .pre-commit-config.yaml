@@ -1,13 +1,31 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.3.0
+    rev: v0.15.11
     hooks:
       - id: ruff
         args: [ --fix ]
       - id: ruff-format
+
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.9.0
+    rev: v1.20.1
     hooks:
       - id: mypy
         additional_dependencies: [polars, pydantic, pyyaml]
         args: [--strict]
+
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.6
+    hooks:
+      - id: insert-license
+        files: \.py$
+        exclude: ^tests/|__pycache__
+        args:
+          - --license-filepath
+          - .github/LICENSE_HEADER.txt
+          - --use-current-year
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.13.9
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
