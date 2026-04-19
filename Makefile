@@ -2,6 +2,8 @@
 
 install:
 	uv sync --all-extras
+	uv run pre-commit install
+	uv run pre-commit install --hook-type commit-msg
 
 format:
 	uv run ruff format src/ tests/
@@ -17,5 +19,7 @@ test:
 all: format lint test
 
 clean:
-	rm -rf .venv .mypy_cache .pytest_cache .ruff_cache
+	rm -rf .mypy_cache .pytest_cache .ruff_cache
+	rm -rf site/ dist/ build/
+	rm -f .coverage coverage.xml
 	find . -type d -name "__pycache__" -exec rm -rf {} +
