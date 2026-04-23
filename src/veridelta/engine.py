@@ -5,6 +5,7 @@
 
 import re
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -14,7 +15,6 @@ from veridelta.models import (
     DiffConfig,
     DiffSummary,
     SourceConfig,
-    SourceType,
 )
 
 
@@ -346,6 +346,31 @@ class DiffEngine:
             self.source.height, 1
         )
         is_match = mismatch_ratio <= self.config.threshold
+
+        # Export artifacts if configured
+        if getattr(self.config, "output_path", None):
+            out_dir = Path(self.config.output_path)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            fmt = getattr(self.config, "output_format", "parquet")
+
+            def _export_artifact(df: pl.DataFrame, name: str) -> None:
+                if df.height == 0:
+                    return
+
+                file_path = out_dir / f"{name}.{fmt}"
+                if fmt == "csv":
+                    df.write_csv(file_path)
+                elif fmt == "parquet":
+                    df.write_parquet(file_path)
+                else:
+                    raise NotImplementedError(
+                        f"Export support for format '{fmt}' is not yet implemented."
+                    )
+
+            _export_artifact(added, "added_rows")
+            _export_artifact(removed, "removed_rows")
+            _export_artifact(changed_rows, "changed_rows")
 
         return DiffSummary(
             total_rows_source=self.source.height,

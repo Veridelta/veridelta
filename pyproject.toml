@@ -45,6 +45,9 @@ dev = [
     "types-pyyaml>=6.0.12.20260408",
 ]
 
+[project.scripts]
+veridelta = "veridelta.cli:main"
+
 [tool.uv]
 managed = true
 
