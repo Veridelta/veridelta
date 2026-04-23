@@ -170,7 +170,7 @@ class ColumnRule(BaseModel):
         if v is not None:
             try:
                 re.compile(v)
-            except re.error as err:  # noqa: PERF203
+            except re.error as err:
                 raise ValueError(f"Invalid regex pattern '{v}': {err}") from err
         return v
 
@@ -192,7 +192,7 @@ class ColumnRule(BaseModel):
             for pattern in v:
                 try:
                     re.compile(pattern)
-                except re.error as err:
+                except re.error as err:  # noqa: PERF203
                     raise ValueError(f"Invalid regex replace pattern '{pattern}': {err}") from err
         return v
 
