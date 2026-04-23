@@ -1683,9 +1683,12 @@ print(f"Changed Rows: {summary.changed_count}")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">src_df</span> <span class="o">=</span> <span class="n">vd</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_nyc_taxi</span><span class="p">()</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Load and deduplicate to ensure primary key integrity</span>
+<span class="n">src_df</span> <span class="o">=</span> <span class="n">vd</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_nyc_taxi</span><span class="p">()</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span>  <span class="c1"># pyright: ignore[reportUnknownMemberType]</span>
+    <span class="n">subset</span><span class="o">=</span><span class="p">[</span><span class="s2">"VendorID"</span><span class="p">,</span> <span class="s2">"tpep_pickup_datetime"</span><span class="p">]</span>
+<span class="p">)</span>
 
-<span class="c1"># Simulate realistic downstream ETL drift:</span>
+<span class="c1"># Simulate ETL drift on the cleaned target:</span>
 <span class="c1"># - Rounding noise on the fare (+$0.002)</span>
 <span class="c1"># - A 0.5% calculation fluctuation on the tip amount (e.g., exchange rate drift)</span>
 <span class="c1"># - Inconsistent string formatting</span>
@@ -1720,13 +1723,16 @@ print(f"Changed Rows: {summary.changed_count}")
 <span class="c1"># Output:</span>
 <span class="c1"># ========== VERIDELTA EXECUTION SUMMARY ===========</span>
 <span class="c1"># Match Status:     SUCCESS</span>
-<span class="c1"># Total Rows:       1,000</span>
+<span class="c1"># Total Rows:       908</span>
 <span class="c1"># Semantic Diffs:   0</span>
 <span class="c1"># ==================================================</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-3">src_df = vd.datasets.load_nyc_taxi()
+<div class="clipboard-copy-txt" id="cell-3"># Load and deduplicate to ensure primary key integrity
+src_df = vd.datasets.load_nyc_taxi().unique(  # pyright: ignore[reportUnknownMemberType]
+    subset=["VendorID", "tpep_pickup_datetime"]
+)
 
-# Simulate realistic downstream ETL drift:
+# Simulate ETL drift on the cleaned target:
 # - Rounding noise on the fare (+$0.002)
 # - A 0.5% calculation fluctuation on the tip amount (e.g., exchange rate drift)
 # - Inconsistent string formatting
@@ -1761,7 +1767,7 @@ print("=" * 50)
 # Output:
 # ========== VERIDELTA EXECUTION SUMMARY ===========
 # Match Status:     SUCCESS
-# Total Rows:       1,000
+# Total Rows:       908
 # Semantic Diffs:   0
 # ==================================================</div>
 </div>
