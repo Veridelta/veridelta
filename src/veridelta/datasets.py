@@ -7,6 +7,7 @@ This module provides utilities to securely download, cache, and load sample
 datasets used in Veridelta's documentation and tutorials.
 """
 
+import importlib.metadata
 import logging
 import pathlib
 import urllib.error
@@ -17,8 +18,12 @@ import polars as pl
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-# TODO: Update this URL to the GitHub Release URL once the dataset is published there.
-_TAXI_URL = "https://raw.githubusercontent.com/Veridelta/veridelta/main/docs/assets/data/sample_taxi_data.parquet"
+try:
+    __version__ = importlib.metadata.version("veridelta")
+except importlib.metadata.PackageNotFoundError:
+    __version__ = "main"
+
+_TAXI_URL = f"https://raw.githubusercontent.com/Veridelta/veridelta/v{__version__}/docs/assets/data/sample_taxi_data.parquet"
 
 
 def _get_cache_dir() -> pathlib.Path:
