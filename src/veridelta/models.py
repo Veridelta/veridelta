@@ -170,7 +170,7 @@ class ColumnRule(BaseModel):
         if v is not None:
             try:
                 re.compile(v)
-            except re.error as err:
+            except re.error as err:  # noqa: PERF203
                 raise ValueError(f"Invalid regex pattern '{v}': {err}") from err
         return v
 
