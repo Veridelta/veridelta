@@ -16,7 +16,7 @@
       
       
       
-        <link rel="next" href="configuration/">
+        <link rel="next" href="examples/quickstart/">
       
       
         
@@ -245,6 +245,26 @@
   
   
   
+    
+    
+      <li class="md-tabs__item">
+        <a href="examples/quickstart/" class="md-tabs__link">
+          
+  
+  
+  Tutorials
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
     <li class="md-tabs__item">
       <a href="configuration/" class="md-tabs__link">
         
@@ -272,6 +292,25 @@
     
   
   API Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="roadmap/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Roadmap
 
       </a>
     </li>
@@ -449,6 +488,149 @@
   
   
   
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorials
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="examples/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Veridelta Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="examples/advanced_rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Part 2: Advanced Heuristics &amp; Data Normalization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="examples/yaml_config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Part 3: CI/CD &amp; Production Workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
     <li class="md-nav__item">
       <a href="configuration/" class="md-nav__link">
         
@@ -497,6 +679,33 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="roadmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -530,25 +739,32 @@
 </ul>
 <h2 id="installation">Installation</h2>
 <p>Install via <code>uv</code> (recommended):</p>
-<pre><code class="language-bash">uv add veridelta
-</code></pre>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>add<span class="w"> </span>veridelta
+</code></pre></div>
 <p>Or using <code>pip</code>:</p>
-<pre><code class="language-bash">pip install veridelta
-</code></pre>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span>veridelta
+</code></pre></div>
 <h2 id="quick-start">Quick Start</h2>
 <ol>
-<li><strong>Define your rules</strong> in a <code>veridelta.yaml</code> file.</li>
-<li><strong>Run the comparison</strong>:
-    <code>bash
-    veridelta run --config veridelta.yaml</code></li>
-<li><strong>Review the summary</strong> in your terminal or check the <code>output_path</code> for detailed Parquet diffs.</li>
+<li>
+<p><strong>Define your rules</strong> in a <code>veridelta.yaml</code> file.</p>
+</li>
+<li>
+<p><strong>Run the comparison</strong>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>veridelta<span class="w"> </span>run<span class="w"> </span>--config<span class="w"> </span>veridelta.yaml
+</code></pre></div>
+</li>
+<li>
+<p><strong>Review the summary</strong> in your terminal or check the <code>output_path</code> for detailed Parquet diffs.</p>
+</li>
 </ol>
 <hr />
 <h2 id="explore-the-docs">Explore the Docs</h2>
 <ul>
-<li><a href="configuration/"><strong>Configuration Guide</strong></a>: Learn how to write rules for tolerances, strings, and schemas.</li>
+<li><a href="examples/quickstart/"><strong>Tutorials</strong></a>: Progressive guides covering basic quickstarts, advanced semantic rules, and production CI/CD workflows.</li>
+<li><a href="https://www.google.com/search?q=configuration.md"><strong>Configuration Guide</strong></a>: Learn how to write rules for tolerances, strings, and schemas.</li>
 <li><a href="api/"><strong>API Reference</strong></a>: Detailed documentation of the Python classes and methods.</li>
-<li><a href="roadmap/"><strong>Roadmap</strong></a>: Discover upcoming features like warehouse pushdown, Lakehouse support, and advanced ML heuristics.</li>
+<li><a href="https://www.google.com/search?q=roadmap.md"><strong>Roadmap</strong></a>: Discover upcoming features like warehouse pushdown, Lakehouse support, and advanced ML heuristics.</li>
 </ul>
 
 

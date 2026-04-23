@@ -16,4 +16,16 @@
          <loc>https://Veridelta.github.io/veridelta/roadmap/</loc>
          <lastmod>2026-04-23</lastmod>
     </url>
+    <url>
+         <loc>https://Veridelta.github.io/veridelta/examples/advanced_rules/</loc>
+         <lastmod>2026-04-23</lastmod>
+    </url>
+    <url>
+         <loc>https://Veridelta.github.io/veridelta/examples/quickstart/</loc>
+         <lastmod>2026-04-23</lastmod>
+    </url>
+    <url>
+         <loc>https://Veridelta.github.io/veridelta/examples/yaml_config/</loc>
+         <lastmod>2026-04-23</lastmod>
+    </url>
 </urlset>
