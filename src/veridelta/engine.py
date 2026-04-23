@@ -6,7 +6,7 @@
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import polars as pl
 
@@ -46,13 +46,13 @@ class ParquetLoader(BaseLoader):
 class LoaderFactory:
     """Factory to return the appropriate loader based on SourceType."""
 
-    _loaders: dict[SourceType, BaseLoader] = {
+    _loaders: ClassVar[dict[str, BaseLoader]] = {
         "csv": CSVLoader(),
         "parquet": ParquetLoader(),
     }
 
     @classmethod
-    def get_loader(cls, source_type: SourceType) -> BaseLoader:
+    def get_loader(cls, source_type: str) -> BaseLoader:
         """Returns the loader for the given type."""
         loader = cls._loaders.get(source_type)
         if not loader:
@@ -83,14 +83,15 @@ class DataIngestor:
 
     def _align_columns(self, df: pl.DataFrame, is_source: bool = True) -> pl.DataFrame:
         """Applies renames and drops ignored columns using specific names or regex patterns."""
-        rename_map = {}
-        to_drop = set()
+        rename_map: dict[str, str] = {}
+        to_drop: set[str] = set()
 
         for rule in self.config.rules:
-            matched_cols = []
-            for col in df.columns:
-                if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col)):
-                    matched_cols.append(col)
+            matched_cols = [
+                col
+                for col in df.columns
+                if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col))
+            ]
 
             if rule.ignore:
                 to_drop.update(matched_cols)
@@ -317,8 +318,8 @@ class DiffEngine:
         )
         common = src_renamed.join(tgt_renamed, on=self.config.primary_keys, how="inner")
 
-        match_expressions = []
-        match_cols = []
+        match_expressions: list[pl.Expr] = []
+        match_cols: list[str] = []
 
         for col in self.source.columns:
             if col in self.config.primary_keys or col not in self.target.columns:
@@ -348,8 +349,9 @@ class DiffEngine:
         is_match = mismatch_ratio <= self.config.threshold
 
         # Export artifacts if configured
-        if getattr(self.config, "output_path", None):
-            out_dir = Path(self.config.output_path)
+        output_path_str = getattr(self.config, "output_path", None)
+        if isinstance(output_path_str, str):
+            out_dir = Path(output_path_str)
             out_dir.mkdir(parents=True, exist_ok=True)
 
             fmt = getattr(self.config, "output_format", "parquet")
