@@ -30,16 +30,20 @@ pip install veridelta
 ## Quick Start
 
 1.  **Define your rules** in a `veridelta.yaml` file.
+
 2.  **Run the comparison**:
+
     ```bash
     veridelta run --config veridelta.yaml
     ```
+
 3.  **Review the summary** in your terminal or check the `output_path` for detailed Parquet diffs.
 
 -----
 
 ## Explore the Docs
 
-  * [**Configuration Guide**](configuration.md): Learn how to write rules for tolerances, strings, and schemas.
+  * [**Tutorials**](examples/quickstart.ipynb): Progressive guides covering basic quickstarts, advanced semantic rules, and production CI/CD workflows.
+  * [**Configuration Guide**](https://www.google.com/search?q=configuration.md): Learn how to write rules for tolerances, strings, and schemas.
   * [**API Reference**](api.md): Detailed documentation of the Python classes and methods.
-  * [**Roadmap**](roadmap.md): Discover upcoming features like warehouse pushdown, Lakehouse support, and advanced ML heuristics.
+  * [**Roadmap**](https://www.google.com/search?q=roadmap.md): Discover upcoming features like warehouse pushdown, Lakehouse support, and advanced ML heuristics.

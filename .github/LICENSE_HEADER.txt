@@ -1,2 +1,2 @@
-Veridelta
 Copyright 2026 The Veridelta Contributors
+SPDX-License-Identifier: Apache-2.0

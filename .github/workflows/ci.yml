@@ -7,8 +7,28 @@ on:
     branches: ["main"]
 
 jobs:
-  quality-and-tests:
-    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+  static-analysis:
+    name: Lint, Format, and Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras
+
+      - name: Run Pre-commit Hooks
+        run: uv run pre-commit run --all-files
+
+  test-matrix:
+    name: Test on Python ${{ matrix.python-version }} (${{ matrix.os }})
+    needs: static-analysis
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -21,7 +41,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install uv and Set up Python
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
@@ -29,15 +49,6 @@ jobs:
 
       - name: Install Dependencies
         run: uv sync --all-extras
-
-      - name: Enforce Formatting (Ruff)
-        run: uv run ruff format --check src/ tests/
-
-      - name: Enforce Linting (Ruff)
-        run: uv run ruff check src/ tests/
-
-      - name: Enforce Strict Typing (Mypy)
-        run: uv run mypy src/ tests/
 
       - name: Execute Test Suite (Pytest)
         run: uv run pytest tests/ --cov=src/veridelta --cov-report=xml

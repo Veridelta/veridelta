@@ -1,66 +1,57 @@
-# Copyright 2026 Nicholas Harder
+# Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Data models for Veridelta configuration and results."""
 
 import re
-from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+SourceType = Literal[
+    "csv",
+    "json",
+    "parquet",
+    "fixed_width",
+    "netcdf",
+    "shapefile",
+    "geopackage",
+    "excel",
+    "sql",
+    "delta",
+    "avro",
+    "xml",
+    "arrow",
+]
+"""Supported and roadmap data formats for ingestion."""
 
-class SourceType(str, Enum):
-    """Supported and roadmap data formats for ingestion."""
+SchemaMode = Literal[
+    "exact",
+    "allow_additions",
+    "allow_removals",
+    "intersection",
+]
+"""Defines how strictly the engine enforces column schemas between datasets.
 
-    CSV = "csv"
-    JSON = "json"
-    PARQUET = "parquet"
-    FIXED_WIDTH = "fixed_width"
-    NETCDF = "netcdf"
-    SHAPEFILE = "shapefile"
-    GEOPACKAGE = "geopackage"
-    EXCEL = "excel"
-    SQL = "sql"
-    DELTA = "delta"
-    AVRO = "avro"
-    XML = "xml"
-    ARROW = "arrow"
+* `"exact"`: Strict 1:1 mapping. Columns must be identical and in the exact same order.
+* `"allow_additions"`: Target can have new columns, but must contain every column present in the Source.
+* `"allow_removals"`: Target is allowed to drop legacy columns, but cannot add any new columns.
+* `"intersection"`: Only diff columns that exist in both datasets, ignoring all others. (Default)
+"""
 
+WhitespaceMode = Literal[
+    "none",
+    "left",
+    "right",
+    "both",
+]
+"""Granular control over string whitespace stripping.
 
-class SchemaMode(str, Enum):
-    """Defines how strictly the engine enforces column schemas between datasets."""
-
-    EXACT = "exact"
-    """Strict 1:1 mapping. Columns must be identical and in the exact same order."""
-
-    RELAXED_ORDER = "relaxed_order"
-    """Strict 1:1 mapping, but order-agnostic. Columns must be identical, but sequence does not matter."""
-
-    ALLOW_ADDITIONS = "allow_additions"
-    """Target can have new columns, but must contain every column present in the Source."""
-
-    ALLOW_REMOVALS = "allow_removals"
-    """Target is allowed to drop legacy columns, but cannot add any new columns."""
-
-    INTERSECTION = "intersection"
-    """Only diff columns that exist in both datasets, ignoring all others. (Default)"""
-
-
-class WhitespaceMode(str, Enum):
-    """Granular control over string whitespace stripping."""
-
-    NONE = "none"
-    """Do not strip any whitespace."""
-
-    LEFT = "left"
-    """Strip leading whitespace only."""
-
-    RIGHT = "right"
-    """Strip trailing whitespace only."""
-
-    BOTH = "both"
-    """Strip both leading and trailing whitespace."""
+* `"none"`: Do not strip any whitespace.
+* `"left"`: Strip leading whitespace only.
+* `"right"`: Strip trailing whitespace only.
+* `"both"`: Strip both leading and trailing whitespace.
+"""
 
 
 class SourceConfig(BaseModel):
@@ -68,12 +59,12 @@ class SourceConfig(BaseModel):
 
     Attributes:
         path: File system path or URI to the data.
-        format: The format of the file (e.g., CSV, Parquet).
+        format: The format of the file (e.g., 'csv', 'parquet').
         options: Format-specific kwargs passed to the loader.
     """
 
     path: str = Field(..., description="File system path or URI to the data.")
-    format: SourceType = Field(SourceType.CSV, description="The format of the file.")
+    format: SourceType = Field("csv", description="The format of the file.")
     options: dict[str, Any] = Field(
         default_factory=dict,
         description="Format-specific options (e.g., {'separator': ';'}).",
@@ -120,7 +111,8 @@ class ColumnRule(BaseModel):
         default=None, description="Ignore case for string comparisons."
     )
     whitespace_mode: WhitespaceMode | None = Field(
-        default=None, description="Granular control over whitespace stripping."
+        default=None,
+        description="Whitespace stripping mode: 'none', 'left', 'right', or 'both'.",
     )
     regex_replace: dict[str, str] | None = Field(
         default=None,
@@ -200,7 +192,7 @@ class ColumnRule(BaseModel):
             for pattern in v:
                 try:
                     re.compile(pattern)
-                except re.error as err:
+                except re.error as err:  # noqa: PERF203
                     raise ValueError(f"Invalid regex replace pattern '{pattern}': {err}") from err
         return v
 
@@ -209,8 +201,6 @@ class DiffConfig(BaseModel):
     """The master configuration for a Veridelta comparison run.
 
     Attributes:
-        source: Configuration for the 'Left' dataset.
-        target: Configuration for the 'Right' dataset.
         primary_keys: Columns used to join and align the datasets.
         schema_mode: How strictly to enforce column existence and matching between sources.
         strict_types: If False, the engine will attempt to cast target columns to source types.
@@ -222,16 +212,13 @@ class DiffConfig(BaseModel):
         rules: List of per-column comparison overrides.
         threshold: Allowed mismatch percentage (0.0 to 1.0) before failure.
         output_path: Path to save the resulting diff report and artifacts.
-        output_format: Format for exporting diff artifacts (e.g., parquet, csv).
     """
-
-    source: SourceConfig = Field(..., description="Config for the 'Left' dataset.")
-    target: SourceConfig = Field(..., description="Config for the 'Right' dataset.")
 
     primary_keys: list[str] = Field(..., description="Columns used to join datasets.")
 
     schema_mode: SchemaMode = Field(
-        default=SchemaMode.INTERSECTION, description="How strictly to enforce column existence."
+        default="intersection",
+        description="Schema enforcement mode: 'exact', 'allow_additions', 'allow_removals', or 'intersection'.",
     )
     strict_types: bool = Field(
         default=False,
@@ -253,24 +240,19 @@ class DiffConfig(BaseModel):
         default=True, description="Globally treat NULL == NULL as a match."
     )
     default_whitespace_mode: WhitespaceMode = Field(
-        default=WhitespaceMode.NONE, description="Global string whitespace stripping behavior."
+        default="none",
+        description="Global string whitespace stripping mode: 'none', 'left', 'right', or 'both'.",
     )
     default_null_values: list[str] = Field(
         default_factory=list, description="Global list of string values to coerce to NULL."
     )
 
     rules: list[ColumnRule] = Field(default_factory=list, description="Column overrides.")
-
     threshold: float = Field(
         default=0.0, ge=0.0, le=1.0, description="Allowed mismatch percentage (0.0 to 1.0)."
     )
-
     output_path: str | None = Field(
         default=None, description="Optional path to save the detailed diff report."
-    )
-    output_format: SourceType = Field(
-        default=SourceType.PARQUET,
-        description="Format for exporting diff artifacts (e.g., parquet, csv).",
     )
 
     @model_validator(mode="after")

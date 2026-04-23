@@ -1,4 +1,4 @@
-# Copyright 2026 Nicholas Harder
+# Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 """Core engine for data ingestion and alignment."""
@@ -6,7 +6,7 @@
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import polars as pl
 
@@ -14,10 +14,7 @@ from veridelta.exceptions import ConfigError
 from veridelta.models import (
     DiffConfig,
     DiffSummary,
-    SchemaMode,
     SourceConfig,
-    SourceType,
-    WhitespaceMode,
 )
 
 
@@ -49,13 +46,13 @@ class ParquetLoader(BaseLoader):
 class LoaderFactory:
     """Factory to return the appropriate loader based on SourceType."""
 
-    _loaders: dict[SourceType, BaseLoader] = {
-        SourceType.CSV: CSVLoader(),
-        SourceType.PARQUET: ParquetLoader(),
+    _loaders: ClassVar[dict[str, BaseLoader]] = {
+        "csv": CSVLoader(),
+        "parquet": ParquetLoader(),
     }
 
     @classmethod
-    def get_loader(cls, source_type: SourceType) -> BaseLoader:
+    def get_loader(cls, source_type: str) -> BaseLoader:
         """Returns the loader for the given type."""
         loader = cls._loaders.get(source_type)
         if not loader:
@@ -68,13 +65,13 @@ class LoaderFactory:
 class DataIngestor:
     """Coordinates loading and alignment of source and target datasets."""
 
-    def __init__(self, config: DiffConfig) -> None:
-        """Initialize the ingestor with a master configuration.
-
-        Args:
-            config: The master DiffConfig object.
-        """
-        self.config = config
+    def __init__(
+        self, diff_config: DiffConfig, source_config: SourceConfig, target_config: SourceConfig
+    ) -> None:
+        """Initialize the ingestor with I/O configs and the comparison config."""
+        self.config = diff_config
+        self.source_config = source_config
+        self.target_config = target_config
 
     def _normalize_headers(self, df: pl.DataFrame) -> pl.DataFrame:
         """Standardizes column names to lowercase and strips whitespace if configured."""
@@ -86,14 +83,15 @@ class DataIngestor:
 
     def _align_columns(self, df: pl.DataFrame, is_source: bool = True) -> pl.DataFrame:
         """Applies renames and drops ignored columns using specific names or regex patterns."""
-        rename_map = {}
-        to_drop = set()
+        rename_map: dict[str, str] = {}
+        to_drop: set[str] = set()
 
         for rule in self.config.rules:
-            matched_cols = []
-            for col in df.columns:
-                if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col)):
-                    matched_cols.append(col)
+            matched_cols = [
+                col
+                for col in df.columns
+                if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col))
+            ]
 
             if rule.ignore:
                 to_drop.update(matched_cols)
@@ -110,18 +108,21 @@ class DataIngestor:
         return df.drop(list(to_drop)).rename(rename_map)
 
     def get_dataframes(self) -> tuple[pl.DataFrame, pl.DataFrame]:
-        """Loads and aligns both datasets."""
-        source_loader = LoaderFactory.get_loader(self.config.source.format)
-        target_loader = LoaderFactory.get_loader(self.config.target.format)
+        """Loads and aligns both datasets using idiomatic method chaining."""
+        source_loader = LoaderFactory.get_loader(self.source_config.format)
+        target_loader = LoaderFactory.get_loader(self.target_config.format)
 
-        source_df = source_loader.load(self.config.source)
-        target_df = target_loader.load(self.config.target)
+        source_df = (
+            source_loader.load(self.source_config)
+            .pipe(self._normalize_headers)
+            .pipe(self._align_columns, is_source=True)
+        )
 
-        source_df = self._normalize_headers(source_df)
-        target_df = self._normalize_headers(target_df)
-
-        source_df = self._align_columns(source_df, is_source=True)
-        target_df = self._align_columns(target_df, is_source=False)
+        target_df = (
+            target_loader.load(self.target_config)
+            .pipe(self._normalize_headers)
+            .pipe(self._align_columns, is_source=False)
+        )
 
         return source_df, target_df
 
@@ -145,7 +146,7 @@ class DiffEngine:
 
     def _get_effective_rule(self, col_name: str) -> dict[str, Any]:
         """Resolves all rules (Specific > Pattern > Global) into a unified dictionary."""
-        eff = {
+        eff: dict[str, Any] = {
             "abs_tol": self.config.default_absolute_tolerance,
             "rel_tol": self.config.default_relative_tolerance,
             "treat_null": self.config.default_treat_null_as_equal,
@@ -216,11 +217,11 @@ class DiffEngine:
                 series = series.str.replace_all(pattern, replacement)
 
         mode = rule["whitespace"]
-        if mode == WhitespaceMode.LEFT:
+        if mode == "left":
             series = series.str.strip_chars_start()
-        elif mode == WhitespaceMode.RIGHT:
+        elif mode == "right":
             series = series.str.strip_chars_end()
-        elif mode == WhitespaceMode.BOTH:
+        elif mode == "both":
             series = series.str.strip_chars()
 
         if rule["case_insensitive"]:
@@ -273,26 +274,18 @@ class DiffEngine:
         if missing_pks_target:
             raise ConfigError(f"Primary keys missing in TARGET: {missing_pks_target}")
 
-        if self.config.schema_mode == SchemaMode.EXACT:
+        if self.config.schema_mode == "exact":
             if self.source.columns != self.target.columns:
                 raise ConfigError(
                     f"EXACT schema match failed.\nSource: {self.source.columns}\nTarget: {self.target.columns}"
                 )
 
-        elif self.config.schema_mode == SchemaMode.RELAXED_ORDER:
-            if source_cols != target_cols:
-                missing = source_cols - target_cols
-                extra = target_cols - source_cols
-                raise ConfigError(
-                    f"RELAXED_ORDER schema match failed.\nMissing in Target: {missing}\nExtra in Target: {extra}"
-                )
-
-        elif self.config.schema_mode == SchemaMode.ALLOW_ADDITIONS:
+        elif self.config.schema_mode == "allow_additions":
             missing_in_target = source_cols - target_cols
             if missing_in_target:
                 raise ConfigError(f"Target is missing required source columns: {missing_in_target}")
 
-        elif self.config.schema_mode == SchemaMode.ALLOW_REMOVALS:
+        elif self.config.schema_mode == "allow_removals":
             extra_in_target = target_cols - source_cols
             if extra_in_target:
                 raise ConfigError(
@@ -325,8 +318,8 @@ class DiffEngine:
         )
         common = src_renamed.join(tgt_renamed, on=self.config.primary_keys, how="inner")
 
-        match_expressions = []
-        match_cols = []
+        match_expressions: list[pl.Expr] = []
+        match_cols: list[str] = []
 
         for col in self.source.columns:
             if col in self.config.primary_keys or col not in self.target.columns:
@@ -355,25 +348,26 @@ class DiffEngine:
         )
         is_match = mismatch_ratio <= self.config.threshold
 
-        if self.config.output_path:
-            out_dir = Path(self.config.output_path)
+        # Export artifacts if configured
+        output_path_str = getattr(self.config, "output_path", None)
+        if isinstance(output_path_str, str):
+            out_dir = Path(output_path_str)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            fmt = self.config.output_format
-            ext = fmt.value
+            fmt = getattr(self.config, "output_format", "parquet")
 
             def _export_artifact(df: pl.DataFrame, name: str) -> None:
                 if df.height == 0:
                     return
 
-                file_path = out_dir / f"{name}.{ext}"
-                if fmt == SourceType.CSV:
+                file_path = out_dir / f"{name}.{fmt}"
+                if fmt == "csv":
                     df.write_csv(file_path)
-                elif fmt == SourceType.PARQUET:
+                elif fmt == "parquet":
                     df.write_parquet(file_path)
                 else:
                     raise NotImplementedError(
-                        f"Export support for format '{fmt.value}' is not yet implemented."
+                        f"Export support for format '{fmt}' is not yet implemented."
                     )
 
             _export_artifact(added, "added_rows")
