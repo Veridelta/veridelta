@@ -4,6 +4,7 @@
 """Veridelta: Semantic diffing for mission-critical data pipelines."""
 
 from veridelta import datasets
+from veridelta.config import load_config
 from veridelta.engine import DataIngestor, DiffEngine
 from veridelta.models import (
     ColumnRule,
@@ -22,4 +23,5 @@ __all__ = [
     "DiffSummary",
     "SourceConfig",
     "datasets",
+    "load_config",
 ]

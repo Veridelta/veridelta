@@ -4,7 +4,7 @@
 """Configuration parsing and validation from YAML files."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 from pydantic import ValidationError
@@ -27,18 +27,19 @@ def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfi
     """
     file_path = Path(path)
 
-    if not file_path.exists():
-        raise ConfigError(f"Configuration file not found: {file_path.absolute()}")
+    if not file_path.is_file():
+        raise ConfigError(f"Configuration file not found or is not a file: {file_path.absolute()}")
 
     try:
         with file_path.open("r", encoding="utf-8") as f:
-            raw_config: Any = yaml.safe_load(f)
+            parsed_yaml: Any = yaml.safe_load(f)
     except yaml.YAMLError as yaml_err:
         raise ConfigError(f"Failed to parse YAML file:\n{yaml_err}") from yaml_err
 
-    if not isinstance(raw_config, dict):
+    if not isinstance(parsed_yaml, dict):
         raise ConfigError("Invalid YAML structure: Root element must be a dictionary.")
 
+    raw_config = cast("dict[str, Any]", parsed_yaml)
     if "source" not in raw_config or "target" not in raw_config:
         raise ConfigError("Configuration must contain both 'source' and 'target' blocks.")
 
