@@ -67,13 +67,13 @@ Use Veridelta directly within Python workflows (e.g., Airflow, notebooks, or ser
 
 ```python
 import polars as pl
-from veridelta import DiffConfig, ColumnRule, DiffEngine
+from veridelta import DiffConfig, DiffRule, DiffEngine
 
 config = DiffConfig(
     primary_keys=["user_id"],
     default_treat_null_as_equal=True,
     rules=[
-        ColumnRule(
+        DiffRule(
             pattern="^AMT_.*",
             absolute_tolerance=0.05
         )

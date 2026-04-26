@@ -36,6 +36,7 @@ dev = [
     "commitizen>=4.13.10",
     "ipykernel>=7.2.0",
     "mkdocs-jupyter>=0.26.3",
+    "mkdocs-macros-plugin>=1.5.0",
     "mkdocs-material>=9.7.6",
     "mkdocstrings[python]>=1.0.3",
     "mypy>=1.20.0",
@@ -58,6 +59,7 @@ files = ["src/veridelta", "tests"]
 strict = true
 plugins = ["pydantic.mypy"]
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
+disable_error_code = ["prop-decorator"]
 warn_return_any = false
 disallow_untyped_decorators = false
 
@@ -131,6 +133,7 @@ version = "0.1.0"
 version_files = [
     "pyproject.toml:version",
     "src/veridelta/__init__.py:__version__",
+    "mkdocs.yml:extra.version",
 ]
 update_changelog_on_bump = true
 major_version_zero = true

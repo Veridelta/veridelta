@@ -10,6 +10,7 @@ datasets used in Veridelta's documentation and tutorials.
 import importlib.metadata
 import logging
 import pathlib
+import shutil
 import urllib.error
 import urllib.request
 
@@ -20,14 +21,17 @@ logger.addHandler(logging.NullHandler())
 
 try:
     __version__ = importlib.metadata.version("veridelta")
+    git_ref = f"v{__version__}"
 except importlib.metadata.PackageNotFoundError:
-    __version__ = "main"
+    git_ref = "main"
 
-_TAXI_URL = f"https://raw.githubusercontent.com/Veridelta/veridelta/v{__version__}/docs/assets/data/sample_taxi_data.parquet"
+_GIT_REF = git_ref
+
+_TAXI_URL = f"https://raw.githubusercontent.com/Veridelta/veridelta/{_GIT_REF}/docs/assets/data/sample_taxi_data.parquet"
 
 
 def _get_cache_dir() -> pathlib.Path:
-    """Get the local cache directory for Veridelta datasets.
+    """Gets the local cache directory for Veridelta datasets.
 
     Returns:
         pathlib.Path: The path to the local cache directory.
@@ -38,10 +42,11 @@ def _get_cache_dir() -> pathlib.Path:
 
 
 def load_nyc_taxi() -> pl.DataFrame:
-    """Load the NYC Taxi sample dataset.
+    """Loads the NYC Taxi sample dataset.
 
     Downloads the dataset from the official Veridelta repository and caches it
-    locally to ensure high-speed subsequent loads.
+    locally to ensure high-speed subsequent loads. Enforces a 15-second timeout
+    to prevent indefinite CI/CD pipeline hangs on network failure.
 
     Returns:
         pl.DataFrame: A Polars DataFrame containing the NYC Taxi sample data.
@@ -54,8 +59,16 @@ def load_nyc_taxi() -> pl.DataFrame:
     if not cache_path.exists():
         logger.warning(f"Downloading NYC Taxi dataset to {cache_path}...")
         try:
-            urllib.request.urlretrieve(_TAXI_URL, cache_path)
+            req = urllib.request.Request(_TAXI_URL)
+            with (
+                urllib.request.urlopen(req, timeout=15.0) as response,
+                open(cache_path, "wb") as out_file,
+            ):
+                shutil.copyfileobj(response, out_file)
+
         except urllib.error.URLError as e:
+            if cache_path.exists():
+                cache_path.unlink()
             raise RuntimeError(
                 f"Failed to download Veridelta sample dataset. "
                 f"Check your internet connection or the URL. Error: {e}"

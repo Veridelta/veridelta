@@ -1,45 +1,40 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Command-line interface for Veridelta."""
+"""Command-line interface for Veridelta.
+
+This module provides the terminal entry points for running Veridelta
+comparisons in CI/CD pipelines and local environments.
+"""
 
 import argparse
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from veridelta.config import load_config
 from veridelta.engine import DataIngestor, DiffEngine
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffConfig, DiffSummary, SourceConfig
 
-
-def print_summary(summary: DiffSummary) -> None:
-    """Prints a formatted summary to the console."""
-    print("\n" + "=" * 50)
-    print("Veridelta Execution Summary")
-    print("=" * 50)
-    print(f"Source Rows:   {summary.total_rows_source:,}")
-    print(f"Target Rows:   {summary.total_rows_target:,}")
-    print("-" * 50)
-    print(f"Added Rows:    {summary.added_count:,}")
-    print(f"Removed Rows:  {summary.removed_count:,}")
-    print(f"Changed Rows:  {summary.changed_count:,}")
-    print("=" * 50)
-
-    if summary.is_match:
-        print("STATUS: SUCCESS (Matches within threshold)")
-    else:
-        print("STATUS: FAILED (Differences exceed threshold)")
-    print("=" * 50 + "\n")
+if TYPE_CHECKING:
+    from veridelta.models import DiffConfig, SourceConfig
 
 
 def run(args: argparse.Namespace) -> int:
-    """Executes the comparison workflow."""
+    """Executes the comparison workflow based on CLI arguments.
+
+    Args:
+        args (argparse.Namespace): The parsed command-line arguments containing
+            the path to the configuration file.
+
+    Returns:
+        int: The system exit code. Returns 0 for a successful match within
+            the configured threshold, and 1 for failures or system errors.
+    """
     config_path = args.config
 
     try:
         print(f"Loading configuration from {config_path}...")
-
         diff_config: DiffConfig
         source_config: SourceConfig
         target_config: SourceConfig
@@ -53,7 +48,7 @@ def run(args: argparse.Namespace) -> int:
         engine = DiffEngine(diff_config, source_df, target_df)
         summary = engine.run()
 
-        print_summary(summary)
+        print(f"\n{summary.report_summary}\n")
 
         if diff_config.output_path and not summary.is_match:
             print(f"Artifacts saved to: {Path(diff_config.output_path).absolute()}\n")
@@ -69,7 +64,12 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    """Main entry point for the CLI."""
+    """Main entry point for the Veridelta CLI.
+
+    Parses arguments and dispatches to the appropriate command handler.
+    Exits the system with the returned status code to integrate seamlessly
+    with pipeline orchestrators.
+    """
     parser = argparse.ArgumentParser(
         prog="veridelta",
         description="Semantic diffing for mission-critical data pipelines.",

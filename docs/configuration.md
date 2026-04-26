@@ -1,56 +1,66 @@
 # Configuration Guide
 
-Veridelta is driven by a configuration object (or YAML file) that defines how two datasets should be aligned and compared.
+Veridelta is driven by a declarative YAML configuration file or Python object. This specification defines data ingestion parameters, schema alignment constraints, and the semantic rules for engine evaluation.
 
-## Core Settings
+## Core Architecture
 
-The following fields are required for every comparison:
+Execution parameters and datasets are defined at the root level of the configuration. The engine requires deterministic identifiers to perform record alignment.
 
-| Field | Description |
+```yaml
+source:
+  path: "legacy_system.csv"
+  format: "csv"
+
+target:
+  path: "modern_system.parquet"
+  format: "parquet"
+
+# Mandatory alignment key
+primary_keys: ["user_id"]
+```
+
+## Engine Directives
+
+Global directives control the strictness of the underlying Polars evaluation engine.
+
+| Directive | Description |
 | :--- | :--- |
-| `primary_keys` | A list of columns used to join and align the datasets (e.g., `['id']`). |
-| `source` | Configuration for the "Legacy" or "Left" dataset. |
-| `target` | Configuration for the "Modern" or "Right" dataset. |
+| `schema_mode` | Enforces column structure constraints. Options: `intersection` (default, compares common columns only), `exact`, `allow_additions`, `allow_removals`. |
+| `strict_types` | If `false` (default), the engine dynamically soft-casts target columns to source types to prevent execution halts on mismatched types. If `true`, type mismatches automatically fail the row. |
+| `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment. |
+| `threshold` | The allowable mismatch ratio (0.0 to 1.0) before the pipeline exits with a failure code. |
 
-## Schema Modes
+## Column-Level Overrides (Rules)
 
-The `schema_mode` determines how Veridelta handles columns that don't match between datasets.
+The `rules` array defines granular, per-column or regex-pattern tolerances. 
 
-- `intersection` (Default): Only compare columns present in both datasets.
-- `exact`: Fail if columns or their order do not match perfectly.
-- `allow_additions`: Allow the Target to have new columns not found in the Source.
-- `allow_removals`: Allow the Target to drop columns found in the Source.
-
-## Column Rules
-
-Rules allow you to define tolerances for specific columns or patterns.
-
-### Numeric Tolerances
-Use these to ignore floating-point jitter in financial or scientific data.
+### 1. Numeric Tolerances
+Bypass floating-point anomalies or acceptable system rounding differences.
 
 ```yaml
 rules:
-  - column_names: ["total_amount"]
+  - column_names: ["total_amount", "tax"]
     absolute_tolerance: 0.01
     relative_tolerance: 0.005
 ```
 
-### String Normalization
-
-Handle messy text data by cleaning it before the comparison.
+### 2. String Normalization & Sanitization
+Execute string mutations prior to type evaluation. `regex_replace` is processed first, ensuring text is sanitized before any subsequent `cast_to` operations.
 
 ```yaml
 rules:
   - column_names: ["user_email"]
     case_insensitive: true
     whitespace_mode: "both"
+    
+  - column_names: ["balance"]
     regex_replace:
-      "\\.com$": ".net"  # Example regex sanitization
+      "\\$": ""  # Strip currency symbols before casting
+    cast_to: "Float64"
 ```
 
-### Value Mapping (Crosswalks)
-
-Translate legacy Enums to modern values.
+### 3. Value Mapping (Crosswalks)
+Translate legacy enumerations or system-specific codes to modern equivalents during evaluation.
 
 ```yaml
 rules:
@@ -58,4 +68,14 @@ rules:
     value_map:
       "0": "INACTIVE"
       "1": "ACTIVE"
+      "2": "PENDING"
+```
+
+### 4. Exclusion Routing
+Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.
+
+```yaml
+rules:
+  - pattern: "^etl_loaded_at_.*"
+    ignore: true
 ```

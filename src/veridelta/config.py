@@ -1,7 +1,11 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Configuration parsing and validation from YAML files."""
+"""Configuration parsing and validation from YAML files.
+
+This module acts as the bridge between user-defined YAML configurations
+and the strict Pydantic models required by the execution engine.
+"""
 
 from pathlib import Path
 from typing import Any, cast
@@ -14,16 +18,24 @@ from veridelta.models import DiffConfig, SourceConfig
 
 
 def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfig]:
-    """Loads a Veridelta configuration from a YAML file.
+    """Loads and validates a Veridelta configuration from a YAML file.
+
+    The parser extracts the explicit `source` and `target` definition blocks,
+    then evaluates all remaining root-level YAML parameters as the master
+    `DiffConfig`.
 
     Args:
-        path: The file path to the YAML configuration.
+        path (str | Path): The file system path to the YAML configuration.
 
     Returns:
-        A tuple of (DiffConfig, SourceConfig, SourceConfig).
+        tuple[DiffConfig, SourceConfig, SourceConfig]: A tuple containing the
+            validated master configuration, source configuration, and target
+            configuration objects respectively.
 
     Raises:
-        ConfigError: If the file is missing, invalid YAML, or fails schema validation.
+        ConfigError: If the file cannot be located, contains invalid YAML syntax,
+            lacks the mandatory source/target blocks, or violates the strict
+            Pydantic schema definitions.
     """
     file_path = Path(path)
 
