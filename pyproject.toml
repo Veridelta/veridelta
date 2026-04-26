@@ -109,15 +109,31 @@ indent-style = "space"
 docstring-code-format = true
 
 [tool.pytest.ini_options]
-addopts = ["--tb=short", "--strict-config", "--strict-markers"]
+addopts = [
+    "--tb=short",
+    "--strict-config",
+    "--strict-markers",
+    "--cov=veridelta",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+testpaths = ["tests"]
 filterwarnings = ["error"]
+markers = [
+    "unit: Isolated tests for individual components or functions.",
+    "integration: Tests evaluating multiple internal components interacting.",
+    "e2e: End-to-end tests validating the full user journey (e.g., CLI).",
+    "smoke: Critical-path tests run post-deployment to ensure basic sanity.",
+    "fast: CPU-bound tests that execute in milliseconds.",
+    "slow: I/O bound or large-dataset tests.",
+]
 
 [tool.coverage.run]
 source = ["src/veridelta"]
 branch = true
 
 [tool.coverage.report]
-# fail_under = 90
+fail_under = 90
 show_missing = true
 skip_covered = true
 exclude_lines = [
