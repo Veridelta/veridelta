@@ -1,3 +1,6 @@
+# Copyright 2026 The Veridelta Contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
 
 from pathlib import Path
