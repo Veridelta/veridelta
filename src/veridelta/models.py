@@ -11,7 +11,7 @@ schema definition for the YAML configuration files.
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 SourceType = Literal[
     "csv",
@@ -69,6 +69,8 @@ class SourceConfig(BaseModel):
             directly to the underlying Polars reader (e.g., `{'separator': ';'}`).
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     path: str = Field(..., description="File system path or URI to the data.")
     format: SourceType = Field("csv", description="The format of the file.")
     options: dict[str, Any] = Field(
@@ -110,6 +112,8 @@ class DiffRule(BaseModel):
         rename_to (str | None): The name in the target dataset if it differs from
             the source. Only valid when `column_names` contains exactly one entry.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     column_names: list[str] = Field(
         default_factory=list, description="Exact names of the columns in the source."
@@ -243,7 +247,11 @@ class DiffConfig(BaseModel):
             in the generated markdown report summary.
         output_path (str | None): Optional path to save the resulting diff report
             and artifacts (added, removed, and changed rows).
+        output_format (str): The file format for exported discrepancy artifacts
+            (e.g., 'parquet', 'csv').
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     primary_keys: list[str] = Field(..., description="Columns used to join datasets.")
 
@@ -293,6 +301,10 @@ class DiffConfig(BaseModel):
     output_path: str | None = Field(
         default=None, description="Optional path to save the detailed diff report."
     )
+    output_format: str = Field(
+        default="parquet",
+        description="The file format for exported discrepancy artifacts (e.g., 'parquet', 'csv').",
+    )
 
     @model_validator(mode="after")
     def apply_schema_normalization(self) -> "DiffConfig":
@@ -336,6 +348,8 @@ class DiffSummary(BaseModel):
         report_limit (int): Internal configuration dictating the max columns to display
             in the `report_summary`. Implicitly excluded from JSON serialization.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     total_rows_source: int
     total_rows_target: int
