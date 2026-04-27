@@ -70,12 +70,21 @@ class TestStructuralAlignment:
         assert summary.total_mismatches == 0
 
     def test_it_aborts_with_config_error_when_primary_keys_are_completely_missing(self) -> None:
-        """Ensure validation catches unmapped schemas lacking the required primary key."""
+        """Ensure validation catches unmapped schemas lacking the required primary key in the source."""
         src = pl.DataFrame({"legacy_id": [1]})
         tgt = pl.DataFrame({"modern_id": [1]})
         config = DiffConfig(primary_keys=["modern_id"])
 
         with pytest.raises(ConfigError, match="Primary keys missing in SOURCE"):
+            DiffEngine(config, src, tgt).run()
+
+    def test_it_aborts_with_config_error_when_target_is_missing_primary_keys(self) -> None:
+        """Ensure validation catches schemas where the target dataset lacks the required primary key."""
+        src = pl.DataFrame({"id": [1]})
+        tgt = pl.DataFrame({"wrong_id": [1]})
+        config = DiffConfig(primary_keys=["id"])
+
+        with pytest.raises(ConfigError, match="Primary keys missing in TARGET"):
             DiffEngine(config, src, tgt).run()
 
     def test_schema_mode_exact_fails_when_target_has_unmapped_columns(self) -> None:
@@ -191,6 +200,62 @@ class TestSemanticNormalization:
 
         assert summary.is_match is True
 
+    def test_it_sanitizes_strings_using_regex_replace_dictionary_before_comparison(self) -> None:
+        """Ensure string contents can be dynamically replaced before diffing occurs."""
+        src = pl.DataFrame({"id": [1, 2], "cost": ["$100", "€50"]})
+        tgt = pl.DataFrame({"id": [1, 2], "cost": ["100", "50"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["cost"], regex_replace={r"\$|€": ""})],
+        )
+        summary = DiffEngine(config, src, tgt).run()
+
+        assert summary.is_match is True
+
+    def test_it_coerces_specific_string_values_to_null_before_comparison(self) -> None:
+        """Ensure predefined string markers are actively converted to true nulls during processing."""
+        src = pl.DataFrame({"id": [1, 2], "status": ["N/A", "Active"]})
+        tgt = pl.DataFrame({"id": [1, 2], "status": [None, "Active"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["status"], null_values=["N/A"], treat_null_as_equal=True)
+            ],
+        )
+        summary = DiffEngine(config, src, tgt).run()
+
+        assert summary.is_match is True
+
+    def test_it_evaluates_numeric_differences_using_relative_tolerance_percentage(self) -> None:
+        """Ensure proportional differences within a calculated relative tolerance pass validation."""
+        src = pl.DataFrame({"id": [1, 2], "metric": [100.0, 100.0]})
+        # Row 1 is exactly a 5% difference (passes with 0.05), Row 2 is 6% difference (fails)
+        tgt = pl.DataFrame({"id": [1, 2], "metric": [105.0, 106.0]})
+
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["metric"], relative_tolerance=0.05)]
+        )
+        summary = DiffEngine(config, src, tgt).run()
+
+        assert summary.is_match is False
+        assert summary.changed_count == 1
+        assert summary.column_mismatches["metric"] == 1
+
+    def test_it_ignores_value_mismatches_in_columns_flagged_to_be_ignored(self) -> None:
+        """Ensure columns flagged for explicit ignoring do not trigger value mismatch failures."""
+        src = pl.DataFrame({"id": [1], "noise": [100]})
+        tgt = pl.DataFrame({"id": [1], "noise": [999]})
+
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["noise"], ignore=True)]
+        )
+        summary = DiffEngine(config, src, tgt).run()
+
+        assert summary.is_match is True
+        assert summary.changed_count == 0
+
 
 @pytest.mark.unit
 @pytest.mark.fast
@@ -217,6 +282,17 @@ class TestEvaluationStrictness:
 
         assert summary.is_match is True
 
+    def test_it_evaluates_nulls_as_mismatches_when_treat_null_as_equal_is_disabled(self) -> None:
+        """Ensure identical null records flag as failures when strict null matching is explicitly turned off."""
+        src = pl.DataFrame({"id": [1], "val": [None]}, schema={"id": pl.Int64, "val": pl.Utf8})
+        tgt = pl.DataFrame({"id": [1], "val": [None]}, schema={"id": pl.Int64, "val": pl.Utf8})
+
+        config = DiffConfig(primary_keys=["id"], default_treat_null_as_equal=False)
+        summary = DiffEngine(config, src, tgt).run()
+
+        assert summary.is_match is False
+        assert summary.changed_count == 1
+
 
 @pytest.mark.unit
 @pytest.mark.fast
@@ -224,12 +300,21 @@ class TestDataIntegrityAndSetDifferences:
     """Validate set-difference logic, uniqueness constraints, and artifact generation."""
 
     def test_it_aborts_execution_when_primary_keys_contain_duplicates(self) -> None:
-        """Ensure validation catches duplicate keys to prevent Cartesian join explosions."""
+        """Ensure validation catches duplicate keys in the source to prevent Cartesian join explosions."""
         src = pl.DataFrame({"id": [1, 1, 2], "val": ["A", "B", "C"]})
         tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "C"]})
         config = DiffConfig(primary_keys=["id"])
 
         with pytest.raises(DataIntegrityError, match="not unique in SOURCE dataset"):
+            DiffEngine(config, src, tgt).run()
+
+    def test_it_aborts_execution_when_target_primary_keys_contain_duplicates(self) -> None:
+        """Ensure validation catches duplicate keys natively inside the target dataset."""
+        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"id": [1, 1, 2], "val": ["A", "A", "B"]})
+        config = DiffConfig(primary_keys=["id"])
+
+        with pytest.raises(DataIntegrityError, match="not unique in TARGET dataset"):
             DiffEngine(config, src, tgt).run()
 
     def test_it_correctly_isolates_added_and_removed_records(self) -> None:
@@ -267,6 +352,20 @@ class TestDataIntegrityAndSetDifferences:
         assert (tmp_path / "added_rows.parquet").exists()
         assert (tmp_path / "removed_rows.parquet").exists()
         assert (tmp_path / "changed_rows.parquet").exists()
+
+    def test_it_skips_artifact_export_when_dataset_is_completely_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure entirely matching datasets do not generate empty zero-byte discrepancy files on disk."""
+        src = pl.DataFrame({"id": [1], "val": ["A"]})
+        tgt = pl.DataFrame({"id": [1], "val": ["A"]})
+
+        config = DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet")
+        DiffEngine(config, src, tgt).run()
+
+        assert not (tmp_path / "added_rows.parquet").exists()
+        assert not (tmp_path / "removed_rows.parquet").exists()
+        assert not (tmp_path / "changed_rows.parquet").exists()
 
     def test_it_raises_not_implemented_error_when_exporting_to_unsupported_formats(
         self, tmp_path: Path
