@@ -45,8 +45,8 @@ def load_nyc_taxi() -> pl.DataFrame:
     """Loads the NYC Taxi sample dataset.
 
     Downloads the dataset from the official Veridelta repository and caches it
-    locally to ensure high-speed subsequent loads. Enforces a 15-second timeout
-    to prevent indefinite CI/CD pipeline hangs on network failure.
+    locally. If the cached file is corrupted, it automatically evicts it and
+    attempts a fresh download. Enforces a 15-second timeout.
 
     Returns:
         pl.DataFrame: A Polars DataFrame containing the NYC Taxi sample data.
@@ -56,7 +56,7 @@ def load_nyc_taxi() -> pl.DataFrame:
     """
     cache_path = _get_cache_dir() / "sample_taxi_data.parquet"
 
-    if not cache_path.exists():
+    def _download_file() -> None:
         logger.warning(f"Downloading NYC Taxi dataset to {cache_path}...")
         try:
             req = urllib.request.Request(_TAXI_URL)
@@ -74,4 +74,15 @@ def load_nyc_taxi() -> pl.DataFrame:
                 f"Check your internet connection or the URL. Error: {e}"
             ) from e
 
-    return pl.read_parquet(cache_path)
+    if not cache_path.exists():
+        _download_file()
+
+    try:
+        return pl.read_parquet(cache_path)
+    except pl.exceptions.PolarsError:
+        logger.warning("Cached dataset is corrupted. Evicting and re-downloading...")
+        if cache_path.exists():
+            cache_path.unlink()
+
+        _download_file()
+        return pl.read_parquet(cache_path)
