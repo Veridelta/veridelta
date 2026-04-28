@@ -26,15 +26,15 @@ class BaseLoader(ABC):
     """Abstract base class for all data loaders."""
 
     @abstractmethod
-    def load(self, config: SourceConfig) -> pl.DataFrame:
-        """Loads data from a source into a Polars DataFrame.
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads data from a source into a Polars LazyFrame.
 
         Args:
             config (SourceConfig): The configuration detailing the path, format,
                 and format-specific parsing options.
 
         Returns:
-            pl.DataFrame: The loaded dataset.
+            pl.LazyFrame: The lazy-loaded dataset graph.
         """
         pass
 
@@ -42,33 +42,33 @@ class BaseLoader(ABC):
 class CSVLoader(BaseLoader):
     """Loader for CSV files utilizing the fast Polars CSV scanner."""
 
-    def load(self, config: SourceConfig) -> pl.DataFrame:
-        """Loads a CSV file into a Polars DataFrame.
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads a CSV file into a Polars LazyFrame.
 
         Args:
             config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.read_csv`.
+                passed directly to `pl.scan_csv`.
 
         Returns:
-            pl.DataFrame: The loaded dataset.
+            pl.LazyFrame: The lazy dataset graph.
         """
-        return pl.read_csv(config.path, **config.options)
+        return pl.scan_csv(config.path, **config.options)
 
 
 class ParquetLoader(BaseLoader):
     """Loader for Parquet files utilizing the Polars Parquet engine."""
 
-    def load(self, config: SourceConfig) -> pl.DataFrame:
-        """Loads a Parquet file into a Polars DataFrame.
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads a Parquet file into a Polars LazyFrame.
 
         Args:
             config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.read_parquet`.
+                passed directly to `pl.scan_parquet`.
 
         Returns:
-            pl.DataFrame: The loaded dataset.
+            pl.LazyFrame: The lazy dataset graph.
         """
-        return pl.read_parquet(config.path, **config.options)
+        return pl.scan_parquet(config.path, **config.options)
 
 
 class LoaderFactory:
@@ -121,38 +121,40 @@ class DataIngestor:
         self.source_config = source_config
         self.target_config = target_config
 
-    def _normalize_headers(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _normalize_headers(self, df: pl.LazyFrame) -> pl.LazyFrame:
         """Standardizes column names based on the master configuration.
 
         Args:
-            df (pl.DataFrame): The raw dataframe.
+            df (pl.LazyFrame): The raw lazy dataframe.
 
         Returns:
-            pl.DataFrame: A dataframe with lowercased/stripped headers if enabled.
+            pl.LazyFrame: A dataframe with lowercased/stripped headers if enabled.
         """
         if not self.config.normalize_column_names:
             return df
 
-        rename_map = {col: col.strip().lower() for col in df.columns}
+        cols = df.collect_schema().names()
+        rename_map = {col: col.strip().lower() for col in cols}
         return df.rename(rename_map)
 
-    def _align_columns(self, df: pl.DataFrame, is_source: bool = True) -> pl.DataFrame:
+    def _align_columns(self, df: pl.LazyFrame, is_source: bool = True) -> pl.LazyFrame:
         """Applies configured renames and drops ignored columns.
 
         Args:
-            df (pl.DataFrame): The dataframe to process.
+            df (pl.LazyFrame): The lazy dataframe to process.
             is_source (bool): True if processing the source data, False for target.
 
         Returns:
-            pl.DataFrame: The structurally aligned dataframe.
+            pl.LazyFrame: The structurally aligned lazy dataframe.
         """
         rename_map: dict[str, str] = {}
         to_drop: set[str] = set()
+        cols = df.collect_schema().names()
 
         for rule in self.config.rules:
             matched_cols = [
                 col
-                for col in df.columns
+                for col in cols
                 if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col))
             ]
 
@@ -164,17 +166,17 @@ class DataIngestor:
                 is_source
                 and rule.rename_to
                 and len(rule.column_names) == 1
-                and rule.column_names[0] in df.columns
+                and rule.column_names[0] in cols
             ):
                 rename_map[rule.column_names[0]] = rule.rename_to
 
         return df.drop(list(to_drop)).rename(rename_map)
 
-    def get_dataframes(self) -> tuple[pl.DataFrame, pl.DataFrame]:
+    def get_dataframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
         """Loads and aligns both source and target datasets.
 
         Returns:
-            tuple[pl.DataFrame, pl.DataFrame]: The prepared (source_df, target_df).
+            tuple[pl.LazyFrame, pl.LazyFrame]: The prepared (source_df, target_df).
         """
         source_loader = LoaderFactory.get_loader(self.source_config.format)
         target_loader = LoaderFactory.get_loader(self.target_config.format)
@@ -198,14 +200,14 @@ class DiffEngine:
     """The core mathematical engine that evaluates differences between datasets."""
 
     def __init__(
-        self, config: DiffConfig, source_df: pl.DataFrame, target_df: pl.DataFrame
+        self, config: DiffConfig, source_df: pl.LazyFrame, target_df: pl.LazyFrame
     ) -> None:
         """Initializes the engine with datasets already aligned by the DataIngestor.
 
         Args:
             config (DiffConfig): The master validation rules configuration.
-            source_df (pl.DataFrame): The aligned 'Left' (Legacy) dataset.
-            target_df (pl.DataFrame): The aligned 'Right' (Modern) dataset.
+            source_df (pl.LazyFrame): The aligned 'Left' (Legacy) dataset.
+            target_df (pl.LazyFrame): The aligned 'Right' (Modern) dataset.
         """
         self.config = config
         self.source = source_df
@@ -277,15 +279,17 @@ class DiffEngine:
 
         pks = self.config.primary_keys
 
-        if self.source.select(pks).is_duplicated().any():
-            dupes = self.source.filter(self.source.select(pks).is_duplicated()).height
+        src_pks = self.source.select(pks).collect()
+        if src_pks.is_duplicated().any():
+            dupes = src_pks.filter(src_pks.is_duplicated()).height
             raise DataIntegrityError(
                 f"Primary keys {pks} are not unique in SOURCE dataset. "
                 f"Found {dupes} duplicate rows. Clean your data before diffing."
             )
 
-        if self.target.select(pks).is_duplicated().any():
-            dupes = self.target.filter(self.target.select(pks).is_duplicated()).height
+        tgt_pks = self.target.select(pks).collect()
+        if tgt_pks.is_duplicated().any():
+            dupes = tgt_pks.filter(tgt_pks.is_duplicated()).height
             raise DataIntegrityError(
                 f"Primary keys {pks} are not unique in TARGET dataset. "
                 f"Found {dupes} duplicate rows. Clean your data before diffing."
@@ -339,19 +343,16 @@ class DiffEngine:
         src = pl.col(f"{col_name}_source")
         tgt = pl.col(f"{col_name}_target")
 
-        tgt_dtype = self.target.schema[col_name]
+        tgt_dtype = self.target.collect_schema().get(col_name)
 
-        # Prevent Polars ComputeError on mixed-type comparisons
         if dtype != tgt_dtype:
             if self.config.strict_types:
-                # If strict types are enforced, a type mismatch is an automatic row mismatch.
                 val_match = pl.lit(False)
                 if rule["treat_null"]:
                     null_match = src.is_null() & tgt.is_null()
                     return (val_match | null_match).fill_null(False)
                 return val_match
             else:
-                # Soft-cast target to source type purely for the comparison expression
                 tgt = tgt.cast(dtype, strict=False)
 
         if rule["value_map"]:
@@ -398,18 +399,21 @@ class DiffEngine:
         src_drop: set[str] = set()
         tgt_drop: set[str] = set()
 
+        src_cols = self.source.collect_schema().names()
+        tgt_cols = self.target.collect_schema().names()
+
         for rule in self.config.rules:
             matched_src = [
-                c
-                for c in self.source.columns
-                if c in rule.column_names or (rule.pattern and re.match(rule.pattern, c))
+                col
+                for col in src_cols
+                if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col))
             ]
 
             target_lookup = rule.rename_to if rule.rename_to else rule.column_names
             matched_tgt = [
-                c
-                for c in self.target.columns
-                if c in (target_lookup if isinstance(target_lookup, list) else [target_lookup])
+                col
+                for col in tgt_cols
+                if col in (target_lookup if isinstance(target_lookup, list) else [target_lookup])
             ]
 
             if rule.ignore:
@@ -419,7 +423,7 @@ class DiffEngine:
 
             if rule.rename_to and len(rule.column_names) == 1:
                 col_name = rule.column_names[0]
-                if col_name in self.source.columns:
+                if col_name in src_cols:
                     src_rename[col_name] = rule.rename_to
 
         self.source = self.source.drop(list(src_drop)).rename(src_rename)
@@ -431,8 +435,8 @@ class DiffEngine:
         Raises:
             ConfigError: If primary keys are missing or schema constraints are violated.
         """
-        source_cols = set(self.source.columns)
-        target_cols = set(self.target.columns)
+        source_cols = set(self.source.collect_schema().names())
+        target_cols = set(self.target.collect_schema().names())
         pks = set(self.config.primary_keys)
 
         if not pks.issubset(source_cols):
@@ -442,9 +446,9 @@ class DiffEngine:
         if not pks.issubset(target_cols):
             raise ConfigError(f"Primary keys missing in TARGET: {pks - target_cols}")
 
-        if self.config.schema_mode == "exact" and self.source.columns != self.target.columns:
+        if self.config.schema_mode == "exact" and source_cols != target_cols:
             raise ConfigError(
-                f"EXACT schema match failed.\nSource: {self.source.columns}\nTarget: {self.target.columns}"
+                f"EXACT schema match failed.\nSource: {source_cols}\nTarget: {target_cols}"
             )
 
         elif self.config.schema_mode == "allow_additions":
@@ -460,24 +464,25 @@ class DiffEngine:
                 )
 
     def run(self) -> DiffSummary:
-        """Execute the end-to-end dataset comparison pipeline.
+        """Execute the end-to-end dataset comparison pipeline lazily.
 
-        Enforces a strict evaluation sequence to guarantee deterministic alignment
-        and prevent compute errors caused by schema drift or type mismatch.
+        Builds an optimized Polars computation graph (DAG) to guarantee deterministic
+        alignment, preventing compute errors and memory exhaustion on large datasets.
+        Data is only materialized into memory when absolutely necessary for execution.
 
         Execution Pipeline:
             1. Structural Alignment: Maps and prunes schemas to establish the
                Target as the authoritative structural contract.
-            2. Validation & Integrity: Asserts primary key existence and uniqueness,
-               and enforces the configured `SchemaMode`.
-            3. Semantic Normalization: Sanitizes strings via regex prior to type
-               coercion, preventing parsing faults.
-            4. Set-Difference Analysis: Evaluates anti-joins to isolate asymmetric
-               records ('Added' and 'Removed').
-            5. Attribute Comparison: Evaluates inner-joins against vectorized match
-               expressions (tolerances, null-coercion) to identify 'Changed' records.
-            6. Artifact Persistence: Exports discrepancy dataframes to the configured
-               storage backend, if requested.
+            2. Validation & Integrity: Asserts primary key existence and uniqueness
+               (triggering a localized collection), and enforces the `SchemaMode`.
+            3. Lazy Graph Construction: Builds the computation DAG for semantic
+               normalization (regex sanitization) and type coercion.
+            4. Relational Joins: Formulates the lazy anti-joins ('Added', 'Removed')
+               and inner-joins ('Changed') to isolate discrepancies.
+            5. Graph Execution: Executes the computation DAG via `.collect()` to
+               evaluate vectorized match expressions and compute exact row counts.
+            6. Artifact Persistence: Exports the materialized discrepancy dataframes
+               to the configured storage backend, if requested.
 
         Returns:
             DiffSummary: Execution report detailing match status, discrepancy counts,
@@ -489,25 +494,25 @@ class DiffEngine:
             NotImplementedError: If the requested artifact export format is unsupported.
         """
         self._align_structure()
-
         self._validate_schema()
         self._check_uniqueness()
 
-        for col in self.source.columns:
+        src_cols = self.source.collect_schema().names()
+        tgt_cols = self.target.collect_schema().names()
+
+        for col in src_cols:
             rule = self._get_effective_rule(col)
 
-            # MUST happen before type casting to prevent ComputeErrors
-            # (so values like "N/A", "NULL", or empty strings can be safely cast to None.)
             if rule["null_values"]:
                 null_list = rule["null_values"]
-                if col in self.source.columns:
+                if col in src_cols:
                     self.source = self.source.with_columns(
                         pl.when(pl.col(col).is_in(null_list))
                         .then(None)
                         .otherwise(pl.col(col))
                         .alias(col)
                     )
-                if col in self.target.columns:
+                if col in tgt_cols:
                     self.target = self.target.with_columns(
                         pl.when(pl.col(col).is_in(null_list))
                         .then(None)
@@ -515,17 +520,16 @@ class DiffEngine:
                         .alias(col)
                     )
 
-            # MUST happen before type casting so values like "$10.00" can be safely cast to Float
             if rule["regex_replace"]:
                 for pattern, replacement in rule["regex_replace"].items():
-                    if col in self.source.columns and isinstance(
-                        self.source.schema[col], (pl.String, pl.Utf8)
+                    if col in src_cols and isinstance(
+                        self.source.collect_schema().get(col), (pl.String, pl.Utf8)
                     ):
                         self.source = self.source.with_columns(
                             pl.col(col).str.replace_all(pattern, replacement)
                         )
-                    if col in self.target.columns and isinstance(
-                        self.target.schema[col], (pl.String, pl.Utf8)
+                    if col in tgt_cols and isinstance(
+                        self.target.collect_schema().get(col), (pl.String, pl.Utf8)
                     ):
                         self.target = self.target.with_columns(
                             pl.col(col).str.replace_all(pattern, replacement)
@@ -534,74 +538,80 @@ class DiffEngine:
             if rule["cast_to"]:
                 dtype = getattr(pl, rule["cast_to"], None)
                 if dtype:
-                    if col in self.source.columns:
+                    if col in src_cols:
                         self.source = self.source.with_columns(pl.col(col).cast(dtype))
-                    if col in self.target.columns:
+                    if col in tgt_cols:
                         self.target = self.target.with_columns(pl.col(col).cast(dtype))
 
-        added = self.target.join(self.source, on=self.config.primary_keys, how="anti")
-        removed = self.source.join(self.target, on=self.config.primary_keys, how="anti")
+        added_lazy = self.target.join(self.source, on=self.config.primary_keys, how="anti")
+        removed_lazy = self.source.join(self.target, on=self.config.primary_keys, how="anti")
+
+        # Re-fetch schema names in case rules altered them
+        src_cols_final = self.source.collect_schema().names()
+        tgt_cols_final = self.target.collect_schema().names()
 
         src_renamed = self.source.rename(
-            {c: f"{c}_source" for c in self.source.columns if c not in self.config.primary_keys}
+            {col: f"{col}_source" for col in src_cols_final if col not in self.config.primary_keys}
         )
         tgt_renamed = self.target.rename(
-            {c: f"{c}_target" for c in self.target.columns if c not in self.config.primary_keys}
+            {col: f"{col}_target" for col in tgt_cols_final if col not in self.config.primary_keys}
         )
-        common = src_renamed.join(tgt_renamed, on=self.config.primary_keys, how="inner")
+        common_lazy = src_renamed.join(tgt_renamed, on=self.config.primary_keys, how="inner")
 
         match_expressions: list[pl.Expr] = []
         match_cols: list[str] = []
 
-        for col in self.source.columns:
-            if col in self.config.primary_keys or col not in self.target.columns:
+        for col in src_cols_final:
+            if col in self.config.primary_keys or col not in tgt_cols_final:
                 continue
 
             rule = self._get_effective_rule(col)
             if rule["ignore"]:
                 continue
 
-            dtype = self.source.schema[col]
+            dtype = self.source.collect_schema()[col]
             expr = self._build_match_expr(col, rule, dtype).alias(f"{col}_is_match")
             match_expressions.append(expr)
             match_cols.append(f"{col}_is_match")
 
+        added_df = added_lazy.collect()
+        removed_df = removed_lazy.collect()
+
         changed_count = 0
-        changed_rows = pl.DataFrame()
+        changed_df = pl.DataFrame()
         column_mismatches: dict[str, int] = {}
 
-        if match_expressions and not common.is_empty():
-            evaluated = common.with_columns(match_expressions)
+        if match_expressions:
+            evaluated_lazy = common_lazy.with_columns(match_expressions)
             all_matched = pl.all_horizontal(match_cols)
-            changed_rows = evaluated.filter(~all_matched)
-            changed_count = changed_rows.height
+            changed_lazy = evaluated_lazy.filter(~all_matched)
 
-            # Invert the boolean matches (~), and sum them. True = 1 mismatch.
-            mismatch_exprs = [
-                (~pl.col(c)).sum().alias(c.replace("_is_match", "")) for c in match_cols
-            ]
+            changed_df = changed_lazy.collect()
+            changed_count = changed_df.height
 
-            raw_counts = evaluated.select(mismatch_exprs).to_dicts()[0]
+            if changed_count > 0:
+                mismatch_exprs = [
+                    (~pl.col(c)).sum().alias(c.replace("_is_match", "")) for c in match_cols
+                ]
+                raw_counts = changed_df.select(mismatch_exprs).to_dicts()[0]
+                column_mismatches = {k: v for k, v in raw_counts.items() if v > 0}
 
-            column_mismatches = {k: v for k, v in raw_counts.items() if v > 0}
+        pk_col = self.config.primary_keys[0]
+        src_total = self.source.select(pl.col(pk_col).count()).collect().item()
+        tgt_total = self.target.select(pl.col(pk_col).count()).collect().item()
 
-        mismatch_ratio = (added.height + removed.height + changed_count) / max(
-            self.source.height, 1
-        )
+        mismatch_ratio = (added_df.height + removed_df.height + changed_count) / max(src_total, 1)
         is_match = mismatch_ratio <= self.config.threshold
 
-        # Export artifacts if configured
         output_path_str = getattr(self.config, "output_path", None)
         if isinstance(output_path_str, str):
             out_dir = Path(output_path_str)
             out_dir.mkdir(parents=True, exist_ok=True)
-
             fmt = getattr(self.config, "output_format", "parquet")
 
             def _export_artifact(df: pl.DataFrame, name: str) -> None:
                 if df.height == 0:
                     return
-
                 file_path = out_dir / f"{name}.{fmt}"
                 if fmt == "csv":
                     df.write_csv(file_path)
@@ -612,15 +622,15 @@ class DiffEngine:
                         f"Export support for format '{fmt}' is not yet implemented."
                     )
 
-            _export_artifact(added, "added_rows")
-            _export_artifact(removed, "removed_rows")
-            _export_artifact(changed_rows, "changed_rows")
+            _export_artifact(added_df, "added_rows")
+            _export_artifact(removed_df, "removed_rows")
+            _export_artifact(changed_df, "changed_rows")
 
         return DiffSummary(
-            total_rows_source=self.source.height,
-            total_rows_target=self.target.height,
-            added_count=added.height,
-            removed_count=removed.height,
+            total_rows_source=src_total,
+            total_rows_target=tgt_total,
+            added_count=added_df.height,
+            removed_count=removed_df.height,
             changed_count=changed_count,
             column_mismatches=column_mismatches,
             is_match=is_match,
