@@ -50,7 +50,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Execute Smoke Tests
-        run: uv run pytest tests/smoke
+        run: uv run pytest tests/smoke --no-cov
 
   test-core:
     name: Core Engine (Py ${{ matrix.python-version }}, ${{ matrix.os }})
@@ -111,4 +111,4 @@ jobs:
         run: uv sync --all-extras
 
       - name: Execute E2E CLI Subprocess Tests
-        run: uv run pytest tests/e2e
+        run: uv run pytest tests/e2e --no-cov
