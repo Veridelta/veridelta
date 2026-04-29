@@ -115,7 +115,7 @@ class TestDatasetCacheManagement:
             code=404,
             msg="Not Found",
             hdrs=Message(),
-            fp=None,
+            fp=io.BytesIO(b"404 Not Found"),
         )
 
         # Simulate the file being opened for writing right before the HTTPError triggers
