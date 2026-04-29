@@ -12,6 +12,7 @@ env:
 
 jobs:
   deploy-docs:
+    name: Build & Deploy MkDocs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -19,16 +20,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@v5
         with:
-          enable-cache: false 
-
-      - name: Set up Python
-        run: uv python install 3.10
+          enable-cache: false
+          python-version: "3.12"
 
       - name: Install Dependencies
         run: uv sync --all-extras --group dev
 
-      - name: Deploy MkDocs
+      - name: Deploy MkDocs to GitHub Pages
         run: uv run mkdocs gh-deploy --force

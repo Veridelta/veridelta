@@ -3,11 +3,11 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      - "v*" # Trigger only when Commitizen pushes a new version tag (e.g., v0.1.0)
+      - "v*"  # Trigger exclusively when a version tag is pushed (e.g., v0.1.0)
 
 jobs:
   build-and-publish:
-    name: Build and Publish
+    name: Build and Publish Artifacts
     runs-on: ubuntu-latest
     
     environment:
@@ -21,11 +21,16 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install uv
+      - name: Install uv and Set up Python
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
+          python-version: "3.12"
 
-      - name: Build Artifacts
+      - name: Build Sdist and Wheel
         run: uv build
 
       - name: Publish to PyPI
