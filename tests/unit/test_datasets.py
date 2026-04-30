@@ -37,7 +37,7 @@ class TestDatasetCacheManagement:
     def test_it_loads_dataset_directly_from_cache_without_downloading_when_file_exists(
         self, mocker: MockerFixture, tmp_path: Path
     ) -> None:
-        """Ensure subsequent loads bypass the network and read directly from disk."""
+        """Ensure subsequent loads bypass the network and read directly from disk lazily."""
         mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
         mock_urlopen = mocker.patch("veridelta.datasets.urllib.request.urlopen")
 
@@ -45,9 +45,12 @@ class TestDatasetCacheManagement:
         cache_file = tmp_path / "sample_taxi_data.parquet"
         df.write_parquet(cache_file)
 
-        result_df = load_nyc_taxi()
+        result_lf = load_nyc_taxi()
 
         mock_urlopen.assert_not_called()
+        assert isinstance(result_lf, pl.LazyFrame)
+
+        result_df = result_lf.collect()
         assert result_df.height == 3
         assert result_df.columns == ["trip_id"]
 
@@ -69,7 +72,7 @@ class TestDatasetCacheManagement:
             "veridelta.datasets.urllib.request.urlopen", return_value=mock_response
         )
 
-        result_df = load_nyc_taxi()
+        result_lf = load_nyc_taxi()
 
         mock_urlopen.assert_called_once()
 
@@ -79,7 +82,10 @@ class TestDatasetCacheManagement:
         assert kwargs["timeout"] == 15.0
 
         assert (tmp_path / "sample_taxi_data.parquet").exists()
+        assert not (tmp_path / "sample_taxi_data.parquet.tmp").exists()  # Ensure tmp is gone
 
+        assert isinstance(result_lf, pl.LazyFrame)
+        result_df = result_lf.collect()
         assert result_df.columns == ["downloaded_col"]
         assert result_df.height == 2
 
@@ -89,10 +95,11 @@ class TestDatasetCacheManagement:
         """Ensure corrupted or interrupted downloads do not leave broken artifact files on disk."""
         mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
         cache_file = tmp_path / "sample_taxi_data.parquet"
+        tmp_file = cache_file.with_suffix(".parquet.tmp")
 
-        # Simulate a file partially writing before the network dies
+        # Simulate a file partially writing to the .tmp location before the network dies
         def simulate_network_failure(*args, **kwargs):  # type: ignore[no-untyped-def]
-            cache_file.touch()  # Simulate 0-byte / partial write
+            tmp_file.touch()  # Simulate 0-byte / partial write to atomic temp file
             raise urllib.error.URLError("Network unreachable")
 
         mock_urlopen = mocker.patch("veridelta.datasets.urllib.request.urlopen")
@@ -101,6 +108,8 @@ class TestDatasetCacheManagement:
         with pytest.raises(RuntimeError, match="Failed to download Veridelta sample dataset"):
             load_nyc_taxi()
 
+        # Assert both the temp file was cleaned up and the real file was never created
+        assert not tmp_file.exists()
         assert not cache_file.exists()
 
     def test_it_handles_http_errors_like_404_not_found_gracefully(
@@ -109,6 +118,7 @@ class TestDatasetCacheManagement:
         """Ensure HTTP rejections (like a bad GitHub ref) trigger cleanup and error handling."""
         mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
         cache_file = tmp_path / "sample_taxi_data.parquet"
+        tmp_file = cache_file.with_suffix(".parquet.tmp")
 
         http_error = urllib.error.HTTPError(
             url="http://fake",
@@ -120,7 +130,7 @@ class TestDatasetCacheManagement:
 
         # Simulate the file being opened for writing right before the HTTPError triggers
         def simulate_404(*args, **kwargs):  # type: ignore[no-untyped-def]
-            cache_file.touch()
+            tmp_file.touch()
             raise http_error
 
         mock_urlopen = mocker.patch("veridelta.datasets.urllib.request.urlopen")
@@ -129,7 +139,8 @@ class TestDatasetCacheManagement:
         with pytest.raises(RuntimeError, match="Check your internet connection or the URL"):
             load_nyc_taxi()
 
-        # Assert the 0-byte file was deleted so the next run can try again
+        # Assert the 0-byte temp file was deleted
+        assert not tmp_file.exists()
         assert not cache_file.exists()
 
         http_error.close()
@@ -154,9 +165,12 @@ class TestDatasetCacheManagement:
             "veridelta.datasets.urllib.request.urlopen", return_value=mock_response
         )
 
-        result_df = load_nyc_taxi()
+        result_lf = load_nyc_taxi()
 
-        # The network SHOULD be called oncebecause it realized the cache was corrupt
+        # The network SHOULD be called once because it realized the cache was corrupt
         mock_urlopen.assert_called_once()
+
+        assert isinstance(result_lf, pl.LazyFrame)
+        result_df = result_lf.collect()
         assert result_df.columns == ["recovered_col"]
         assert result_df.height == 2
