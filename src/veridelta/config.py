@@ -20,22 +20,48 @@ from veridelta.models import DiffConfig, SourceConfig
 def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfig]:
     """Loads and validates a Veridelta configuration from a YAML file.
 
-    The parser extracts the explicit `source` and `target` definition blocks,
-    then evaluates all remaining root-level YAML parameters as the master
-    `DiffConfig`.
+    Extracts the `source` and `target` blocks and evaluates the root
+    parameters as the master `DiffConfig`.
 
     Args:
         path (str | Path): The file system path to the YAML configuration.
 
     Returns:
-        tuple[DiffConfig, SourceConfig, SourceConfig]: A tuple containing the
-            validated master configuration, source configuration, and target
-            configuration objects respectively.
+        tuple[DiffConfig, SourceConfig, SourceConfig]: The validated master,
+            source, and target configurations.
 
     Raises:
         ConfigError: If the file cannot be located, contains invalid YAML syntax,
             lacks the mandatory source/target blocks, or violates the strict
             Pydantic schema definitions.
+
+    Example:
+        A standard pipeline configuration (`veridelta.yaml`):
+
+        ```yaml
+        primary_keys: ["id", "region"]
+        output_format: "parquet"
+
+        source:
+          path: "s3://raw-data/*.csv"
+          format: "csv"
+          options: { has_header: true, infer_schema_length: 10000 }
+
+        target:
+          path: "s3://clean-data/"
+          format: "parquet"
+          options: { use_pyarrow: true }
+        ```
+
+        Executing the configuration via the Python API:
+
+        ```python
+        from veridelta.config import load_config
+        from veridelta.engine import DiffEngine
+
+        diff_cfg, source, target = load_config("veridelta.yaml")
+        summary = DiffEngine(diff_cfg).execute(source, target)
+        ```
     """
     file_path = Path(path)
 
