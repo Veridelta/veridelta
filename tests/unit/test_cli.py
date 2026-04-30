@@ -27,39 +27,36 @@ class TestCommandLineInterface:
         self, mocker: MockerFixture, default_args: argparse.Namespace
     ) -> None:
         """Ensure a successful comparison returns a 0 exit code for CI/CD pipelines."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
-        mock_ingestor = mocker.patch("veridelta.cli.DataIngestor")
-        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
-
-        mock_ingestor.return_value.get_dataframes.return_value = (MagicMock(), MagicMock())
+        mock_load = mocker.patch("veridelta.config.load_config")
+        mock_engine = mocker.patch("veridelta.engine.DiffEngine")
 
         mock_diff_config = MagicMock(output_path=None)
-        mock_load.return_value = (mock_diff_config, MagicMock(), MagicMock())
+        mock_src_cfg = MagicMock()
+        mock_tgt_cfg = MagicMock()
+        mock_load.return_value = (mock_diff_config, mock_src_cfg, mock_tgt_cfg)
 
         mock_summary = MagicMock(is_match=True, report_summary="Status: PASSED")
-        mock_engine.return_value.run.return_value = mock_summary
+        mock_engine.return_value.execute.return_value = mock_summary
 
         exit_code = run(default_args)
 
         assert exit_code == 0
         mock_load.assert_called_once_with("dummy.yaml")
-        mock_engine.return_value.run.assert_called_once()
+        mock_engine.assert_called_once_with(mock_diff_config)
+        mock_engine.return_value.execute.assert_called_once_with(mock_src_cfg, mock_tgt_cfg)
 
     def test_it_returns_exit_code_one_when_datasets_do_not_match(
         self, mocker: MockerFixture, default_args: argparse.Namespace
     ) -> None:
         """Ensure a failed comparison returns a 1 exit code to halt pipelines."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
-        mock_ingestor = mocker.patch("veridelta.cli.DataIngestor")
-        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
-
-        mock_ingestor.return_value.get_dataframes.return_value = (MagicMock(), MagicMock())
+        mock_load = mocker.patch("veridelta.config.load_config")
+        mock_engine = mocker.patch("veridelta.engine.DiffEngine")
 
         mock_diff_config = MagicMock(output_path=None)
         mock_load.return_value = (mock_diff_config, MagicMock(), MagicMock())
 
         mock_summary = MagicMock(is_match=False, report_summary="Status: FAILED")
-        mock_engine.return_value.run.return_value = mock_summary
+        mock_engine.return_value.execute.return_value = mock_summary
 
         exit_code = run(default_args)
 
@@ -72,17 +69,14 @@ class TestCommandLineInterface:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Ensure users are notified of where artifacts are saved upon failure."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
-        mock_ingestor = mocker.patch("veridelta.cli.DataIngestor")
-        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
-
-        mock_ingestor.return_value.get_dataframes.return_value = (MagicMock(), MagicMock())
+        mock_load = mocker.patch("veridelta.config.load_config")
+        mock_engine = mocker.patch("veridelta.engine.DiffEngine")
 
         mock_diff_config = MagicMock(output_path="/tmp/diffs")
         mock_load.return_value = (mock_diff_config, MagicMock(), MagicMock())
 
         mock_summary = MagicMock(is_match=False, report_summary="Status: FAILED")
-        mock_engine.return_value.run.return_value = mock_summary
+        mock_engine.return_value.execute.return_value = mock_summary
 
         run(default_args)
         captured = capsys.readouterr()
@@ -97,7 +91,7 @@ class TestCommandLineInterface:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Ensure validation errors gracefully halt execution and print to standard error."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_load = mocker.patch("veridelta.config.load_config")
         mock_load.side_effect = ConfigError("Invalid schema mode")
 
         exit_code = run(default_args)
@@ -114,7 +108,7 @@ class TestCommandLineInterface:
         capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Ensure unhandled system errors do not crash the runner ungracefully."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_load = mocker.patch("veridelta.config.load_config")
         mock_load.side_effect = RuntimeError("Disk full")
 
         exit_code = run(default_args)
@@ -139,3 +133,17 @@ class TestCommandLineInterface:
         assert args_passed.config == "custom.yaml"
 
         mock_exit.assert_called_once_with(0)
+
+    def test_main_handles_version_flag(
+        self, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure the --version flag dynamically prints the package version and exits."""
+        mocker.patch("importlib.metadata.version", return_value="99.9.9")
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "--version"])
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "veridelta 99.9.9" in captured.out

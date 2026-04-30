@@ -23,11 +23,11 @@ from veridelta.models import (
 
 
 class BaseLoader(ABC):
-    """Abstract base class for all data loaders."""
+    """Abstract interface for dataset loaders."""
 
     @abstractmethod
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads data from a source into a Polars LazyFrame.
+        """Load data from a source into a Polars LazyFrame.
 
         Args:
             config (SourceConfig): The configuration detailing the path, format,
@@ -40,10 +40,10 @@ class BaseLoader(ABC):
 
 
 class CSVLoader(BaseLoader):
-    """Loader for CSV files utilizing the fast Polars CSV scanner."""
+    """Loader for CSV files utilizing the Polars CSV scanner."""
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a CSV file into a Polars LazyFrame.
+        """Load a CSV file into a Polars LazyFrame.
 
         Args:
             config (SourceConfig): The source configuration. Extra options are
@@ -59,7 +59,7 @@ class ParquetLoader(BaseLoader):
     """Loader for Parquet files utilizing the Polars Parquet engine."""
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a Parquet file into a Polars LazyFrame.
+        """Load a Parquet file into a Polars LazyFrame.
 
         Args:
             config (SourceConfig): The source configuration. Extra options are
@@ -72,7 +72,7 @@ class ParquetLoader(BaseLoader):
 
 
 class LoaderFactory:
-    """Factory to return the appropriate loader based on the configured SourceType."""
+    """Factory to retrieve the appropriate loader based on data format."""
 
     _loaders: ClassVar[dict[str, BaseLoader]] = {
         "csv": CSVLoader(),
@@ -81,7 +81,7 @@ class LoaderFactory:
 
     @classmethod
     def get_loader(cls, source_type: str) -> BaseLoader:
-        """Retrieves the correct loader instance for the given data format.
+        """Instantiate the correct loader for the given data format.
 
         Args:
             source_type (str): The format identifier (e.g., 'csv', 'parquet').
@@ -90,7 +90,7 @@ class LoaderFactory:
             BaseLoader: An instantiated data loader.
 
         Raises:
-            NotImplementedError: If the requested format is not yet supported.
+            NotImplementedError: If the requested format is not supported.
         """
         loader = cls._loaders.get(source_type)
         if not loader:
@@ -101,16 +101,12 @@ class LoaderFactory:
 
 
 class DataIngestor:
-    """Coordinates the loading, renaming, and structural alignment of datasets.
-
-    This class prepares raw external data for comparison by normalizing headers
-    and dropping ignored columns before handing them off to the DiffEngine.
-    """
+    """Coordinator for loading, renaming, and structurally aligning datasets."""
 
     def __init__(
         self, diff_config: DiffConfig, source_config: SourceConfig, target_config: SourceConfig
     ) -> None:
-        """Initializes the ingestor.
+        """Initialize the ingestor.
 
         Args:
             diff_config (DiffConfig): The master comparison configuration.
@@ -121,27 +117,27 @@ class DataIngestor:
         self.source_config = source_config
         self.target_config = target_config
 
-    def _normalize_headers(self, df: pl.LazyFrame) -> pl.LazyFrame:
-        """Standardizes column names based on the master configuration.
+    def _normalize_headers(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """Standardize column names based on the master configuration.
 
         Args:
-            df (pl.LazyFrame): The raw lazy dataframe.
+            lf (pl.LazyFrame): The raw lazy dataframe.
 
         Returns:
             pl.LazyFrame: A dataframe with lowercased/stripped headers if enabled.
         """
         if not self.config.normalize_column_names:
-            return df
+            return lf
 
-        cols = df.collect_schema().names()
+        cols = lf.collect_schema().names()
         rename_map = {col: col.strip().lower() for col in cols}
-        return df.rename(rename_map)
+        return lf.rename(rename_map)
 
-    def _align_columns(self, df: pl.LazyFrame, is_source: bool = True) -> pl.LazyFrame:
-        """Applies configured renames and drops ignored columns.
+    def _align_columns(self, lf: pl.LazyFrame, is_source: bool = True) -> pl.LazyFrame:
+        """Apply configured renames and drop ignored columns.
 
         Args:
-            df (pl.LazyFrame): The lazy dataframe to process.
+            lf (pl.LazyFrame): The lazy dataframe to process.
             is_source (bool): True if processing the source data, False for target.
 
         Returns:
@@ -149,7 +145,7 @@ class DataIngestor:
         """
         rename_map: dict[str, str] = {}
         to_drop: set[str] = set()
-        cols = df.collect_schema().names()
+        cols = lf.collect_schema().names()
 
         for rule in self.config.rules:
             matched_cols = [
@@ -170,51 +166,49 @@ class DataIngestor:
             ):
                 rename_map[rule.column_names[0]] = rule.rename_to
 
-        return df.drop(list(to_drop)).rename(rename_map)
+        return lf.drop(list(to_drop)).rename(rename_map)
 
-    def get_dataframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
-        """Loads and aligns both source and target datasets.
+    def get_lazyframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+        """Load and structurally align source and target datasets lazily.
 
         Returns:
-            tuple[pl.LazyFrame, pl.LazyFrame]: The prepared (source_df, target_df).
+            tuple[pl.LazyFrame, pl.LazyFrame]: The prepared (source_lf, target_lf).
         """
         source_loader = LoaderFactory.get_loader(self.source_config.format)
         target_loader = LoaderFactory.get_loader(self.target_config.format)
 
-        source_df = (
+        source_lf = (
             source_loader.load(self.source_config)
             .pipe(self._normalize_headers)
             .pipe(self._align_columns, is_source=True)
         )
 
-        target_df = (
+        target_lf = (
             target_loader.load(self.target_config)
             .pipe(self._normalize_headers)
             .pipe(self._align_columns, is_source=False)
         )
 
-        return source_df, target_df
+        return source_lf, target_lf
 
 
 class DiffEngine:
-    """The core mathematical engine that evaluates differences between datasets."""
+    """Stateless mathematical engine for evaluating dataset differences.
 
-    def __init__(
-        self, config: DiffConfig, source_df: pl.LazyFrame, target_df: pl.LazyFrame
-    ) -> None:
-        """Initializes the engine with datasets already aligned by the DataIngestor.
+    Allows a single configured instance to validate multiple source/target
+    dataset pairs safely in a multi-threaded pipeline without retaining state.
+    """
+
+    def __init__(self, config: DiffConfig) -> None:
+        """Initialize the engine with the master ruleset.
 
         Args:
             config (DiffConfig): The master validation rules configuration.
-            source_df (pl.LazyFrame): The aligned 'Left' (Legacy) dataset.
-            target_df (pl.LazyFrame): The aligned 'Right' (Modern) dataset.
         """
         self.config = config
-        self.source = source_df
-        self.target = target_df
 
     def _get_effective_rule(self, col_name: str) -> dict[str, Any]:
-        """Resolves all rules (Specific > Pattern > Global) into a unified dictionary.
+        """Resolve all configured rules into a unified dictionary.
 
         Args:
             col_name (str): The name of the column to resolve rules for.
@@ -268,18 +262,22 @@ class DiffEngine:
 
         return eff
 
-    def _check_uniqueness(self) -> None:
-        """Verifies that primary keys are unique in both datasets.
+    def _check_uniqueness(self, source_lf: pl.LazyFrame, target_lf: pl.LazyFrame) -> None:
+        """Verify that primary keys are strictly unique in both datasets.
+
+        Args:
+            source_lf (pl.LazyFrame): The source dataset.
+            target_lf (pl.LazyFrame): The target dataset.
 
         Raises:
             DataIntegrityError: If duplicates are found in the primary keys of either
-                dataset, preventing join explosions.
+                dataset, preventing deterministic joins.
         """
         from veridelta.exceptions import DataIntegrityError
 
         pks = self.config.primary_keys
 
-        src_pks = self.source.select(pks).collect()
+        src_pks = source_lf.select(pks).collect()
         if src_pks.is_duplicated().any():
             dupes = src_pks.filter(src_pks.is_duplicated()).height
             raise DataIntegrityError(
@@ -287,7 +285,7 @@ class DiffEngine:
                 f"Found {dupes} duplicate rows. Clean your data before diffing."
             )
 
-        tgt_pks = self.target.select(pks).collect()
+        tgt_pks = target_lf.select(pks).collect()
         if tgt_pks.is_duplicated().any():
             dupes = tgt_pks.filter(tgt_pks.is_duplicated()).height
             raise DataIntegrityError(
@@ -296,7 +294,7 @@ class DiffEngine:
             )
 
     def _apply_string_rules(self, series: pl.Expr, rule: dict[str, Any]) -> pl.Expr:
-        """Applies whitespace, casing, and regex cleaning to a string expression.
+        """Apply whitespace, casing, and regex cleaning to a string expression.
 
         Args:
             series (pl.Expr): The Polars expression representing the string column.
@@ -322,28 +320,30 @@ class DiffEngine:
 
         return series
 
-    def _build_match_expr(self, col_name: str, rule: dict[str, Any], dtype: pl.DataType) -> pl.Expr:
-        """Builds a robust comparison expression based on data type and user rules.
-
-        Implicit Type Alignment:
-            Polars is strictly typed. Comparing a Float64 to an Int64 or String raises
-            a ComputeError. If a schema drift is detected between Source and Target:
-            - If `strict_types=True`: The mismatch is immediately evaluated as `False`.
-            - If `strict_types=False` (Default): The target column is dynamically soft-cast
-              to the source's data type purely for the mathematical evaluation.
+    def _build_match_expr(
+        self, col_name: str, rule: dict[str, Any], dtype: pl.DataType, target_lf: pl.LazyFrame
+    ) -> pl.Expr:
+        """Build a robust comparison expression based on data type and user rules.
 
         Args:
             col_name (str): The column being compared.
             rule (dict[str, Any]): The unified rules to apply.
             dtype (pl.DataType): The data type of the source column.
+            target_lf (pl.LazyFrame): The target dataframe, needed for type checks.
 
         Returns:
-            pl.Expr: A boolean expression evaluating to True where the row values match.
+            pl.Expr: A boolean expression evaluating to True where row values match.
+
+        Notes:
+            If a schema drift is detected between Source and Target:
+            - `strict_types=True`: The mismatch immediately evaluates as `False`.
+            - `strict_types=False`: The target column dynamically soft-casts
+              to the source's data type purely for mathematical evaluation.
         """
         src = pl.col(f"{col_name}_source")
         tgt = pl.col(f"{col_name}_target")
 
-        tgt_dtype = self.target.collect_schema().get(col_name)
+        tgt_dtype = target_lf.collect_schema().get(col_name)
 
         if dtype != tgt_dtype:
             if self.config.strict_types:
@@ -380,27 +380,30 @@ class DiffEngine:
 
         return val_match.fill_null(False)
 
-    def _align_structure(self) -> None:
-        """Perform structural normalization to reconcile asymmetrical schemas.
+    def _align_structure(
+        self, source_lf: pl.LazyFrame, target_lf: pl.LazyFrame
+    ) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+        """Align source and target schemas according to configuration rules.
 
-        Maps Source headers to Target counterparts and drops excluded fields based
-        on declarative rules. This establishes the Target system's schema as the
-        authoritative state, ensuring subsequent validation and comparison operate
-        against a single source of truth.
+        Apply column renames to the source dataset and drop ignored columns
+        from both datasets to establish a uniform structure for comparison.
 
-        Side Effects:
-            Mutates `self.source` and `self.target` to reflect the aligned structure.
+        Args:
+            source_lf (pl.LazyFrame): The unaligned source dataset.
+            target_lf (pl.LazyFrame): The unaligned target dataset.
 
-        Note:
-            Mandatory prerequisite for `_validate_schema`. Validating raw data
-            metadata before alignment results in `ConfigError` during migrations.
+        Returns:
+            tuple[pl.LazyFrame, pl.LazyFrame]: The aligned (source, target) datasets.
+
+        Notes:
+            This is a mandatory prerequisite for `_validate_schema`.
         """
         src_rename: dict[str, str] = {}
         src_drop: set[str] = set()
         tgt_drop: set[str] = set()
 
-        src_cols = self.source.collect_schema().names()
-        tgt_cols = self.target.collect_schema().names()
+        src_cols = source_lf.collect_schema().names()
+        tgt_cols = target_lf.collect_schema().names()
 
         for rule in self.config.rules:
             matched_src = [
@@ -426,17 +429,23 @@ class DiffEngine:
                 if col_name in src_cols:
                     src_rename[col_name] = rule.rename_to
 
-        self.source = self.source.drop(list(src_drop)).rename(src_rename)
-        self.target = self.target.drop(list(tgt_drop))
+        source_lf = source_lf.drop(list(src_drop)).rename(src_rename)
+        target_lf = target_lf.drop(list(tgt_drop))
 
-    def _validate_schema(self) -> None:
-        """Enforces the configured SchemaMode before comparison.
+        return source_lf, target_lf
+
+    def _validate_schema(self, source_lf: pl.LazyFrame, target_lf: pl.LazyFrame) -> None:
+        """Enforce the configured schema mode before comparison.
+
+        Args:
+            source_lf (pl.LazyFrame): The structurally aligned source dataset.
+            target_lf (pl.LazyFrame): The structurally aligned target dataset.
 
         Raises:
             ConfigError: If primary keys are missing or schema constraints are violated.
         """
-        source_cols = set(self.source.collect_schema().names())
-        target_cols = set(self.target.collect_schema().names())
+        source_cols = set(source_lf.collect_schema().names())
+        target_cols = set(target_lf.collect_schema().names())
         pks = set(self.config.primary_keys)
 
         if not pks.issubset(source_cols):
@@ -463,42 +472,43 @@ class DiffEngine:
                     f"Target contains unauthorized additional columns: {extra_in_target}"
                 )
 
-    def run(self) -> DiffSummary:
-        """Execute the end-to-end dataset comparison pipeline lazily.
+    def compare_lazyframes(self, source_lf: pl.LazyFrame, target_lf: pl.LazyFrame) -> DiffSummary:
+        """Evaluate the difference between two lazy frames.
 
-        Builds an optimized Polars computation graph (DAG) to guarantee deterministic
-        alignment, preventing compute errors and memory exhaustion on large datasets.
-        Data is only materialized into memory when absolutely necessary for execution.
+        Build an optimized Polars computation graph to isolate discrepancies
+        using relational anti-joins and inner-joins. Bypass disk I/O entirely
+        to enable high-speed, in-memory unit testing.
 
-        Execution Pipeline:
-            1. Structural Alignment: Maps and prunes schemas to establish the
-               Target as the authoritative structural contract.
-            2. Validation & Integrity: Asserts primary key existence and uniqueness
-               (triggering a localized collection), and enforces the `SchemaMode`.
-            3. Lazy Graph Construction: Builds the computation DAG for semantic
-               normalization (regex sanitization) and type coercion.
-            4. Relational Joins: Formulates the lazy anti-joins ('Added', 'Removed')
-               and inner-joins ('Changed') to isolate discrepancies.
-            5. Graph Execution: Executes the computation DAG via `.collect()` to
-               evaluate vectorized match expressions and compute exact row counts.
-            6. Artifact Persistence: Exports the materialized discrepancy dataframes
-               to the configured storage backend, if requested.
+        Args:
+            source_lf (pl.LazyFrame): The legacy dataset graph.
+            target_lf (pl.LazyFrame): The modern dataset graph.
 
         Returns:
-            DiffSummary: Execution report detailing match status, discrepancy counts,
-                and column-level drift metrics.
+            DiffSummary: Execution report detailing match status and discrepancy metrics.
 
-        Raises:
-            ConfigError: If schema constraints or primary keys are violated post-alignment.
-            DataIntegrityError: If duplicate primary keys prevent deterministic joins.
-            NotImplementedError: If the requested artifact export format is unsupported.
+        Examples:
+            Execute a pure in-memory comparison for unit testing:
+
+            ```python
+            import polars as pl
+            from veridelta.models import DiffConfig, DiffRule
+            from veridelta.engine import DiffEngine
+
+            src = pl.DataFrame({"id": [1], "val": [10]})
+            tgt = pl.DataFrame({"id": [1], "val": [11]})
+
+            config = DiffConfig(primary_keys=["id"])
+            summary = DiffEngine(config).compare_lazyframes(src.lazy(), tgt.lazy())
+
+            assert summary.changed_count == 1
+            ```
         """
-        self._align_structure()
-        self._validate_schema()
-        self._check_uniqueness()
+        source_lf, target_lf = self._align_structure(source_lf, target_lf)
+        self._validate_schema(source_lf, target_lf)
+        self._check_uniqueness(source_lf, target_lf)
 
-        src_cols = self.source.collect_schema().names()
-        tgt_cols = self.target.collect_schema().names()
+        src_cols = source_lf.collect_schema().names()
+        tgt_cols = target_lf.collect_schema().names()
 
         for col in src_cols:
             rule = self._get_effective_rule(col)
@@ -506,14 +516,14 @@ class DiffEngine:
             if rule["null_values"]:
                 null_list = rule["null_values"]
                 if col in src_cols:
-                    self.source = self.source.with_columns(
+                    source_lf = source_lf.with_columns(
                         pl.when(pl.col(col).is_in(null_list))
                         .then(None)
                         .otherwise(pl.col(col))
                         .alias(col)
                     )
                 if col in tgt_cols:
-                    self.target = self.target.with_columns(
+                    target_lf = target_lf.with_columns(
                         pl.when(pl.col(col).is_in(null_list))
                         .then(None)
                         .otherwise(pl.col(col))
@@ -523,15 +533,15 @@ class DiffEngine:
             if rule["regex_replace"]:
                 for pattern, replacement in rule["regex_replace"].items():
                     if col in src_cols and isinstance(
-                        self.source.collect_schema().get(col), (pl.String, pl.Utf8)
+                        source_lf.collect_schema().get(col), (pl.String, pl.Utf8)
                     ):
-                        self.source = self.source.with_columns(
+                        source_lf = source_lf.with_columns(
                             pl.col(col).str.replace_all(pattern, replacement)
                         )
                     if col in tgt_cols and isinstance(
-                        self.target.collect_schema().get(col), (pl.String, pl.Utf8)
+                        target_lf.collect_schema().get(col), (pl.String, pl.Utf8)
                     ):
-                        self.target = self.target.with_columns(
+                        target_lf = target_lf.with_columns(
                             pl.col(col).str.replace_all(pattern, replacement)
                         )
 
@@ -539,21 +549,20 @@ class DiffEngine:
                 dtype = getattr(pl, rule["cast_to"], None)
                 if dtype:
                     if col in src_cols:
-                        self.source = self.source.with_columns(pl.col(col).cast(dtype))
+                        source_lf = source_lf.with_columns(pl.col(col).cast(dtype))
                     if col in tgt_cols:
-                        self.target = self.target.with_columns(pl.col(col).cast(dtype))
+                        target_lf = target_lf.with_columns(pl.col(col).cast(dtype))
 
-        added_lazy = self.target.join(self.source, on=self.config.primary_keys, how="anti")
-        removed_lazy = self.source.join(self.target, on=self.config.primary_keys, how="anti")
+        added_lazy = target_lf.join(source_lf, on=self.config.primary_keys, how="anti")
+        removed_lazy = source_lf.join(target_lf, on=self.config.primary_keys, how="anti")
 
-        # Re-fetch schema names in case rules altered them
-        src_cols_final = self.source.collect_schema().names()
-        tgt_cols_final = self.target.collect_schema().names()
+        src_cols_final = source_lf.collect_schema().names()
+        tgt_cols_final = target_lf.collect_schema().names()
 
-        src_renamed = self.source.rename(
+        src_renamed = source_lf.rename(
             {col: f"{col}_source" for col in src_cols_final if col not in self.config.primary_keys}
         )
-        tgt_renamed = self.target.rename(
+        tgt_renamed = target_lf.rename(
             {col: f"{col}_target" for col in tgt_cols_final if col not in self.config.primary_keys}
         )
         common_lazy = src_renamed.join(tgt_renamed, on=self.config.primary_keys, how="inner")
@@ -569,8 +578,8 @@ class DiffEngine:
             if rule["ignore"]:
                 continue
 
-            dtype = self.source.collect_schema()[col]
-            expr = self._build_match_expr(col, rule, dtype).alias(f"{col}_is_match")
+            dtype = source_lf.collect_schema()[col]
+            expr = self._build_match_expr(col, rule, dtype, target_lf).alias(f"{col}_is_match")
             match_expressions.append(expr)
             match_cols.append(f"{col}_is_match")
 
@@ -597,8 +606,8 @@ class DiffEngine:
                 column_mismatches = {k: v for k, v in raw_counts.items() if v > 0}
 
         pk_col = self.config.primary_keys[0]
-        src_total = self.source.select(pl.col(pk_col).count()).collect().item()
-        tgt_total = self.target.select(pl.col(pk_col).count()).collect().item()
+        src_total = source_lf.select(pl.col(pk_col).count()).collect().item()
+        tgt_total = target_lf.select(pl.col(pk_col).count()).collect().item()
 
         mismatch_ratio = (added_df.height + removed_df.height + changed_count) / max(src_total, 1)
         is_match = mismatch_ratio <= self.config.threshold
@@ -636,3 +645,35 @@ class DiffEngine:
             is_match=is_match,
             report_limit=self.config.report_top_columns_limit,
         )
+
+    def execute(self, source_config: SourceConfig, target_config: SourceConfig) -> DiffSummary:
+        """Execute the end-to-end dataset comparison pipeline from disk configurations.
+
+        Delegate dataset loading to the data ingestor, then evaluate structural
+        and row-level differences via the core mathematical engine.
+
+        Args:
+            source_config (SourceConfig): Configuration for the legacy dataset.
+            target_config (SourceConfig): Configuration for the modern dataset.
+
+        Returns:
+            DiffSummary: Execution report detailing match status and discrepancy metrics.
+
+        Examples:
+            Execute a file-based pipeline utilizing automated Polars I/O abstractions:
+
+            ```python
+            from veridelta.config import load_config
+            from veridelta.engine import DiffEngine
+
+            diff_cfg, source, target = load_config("veridelta.yaml")
+
+            # The engine automatically resolves standard I/O paths (local, s3://, etc.)
+            summary = DiffEngine(diff_cfg).execute(source, target)
+            print(summary.report_summary)
+            ```
+        """
+        ingestor = DataIngestor(self.config, source_config, target_config)
+        source_lf, target_lf = ingestor.get_lazyframes()
+
+        return self.compare_lazyframes(source_lf, target_lf)

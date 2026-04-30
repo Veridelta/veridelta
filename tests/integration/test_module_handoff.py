@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from veridelta.engine import DataIngestor, DiffEngine
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, SourceConfig
 
@@ -28,11 +28,7 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="csv")
         diff_cfg = DiffConfig(primary_keys=["id"])
 
-        ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-        src_lazy, tgt_lazy = ingestor.get_dataframes()
-
-        engine = DiffEngine(diff_cfg, src_lazy, tgt_lazy)
-        summary = engine.run()
+        summary = DiffEngine(diff_cfg).execute(src_cfg, tgt_cfg)
 
         assert summary.is_match is False
         assert summary.changed_count == 1
@@ -53,9 +49,7 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="parquet")
         diff_cfg = DiffConfig(primary_keys=["id"], strict_types=True)
 
-        ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-        src_lazy, tgt_lazy = ingestor.get_dataframes()
-        summary = DiffEngine(diff_cfg, src_lazy, tgt_lazy).run()
+        summary = DiffEngine(diff_cfg).execute(src_cfg, tgt_cfg)
 
         # Because strict_types=True, 100 != "100"
         assert summary.is_match is False
@@ -76,8 +70,5 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="csv")
         diff_cfg = DiffConfig(primary_keys=["id"], schema_mode="exact")
 
-        ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-        src_lazy, tgt_lazy = ingestor.get_dataframes()
-
         with pytest.raises(ConfigError, match="EXACT schema match failed"):
-            DiffEngine(diff_cfg, src_lazy, tgt_lazy).run()
+            DiffEngine(diff_cfg).execute(src_cfg, tgt_cfg)

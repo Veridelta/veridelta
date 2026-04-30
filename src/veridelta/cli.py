@@ -1,59 +1,88 @@
+#!/usr/bin/env python3
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Command-line interface for Veridelta.
+"""Command-line interface for the Veridelta execution engine.
 
-This module provides the terminal entry points for running Veridelta
-comparisons in CI/CD pipelines and local environments.
+This module provides the entry point for terminal execution, argument parsing,
+and graceful error handling to ensure seamless integration with CI/CD pipelines.
 """
 
 import argparse
 import sys
-from pathlib import Path
-from typing import TYPE_CHECKING
 
-from veridelta.config import load_config
-from veridelta.engine import DataIngestor, DiffEngine
-from veridelta.exceptions import ConfigError
 
-if TYPE_CHECKING:
-    from veridelta.models import DiffConfig, SourceConfig
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        args (list[str] | None): Optional list of arguments to parse.
+
+    Returns:
+        argparse.Namespace: The parsed namespace containing CLI parameters.
+    """
+    import importlib.metadata
+
+    try:
+        __version__ = importlib.metadata.version("veridelta")
+    except importlib.metadata.PackageNotFoundError:
+        __version__ = "unknown"
+
+    parser = argparse.ArgumentParser(
+        prog="veridelta",
+        description="Veridelta: Semantic diffing for mission-critical data pipelines.",
+    )
+
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Show the installed version of Veridelta and exit.",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser("run", help="Execute a comparison pipeline.")
+    run_parser.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        required=True,
+        help="Path to the Veridelta YAML configuration file.",
+    )
+
+    return parser.parse_args(args)
 
 
 def run(args: argparse.Namespace) -> int:
-    """Executes the comparison workflow based on CLI arguments.
+    """Execute the core Veridelta CLI workflow.
 
     Args:
-        args (argparse.Namespace): The parsed command-line arguments containing
-            the path to the configuration file.
+        args (argparse.Namespace): The parsed command-line arguments.
 
     Returns:
-        int: The system exit code. Returns 0 for a successful match within
-            the configured threshold, and 1 for failures or system errors.
+        int: Exit code (0 for match/success, 1 for mismatch/error).
     """
-    config_path = args.config
+    from veridelta.config import load_config
+    from veridelta.engine import DiffEngine
+    from veridelta.exceptions import ConfigError
 
     try:
-        print(f"Loading configuration from {config_path}...")
-        diff_config: DiffConfig
-        source_config: SourceConfig
-        target_config: SourceConfig
-        diff_config, source_config, target_config = load_config(config_path)
+        print(f"Loading configuration from {args.config}...")
+        diff_cfg, src_cfg, tgt_cfg = load_config(args.config)
 
         print("Ingesting and aligning datasets...")
-        ingestor = DataIngestor(diff_config, source_config, target_config)
-        source_df, target_df = ingestor.get_dataframes()
+        summary = DiffEngine(diff_cfg).execute(src_cfg, tgt_cfg)
 
-        print("Executing semantic diff...")
-        engine = DiffEngine(diff_config, source_df, target_df)
-        summary = engine.run()
+        print("\n" + summary.report_summary)
 
-        print(f"\n{summary.report_summary}\n")
-
-        if diff_config.output_path and not summary.is_match:
-            print(f"Artifacts saved to: {Path(diff_config.output_path).absolute()}\n")
-
-        return 0 if summary.is_match else 1
+        if summary.is_match:
+            return 0
+        else:
+            if getattr(diff_cfg, "output_path", None):
+                print(f"\nArtifacts saved to: {diff_cfg.output_path}")
+            return 1
 
     except ConfigError as e:
         print(f"\nConfiguration Error:\n{e}", file=sys.stderr)
@@ -64,33 +93,11 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    """Main entry point for the Veridelta CLI.
-
-    Parses arguments and dispatches to the appropriate command handler.
-    Exits the system with the returned status code to integrate seamlessly
-    with pipeline orchestrators.
-    """
-    parser = argparse.ArgumentParser(
-        prog="veridelta",
-        description="Semantic diffing for mission-critical data pipelines.",
-    )
-
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    run_parser = subparsers.add_parser("run", help="Run a Veridelta comparison.")
-    run_parser.add_argument(
-        "-c",
-        "--config",
-        type=str,
-        default="veridelta.yaml",
-        help="Path to the YAML configuration file (default: veridelta.yaml)",
-    )
-
-    args = parser.parse_args()
+    """Primary entry point for the command-line interface."""
+    args = parse_args()
 
     if args.command == "run":
-        exit_code = run(args)
-        sys.exit(exit_code)
+        sys.exit(run(args))
 
 
 if __name__ == "__main__":
