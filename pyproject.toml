@@ -21,13 +21,15 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Typing :: Typed",
 ]
 dependencies = ["polars>=1.39.3", "pydantic>=2.12.5", "pyyaml>=6.0.3"]
 
 [project.urls]
-Homepage = "https://github.com/Veridelta/veridelta"
+Homepage = "https://veridelta.github.io/veridelta/"
 Repository = "https://github.com/Veridelta/veridelta"
 Issues = "https://github.com/Veridelta/veridelta/issues"
 
