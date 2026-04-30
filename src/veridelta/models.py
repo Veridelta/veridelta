@@ -1,11 +1,10 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Data models for Veridelta configuration and results.
+"""Pydantic models defining Veridelta configurations and execution summaries.
 
-This module defines the Pydantic models used to configure data ingestion,
-comparison rules, and format the output summaries. It acts as the strict
-schema definition for the YAML configuration files.
+This module provides the strict schema definitions used to parse YAML
+configuration files, validate comparison rules, and format execution results.
 """
 
 import re
@@ -36,12 +35,12 @@ SchemaMode = Literal[
     "allow_removals",
     "intersection",
 ]
-"""Defines how strictly the engine enforces column schemas between datasets.
+"""Strategy for enforcing column schemas between datasets.
 
 * `"exact"`: Strict 1:1 mapping. Columns must be identical and in the exact same order.
-* `"allow_additions"`: Target can have new columns, but must contain every column present in the Source.
-* `"allow_removals"`: Target is allowed to drop legacy columns, but cannot add any new columns.
-* `"intersection"`: Only diff columns that exist in both datasets, ignoring all others. (Default)
+* `"allow_additions"`: Target can have new columns, but must contain every Source column.
+* `"allow_removals"`: Target can drop legacy columns, but cannot add new columns.
+* `"intersection"`: Diff only columns that exist in both datasets. (Default)
 """
 
 WhitespaceMode = Literal[
@@ -52,7 +51,7 @@ WhitespaceMode = Literal[
 ]
 """Granular control over string whitespace stripping.
 
-* `"none"`: Do not strip any whitespace.
+* `"none"`: Do not strip any whitespace. (Default)
 * `"left"`: Strip leading whitespace only.
 * `"right"`: Strip trailing whitespace only.
 * `"both"`: Strip both leading and trailing whitespace.
@@ -60,13 +59,13 @@ WhitespaceMode = Literal[
 
 
 class SourceConfig(BaseModel):
-    """Configuration for a specific data source.
+    """Configuration schema for a specific data source.
 
     Attributes:
         path (str): File system path or URI to the data.
         format (SourceType): The format of the file (e.g., 'csv', 'parquet').
         options (dict[str, Any]): Format-specific keyword arguments passed
-            directly to the underlying Polars reader (e.g., `{'separator': ';'}`).
+            directly to the underlying Polars reader.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -80,37 +79,25 @@ class SourceConfig(BaseModel):
 
 
 class DiffRule(BaseModel):
-    """Specific overrides for one or more columns using exact names or regex.
+    """Column-level comparison overrides using exact names or regex patterns.
 
     Attributes:
         column_names (list[str]): Exact names of the columns in the source dataset.
         pattern (str | None): Regex pattern to match multiple columns (e.g., '^AMT_.*').
-        absolute_tolerance (float | None): The maximum allowed absolute difference
-            for numeric mathematical comparisons.
-        relative_tolerance (float | None): The maximum allowed relative difference
-            (e.g., 0.01 for 1%).
-        case_insensitive (bool | None): If True, ignores case differences in strings.
-        whitespace_mode (WhitespaceMode | None): Granular control over stripping
-            leading/trailing whitespace prior to string comparison.
-        regex_replace (dict[str, str] | None): Dictionary of `{pattern: replacement}`
-            to sanitize text. Implicitly executed *before* type coercion to ensure
-            text sanitization completes safely before casting.
-        pad_zeros (int | None): Left-pad numeric strings to this exact length
-            (e.g., 5 -> '00123').
-        value_map (dict[str, str] | None): Translate Source values to Target values
-            before comparison (e.g., `{'M': 'Male'}`).
-        null_values (list[str] | None): Specific string values to actively coerce
-            to NULL (e.g., `['N/A', '-999']`).
-        treat_null_as_equal (bool | None): If True, evaluates NULL == NULL as a
-            successful match rather than a missing value mismatch.
-        datetime_format (str | None): Expected strptime format for dates
-            (e.g., '%Y-%m-%d %H:%M:%S').
+        absolute_tolerance (float | None): Maximum allowed absolute difference for numerics.
+        relative_tolerance (float | None): Maximum allowed relative difference (e.g., 0.01 for 1%).
+        case_insensitive (bool | None): Ignore case differences in strings.
+        whitespace_mode (WhitespaceMode | None): Granular control over string whitespace stripping.
+        regex_replace (dict[str, str] | None): Dictionary of `{pattern: replacement}` to sanitize text.
+        pad_zeros (int | None): Left-pad numeric strings to this exact length.
+        value_map (dict[str, str] | None): Translate Source values to Target values.
+        null_values (list[str] | None): Specific string values to actively coerce to NULL.
+        treat_null_as_equal (bool | None): Evaluate NULL == NULL as a successful match.
+        datetime_format (str | None): Expected strptime format for dates.
         timezone (str | None): Target timezone to normalize dates to before comparison.
-        cast_to (str | None): Explicitly cast column to this Polars datatype
-            (e.g., 'Float64'). Evaluated *after* string transformations.
-        ignore (bool): Whether to skip this column entirely during comparison.
-        rename_to (str | None): The name in the target dataset if it differs from
-            the source. Only valid when `column_names` contains exactly one entry.
+        cast_to (str | None): Explicitly cast column to this Polars datatype.
+        ignore (bool): Skip this column entirely during comparison.
+        rename_to (str | None): Target dataset column name if different from the source.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -178,7 +165,7 @@ class DiffRule(BaseModel):
     @field_validator("pattern")
     @classmethod
     def validate_pattern(cls, v: str | None) -> str | None:
-        """Ensures the provided regex pattern is a valid expression at configuration time.
+        """Ensure the provided regex pattern is a valid expression at configuration time.
 
         Args:
             v (str | None): The string regex pattern to validate.
@@ -199,7 +186,7 @@ class DiffRule(BaseModel):
     @field_validator("regex_replace")
     @classmethod
     def validate_regex_replace(cls, v: dict[str, str] | None) -> dict[str, str] | None:
-        """Ensures all keys in the regex replacement dictionary are valid regex patterns.
+        """Ensure all keys in the regex replacement dictionary are valid regex patterns.
 
         Args:
             v (dict[str, str] | None): A mapping of regex patterns to replacements.
@@ -220,35 +207,40 @@ class DiffRule(BaseModel):
 
 
 class DiffConfig(BaseModel):
-    """The master configuration for a Veridelta comparison run.
+    """Master configuration schema for a Veridelta execution run.
 
     Attributes:
         primary_keys (list[str]): Columns used to join and align the datasets.
-            Must be unique in both datasets.
-        schema_mode (SchemaMode): How strictly to enforce column existence and
-            matching between sources.
-        strict_types (bool): If False (default), the engine implicitly soft-casts
-            target columns to source types purely for the comparison expression,
-            preventing execution crashes on type mismatches. If True, type mismatches
-            will automatically evaluate as row failures.
-        normalize_column_names (bool): If True, strips whitespace and lowercases
-            all column headers prior to schema alignment.
+        schema_mode (SchemaMode): Strategy for enforcing column existence between sources.
+        strict_types (bool): If True, type mismatches automatically evaluate as row failures.
+            If False, target columns are dynamically soft-cast to source types.
+        normalize_column_names (bool): Strip whitespace and lowercase all column headers.
         default_absolute_tolerance (float): Global absolute tolerance for numeric columns.
         default_relative_tolerance (float): Global relative tolerance for numeric columns.
         default_treat_null_as_equal (bool): Global setting for handling NULL == NULL.
         default_whitespace_mode (WhitespaceMode): Global string whitespace stripping mode.
-        default_null_values (list[str]): Global list of string values to aggressively
-            coerce to NULL.
-        rules (list[DiffRule]): List of per-column comparison overrides. Specific
-            `column_names` take precedence over regex `pattern` rules.
-        threshold (float): Allowed mismatch ratio (0.0 to 1.0) before the `is_match`
-            flag evaluates to False.
-        report_top_columns_limit (int): Max number of drifted columns to display
-            in the generated markdown report summary.
-        output_path (str | None): Optional path to save the resulting diff report
-            and artifacts (added, removed, and changed rows).
-        output_format (str): The file format for exported discrepancy artifacts
-            (e.g., 'parquet', 'csv').
+        default_null_values (list[str]): Global list of string values to aggressively coerce to NULL.
+        rules (list[DiffRule]): List of per-column comparison overrides.
+        threshold (float): Allowed mismatch ratio (0.0 to 1.0) before the comparison fails.
+        report_top_columns_limit (int): Max drifted columns to display in the markdown summary.
+        output_path (str | None): Directory to save diff artifacts (added, removed, changed rows).
+        output_format (str): File format for exported discrepancy artifacts.
+
+    Examples:
+        Instantiate a strict comparison configuration via the Python API:
+
+        ```python
+        from veridelta.models import DiffConfig, DiffRule
+
+        config = DiffConfig(
+            primary_keys=["transaction_id"],
+            strict_types=True,
+            rules=[
+                DiffRule(pattern="^AMT_", absolute_tolerance=0.05),
+                DiffRule(column_names=["PII_HASH"], ignore=True),
+            ],
+        )
+        ```
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -308,7 +300,7 @@ class DiffConfig(BaseModel):
 
     @model_validator(mode="after")
     def apply_schema_normalization(self) -> "DiffConfig":
-        """Automatically lowercases and strips config keys if normalization is enabled.
+        """Automatically lowercase and strip config keys if normalization is enabled.
 
         Returns:
             DiffConfig: The mutated configuration instance.
@@ -324,7 +316,7 @@ class DiffConfig(BaseModel):
 
 
 class DiffSummary(BaseModel):
-    """The high-level execution results of a Veridelta comparison.
+    """High-level execution report of a Veridelta dataset comparison.
 
     Attributes:
         total_rows_source (int): Number of rows in the source dataset.
@@ -337,16 +329,23 @@ class DiffSummary(BaseModel):
         is_match (bool): Boolean indicating if the overall diff falls within the
             allowed mismatch threshold.
         total_mismatches (int): (Computed) The sum of all added, removed, and changed rows.
-        mismatch_ratio (float): (Computed) The ratio of mismatched rows to the baseline
-            source dataset.
-        match_rate_percentage (float): (Computed) The overall match rate expressed
-            as a percentage (e.g., 99.98).
+        mismatch_ratio (float): (Computed) The ratio of mismatched rows to the baseline source.
+        match_rate_percentage (float): (Computed) The overall match rate as a percentage.
         is_perfect_match (bool): (Computed) True only if there are exactly 0 mismatches.
         volume_shift (int): (Computed) The net change in row volume (Target - Source).
-        report_summary (str): (Computed) A pre-formatted, human-readable markdown
-            status report intended for CI/CD logs or PR comments.
+        report_summary (str): (Computed) A pre-formatted markdown status report.
         report_limit (int): Internal configuration dictating the max columns to display
-            in the `report_summary`. Implicitly excluded from JSON serialization.
+            in the `report_summary`. Excluded from JSON serialization.
+
+    Examples:
+        Access computed execution metrics for custom integrations:
+
+        ```python
+        summary = engine.execute(source, target)
+
+        if summary.match_rate_percentage < 99.5:
+            trigger_slack_alert(f"Critical data drift! {summary.changed_count} rows impacted.")
+        ```
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -364,7 +363,7 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def total_mismatches(self) -> int:
-        """Calculates the sum of all added, removed, and changed rows.
+        """Calculate the sum of all added, removed, and changed rows.
 
         Returns:
             int: The total count of discrepancy events.
@@ -374,7 +373,7 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def mismatch_ratio(self) -> float:
-        """Calculates the ratio of mismatched rows to the baseline source dataset.
+        """Calculate the ratio of mismatched rows to the baseline source dataset.
 
         Returns:
             float: A float representing the ratio (0.0 to 1.0+).
@@ -384,7 +383,7 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def match_rate_percentage(self) -> float:
-        """Calculates the overall match rate expressed as a percentage.
+        """Calculate the overall match rate expressed as a percentage.
 
         Returns:
             float: The match percentage rounded to two decimal places (e.g., 99.98).
@@ -394,7 +393,7 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def is_perfect_match(self) -> bool:
-        """Evaluates if the datasets are completely identical under the configured rules.
+        """Evaluate if the datasets are completely identical under the configured rules.
 
         Returns:
             bool: True if there are zero total mismatches.
@@ -404,7 +403,7 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def volume_shift(self) -> int:
-        """Calculates the net change in row volume between the systems.
+        """Calculate the net change in row volume between the systems.
 
         Returns:
             int: The net shift (Target rows - Source rows).
@@ -414,10 +413,10 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def report_summary(self) -> str:
-        """Generates a pre-formatted, human-readable status report.
+        """Generate a pre-formatted, human-readable status report.
 
-        This string aggregates all metrics and top column-level drifts into a
-        clean markdown format ready for immediate pipeline logging.
+        Aggregates all metrics and top column-level drifts into a clean
+        markdown format ready for immediate CI/CD pipeline logging.
 
         Returns:
             str: The formatted execution summary.
