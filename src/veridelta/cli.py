@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
@@ -16,7 +17,8 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments.
 
     Args:
-        args (list[str] | None): Optional list of arguments to parse.
+        args (list[str] | None): Optional list of arguments to parse. Defaults
+            to `sys.argv[1:]` if not provided.
 
     Returns:
         argparse.Namespace: The parsed namespace containing CLI parameters.
@@ -62,7 +64,11 @@ def run(args: argparse.Namespace) -> int:
         args (argparse.Namespace): The parsed command-line arguments.
 
     Returns:
-        int: Exit code (0 for match/success, 1 for mismatch/error).
+        int: Standard POSIX exit code (0 for match/success, 1 for mismatch/error).
+
+    Notes:
+        Heavy module imports (Polars, Pydantic) are deferred inside this function
+        to ensure that invoking `veridelta --help` remains fast.
     """
     from veridelta.config import load_config
     from veridelta.engine import DiffEngine
@@ -93,7 +99,11 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    """Primary entry point for the command-line interface."""
+    """Execute the primary command-line interface entry point.
+
+    Route the invoked command to the appropriate handler and translate
+    internal return states into standard POSIX exit codes.
+    """
     args = parse_args()
 
     if args.command == "run":
