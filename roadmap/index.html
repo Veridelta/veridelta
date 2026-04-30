@@ -89,6 +89,10 @@
       
     </div>
     
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
     
       
 
@@ -478,6 +482,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../examples/quickstart_cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Veridelta CLI: End-to-End Execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../examples/advanced_rules/" class="md-nav__link">
         
   
@@ -485,7 +517,7 @@
   <span class="md-ellipsis">
     
   
-    Part 2: Advanced Heuristics &amp; Data Normalization
+    Advanced Heuristics &amp; Data Normalization
   
 
     
@@ -513,7 +545,7 @@
   <span class="md-ellipsis">
     
   
-    Part 3: CI/CD &amp; Production Workflows
+    CI/CD &amp; Production Workflows
   
 
     
@@ -655,10 +687,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-expanded-ecosystem-support" class="md-nav__link">
+  <a href="#1-enterprise-ecosystem-integration" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Expanded Ecosystem Support
+        1. Enterprise Ecosystem Integration
       
     </span>
   </a>
@@ -666,10 +698,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-advanced-heuristics" class="md-nav__link">
+  <a href="#2-advanced-heuristics-ml" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Advanced Heuristics
+        2. Advanced Heuristics &amp; ML
       
     </span>
   </a>
@@ -677,10 +709,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-cicd-reporting" class="md-nav__link">
+  <a href="#3-developer-experience-dx-tooling" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. CI/CD &amp; Reporting
+        3. Developer Experience (DX) &amp; Tooling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-pipeline-observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Pipeline Observability
       
     </span>
   </a>
@@ -716,20 +759,28 @@
 
 
 <h1 id="veridelta-roadmap">Veridelta Roadmap</h1>
-<p>Veridelta is currently in <code>v0.1.0</code> (Alpha). The core semantic diffing engine is stable, but we are actively expanding the ecosystem. Here is what is coming next:</p>
-<h3 id="1-expanded-ecosystem-support">1. Expanded Ecosystem Support</h3>
-<p>While CSV and Parquet cover the majority of file-based workflows, enterprise pipelines often operate directly on data warehouses and lakehouses.
-* Native integration for <strong>Delta Lake</strong> and <strong>Apache Iceberg</strong> tables.
-* Direct SQL pushdown for <strong>Snowflake</strong> and <strong>Databricks</strong> to diff massive datasets without pulling them into memory.</p>
-<h3 id="2-advanced-heuristics">2. Advanced Heuristics</h3>
+<p>Veridelta is currently in <strong>v0.1.0</strong>. The core execution engine is stable. The following roadmap outlines the strategic expansion of the framework's ecosystem, intelligence, and developer tooling.</p>
+<h2 id="1-enterprise-ecosystem-integration">1. Enterprise Ecosystem Integration</h2>
+<p>While file-based architectures (CSV, Parquet) are fully supported, mission-critical pipelines often operate directly on distributed storage and warehouse compute.</p>
 <ul>
-<li><strong>Fuzzy String Matching:</strong> Support for Levenshtein distance thresholds to catch minor typos without explicit regex.</li>
-<li><strong>Schema Evolution ML:</strong> Auto-suggest <code>value_map</code> dictionaries based on statistical sampling (e.g., auto-detecting that 'M' maps to 'Male' 99% of the time).</li>
+<li><strong>Lakehouse Native:</strong> Direct integration with <strong>Delta Lake</strong> and <strong>Apache Iceberg</strong> table formats.</li>
+<li><strong>Warehouse Pushdown:</strong> Native SQL translation layers for <strong>Snowflake</strong>, <strong>Databricks</strong>, and <strong>BigQuery</strong>, enabling out-of-core evaluation without extracting data into local memory.</li>
 </ul>
-<h3 id="3-cicd-reporting">3. CI/CD &amp; Reporting</h3>
+<h2 id="2-advanced-heuristics-ml">2. Advanced Heuristics &amp; ML</h2>
 <ul>
-<li><strong>GitHub Actions App:</strong> A native GitHub Action that comments on PRs with a mini Veridelta diff summary when pipeline code changes.</li>
-<li><strong>HTML Dashboards:</strong> An optional <code>--html</code> flag in the CLI to generate a standalone, interactive web report of the diff results.</li>
+<li><strong>Fuzzy Matching:</strong> Implementation of Levenshtein and Jaro-Winkler distance thresholds to bypass non-deterministic typographical errors without explicit regex definition.</li>
+<li><strong>Automated Crosswalks:</strong> Statistical sampling heuristics to auto-generate <code>value_map</code> proposals (e.g., detecting a 99.9% correlation between legacy <code>M</code> and modern <code>Male</code>).</li>
+</ul>
+<h2 id="3-developer-experience-dx-tooling">3. Developer Experience (DX) &amp; Tooling</h2>
+<p>A framework is only as effective as the developer's ability to interface with it safely and efficiently.</p>
+<ul>
+<li><strong>VS Code Extension:</strong> A dedicated IDE extension providing domain-specific YAML schema validation, strict type IntelliSense, one-click local test execution, and inline visualization of discrepancy artifacts directly within the editor. This shifts configuration error detection left, preventing wasted compute cycles in production.</li>
+<li><strong>Interactive Reporting:</strong> A <code>--html</code> CLI directive to compile execution summaries and top-n drifts into standalone, interactive dashboards.</li>
+</ul>
+<h2 id="4-pipeline-observability">4. Pipeline Observability</h2>
+<ul>
+<li><strong>Native CI/CD Runners:</strong> First-party <strong>GitHub Actions</strong> and <strong>GitLab CI</strong> plugins to execute comparisons and post execution summaries directly to Pull Request comments.</li>
+<li><strong>Telemetry Export:</strong> OpenTelemetry-compliant JSON output for ingestion into Datadog, Grafana, or custom data quality dashboards.</li>
 </ul>
 
 
@@ -780,7 +831,7 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.1.0"}</script>
     
     
       <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>

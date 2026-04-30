@@ -12,13 +12,13 @@
         <meta name="author" content="Veridelta Maintainers">
       
       
-        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/quickstart/">
+        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/quickstart_cli/">
       
       
-        <link rel="prev" href="../..">
+        <link rel="prev" href="../quickstart/">
       
       
-        <link rel="next" href="../quickstart_cli/">
+        <link rel="next" href="../advanced_rules/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Veridelta Quickstart - Veridelta</title>
+        <title>Veridelta CLI: End-to-End Execution - Veridelta</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#veridelta-quickstart" class="md-skip">
+        <a href="#veridelta-cli-end-to-end-execution" class="md-skip">
           Skip to content
         </a>
       
@@ -120,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Veridelta Quickstart
+              Veridelta CLI: End-to-End Execution
             
           </span>
         </div>
@@ -254,7 +254,7 @@
     
     
       <li class="md-tabs__item md-tabs__item--active">
-        <a href="./" class="md-tabs__link">
+        <a href="../quickstart/" class="md-tabs__link">
           
   
   
@@ -458,6 +458,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Veridelta Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -477,7 +505,7 @@
   <span class="md-ellipsis">
     
   
-    Veridelta Quickstart
+    Veridelta CLI: End-to-End Execution
   
 
     
@@ -495,7 +523,7 @@
   <span class="md-ellipsis">
     
   
-    Veridelta Quickstart
+    Veridelta CLI: End-to-End Execution
   
 
     
@@ -521,10 +549,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-the-challenge-physical-vs-logical-equality" class="md-nav__link">
+  <a href="#1-local-data-generation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. The Challenge: Physical vs. Logical Equality
+        1. Local Data Generation
       
     </span>
   </a>
@@ -532,10 +560,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-defining-semantic-boundaries" class="md-nav__link">
+  <a href="#2-configuration-definition" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Defining Semantic Boundaries
+        2. Configuration Definition
       
     </span>
   </a>
@@ -543,10 +571,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-scale-performance-simulating-pipeline-drift" class="md-nav__link">
+  <a href="#3-cli-execution" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Scale &amp; Performance: Simulating Pipeline Drift
+        3. CLI Execution
       
     </span>
   </a>
@@ -554,10 +582,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#architectural-highlights" class="md-nav__link">
+  <a href="#4-teardown-housekeeping" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Architectural Highlights
+        4. Teardown &amp; Housekeeping
       
     </span>
   </a>
@@ -568,34 +596,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../quickstart_cli/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Veridelta CLI: End-to-End Execution
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1492,8 +1492,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="veridelta-quickstart">Veridelta Quickstart<a class="anchor-link" href="#veridelta-quickstart">¶</a></h1><p>Veridelta is a high-performance semantic diffing engine built on Polars. Standard binary equality checks often fail in production pipelines due to trivial transformation artifacts like floating-point noise, rounding algorithm mismatches, or string formatting variance.</p>
-<p>Veridelta enables data engineers to define <strong>logical equality</strong> through declarative configuration, ensuring resilient data validation at scale.</p>
+<h1 id="veridelta-cli-end-to-end-execution">Veridelta CLI: End-to-End Execution<a class="anchor-link" href="#veridelta-cli-end-to-end-execution">¶</a></h1><p>The Command Line Interface (CLI) is the primary deployment mechanism for production CI/CD pipelines and data orchestration systems.</p>
+<p>This document outlines the standard operating procedure for generating local test data, defining a declarative YAML configuration, and executing the validation engine via the CLI.</p>
 </div>
 </div>
 </div>
@@ -1504,12 +1504,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="1-the-challenge-physical-vs-logical-equality">1. The Challenge: Physical vs. Logical Equality<a class="anchor-link" href="#1-the-challenge-physical-vs-logical-equality">¶</a></h2><p>Data migration between disparate computational environments (e.g., Python application layers to SQL data warehouses) introduces expected transformation artifacts. Two common examples include:</p>
-<ol>
-<li><strong>Rounding Algorithm Mismatches:</strong> Python utilizes "Banker's Rounding" (round half to even; <code>10.445</code> evaluates to <code>10.44</code>). SQL systems typically utilize standard rounding (round half away from zero; <code>10.445</code> evaluates to <code>10.45</code>). This generates an artificial <code>$0.01</code> variance.</li>
-<li><strong>String Casing &amp; Padding:</strong> Legacy systems may export Title Case (<code>"Pending"</code>), while modern warehouses enforce standardized, padded UPPERCASE (<code>" PENDING "</code>).</li>
-</ol>
-<p>These datasets are logically identical, yet standard physical equality checks evaluate to false.</p>
+<h2 id="1-local-data-generation">1. Local Data Generation<a class="anchor-link" href="#1-local-data-generation">¶</a></h2><p>Generate representative <code>source</code> and <code>target</code> CSV artifacts to simulate schema and formatting drift between systems.</p>
 </div>
 </div>
 </div>
@@ -1534,61 +1529,45 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">vd</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffConfig</span><span class="p">,</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">DiffRule</span>
-
-<span class="c1"># Source System (Legacy Python - Banker's Rounding, Title Case)</span>
-<span class="n">src_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+<span class="c1"># Source System Export</span>
+<span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">"transaction_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"TXN-001"</span><span class="p">,</span> <span class="s2">"TXN-002"</span><span class="p">,</span> <span class="s2">"TXN-003"</span><span class="p">],</span>
-        <span class="s2">"tax_amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.44</span><span class="p">,</span> <span class="mf">250.50</span><span class="p">,</span> <span class="mf">300.00</span><span class="p">],</span>  <span class="c1"># 10.445 rounded half-to-even</span>
-        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Cleared"</span><span class="p">,</span> <span class="s2">"Pending"</span><span class="p">,</span> <span class="s2">"Failed"</span><span class="p">],</span>
+        <span class="s2">"user_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="s2">"Pending"</span><span class="p">,</span> <span class="s2">"Closed"</span><span class="p">],</span>
+        <span class="s2">"balance"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"$100.50"</span><span class="p">,</span> <span class="s2">"$50.00"</span><span class="p">,</span> <span class="s2">"$0.00"</span><span class="p">],</span>
     <span class="p">}</span>
-<span class="p">)</span>
+<span class="p">)</span><span class="o">.</span><span class="n">write_csv</span><span class="p">(</span><span class="s2">"source_export.csv"</span><span class="p">)</span>
 
-<span class="c1"># Target System (Modern SQL - Standard Rounding, UPPERCASE with padding)</span>
-<span class="n">tgt_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span>
-        <span class="s2">"transaction_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"TXN-001"</span><span class="p">,</span> <span class="s2">"TXN-002"</span><span class="p">,</span> <span class="s2">"TXN-003"</span><span class="p">],</span>
-        <span class="s2">"tax_amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.45</span><span class="p">,</span> <span class="mf">250.50</span><span class="p">,</span> <span class="mf">300.00</span><span class="p">],</span>  <span class="c1"># 10.445 rounded half-up</span>
-        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">" CLEARED "</span><span class="p">,</span> <span class="s2">" PENDING "</span><span class="p">,</span> <span class="s2">" FAILED "</span><span class="p">],</span>
-    <span class="p">}</span>
-<span class="p">)</span>
+<span class="c1"># Target System Export (Exhibits categorical and numeric type drift)</span>
+<span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span><span class="s2">"user_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"ACT"</span><span class="p">,</span> <span class="s2">"PND"</span><span class="p">,</span> <span class="s2">"CLS"</span><span class="p">],</span> <span class="s2">"balance"</span><span class="p">:</span> <span class="p">[</span><span class="mf">100.50</span><span class="p">,</span> <span class="mf">50.00</span><span class="p">,</span> <span class="mf">0.00</span><span class="p">]}</span>
+<span class="p">)</span><span class="o">.</span><span class="n">write_csv</span><span class="p">(</span><span class="s2">"target_export.csv"</span><span class="p">)</span>
 
-<span class="n">is_physically_equal</span> <span class="o">=</span> <span class="n">src_df</span><span class="o">.</span><span class="n">equals</span><span class="p">(</span><span class="n">tgt_df</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Strict Physical Equality: </span><span class="si">{</span><span class="n">is_physically_equal</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"SYSTEM: Data artifacts provisioned to local filesystem."</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># Strict Physical Equality: False</span>
+<span class="c1"># SYSTEM: Data artifacts provisioned to local filesystem.</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-1">import polars as pl
 
-import veridelta as vd
-from veridelta import DiffConfig, DiffEngine, DiffRule
-
-# Source System (Legacy Python - Banker's Rounding, Title Case)
-src_df = pl.DataFrame(
+# Source System Export
+pl.DataFrame(
     {
-        "transaction_id": ["TXN-001", "TXN-002", "TXN-003"],
-        "tax_amount": [10.44, 250.50, 300.00],  # 10.445 rounded half-to-even
-        "status": ["Cleared", "Pending", "Failed"],
+        "user_id": [1, 2, 3],
+        "status": ["Active", "Pending", "Closed"],
+        "balance": ["$100.50", "$50.00", "$0.00"],
     }
-)
+).write_csv("source_export.csv")
 
-# Target System (Modern SQL - Standard Rounding, UPPERCASE with padding)
-tgt_df = pl.DataFrame(
-    {
-        "transaction_id": ["TXN-001", "TXN-002", "TXN-003"],
-        "tax_amount": [10.45, 250.50, 300.00],  # 10.445 rounded half-up
-        "status": [" CLEARED ", " PENDING ", " FAILED "],
-    }
-)
+# Target System Export (Exhibits categorical and numeric type drift)
+pl.DataFrame(
+    {"user_id": [1, 2, 3], "status": ["ACT", "PND", "CLS"], "balance": [100.50, 50.00, 0.00]}
+).write_csv("target_export.csv")
 
-is_physically_equal = src_df.equals(tgt_df)
-print(f"Strict Physical Equality: {is_physically_equal}")
+print("SYSTEM: Data artifacts provisioned to local filesystem.")
 
 # Output:
-# Strict Physical Equality: False</div>
+# SYSTEM: Data artifacts provisioned to local filesystem.</div>
 </div>
 </div>
 </div>
@@ -1601,7 +1580,7 @@ print(f"Strict Physical Equality: {is_physically_equal}")
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="2-defining-semantic-boundaries">2. Defining Semantic Boundaries<a class="anchor-link" href="#2-defining-semantic-boundaries">¶</a></h2><p>Veridelta resolves physical variance by establishing semantic boundaries. The <code>DiffConfig</code> object declaratively defines acceptable tolerances and normalization rules, masking expected migration artifacts without ignoring genuine data corruption.</p>
+<h2 id="2-configuration-definition">2. Configuration Definition<a class="anchor-link" href="#2-configuration-definition">¶</a></h2><p>The YAML configuration file dictates the validation rules, string sanitization, and type coercions. Parameters map directly to the root of the configuration models.</p>
 </div>
 </div>
 </div>
@@ -1624,61 +1603,57 @@ print(f"Strict Physical Equality: {is_physically_equal}")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Define the semantic comparison boundaries</span>
-<span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"transaction_id"</span><span class="p">],</span>
-    <span class="c1"># Global Policies: Applied to all columns (unless overridden)</span>
-    <span class="c1"># Allow a maximum of $0.01 variance to account for Banker's Rounding differences</span>
-    <span class="n">default_absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>
-    <span class="c1"># Global Whitespace Policy: Strip all leading/trailing whitespace</span>
-    <span class="n">default_whitespace_mode</span><span class="o">=</span><span class="s2">"both"</span><span class="p">,</span>
-    <span class="c1"># Granular Overrides: Column-specific normalization</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"status"</span><span class="p">],</span>
-            <span class="n">case_insensitive</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Ensure 'Pending' matches ' PENDING '</span>
-        <span class="p">)</span>
-    <span class="p">],</span>
-<span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="o">%%</span><span class="n">writefile</span> <span class="n">veridelta</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">source</span><span class="p">:</span>
+  <span class="n">path</span><span class="p">:</span> <span class="s2">"source_export.csv"</span>
+  <span class="nb">format</span><span class="p">:</span> <span class="s2">"csv"</span>
 
-<span class="c1"># Execute the comparison using the aligned DataFrames</span>
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="p">,</span> <span class="n">tgt_df</span><span class="p">)</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="n">target</span><span class="p">:</span>
+  <span class="n">path</span><span class="p">:</span> <span class="s2">"target_export.csv"</span>
+  <span class="nb">format</span><span class="p">:</span> <span class="s2">"csv"</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match Status: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Changed Rows: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">changed_count</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="n">primary_keys</span><span class="p">:</span> <span class="p">[</span><span class="s2">"user_id"</span><span class="p">]</span>
+<span class="n">strict_types</span><span class="p">:</span> <span class="n">false</span>
+<span class="n">output_path</span><span class="p">:</span> <span class="s2">"./diff_results"</span>
+<span class="n">output_format</span><span class="p">:</span> <span class="s2">"parquet"</span>
 
-<span class="c1"># Output:</span>
-<span class="c1"># Match Status: True</span>
-<span class="c1"># Changed Rows: 0</span>
+<span class="n">rules</span><span class="p">:</span>
+  <span class="o">-</span> <span class="n">column_names</span><span class="p">:</span> <span class="p">[</span><span class="s2">"status"</span><span class="p">]</span>
+    <span class="n">value_map</span><span class="p">:</span>
+      <span class="s2">"Active"</span><span class="p">:</span> <span class="s2">"ACT"</span>
+      <span class="s2">"Pending"</span><span class="p">:</span> <span class="s2">"PND"</span>
+      <span class="s2">"Closed"</span><span class="p">:</span> <span class="s2">"CLS"</span>
+      
+  <span class="o">-</span> <span class="n">column_names</span><span class="p">:</span> <span class="p">[</span><span class="s2">"balance"</span><span class="p">]</span>
+    <span class="n">regex_replace</span><span class="p">:</span>
+      <span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span>
+    <span class="n">cast_to</span><span class="p">:</span> <span class="s2">"Float64"</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-2"># Define the semantic comparison boundaries
-config = DiffConfig(
-    primary_keys=["transaction_id"],
-    # Global Policies: Applied to all columns (unless overridden)
-    # Allow a maximum of $0.01 variance to account for Banker's Rounding differences
-    default_absolute_tolerance=0.01,
-    # Global Whitespace Policy: Strip all leading/trailing whitespace
-    default_whitespace_mode="both",
-    # Granular Overrides: Column-specific normalization
-    rules=[
-        DiffRule(
-            column_names=["status"],
-            case_insensitive=True,  # Ensure 'Pending' matches ' PENDING '
-        )
-    ],
-)
+<div class="clipboard-copy-txt" id="cell-2">%%writefile veridelta.yaml
+source:
+  path: "source_export.csv"
+  format: "csv"
 
-# Execute the comparison using the aligned DataFrames
-engine = DiffEngine(config, src_df, tgt_df)
-summary = engine.run()
+target:
+  path: "target_export.csv"
+  format: "csv"
 
-print(f"Match Status: {summary.is_match}")
-print(f"Changed Rows: {summary.changed_count}")
+primary_keys: ["user_id"]
+strict_types: false
+output_path: "./diff_results"
+output_format: "parquet"
 
-# Output:
-# Match Status: True
-# Changed Rows: 0</div>
+rules:
+  - column_names: ["status"]
+    value_map:
+      "Active": "ACT"
+      "Pending": "PND"
+      "Closed": "CLS"
+      
+  - column_names: ["balance"]
+    regex_replace:
+      "\\$": ""
+    cast_to: "Float64"</div>
 </div>
 </div>
 </div>
@@ -1691,8 +1666,8 @@ print(f"Changed Rows: {summary.changed_count}")
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="3-scale-performance-simulating-pipeline-drift">3. Scale &amp; Performance: Simulating Pipeline Drift<a class="anchor-link" href="#3-scale-performance-simulating-pipeline-drift">¶</a></h2><p>Veridelta is built on Polars' Rust backend, enabling semantic normalization to scale linearly across available CPU cores.</p>
-<p>The following benchmark loads a sample of the NYC Yellow Taxi dataset, injects programmatic ETL drift, and executes a multi-threaded semantic comparison.</p>
+<h2 id="3-cli-execution">3. CLI Execution<a class="anchor-link" href="#3-cli-execution">¶</a></h2><p>Execute the Veridelta engine using the staged configuration.</p>
+<p>A <code>0</code> exit code denotes pipeline success (mismatches within threshold). A <code>1</code> exit code denotes failure, halting the pipeline and persisting discrepancy artifacts to the designated <code>output_path</code>.</p>
 </div>
 </div>
 </div>
@@ -1715,93 +1690,49 @@ print(f"Changed Rows: {summary.changed_count}")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Load and deduplicate to ensure primary key integrity</span>
-<span class="n">src_df</span> <span class="o">=</span> <span class="n">vd</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_nyc_taxi</span><span class="p">()</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span>  <span class="c1"># pyright: ignore[reportUnknownMemberType]</span>
-    <span class="n">subset</span><span class="o">=</span><span class="p">[</span><span class="s2">"VendorID"</span><span class="p">,</span> <span class="s2">"tpep_pickup_datetime"</span><span class="p">]</span>
-<span class="p">)</span>
-
-<span class="c1"># Simulate ETL drift on the cleaned target:</span>
-<span class="c1"># - Rounding noise on the fare (+$0.002)</span>
-<span class="c1"># - A 0.5% calculation fluctuation on the tip amount (e.g., exchange rate drift)</span>
-<span class="c1"># - Inconsistent string formatting</span>
-<span class="n">tgt_df</span> <span class="o">=</span> <span class="n">src_df</span><span class="o">.</span><span class="n">with_columns</span><span class="p">(</span>  <span class="c1"># pyright: ignore[reportUnknownMemberType]</span>
-    <span class="n">fare_amount</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">"fare_amount"</span><span class="p">)</span> <span class="o">+</span> <span class="mf">0.002</span><span class="p">,</span>
-    <span class="n">tip_amount</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">"tip_amount"</span><span class="p">)</span> <span class="o">*</span> <span class="mf">1.005</span><span class="p">,</span>
-    <span class="n">store_and_fwd_flag</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">"store_and_fwd_flag"</span><span class="p">)</span><span class="o">.</span><span class="n">str</span><span class="o">.</span><span class="n">to_uppercase</span><span class="p">(),</span>
-<span class="p">)</span>
-
-<span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"VendorID"</span><span class="p">,</span> <span class="s2">"tpep_pickup_datetime"</span><span class="p">],</span>
-    <span class="c1"># Global Policy: Ignore micro-penny rounding errors across the board</span>
-    <span class="n">default_absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"store_and_fwd_flag"</span><span class="p">],</span> <span class="n">case_insensitive</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"tip_amount"</span><span class="p">],</span>
-            <span class="n">relative_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>  <span class="c1"># Accept up to 1% relative drift on tips</span>
-        <span class="p">),</span>
-    <span class="p">],</span>
-<span class="p">)</span>
-
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="p">,</span> <span class="n">tgt_df</span><span class="p">)</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">' VERIDELTA EXECUTION SUMMARY '</span><span class="si">:</span><span class="s2">=^50</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match Status:     </span><span class="si">{</span><span class="s1">'SUCCESS'</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">'FAILED'</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Total Rows:       </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">total_rows_source</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Semantic Diffs:   </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">changed_count</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"="</span> <span class="o">*</span> <span class="mi">50</span><span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="err">!</span><span class="n">veridelta</span> <span class="n">run</span> <span class="o">-</span><span class="n">c</span> <span class="n">veridelta</span><span class="o">.</span><span class="n">yaml</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># ========== VERIDELTA EXECUTION SUMMARY ===========</span>
-<span class="c1"># Match Status:     SUCCESS</span>
-<span class="c1"># Total Rows:       908</span>
-<span class="c1"># Semantic Diffs:   0</span>
-<span class="c1"># ==================================================</span>
+<span class="c1"># Loading configuration from veridelta.yaml...</span>
+<span class="c1"># Ingesting and aligning datasets...</span>
+<span class="c1"># Executing semantic diff...</span>
+<span class="c1">#</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        PASSED (Perfect Match)</span>
+<span class="c1"># Match Rate:    100.0%</span>
+<span class="c1"># Source Rows:   3</span>
+<span class="c1"># Target Rows:   3</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Row-Level Discrepancies:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         0</span>
+<span class="c1"># Removed:       0</span>
+<span class="c1"># Changed:       0</span>
+<span class="c1"># Total Issues:  0</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-3"># Load and deduplicate to ensure primary key integrity
-src_df = vd.datasets.load_nyc_taxi().unique(  # pyright: ignore[reportUnknownMemberType]
-    subset=["VendorID", "tpep_pickup_datetime"]
-)
-
-# Simulate ETL drift on the cleaned target:
-# - Rounding noise on the fare (+$0.002)
-# - A 0.5% calculation fluctuation on the tip amount (e.g., exchange rate drift)
-# - Inconsistent string formatting
-tgt_df = src_df.with_columns(  # pyright: ignore[reportUnknownMemberType]
-    fare_amount=pl.col("fare_amount") + 0.002,
-    tip_amount=pl.col("tip_amount") * 1.005,
-    store_and_fwd_flag=pl.col("store_and_fwd_flag").str.to_uppercase(),
-)
-
-config = DiffConfig(
-    primary_keys=["VendorID", "tpep_pickup_datetime"],
-    # Global Policy: Ignore micro-penny rounding errors across the board
-    default_absolute_tolerance=0.01,
-    rules=[
-        DiffRule(column_names=["store_and_fwd_flag"], case_insensitive=True),
-        DiffRule(
-            column_names=["tip_amount"],
-            relative_tolerance=0.01,  # Accept up to 1% relative drift on tips
-        ),
-    ],
-)
-
-engine = DiffEngine(config, src_df, tgt_df)
-summary = engine.run()
-
-print(f"{' VERIDELTA EXECUTION SUMMARY ':=^50}")
-print(f"Match Status:     {'SUCCESS' if summary.is_match else 'FAILED'}")
-print(f"Total Rows:       {summary.total_rows_source:,}")
-print(f"Semantic Diffs:   {summary.changed_count:,}")
-print("=" * 50)
+<div class="clipboard-copy-txt" id="cell-3">!veridelta run -c veridelta.yaml
 
 # Output:
-# ========== VERIDELTA EXECUTION SUMMARY ===========
-# Match Status:     SUCCESS
-# Total Rows:       908
-# Semantic Diffs:   0
-# ==================================================</div>
+# Loading configuration from veridelta.yaml...
+# Ingesting and aligning datasets...
+# Executing semantic diff...
+#
+# Veridelta Execution Summary
+# ===========================
+# Status:        PASSED (Perfect Match)
+# Match Rate:    100.0%
+# Source Rows:   3
+# Target Rows:   3
+# Volume Shift:  +0 rows
+#
+# Row-Level Discrepancies:
+# ---------------------------
+# Added:         0
+# Removed:       0
+# Changed:       0
+# Total Issues:  0</div>
 </div>
 </div>
 </div>
@@ -1814,12 +1745,60 @@ print("=" * 50)
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="architectural-highlights">Architectural Highlights<a class="anchor-link" href="#architectural-highlights">¶</a></h2><p>Veridelta is engineered for integration into high-throughput data pipelines and CI/CD validation gates.</p>
-<ul>
-<li><strong>Zero-Import Configuration:</strong> Semantic modes utilize literal strings, enabling configuration via YAML/JSON without requiring Python imports.</li>
-<li><strong>Strict Type Validation:</strong> Built on Pydantic V2, ensuring configuration logic is strictly validated before expensive I/O operations begin.</li>
-<li><strong>Hardware-Accelerated Execution:</strong> Direct integration with Polars' Rust engine ensures that normalization and row-level diffing scales natively with available hardware.</li>
-</ul>
+<h2 id="4-teardown-housekeeping">4. Teardown &amp; Housekeeping<a class="anchor-link" href="#4-teardown-housekeeping">¶</a></h2><p>Purge local testing artifacts and generated reporting directories to maintain a clean workspace.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-4">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
+
+<span class="c1"># Remove local file artifacts</span>
+<span class="k">for</span> <span class="n">file</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">"source_export.csv"</span><span class="p">,</span> <span class="s2">"target_export.csv"</span><span class="p">,</span> <span class="s2">"veridelta.yaml"</span><span class="p">]:</span>
+    <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">file</span><span class="p">)</span><span class="o">.</span><span class="n">unlink</span><span class="p">(</span><span class="n">missing_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="c1"># Remove generated artifacts directory</span>
+<span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="s2">"diff_results"</span><span class="p">,</span> <span class="n">ignore_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="s2">"SYSTEM: Local artifacts cleaned."</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># SYSTEM: Local artifacts cleaned.</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-4">import pathlib
+import shutil
+
+# Remove local file artifacts
+for file in ["source_export.csv", "target_export.csv", "veridelta.yaml"]:
+    pathlib.Path(file).unlink(missing_ok=True)
+
+# Remove generated artifacts directory
+shutil.rmtree("diff_results", ignore_errors=True)
+
+print("SYSTEM: Local artifacts cleaned.")
+
+# Output:
+# SYSTEM: Local artifacts cleaned.</div>
+</div>
+</div>
 </div>
 </div>
 </div>

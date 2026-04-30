@@ -15,7 +15,7 @@
         <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/advanced_rules/">
       
       
-        <link rel="prev" href="../quickstart/">
+        <link rel="prev" href="../quickstart_cli/">
       
       
         <link rel="next" href="../yaml_config/">
@@ -29,7 +29,7 @@
     
     
       
-        <title>Part 2: Advanced Heuristics & Data Normalization - Veridelta</title>
+        <title>Advanced Heuristics & Data Normalization - Veridelta</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#part-2-advanced-heuristics-data-normalization" class="md-skip">
+        <a href="#advanced-heuristics-data-normalization" class="md-skip">
           Skip to content
         </a>
       
@@ -90,6 +90,10 @@
     <div data-md-component="announce">
       
     </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
     
     
       
@@ -116,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Part 2: Advanced Heuristics &amp; Data Normalization
+              Advanced Heuristics &amp; Data Normalization
             
           </span>
         </div>
@@ -482,6 +486,34 @@
                 
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart_cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Veridelta CLI: End-to-End Execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
     
   
   
@@ -501,7 +533,7 @@
   <span class="md-ellipsis">
     
   
-    Part 2: Advanced Heuristics &amp; Data Normalization
+    Advanced Heuristics &amp; Data Normalization
   
 
     
@@ -519,7 +551,7 @@
   <span class="md-ellipsis">
     
   
-    Part 2: Advanced Heuristics &amp; Data Normalization
+    Advanced Heuristics &amp; Data Normalization
   
 
     
@@ -553,13 +585,80 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="1. Simulating Systemic Formatting Discrepancies">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-baseline-failure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Baseline Failure
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-declarative-transformation-rules" class="md-nav__link">
+  <a href="#2-programmatic-transformation-rules" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Declarative Transformation Rules
+        2. Programmatic Transformation Rules
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-rule-chaining-type-coercion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Rule Chaining &amp; Type Coercion
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Rule Chaining &amp; Type Coercion">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#applying-the-chain" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Applying the Chain
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-schema-asymmetry-and-data-quality" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Schema Asymmetry and Data Quality
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#conclusion-architecting-for-maintainability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conclusion: Architecting for Maintainability
       
     </span>
   </a>
@@ -589,7 +688,7 @@
   <span class="md-ellipsis">
     
   
-    Part 3: CI/CD &amp; Production Workflows
+    CI/CD &amp; Production Workflows
   
 
     
@@ -1438,7 +1537,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="part-2-advanced-heuristics-data-normalization">Part 2: Advanced Heuristics &amp; Data Normalization<a class="anchor-link" href="#part-2-advanced-heuristics-data-normalization">¶</a></h1><p>Beyond numeric tolerances, semantic validation frequently requires complex string mutation and schema alignment. This notebook demonstrates how to resolve systemic formatting discrepancies using Veridelta's declarative regular expressions and deterministic value mapping.</p>
+<h1 id="advanced-heuristics-data-normalization">Advanced Heuristics &amp; Data Normalization<a class="anchor-link" href="#advanced-heuristics-data-normalization">¶</a></h1><p>While Veridelta supports declarative YAML configurations for CI/CD pipelines, its native Python API provides programmatic flexibility for complex data environments. This notebook demonstrates how to construct advanced heuristics, deterministic value mapping, and rule chaining directly within Python using Veridelta's configuration models.</p>
+<p>Operating directly on Polars DataFrames via the Python API is ideal for interactive exploratory data analysis, dynamic rule generation, and integration into existing Python-based orchestrators.</p>
 </div>
 </div>
 </div>
@@ -1449,7 +1549,8 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="1-simulating-systemic-formatting-discrepancies">1. Simulating Systemic Formatting Discrepancies<a class="anchor-link" href="#1-simulating-systemic-formatting-discrepancies">¶</a></h3><p>During cross-platform migrations (e.g., legacy CRM to a modern SaaS platform), categorical enumerations and string formats routinely diverge. The following mock datasets simulate a scenario where the target system utilizes abbreviated tier codes and strips all non-numeric characters from phone numbers.</p>
+<h2 id="1-simulating-systemic-formatting-discrepancies">1. Simulating Systemic Formatting Discrepancies<a class="anchor-link" href="#1-simulating-systemic-formatting-discrepancies">¶</a></h2><p>During cross-platform migrations (e.g., legacy CRM to a modern SaaS platform), categorical enumerations and string formats routinely diverge.</p>
+<p>The following DataFrames simulate a scenario where the target system utilizes abbreviated tier codes and strips all non-numeric characters from phone numbers.</p>
 </div>
 </div>
 </div>
@@ -1472,14 +1573,13 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">pathlib</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
-
-<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataIngestor</span><span class="p">,</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">load_config</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.engine</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffEngine</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffConfig</span><span class="p">,</span> <span class="n">DiffRule</span>
 
 <span class="c1"># Source System: Legacy CRM (Verbose statuses, formatted phone numbers)</span>
-<span class="n">src_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+<span class="n">src_crm</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
         <span class="s2">"customer_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"CUST-801"</span><span class="p">,</span> <span class="s2">"CUST-802"</span><span class="p">],</span>
         <span class="s2">"subscription_tier"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Premium"</span><span class="p">,</span> <span class="s2">"Enterprise"</span><span class="p">],</span>
@@ -1488,7 +1588,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <span class="p">)</span>
 
 <span class="c1"># Target System: Modern Platform (Abbreviated tiers, numeric-only phones)</span>
-<span class="n">tgt_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+<span class="n">tgt_saas</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
         <span class="s2">"customer_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"CUST-801"</span><span class="p">,</span> <span class="s2">"CUST-802"</span><span class="p">],</span>
         <span class="s2">"subscription_tier"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"PRM"</span><span class="p">,</span> <span class="s2">"ENT"</span><span class="p">],</span>
@@ -1496,22 +1596,18 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
     <span class="p">}</span>
 <span class="p">)</span>
 
-<span class="c1"># Serialize to disk to simulate remote data artifacts</span>
-<span class="n">src_df</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">"legacy_crm.parquet"</span><span class="p">)</span>
-<span class="n">tgt_df</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">"modern_saas.parquet"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"Mock migration artifacts serialized."</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"In-memory data artifacts initialized."</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># Mock migration artifacts serialized.</span>
+<span class="c1"># In-memory data artifacts initialized.</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-1">import pathlib
+<div class="clipboard-copy-txt" id="cell-1">import polars as pl
 
-import polars as pl
-
-from veridelta import DataIngestor, DiffEngine, load_config
+from veridelta.engine import DiffEngine
+from veridelta.models import DiffConfig, DiffRule
 
 # Source System: Legacy CRM (Verbose statuses, formatted phone numbers)
-src_df = pl.DataFrame(
+src_crm = pl.DataFrame(
     {
         "customer_id": ["CUST-801", "CUST-802"],
         "subscription_tier": ["Premium", "Enterprise"],
@@ -1520,7 +1616,7 @@ src_df = pl.DataFrame(
 )
 
 # Target System: Modern Platform (Abbreviated tiers, numeric-only phones)
-tgt_df = pl.DataFrame(
+tgt_saas = pl.DataFrame(
     {
         "customer_id": ["CUST-801", "CUST-802"],
         "subscription_tier": ["PRM", "ENT"],
@@ -1528,13 +1624,10 @@ tgt_df = pl.DataFrame(
     }
 )
 
-# Serialize to disk to simulate remote data artifacts
-src_df.write_parquet("legacy_crm.parquet")
-tgt_df.write_parquet("modern_saas.parquet")
-print("Mock migration artifacts serialized.")
+print("In-memory data artifacts initialized.")
 
 # Output:
-# Mock migration artifacts serialized.</div>
+# In-memory data artifacts initialized.</div>
 </div>
 </div>
 </div>
@@ -1547,7 +1640,7 @@ print("Mock migration artifacts serialized.")
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="2-declarative-transformation-rules">2. Declarative Transformation Rules<a class="anchor-link" href="#2-declarative-transformation-rules">¶</a></h3><p>Value mappings and regular expression replacements execute natively within the Polars Rust engine, ensuring optimal execution speed. These heuristics are declared within the configuration policy to maintain strict separation between validation rules and operational code.</p>
+<h3 id="the-baseline-failure">The Baseline Failure<a class="anchor-link" href="#the-baseline-failure">¶</a></h3><p>If we run a comparison using standard strict equality, the engine correctly flags that 100% of the rows contain semantic discrepancies due to the formatting drift.</p>
 </div>
 </div>
 </div>
@@ -1570,89 +1663,57 @@ print("Mock migration artifacts serialized.")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Define translation heuristics via YAML configuration</span>
-<span class="n">yaml_config</span> <span class="o">=</span> <span class="s2">"""</span>
-<span class="s2">primary_keys: ["customer_id"]</span>
-<span class="s2">source:</span>
-<span class="s2">  path: "legacy_crm.parquet"</span>
-<span class="s2">  format: "parquet"</span>
-<span class="s2">target:</span>
-<span class="s2">  path: "modern_saas.parquet"</span>
-<span class="s2">  format: "parquet"</span>
-<span class="s2">rules:</span>
-<span class="s2">  - column_names: ["subscription_tier"]</span>
-<span class="s2">    value_map:                   # Deterministic translation dictionary</span>
-<span class="s2">      "Premium": "PRM"</span>
-<span class="s2">      "Enterprise": "ENT"</span>
-<span class="s2">  - column_names: ["contact_number"]</span>
-<span class="s2">    regex_replace:</span>
-<span class="s2">      "[^0-9]": ""               # Strip all non-numeric characters prior to evaluation</span>
-<span class="s2">"""</span>
-<span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="s2">"veridelta_heuristics.yaml"</span><span class="p">)</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">yaml_config</span><span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">baseline_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"customer_id"</span><span class="p">])</span>
+<span class="n">engine_baseline</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">baseline_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="p">,</span> <span class="n">tgt_saas</span><span class="p">)</span>
 
-<span class="c1"># Execute validation pipeline</span>
-<span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">load_config</span><span class="p">(</span><span class="s2">"veridelta_heuristics.yaml"</span><span class="p">)</span>
-
-<span class="n">ingestor</span> <span class="o">=</span> <span class="n">DataIngestor</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span>
-<span class="n">source_data</span><span class="p">,</span> <span class="n">target_data</span> <span class="o">=</span> <span class="n">ingestor</span><span class="o">.</span><span class="n">get_dataframes</span><span class="p">()</span>
-
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">source_data</span><span class="p">,</span> <span class="n">target_data</span><span class="p">)</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">' VERIDELTA EXECUTION SUMMARY '</span><span class="si">:</span><span class="s2">=^50</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match Status:     </span><span class="si">{</span><span class="s1">'SUCCESS'</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">'FAILED'</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Total Rows:       </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">total_rows_source</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Semantic Diffs:   </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">changed_count</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"="</span> <span class="o">*</span> <span class="mi">50</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">engine_baseline</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># ========== VERIDELTA EXECUTION SUMMARY ===========</span>
-<span class="c1"># Match Status:     SUCCESS</span>
-<span class="c1"># Total Rows:       2</span>
-<span class="c1"># Semantic Diffs:   0</span>
-<span class="c1"># ==================================================</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        FAILED</span>
+<span class="c1"># Match Rate:    0.0%</span>
+<span class="c1"># Source Rows:   2</span>
+<span class="c1"># Target Rows:   2</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         0</span>
+<span class="c1"># Removed:       0</span>
+<span class="c1"># Changed:       2</span>
+<span class="c1"># Total Issues:  2</span>
+<span class="c1">#</span>
+<span class="c1"># Top Column-Level Drifts:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># - subscription_tier: 2 mismatches</span>
+<span class="c1"># - contact_number: 2 mismatches</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-2"># Define translation heuristics via YAML configuration
-yaml_config = """
-primary_keys: ["customer_id"]
-source:
-  path: "legacy_crm.parquet"
-  format: "parquet"
-target:
-  path: "modern_saas.parquet"
-  format: "parquet"
-rules:
-  - column_names: ["subscription_tier"]
-    value_map:                   # Deterministic translation dictionary
-      "Premium": "PRM"
-      "Enterprise": "ENT"
-  - column_names: ["contact_number"]
-    regex_replace:
-      "[^0-9]": ""               # Strip all non-numeric characters prior to evaluation
-"""
-pathlib.Path("veridelta_heuristics.yaml").write_text(yaml_config)
+<div class="clipboard-copy-txt" id="cell-2">baseline_config = DiffConfig(primary_keys=["customer_id"])
+engine_baseline = DiffEngine(baseline_config, src_crm, tgt_saas)
 
-# Execute validation pipeline
-diff_cfg, src_cfg, tgt_cfg = load_config("veridelta_heuristics.yaml")
-
-ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-source_data, target_data = ingestor.get_dataframes()
-
-engine = DiffEngine(diff_cfg, source_data, target_data)
-summary = engine.run()
-
-print(f"{' VERIDELTA EXECUTION SUMMARY ':=^50}")
-print(f"Match Status:     {'SUCCESS' if summary.is_match else 'FAILED'}")
-print(f"Total Rows:       {summary.total_rows_source:,}")
-print(f"Semantic Diffs:   {summary.changed_count:,}")
-print("=" * 50)
+print(engine_baseline.run().report_summary)
 
 # Output:
-# ========== VERIDELTA EXECUTION SUMMARY ===========
-# Match Status:     SUCCESS
-# Total Rows:       2
-# Semantic Diffs:   0
-# ==================================================</div>
+# Veridelta Execution Summary
+# ===========================
+# Status:        FAILED
+# Match Rate:    0.0%
+# Source Rows:   2
+# Target Rows:   2
+# Volume Shift:  +0 rows
+#
+# Discrepancy Breakdown:
+# ---------------------------
+# Added:         0
+# Removed:       0
+# Changed:       2
+# Total Issues:  2
+#
+# Top Column-Level Drifts:
+# ---------------------------
+# - subscription_tier: 2 mismatches
+# - contact_number: 2 mismatches</div>
 </div>
 </div>
 </div>
@@ -1665,8 +1726,7 @@ print("=" * 50)
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<hr/>
-<p><em>(Run the cell below to clean up the temporary files generated by this notebook)</em></p>
+<h2 id="2-programmatic-transformation-rules">2. Programmatic Transformation Rules<a class="anchor-link" href="#2-programmatic-transformation-rules">¶</a></h2><p>Value mappings and regular expression replacements execute natively within the Polars Rust engine, ensuring optimal execution speed. By instantiating <code>DiffRule</code> objects, we instruct the engine to sanitize the data <em>prior</em> to evaluating equality, bridging the gap between the two systems.</p>
 </div>
 </div>
 </div>
@@ -1689,15 +1749,434 @@ print("=" * 50)
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Remove local artifacts (housekeeping)</span>
-<span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">"legacy_crm.parquet"</span><span class="p">,</span> <span class="s2">"modern_saas.parquet"</span><span class="p">,</span> <span class="s2">"veridelta_heuristics.yaml"</span><span class="p">]:</span>
-    <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">f</span><span class="p">)</span><span class="o">.</span><span class="n">unlink</span><span class="p">(</span><span class="n">missing_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Construct the configuration</span>
+<span class="n">mapping_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"customer_id"</span><span class="p">],</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">DiffRule</span><span class="p">(</span>
+            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"subscription_tier"</span><span class="p">],</span> <span class="n">value_map</span><span class="o">=</span><span class="p">{</span><span class="s2">"Premium"</span><span class="p">:</span> <span class="s2">"PRM"</span><span class="p">,</span> <span class="s2">"Enterprise"</span><span class="p">:</span> <span class="s2">"ENT"</span><span class="p">}</span>
+        <span class="p">),</span>
+        <span class="n">DiffRule</span><span class="p">(</span>
+            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"contact_number"</span><span class="p">],</span>
+            <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span>
+                <span class="s2">"[^0-9]"</span><span class="p">:</span> <span class="s2">""</span>  <span class="c1"># Strip all non-numeric characters</span>
+            <span class="p">},</span>
+        <span class="p">),</span>
+    <span class="p">],</span>
+<span class="p">)</span>
+
+<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">mapping_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="p">,</span> <span class="n">tgt_saas</span><span class="p">)</span>
+<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        PASSED (Perfect Match)</span>
+<span class="c1"># Match Rate:    100.0%</span>
+<span class="c1"># Source Rows:   2</span>
+<span class="c1"># Target Rows:   2</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         0</span>
+<span class="c1"># Removed:       0</span>
+<span class="c1"># Changed:       0</span>
+<span class="c1"># Total Issues:  0</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-3"># Remove local artifacts (housekeeping)
-for f in ["legacy_crm.parquet", "modern_saas.parquet", "veridelta_heuristics.yaml"]:
-    pathlib.Path(f).unlink(missing_ok=True)</div>
+<div class="clipboard-copy-txt" id="cell-3"># Construct the configuration
+mapping_config = DiffConfig(
+    primary_keys=["customer_id"],
+    rules=[
+        DiffRule(
+            column_names=["subscription_tier"], value_map={"Premium": "PRM", "Enterprise": "ENT"}
+        ),
+        DiffRule(
+            column_names=["contact_number"],
+            regex_replace={
+                "[^0-9]": ""  # Strip all non-numeric characters
+            },
+        ),
+    ],
+)
+
+engine = DiffEngine(mapping_config, src_crm, tgt_saas)
+summary = engine.run()
+
+print(summary.report_summary)
+
+# Output:
+# Veridelta Execution Summary
+# ===========================
+# Status:        PASSED (Perfect Match)
+# Match Rate:    100.0%
+# Source Rows:   2
+# Target Rows:   2
+# Volume Shift:  +0 rows
+#
+# Discrepancy Breakdown:
+# ---------------------------
+# Added:         0
+# Removed:       0
+# Changed:       0
+# Total Issues:  0</div>
 </div>
 </div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="3-rule-chaining-type-coercion">3. Rule Chaining &amp; Type Coercion<a class="anchor-link" href="#3-rule-chaining-type-coercion">¶</a></h2><p>Real-world migrations often feature compounding discrepancies. For example, a legacy billing system might export invoice amounts as formatted strings (e.g., <code>"$10.00"</code>), while the modern system exports raw numeric values (e.g., <code>10.0</code>).</p>
+<p>If we compare these without rules, they immediately fail due to both Type mismatches (<code>String</code> vs <code>Float</code>) and Value mismatches (<code>$10.00</code> vs <code>10.0</code>).</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-4">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Source: Legacy Billing (Strings with currency symbols)</span>
+<span class="n">src_billing</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span>
+        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">],</span>
+        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"$10.00"</span><span class="p">,</span> <span class="s2">"$99.99"</span><span class="p">],</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+
+<span class="c1"># Target: Modern Billing (Raw numbers, missing the penny on INV-002 due to a known tax bug)</span>
+<span class="n">tgt_billing</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span>
+        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">],</span>
+        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.00</span><span class="p">,</span> <span class="mf">99.98</span><span class="p">],</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+
+<span class="c1"># Baseline failure: Veridelta gracefully handles the String vs Float mismatch</span>
+<span class="c1"># (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.</span>
+<span class="n">baseline_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">]),</span> <span class="n">src_billing</span><span class="p">,</span> <span class="n">tgt_billing</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">baseline_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        FAILED</span>
+<span class="c1"># Match Rate:    0.0%</span>
+<span class="c1"># Source Rows:   2</span>
+<span class="c1"># Target Rows:   2</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         0</span>
+<span class="c1"># Removed:       0</span>
+<span class="c1"># Changed:       2</span>
+<span class="c1"># Total Issues:  2</span>
+<span class="c1">#</span>
+<span class="c1"># Top Column-Level Drifts:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># - amount: 2 mismatches</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-4"># Source: Legacy Billing (Strings with currency symbols)
+src_billing = pl.DataFrame(
+    {
+        "invoice_id": ["INV-001", "INV-002"],
+        "amount": ["$10.00", "$99.99"],
+    }
+)
+
+# Target: Modern Billing (Raw numbers, missing the penny on INV-002 due to a known tax bug)
+tgt_billing = pl.DataFrame(
+    {
+        "invoice_id": ["INV-001", "INV-002"],
+        "amount": [10.00, 99.98],
+    }
+)
+
+# Baseline failure: Veridelta gracefully handles the String vs Float mismatch
+# (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.
+baseline_billing = DiffEngine(DiffConfig(primary_keys=["invoice_id"]), src_billing, tgt_billing)
+print(baseline_billing.run().report_summary)
+
+# Output:
+# Veridelta Execution Summary
+# ===========================
+# Status:        FAILED
+# Match Rate:    0.0%
+# Source Rows:   2
+# Target Rows:   2
+# Volume Shift:  +0 rows
+#
+# Discrepancy Breakdown:
+# ---------------------------
+# Added:         0
+# Removed:       0
+# Changed:       2
+# Total Issues:  2
+#
+# Top Column-Level Drifts:
+# ---------------------------
+# - amount: 2 mismatches</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h3 id="applying-the-chain">Applying the Chain<a class="anchor-link" href="#applying-the-chain">¶</a></h3><p>Instead of writing complex row-by-row lambda functions in Pandas, Veridelta allows you to <strong>chain rules declaratively</strong>.</p>
+<p>In the following configuration, we define a single <code>DiffRule</code> that strips the currency symbol, casts the strings to Polars <code>Float64</code> objects, and applies an absolute tolerance to handle penny-rounding differences—all executed in sequence within the optimized C-level pipeline.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-5">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Chain rules: Regex Clean -&gt; Type Cast -&gt; Numeric Tolerance</span>
+<span class="n">chained_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">],</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">DiffRule</span><span class="p">(</span>
+            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"amount"</span><span class="p">],</span>
+            <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span><span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span><span class="p">},</span>  <span class="c1"># 1. Strip the dollar sign</span>
+            <span class="n">cast_to</span><span class="o">=</span><span class="s2">"Float64"</span><span class="p">,</span>  <span class="c1"># 2. Coerce to Float for mathematical comparison</span>
+            <span class="n">absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>  <span class="c1"># 3. Forgive the 1-cent tax rounding variance</span>
+        <span class="p">)</span>
+    <span class="p">],</span>
+<span class="p">)</span>
+
+<span class="n">engine_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">chained_config</span><span class="p">,</span> <span class="n">src_billing</span><span class="p">,</span> <span class="n">tgt_billing</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">engine_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        PASSED (Perfect Match)</span>
+<span class="c1"># Match Rate:    100.0%</span>
+<span class="c1"># Source Rows:   2</span>
+<span class="c1"># Target Rows:   2</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         0</span>
+<span class="c1"># Removed:       0</span>
+<span class="c1"># Changed:       0</span>
+<span class="c1"># Total Issues:  0</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-5"># Chain rules: Regex Clean -&gt; Type Cast -&gt; Numeric Tolerance
+chained_config = DiffConfig(
+    primary_keys=["invoice_id"],
+    rules=[
+        DiffRule(
+            column_names=["amount"],
+            regex_replace={"\\$": ""},  # 1. Strip the dollar sign
+            cast_to="Float64",  # 2. Coerce to Float for mathematical comparison
+            absolute_tolerance=0.01,  # 3. Forgive the 1-cent tax rounding variance
+        )
+    ],
+)
+
+engine_billing = DiffEngine(chained_config, src_billing, tgt_billing)
+print(engine_billing.run().report_summary)
+
+# Output:
+# Veridelta Execution Summary
+# ===========================
+# Status:        PASSED (Perfect Match)
+# Match Rate:    100.0%
+# Source Rows:   2
+# Target Rows:   2
+# Volume Shift:  +0 rows
+#
+# Discrepancy Breakdown:
+# ---------------------------
+# Added:         0
+# Removed:       0
+# Changed:       0
+# Total Issues:  0</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="4-schema-asymmetry-and-data-quality">4. Schema Asymmetry and Data Quality<a class="anchor-link" href="#4-schema-asymmetry-and-data-quality">¶</a></h2><p>Schema instability is a routine aspect of system evolution. Veridelta manages naming drifts and legacy data representations as semantic equivalents rather than execution failures.</p>
+<ul>
+<li><strong>Schema Mapping</strong>: <code>rename_to</code> aligns disparate field names between datasets, consolidating duplicated knowledge into a single representation.</li>
+<li><strong>Data Quality</strong>: <code>null_values</code> and <code>treat_null_as_equal</code> provide an authoritative definition for missing data. This centralizes intent and prevents maintenance nightmares caused by implicit guesses or fragmented validation logic.</li>
+</ul>
+<p>This declarative approach establishes a <strong>Single Source of Truth (SSoT)</strong>.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-6">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Scenario: Target system renamed the legacy ID and uses actual NULLs</span>
+<span class="n">src_legacy</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">({</span><span class="s2">"id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="s2">"UNKNOWN"</span><span class="p">,</span> <span class="s2">"Active"</span><span class="p">]})</span>
+
+<span class="n">tgt_modern</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span>
+        <span class="s2">"user_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>  <span class="c1"># The authoritative column name (Target/Modern)</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">"Active"</span><span class="p">],</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+
+<span class="n">asymmetry_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"user_id"</span><span class="p">],</span>  <span class="c1"># Reference the authoritative Target name</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">DiffRule</span><span class="p">(</span>
+            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"id"</span><span class="p">],</span>
+            <span class="n">rename_to</span><span class="o">=</span><span class="s2">"user_id"</span><span class="p">,</span>  <span class="c1"># Source will be renamed to match Target</span>
+        <span class="p">),</span>
+        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"status"</span><span class="p">],</span> <span class="n">null_values</span><span class="o">=</span><span class="p">[</span><span class="s2">"UNKNOWN"</span><span class="p">],</span> <span class="n">treat_null_as_equal</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+    <span class="p">],</span>
+<span class="p">)</span>
+
+<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">asymmetry_config</span><span class="p">,</span> <span class="n">src_legacy</span><span class="p">,</span> <span class="n">tgt_modern</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        PASSED (Perfect Match)</span>
+<span class="c1"># Match Rate:    100.0%</span>
+<span class="c1"># Source Rows:   3</span>
+<span class="c1"># Target Rows:   3</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Row-Level Discrepancies:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         0</span>
+<span class="c1"># Removed:       0</span>
+<span class="c1"># Changed:       0</span>
+<span class="c1"># Total Issues:  0</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-6"># Scenario: Target system renamed the legacy ID and uses actual NULLs
+src_legacy = pl.DataFrame({"id": [1, 2, 3], "status": ["Active", "UNKNOWN", "Active"]})
+
+tgt_modern = pl.DataFrame(
+    {
+        "user_id": [1, 2, 3],  # The authoritative column name (Target/Modern)
+        "status": ["Active", None, "Active"],
+    }
+)
+
+asymmetry_config = DiffConfig(
+    primary_keys=["user_id"],  # Reference the authoritative Target name
+    rules=[
+        DiffRule(
+            column_names=["id"],
+            rename_to="user_id",  # Source will be renamed to match Target
+        ),
+        DiffRule(column_names=["status"], null_values=["UNKNOWN"], treat_null_as_equal=True),
+    ],
+)
+
+summary = DiffEngine(asymmetry_config, src_legacy, tgt_modern).run()
+print(summary.report_summary)
+
+# Output:
+# Veridelta Execution Summary
+# ===========================
+# Status:        PASSED (Perfect Match)
+# Match Rate:    100.0%
+# Source Rows:   3
+# Target Rows:   3
+# Volume Shift:  +0 rows
+#
+# Row-Level Discrepancies:
+# ---------------------------
+# Added:         0
+# Removed:       0
+# Changed:       0
+# Total Issues:  0</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="conclusion-architecting-for-maintainability">Conclusion: Architecting for Maintainability<a class="anchor-link" href="#conclusion-architecting-for-maintainability">¶</a></h2><p>Veridelta’s programmatic API abstracts the boilerplate of cross-system data validation. By encapsulating semantic transformations, schema alignment, and tolerances within declarative <code>DiffRule</code> models, you prevent validation logic from fragmenting across custom Pandas scripts or SQL queries.</p>
+<p><strong>Key Architectural Takeaways:</strong></p>
+<ul>
+<li><strong>Single Source of Truth:</strong> Centralize migration assumptions (renames, null coercion, value maps) into version-controlled configuration objects.</li>
+<li><strong>Performance at Scale:</strong> Pushing operations down to the Polars Rust engine ensures validation scales efficiently out-of-core without memory bottlenecks.</li>
+<li><strong>Pipeline Integration:</strong> Use the Python API to dynamically generate configurations within orchestrators (e.g., Apache Airflow, Dagster) to gate downstream deployments based on strict data quality thresholds.</li>
+</ul>
+<p>For automated CI/CD workflows, these Python models map 1:1 with Veridelta's YAML specification, allowing a seamless transition from exploratory notebook analysis to strict, automated pipeline execution.</p>
 </div>
 </div>
 </div>
@@ -1758,7 +2237,7 @@ for f in ["legacy_crm.parquet", "modern_saas.parquet", "veridelta_heuristics.yam
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.1.0"}</script>
     
     
       <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>

@@ -89,6 +89,10 @@
       
     </div>
     
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
     
       
 
@@ -431,10 +435,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#key-features" class="md-nav__link">
+  <a href="#core-capabilities" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Key Features
+        Core Capabilities
       
     </span>
   </a>
@@ -464,10 +468,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#explore-the-docs" class="md-nav__link">
+  <a href="#documentation-directory" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Explore the Docs
+        Documentation Directory
       
     </span>
   </a>
@@ -569,6 +573,34 @@
   
   
     <li class="md-nav__item">
+      <a href="examples/quickstart_cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Veridelta CLI: End-to-End Execution
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="examples/advanced_rules/" class="md-nav__link">
         
   
@@ -576,7 +608,7 @@
   <span class="md-ellipsis">
     
   
-    Part 2: Advanced Heuristics &amp; Data Normalization
+    Advanced Heuristics &amp; Data Normalization
   
 
     
@@ -604,7 +636,7 @@
   <span class="md-ellipsis">
     
   
-    Part 3: CI/CD &amp; Production Workflows
+    CI/CD &amp; Production Workflows
   
 
     
@@ -728,43 +760,47 @@
 
 <h1 id="welcome-to-veridelta">Welcome to Veridelta</h1>
 <p><strong>Semantic diffing for mission-critical data pipelines.</strong></p>
-<p>Veridelta is a high-performance data comparison engine designed to validate changes between datasets. Built on top of <a href="https://pola.rs/">Polars</a>, it allows you to define explicit rules for expected variance, like floating-point jitter or casing differences, so you can ignore the noise and focus on real regressions.</p>
+<p>Veridelta is a high-performance data comparison engine designed to validate changes between datasets. Built on the <a href="https://pola.rs/">Polars</a> DataFrame library, it enables explicit rule definitions for expected variance—such as floating-point jitter, schema drift, or categorical crosswalks—preventing false positives and isolating true data regressions.</p>
 <hr />
-<h2 id="key-features">Key Features</h2>
+<h2 id="core-capabilities">Core Capabilities</h2>
 <ul>
-<li><strong>Blazing Fast:</strong> Powered by a Rust-backed Polars engine for massive dataset handling.</li>
-<li><strong>Declarative Rules:</strong> Define tolerances, string normalization, and null handling in simple YAML.</li>
-<li><strong>Dual-Entry:</strong> Use it as a CLI tool in CI/CD pipelines or as a Python library in Airflow/Notebooks.</li>
-<li><strong>Flexible Schema Modes:</strong> Handle evolving datasets with support for additions, removals, and strict matching.</li>
+<li><strong>High-Performance Execution:</strong> Powered by a Rust-backed Polars engine for out-of-core dataset processing.</li>
+<li><strong>Declarative Configuration:</strong> Define numeric tolerances, string normalization, and type coercion in standardized YAML.</li>
+<li><strong>Omni-Channel Deployment:</strong> Execute via CLI in CI/CD pipelines (GitHub Actions, GitLab CI) or as a Python library in data orchestrators (Airflow, Dagster).</li>
+<li><strong>Schema Evolution Support:</strong> Manage structural drift with strict, intersection, or additive schema enforcement modes.</li>
 </ul>
 <h2 id="installation">Installation</h2>
-<p>Install via <code>uv</code> (recommended):</p>
+<p>Install via <code>uv</code> (Recommended):</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>add<span class="w"> </span>veridelta
 </code></pre></div>
-<p>Or using <code>pip</code>:</p>
+<p>Or via standard <code>pip</code>:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>pip<span class="w"> </span>install<span class="w"> </span>veridelta
 </code></pre></div>
 <h2 id="quick-start">Quick Start</h2>
-<ol>
-<li>
-<p><strong>Define your rules</strong> in a <code>veridelta.yaml</code> file.</p>
-</li>
-<li>
-<p><strong>Run the comparison</strong>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>veridelta<span class="w"> </span>run<span class="w"> </span>--config<span class="w"> </span>veridelta.yaml
+<p><strong>1. Define the execution specification (<code>veridelta.yaml</code>):</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">source</span><span class="p">:</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;legacy_system.csv&quot;</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;csv&quot;</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nt">target</span><span class="p">:</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="nt">path</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;modern_system.parquet&quot;</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;parquet&quot;</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="nt">primary_keys</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;id&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;revenue&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">    </span><span class="nt">absolute_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.01</span>
 </code></pre></div>
-</li>
-<li>
-<p><strong>Review the summary</strong> in your terminal or check the <code>output_path</code> for detailed Parquet diffs.</p>
-</li>
-</ol>
+<p><strong>2. Execute the validation engine:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml
+</code></pre></div>
+<p><strong>3. Review the execution summary:</strong> Evaluate the terminal output or inspect the generated <code>.parquet</code> artifacts for row-level discrepancies.</p>
 <hr />
-<h2 id="explore-the-docs">Explore the Docs</h2>
+<h2 id="documentation-directory">Documentation Directory</h2>
 <ul>
-<li><a href="examples/quickstart/"><strong>Tutorials</strong></a>: Progressive guides covering basic quickstarts, advanced semantic rules, and production CI/CD workflows.</li>
-<li><a href="https://www.google.com/search?q=configuration.md"><strong>Configuration Guide</strong></a>: Learn how to write rules for tolerances, strings, and schemas.</li>
-<li><a href="api/"><strong>API Reference</strong></a>: Detailed documentation of the Python classes and methods.</li>
-<li><a href="https://www.google.com/search?q=roadmap.md"><strong>Roadmap</strong></a>: Discover upcoming features like warehouse pushdown, Lakehouse support, and advanced ML heuristics.</li>
+<li><a href="examples/quickstart_cli/"><strong>Tutorials</strong></a>: Progressive guides covering CLI execution, programmatic Python usage, and advanced semantic rules.</li>
+<li><a href="configuration/"><strong>Configuration Guide</strong></a>: Complete specification for tolerance rules, schema enforcement, and I/O settings.</li>
+<li><a href="api/"><strong>API Reference</strong></a>: Developer documentation for the internal Python classes and methods.</li>
+<li><a href="roadmap/"><strong>Roadmap</strong></a>: Upcoming framework capabilities, including warehouse pushdown and Lakehouse integrations.</li>
 </ul>
 
 
@@ -815,7 +851,7 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.1.0"}</script>
     
     
       <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
