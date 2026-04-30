@@ -668,7 +668,6 @@ class DiffEngine:
 
             diff_cfg, source, target = load_config("veridelta.yaml")
 
-            # The engine automatically resolves standard I/O paths (local, s3://, etc.)
             summary = DiffEngine(diff_cfg).execute(source, target)
             print(summary.report_summary)
             ```
