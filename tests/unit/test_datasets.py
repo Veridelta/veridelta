@@ -132,6 +132,8 @@ class TestDatasetCacheManagement:
         # Assert the 0-byte file was deleted so the next run can try again
         assert not cache_file.exists()
 
+        http_error.close()
+
     def test_it_automatically_evicts_corrupted_cache_and_redownloads_the_file(
         self, mocker: MockerFixture, tmp_path: Path
     ) -> None:
