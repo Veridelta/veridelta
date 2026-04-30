@@ -1,38 +1,36 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Custom exceptions for Veridelta operations.
+"""Custom exception hierarchy for Veridelta operations.
 
-This module defines the core exception hierarchy used throughout the
-Veridelta framework. Consumers of the Python API can catch the base
-`VerideltaError` to safely handle all framework-specific failures.
+This module defines the core exceptions used throughout the framework.
+API consumers can catch the base `VerideltaError` to safely handle all
+domain-specific failures without masking standard Python runtime errors.
 """
 
 
 class VerideltaError(Exception):
-    """Base exception for all Veridelta-specific errors.
+    """Base exception for all Veridelta errors.
 
-    Consumers should catch this exception to handle pipeline validation
-    failures gracefully without silencing standard Python runtime errors
-    (like `MemoryError` or `ValueError`).
+    Notes:
+        Catch this exception at the top level of integration pipelines
+        to gracefully handle domain-specific execution failures.
     """
 
 
 class ConfigError(VerideltaError):
-    """Raised when configuration validation or schema enforcement fails.
+    """Exception raised for configuration and schema validation failures.
 
-    This is triggered during pipeline initialization or schema validation
-    if mandatory parameters (like primary keys) are missing, or if strict
-    schema constraints (e.g., `allow_removals`, `exact`) are violated by
-    the provided datasets.
+    Triggered during initialization or structural alignment if mandatory
+    parameters are missing or if strict schema constraints (e.g., `exact`,
+    `allow_removals`) are violated.
     """
 
 
 class DataIntegrityError(VerideltaError):
-    """Raised when foundational data assumptions are violated.
+    """Exception raised for violations of foundational data constraints.
 
-    This is typically raised during the pre-evaluation phase if primary
-    keys are not unique within either dataset. Halting execution on this
-    error prevents catastrophic join explosions and Out-Of-Memory (OOM)
-    crashes during the Polars evaluation phase.
+    Triggered during the pre-evaluation phase if primary keys are not
+    strictly unique within either dataset, preventing non-deterministic
+    joins and memory exhaustion.
     """
