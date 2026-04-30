@@ -12,26 +12,40 @@ license = { text = "Apache-2.0" }
 authors = [
     { name = "The Veridelta Contributors", email = "veridelta.labs@gmail.com" },
 ]
-keywords = ["data-engineering", "polars", "diff", "testing"]
+keywords = [
+    "data-engineering",
+    "polars",
+    "diff",
+    "testing",
+    "data-quality",
+    "data-validation",
+    "etl",
+    "dataframe",
+    "schema-validation",
+    "reconciliation",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Testing",
     "Typing :: Typed",
 ]
 dependencies = ["polars>=1.39.3", "pydantic>=2.12.5", "pyyaml>=6.0.3"]
 
 [project.urls]
 Homepage = "https://veridelta.github.io/veridelta/"
+Documentation = "https://veridelta.github.io/veridelta/"
 Repository = "https://github.com/Veridelta/veridelta"
 Issues = "https://github.com/Veridelta/veridelta/issues"
+Changelog = "https://github.com/Veridelta/veridelta/releases"
 
 [dependency-groups]
 dev = [
