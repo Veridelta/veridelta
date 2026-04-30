@@ -1,16 +1,23 @@
 # Veridelta Roadmap
 
-Veridelta is currently in `v0.1.0` (Alpha). The core semantic diffing engine is stable, but we are actively expanding the ecosystem. Here is what is coming next:
+Veridelta is currently in **v{{ config.extra.version }}**. The core execution engine is stable. The following roadmap outlines the strategic expansion of the framework's ecosystem, intelligence, and developer tooling.
 
-### 1. Expanded Ecosystem Support
-While CSV and Parquet cover the majority of file-based workflows, enterprise pipelines often operate directly on data warehouses and lakehouses.
-* Native integration for **Delta Lake** and **Apache Iceberg** tables.
-* Direct SQL pushdown for **Snowflake** and **Databricks** to diff massive datasets without pulling them into memory.
+## 1. Enterprise Ecosystem Integration
+While file-based architectures (CSV, Parquet) are fully supported, mission-critical pipelines often operate directly on distributed storage and warehouse compute.
 
-### 2. Advanced Heuristics
-* **Fuzzy String Matching:** Support for Levenshtein distance thresholds to catch minor typos without explicit regex.
-* **Schema Evolution ML:** Auto-suggest `value_map` dictionaries based on statistical sampling (e.g., auto-detecting that 'M' maps to 'Male' 99% of the time).
+* **Lakehouse Native:** Direct integration with **Delta Lake** and **Apache Iceberg** table formats.
+* **Warehouse Pushdown:** Native SQL translation layers for **Snowflake**, **Databricks**, and **BigQuery**, enabling out-of-core evaluation without extracting data into local memory.
 
-### 3. CI/CD & Reporting
-* **GitHub Actions App:** A native GitHub Action that comments on PRs with a mini Veridelta diff summary when pipeline code changes.
-* **HTML Dashboards:** An optional `--html` flag in the CLI to generate a standalone, interactive web report of the diff results.
+## 2. Advanced Heuristics & ML
+* **Fuzzy Matching:** Implementation of Levenshtein and Jaro-Winkler distance thresholds to bypass non-deterministic typographical errors without explicit regex definition.
+* **Automated Crosswalks:** Statistical sampling heuristics to auto-generate `value_map` proposals (e.g., detecting a 99.9% correlation between legacy `M` and modern `Male`).
+
+## 3. Developer Experience (DX) & Tooling
+A framework is only as effective as the developer's ability to interface with it safely and efficiently.
+
+* **VS Code Extension:** A dedicated IDE extension providing domain-specific YAML schema validation, strict type IntelliSense, one-click local test execution, and inline visualization of discrepancy artifacts directly within the editor. This shifts configuration error detection left, preventing wasted compute cycles in production.
+* **Interactive Reporting:** A `--html` CLI directive to compile execution summaries and top-n drifts into standalone, interactive dashboards.
+
+## 4. Pipeline Observability
+* **Native CI/CD Runners:** First-party **GitHub Actions** and **GitLab CI** plugins to execute comparisons and post execution summaries directly to Pull Request comments.
+* **Telemetry Export:** OpenTelemetry-compliant JSON output for ingestion into Datadog, Grafana, or custom data quality dashboards.

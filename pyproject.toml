@@ -36,12 +36,14 @@ dev = [
     "commitizen>=4.13.10",
     "ipykernel>=7.2.0",
     "mkdocs-jupyter>=0.26.3",
+    "mkdocs-macros-plugin>=1.5.0",
     "mkdocs-material>=9.7.6",
     "mkdocstrings[python]>=1.0.3",
     "mypy>=1.20.0",
     "pre-commit>=4.5.1",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
     "ruff>=0.15.10",
     "types-pyyaml>=6.0.12.20260408",
 ]
@@ -54,21 +56,28 @@ managed = true
 
 [tool.mypy]
 python_version = "3.10"
-files = ["src/veridelta", "tests"]
+mypy_path = "src"
+files = ["src", "tests"]
 strict = true
 plugins = ["pydantic.mypy"]
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
-warn_return_any = false
+disable_error_code = ["prop-decorator"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "conftest"]
 disallow_untyped_decorators = false
+disable_error_code = ["untyped-decorator"]
+warn_return_any = false
+
+[[tool.mypy.overrides]]
+module = ["polars.*", "yaml.*", "pytest.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
-
-[[tool.mypy.overrides]]
-module = ["polars.*", "yaml.*"]
-ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 100
@@ -107,15 +116,31 @@ indent-style = "space"
 docstring-code-format = true
 
 [tool.pytest.ini_options]
-addopts = ["--tb=short", "--strict-config", "--strict-markers"]
+addopts = [
+    "--tb=short",
+    "--strict-config",
+    "--strict-markers",
+    "--cov=veridelta",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+testpaths = ["tests"]
 filterwarnings = ["error"]
+markers = [
+    "unit: Isolated tests for individual components or functions.",
+    "integration: Tests evaluating multiple internal components interacting.",
+    "e2e: End-to-end tests validating the full user journey (e.g., CLI).",
+    "smoke: Critical-path tests run post-deployment to ensure basic sanity.",
+    "fast: CPU-bound tests that execute in milliseconds.",
+    "slow: I/O bound or large-dataset tests.",
+]
 
 [tool.coverage.run]
 source = ["src/veridelta"]
 branch = true
 
 [tool.coverage.report]
-# fail_under = 90
+fail_under = 90
 show_missing = true
 skip_covered = true
 exclude_lines = [
@@ -131,6 +156,7 @@ version = "0.1.0"
 version_files = [
     "pyproject.toml:version",
     "src/veridelta/__init__.py:__version__",
+    "mkdocs.yml:extra.version",
 ]
 update_changelog_on_bump = true
 major_version_zero = true

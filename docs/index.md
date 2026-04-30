@@ -2,26 +2,26 @@
 
 **Semantic diffing for mission-critical data pipelines.**
 
-Veridelta is a high-performance data comparison engine designed to validate changes between datasets. Built on top of [Polars](https://pola.rs/), it allows you to define explicit rules for expected variance, like floating-point jitter or casing differences, so you can ignore the noise and focus on real regressions.
+Veridelta is a high-performance data comparison engine designed to validate changes between datasets. Built on the [Polars](https://pola.rs/) DataFrame library, it enables explicit rule definitions for expected variance—such as floating-point jitter, schema drift, or categorical crosswalks—preventing false positives and isolating true data regressions.
 
 ---
 
-## Key Features
+## Core Capabilities
 
-* **Blazing Fast:** Powered by a Rust-backed Polars engine for massive dataset handling.
-* **Declarative Rules:** Define tolerances, string normalization, and null handling in simple YAML.
-* **Dual-Entry:** Use it as a CLI tool in CI/CD pipelines or as a Python library in Airflow/Notebooks.
-* **Flexible Schema Modes:** Handle evolving datasets with support for additions, removals, and strict matching.
+* **High-Performance Execution:** Powered by a Rust-backed Polars engine for out-of-core dataset processing.
+* **Declarative Configuration:** Define numeric tolerances, string normalization, and type coercion in standardized YAML.
+* **Omni-Channel Deployment:** Execute via CLI in CI/CD pipelines (GitHub Actions, GitLab CI) or as a Python library in data orchestrators (Airflow, Dagster).
+* **Schema Evolution Support:** Manage structural drift with strict, intersection, or additive schema enforcement modes.
 
 ## Installation
 
-Install via `uv` (recommended):
+Install via `uv` (Recommended):
 
 ```bash
 uv add veridelta
 ```
 
-Or using `pip`:
+Or via standard `pip`:
 
 ```bash
 pip install veridelta
@@ -29,21 +29,35 @@ pip install veridelta
 
 ## Quick Start
 
-1.  **Define your rules** in a `veridelta.yaml` file.
+**1. Define the execution specification (`veridelta.yaml`):**
 
-2.  **Run the comparison**:
+```yaml
+source:
+  path: "legacy_system.csv"
+  format: "csv"
+target:
+  path: "modern_system.parquet"
+  format: "parquet"
 
-    ```bash
-    veridelta run --config veridelta.yaml
-    ```
+primary_keys: ["id"]
+rules:
+  - column_names: ["revenue"]
+    absolute_tolerance: 0.01
+```
 
-3.  **Review the summary** in your terminal or check the `output_path` for detailed Parquet diffs.
+**2. Execute the validation engine:**
 
------
+```bash
+veridelta run -c veridelta.yaml
+```
 
-## Explore the Docs
+**3. Review the execution summary:** Evaluate the terminal output or inspect the generated `.parquet` artifacts for row-level discrepancies.
 
-  * [**Tutorials**](examples/quickstart.ipynb): Progressive guides covering basic quickstarts, advanced semantic rules, and production CI/CD workflows.
-  * [**Configuration Guide**](https://www.google.com/search?q=configuration.md): Learn how to write rules for tolerances, strings, and schemas.
-  * [**API Reference**](api.md): Detailed documentation of the Python classes and methods.
-  * [**Roadmap**](https://www.google.com/search?q=roadmap.md): Discover upcoming features like warehouse pushdown, Lakehouse support, and advanced ML heuristics.
+---
+
+## Documentation Directory
+
+* [**Tutorials**](examples/quickstart_cli.ipynb): Progressive guides covering CLI execution, programmatic Python usage, and advanced semantic rules.
+* [**Configuration Guide**](configuration.md): Complete specification for tolerance rules, schema enforcement, and I/O settings.
+* [**API Reference**](api.md): Developer documentation for the internal Python classes and methods.
+* [**Roadmap**](roadmap.md): Upcoming framework capabilities, including warehouse pushdown and Lakehouse integrations.

@@ -1,36 +1,36 @@
 # Veridelta
 
-[![CI](https://github.com/veridelta/veridelta/actions/workflows/ci.yml/badge.svg)](https://github.com/veridelta/veridelta/actions)
+[![CI Pipeline](https://github.com/veridelta/veridelta/actions/workflows/ci.yml/badge.svg)](https://github.com/veridelta/veridelta/actions)
+[![codecov](https://codecov.io/gh/veridelta/veridelta/graph/badge.svg)](https://codecov.io/gh/veridelta/veridelta)
 [![PyPI version](https://badge.fury.io/py/veridelta.svg)](https://pypi.org/project/veridelta/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 **Semantic diffing for data pipelines.** Define expected variance, validate intentional changes, and detect regressions with confidence.
 
-Veridelta is a Rust-backed (via Polars) data comparison engine designed for large-scale datasets. It enables data engineers to define precise mathematical and semantic rules for comparing datasets, ensuring that expected differences (such as floating-point variance or controlled schema evolution) are ignored while unintended regressions are caught immediately.
+Veridelta is a declarative data comparison engine powered by [Polars](https://pola.rs/).
+It applies semantic and mathematical rules to filter out expected pipeline noise,
+such as floating-point drift or formatting changes, and programmatically isolates true
+data regressions at scale.
 
-**[Read the Documentation](https://veridelta.github.io/veridelta)**
+**[Documentation & API Reference](https://veridelta.github.io/veridelta)**
 
 ---
 
-## Quick Start
-
-### Installation
-
-Install using `uv` (recommended) or `pip`:
+## Installation
 
 ```bash
 uv add veridelta
-````
+```
 
 ---
 
 ## Usage
 
-Veridelta supports both configuration-driven workflows and direct Python integration.
+Veridelta supports configuration-driven CLI execution and programmatic Python API integration.
 
-### Option A: Configuration (YAML / CLI)
+### CLI Configuration (YAML)
 
-Define comparison rules in a YAML configuration file:
+Declare comparison rules and tolerances via YAML:
 
 ```yaml
 # veridelta.yaml
@@ -53,7 +53,7 @@ rules:
     regex_replace: {"[^0-9]": ""}
 ```
 
-Run the comparison:
+Execute the comparison:
 
 ```bash
 veridelta run --config veridelta.yaml
@@ -61,53 +61,58 @@ veridelta run --config veridelta.yaml
 
 ---
 
-### Option B: Python API
+### Python API
 
-Use Veridelta directly within Python workflows (e.g., Airflow, notebooks, or services):
+Integrate directly into programmatic workflows (e.g., Airflow, Databricks). The `DiffEngine` natively consumes Polars `LazyFrame` objects for memory-safe, big-data execution.
 
 ```python
 import polars as pl
-from veridelta import DiffConfig, ColumnRule, DiffEngine
+from veridelta import DiffConfig, DiffRule, DiffEngine
+
+source_lazy = pl.scan_parquet("legacy_data.parquet")
+target_lazy = pl.scan_parquet("modern_data.parquet")
 
 config = DiffConfig(
     primary_keys=["user_id"],
     default_treat_null_as_equal=True,
     rules=[
-        ColumnRule(
+        DiffRule(
             pattern="^AMT_.*",
             absolute_tolerance=0.05
         )
     ]
 )
 
-engine = DiffEngine(config, source_df, target_df)
+engine = DiffEngine(config, source_lazy, target_lazy)
 summary = engine.run()
 
 if not summary.is_match:
-    print(f"Pipeline regression detected: {summary.changed_count} rows differ.")
+    print(f"Regression detected: {summary.changed_count} rows differ.")
 ```
-
-## Documentation & Advanced Features
-
-The examples above just scratch the surface. For full configuration details, the Python API reference, and advanced rule definitions—including schema evolution, whitespace handling, and type coercion—visit the official documentation:
-
-**[veridelta.github.io/veridelta](https://veridelta.github.io/veridelta)**
 
 ---
 
-## Roadmap & What's Next
+## Core Capabilities
 
-Veridelta is in active development. While the core diffing engine is stable for file-based workflows (CSV, Parquet), we are rapidly expanding the ecosystem. Upcoming priorities include:
+* **Structural Alignment:** Map legacy column names to modern schemas automatically.
+* **Semantic Normalization:** Coerce string markers to nulls, standardize whitespace, and cast types dynamically before mathematical comparison.
+* **Discrepancy Artifacts:** Export isolated Parquet files detailing `added`, `removed`, and `changed` records for downstream auditing.
 
-- **Warehouse Pushdown:** Direct SQL integrations for Snowflake and Databricks.
-- **Lakehouse Native:** First-class support for Delta Lake and Apache Iceberg.
-- **Advanced Heuristics:** Fuzzy string matching and ML-driven schema evolution mapping.
-- **Reporting:** Interactive HTML diff dashboards and native GitHub Action integrations.
+---
 
-For a detailed look at planned features, check out the [Full Roadmap](https://veridelta.github.io/veridelta/roadmap/) in our official documentation.
+## Roadmap
+
+Upcoming enterprise integrations:
+
+* **Warehouse Pushdown:** Direct SQL execution for Snowflake and Databricks.
+* **Lakehouse Native:** First-class support for Delta Lake and Apache Iceberg.
+* **Advanced Heuristics:** Fuzzy string matching and ML-driven schema mapping.
+* **Reporting:** Interactive HTML diff dashboards and CI/CD status checks.
+
+[View Detailed Roadmap](https://veridelta.github.io/veridelta/roadmap/)
 
 ---
 
 ## License
 
-Veridelta is distributed under the terms of the Apache 2.0 License.
+Distributed under the Apache 2.0 License.

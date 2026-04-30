@@ -31,6 +31,7 @@ theme:
 plugins:
   - search
   - mkdocs-jupyter
+  - macros: {}
   - mkdocstrings:
       handlers:
         python:
@@ -38,6 +39,9 @@ plugins:
             docstring_style: google
             show_source: true
             show_root_heading: true
+
+extra:
+  version: 0.1.0
 
 markdown_extensions:
   - admonition
@@ -49,7 +53,8 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Tutorials:
-    - Quickstart: examples/quickstart.ipynb
+    - Python Quickstart: examples/quickstart.ipynb
+    - CLI Quickstart: examples/quickstart_cli.ipynb
     - Advanced Rules: examples/advanced_rules.ipynb
     - CI/CD Workflows: examples/yaml_config.ipynb
   - Configuration: configuration.md

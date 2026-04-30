@@ -7,8 +7,8 @@ from veridelta import datasets
 from veridelta.config import load_config
 from veridelta.engine import DataIngestor, DiffEngine
 from veridelta.models import (
-    ColumnRule,
     DiffConfig,
+    DiffRule,
     DiffSummary,
     SourceConfig,
 )
@@ -16,10 +16,10 @@ from veridelta.models import (
 __version__ = "0.1.0"
 
 __all__ = [
-    "ColumnRule",
     "DataIngestor",
     "DiffConfig",
     "DiffEngine",
+    "DiffRule",
     "DiffSummary",
     "SourceConfig",
     "datasets",

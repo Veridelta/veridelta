@@ -18,7 +18,7 @@ repos:
     hooks:
       - id: insert-license
         files: \.py$
-        exclude: ^tests/|__pycache__
+        exclude: __pycache__
         args:
           - --license-filepath
           - .github/LICENSE_HEADER.txt
