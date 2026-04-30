@@ -2,6 +2,10 @@
 
 We welcome contributions to Veridelta. To maintain an enterprise-grade standard, all code must adhere to strict architectural, typing, and formatting guidelines. 
 
+## 0. Propose Changes First
+
+Before writing code, **please open an issue** to discuss the proposed bug fix or feature. This ensures your work aligns with the Veridelta roadmap and prevents duplicated effort or rejected Pull Requests.
+
 ## 1. Development Environment
 
 We rely on [uv](https://docs.astral.sh/uv/) for deterministic, high-performance environment management. You do not need Docker to contribute; native execution is the recommended path.
@@ -37,7 +41,7 @@ We strictly follow Trunk-Based Development. **Never commit directly to `main`.**
 
 ## 3. Commit Standards
 
-We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/). Our `commit-msg` hook will automatically reject any commit that does not follow this structure:
+We strictly enforce [Conventional Commits](https://www.conventionalcommits.org/). Our `commit-msg` hook will automatically reject any commit that does not follow this structure:
 * `feat:` A new feature.
 * `fix:` A bug fix.
 * `docs:` Documentation changes.
@@ -49,6 +53,7 @@ We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/)
 
 ## 4. Pull Requests
 
-1. Ensure `make all` passes locally.
-2. Open a PR against the `main` branch. Ensure your PR title also follows the Conventional Commits format (e.g., `feat: added semantic parser`).
-3. **The CI Pipeline is the final gatekeeper.** It will automatically test your PR across multiple operating systems and Python versions. If the static analysis or test matrix fails, the PR cannot be merged.
+1. **Test Coverage:** Veridelta strictly enforces a **90% code coverage floor**. Your PR must include unit tests for all new functionality.
+2. **Local Checks:** Ensure `make all` passes locally without warnings.
+3. **Draft the PR:** Open a PR against the `main` branch. Ensure your PR title also follows the Conventional Commits format (e.g., `feat: added semantic parser`).
+4. **The CI Pipeline is the final gatekeeper.** It will automatically test your PR across multiple operating systems and Python versions. If the static analysis, type checking, or test matrix fails, the PR cannot be merged.
