@@ -10,6 +10,7 @@ theme:
   features:
     - navigation.tabs
     - navigation.sections
+    - navigation.top
     - toc.integrate
     - content.code.copy
   palette:
@@ -31,7 +32,6 @@ theme:
 plugins:
   - search
   - mkdocs-jupyter
-  - macros: {}
   - mkdocstrings:
       handlers:
         python:
@@ -40,12 +40,12 @@ plugins:
             show_source: true
             show_root_heading: true
 
-extra:
-  version: 0.2.0
-
 markdown_extensions:
   - admonition
+  - pymdownx.snippets
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
