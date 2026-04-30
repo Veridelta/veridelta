@@ -18,10 +18,10 @@ from veridelta.models import DiffConfig, SourceConfig
 
 
 def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfig]:
-    """Loads and validates a Veridelta configuration from a YAML file.
+    """Load and validate a Veridelta configuration from a YAML file.
 
-    Extracts the `source` and `target` blocks and evaluates the root
-    parameters as the master `DiffConfig`.
+    Extract the `source` and `target` definition blocks, then evaluate all
+    remaining root-level YAML parameters as the master `DiffConfig`.
 
     Args:
         path (str | Path): The file system path to the YAML configuration.
@@ -35,7 +35,7 @@ def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfi
             lacks the mandatory source/target blocks, or violates the strict
             Pydantic schema definitions.
 
-    Example:
+    Examples:
         A standard pipeline configuration (`veridelta.yaml`):
 
         ```yaml
