@@ -15,8 +15,8 @@ target:
   path: "modern_system.parquet"
   format: "parquet"
 
-# Mandatory alignment key
-primary_keys: ["user_id"]
+# Mandatory alignment key (Supports single or composite keys)
+primary_keys: ["tenant_id", "transaction_id"]
 ```
 
 ## Engine Directives
@@ -30,9 +30,20 @@ Global directives control the strictness of the underlying Polars evaluation eng
 | `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment. |
 | `threshold` | The allowable mismatch ratio (0.0 to 1.0) before the pipeline exits with a failure code. |
 
+## Global Tolerances
+
+Instead of defining rules for every single column, you can establish baseline tolerances that apply to the entire dataset automatically.
+
+| Directive | Description |
+| :--- | :--- |
+| `default_absolute_tolerance` | Baseline allowed numeric drift (e.g., `0.01`). |
+| `default_treat_null_as_equal`| If `true` (default), comparing `NULL` to `NULL` evaluates as a valid match. |
+| `default_whitespace_mode` | Global string stripping: `none`, `left`, `right`, or `both`. |
+| `default_null_values` | Array of strings to universally coerce to standard NULLs (e.g., `["N/A", "UNKNOWN", "-999"]`). |
+
 ## Column-Level Overrides (Rules)
 
-The `rules` array defines granular, per-column or regex-pattern tolerances. 
+The `rules` array defines granular, per-column or regex-pattern tolerances. Specific `column_names` take precedence over regex `pattern` rules.
 
 ### 1. Numeric Tolerances
 Bypass floating-point anomalies or acceptable system rounding differences.
