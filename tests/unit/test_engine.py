@@ -234,6 +234,35 @@ class TestSemanticNormalization:
         assert summary.changed_count == 0
         assert "basin" not in summary.column_mismatches
 
+    def test_value_map_supports_non_string_types(self) -> None:
+        """Ensure value_map accepts integers, floats, and booleans without throwing Pydantic validation errors."""
+        src = pl.DataFrame({"id": [1, 2], "rad": [35, 50], "flag": [1, 0], "score": [9.9, 8.5]})
+        tgt = pl.DataFrame(
+            {"id": [1, 2], "rad": [34, 50], "flag": [True, False], "score": [10.0, 8.5]}
+        )
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["rad"], value_map={35: 34}),
+                DiffRule(column_names=["flag"], value_map={1: True, 0: False}, cast_to="Boolean"),
+                DiffRule(column_names=["score"], value_map={9.9: 10.0}),
+            ],
+        )
+        summary = DiffEngine(config).compare_lazyframes(src.lazy(), tgt.lazy())
+
+        assert summary.is_match is True
+        assert summary.changed_count == 0
+
+    def test_value_map_rejects_complex_nested_types_to_preserve_schema_stability(self) -> None:
+        """Ensure Pydantic prevents users from mapping flat scalars into nested structures (dicts/lists)."""
+        from pydantic import ValidationError
+
+        # Loose match to prevent flaky tests against Pydantic Union error formatting
+        with pytest.raises(ValidationError, match="Input should be a valid"):
+            # Attempting to map a string to a dictionary creates an unstable pl.Struct column
+            DiffRule(column_names=["status"], value_map={"Active": {"code": 1, "desc": "active"}})  # type: ignore[dict-item]
+
     def test_it_sanitizes_strings_using_regex_replace_dictionary_before_comparison(self) -> None:
         """Ensure string contents can be dynamically replaced before diffing occurs."""
         src = pl.DataFrame({"id": [1, 2], "cost": ["$100", "€50"]})

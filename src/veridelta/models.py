@@ -90,7 +90,7 @@ class DiffRule(BaseModel):
         whitespace_mode (WhitespaceMode | None): Granular control over string whitespace stripping.
         regex_replace (dict[str, str] | None): Dictionary of `{pattern: replacement}` to sanitize text.
         pad_zeros (int | None): Left-pad numeric strings to this exact length.
-        value_map (dict[str, str] | None): Translate Source values to Target values.
+        value_map (dict[str | int | float | bool, str | int | float | bool] | None): Translate Source values to Target values.
         null_values (list[str] | None): Specific string values to actively coerce to NULL.
         treat_null_as_equal (bool | None): Evaluate NULL == NULL as a successful match.
         datetime_format (str | None): Expected strptime format for dates.
@@ -133,8 +133,9 @@ class DiffRule(BaseModel):
         description="Left-pad numeric strings to this length (e.g., 5 -> '00123').",
     )
 
-    value_map: dict[str, str] | None = Field(
-        default=None, description="Translate Source values to Target values (e.g., {'M': 'Male'})."
+    value_map: dict[str | int | float | bool, str | int | float | bool] | None = Field(
+        default=None,
+        description="Translate Source values to Target values (e.g., {'M': 'Male', 35: 34}).",
     )
     null_values: list[str] | None = Field(
         default=None, description="Specific string values to treat as NULL (e.g., ['N/A', '-999'])."
