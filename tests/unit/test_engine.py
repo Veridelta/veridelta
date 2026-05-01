@@ -201,6 +201,39 @@ class TestSemanticNormalization:
 
         assert summary.is_match is True
 
+    def test_value_map_respects_case_insensitive_flag(self) -> None:
+        """Verify value maps resolve case-insensitively when the flag is enabled."""
+        src = pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "basin": ["AL", "al", "Al"],
+            }
+        )
+
+        tgt = pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "basin": ["ATL", "ATL", "ATL"],
+            }
+        )
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["basin"],
+                    case_insensitive=True,
+                    value_map={"aL": "ATL"},
+                )
+            ],
+        )
+
+        summary = DiffEngine(config).compare_lazyframes(src.lazy(), tgt.lazy())
+
+        assert summary.is_match is True
+        assert summary.changed_count == 0
+        assert "basin" not in summary.column_mismatches
+
     def test_it_sanitizes_strings_using_regex_replace_dictionary_before_comparison(self) -> None:
         """Ensure string contents can be dynamically replaced before diffing occurs."""
         src = pl.DataFrame({"id": [1, 2], "cost": ["$100", "€50"]})

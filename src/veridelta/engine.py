@@ -356,7 +356,11 @@ class DiffEngine:
                 tgt = tgt.cast(dtype, strict=False)
 
         if rule["value_map"]:
-            src = src.replace(rule["value_map"])
+            if rule["case_insensitive"] and isinstance(dtype, (pl.String, pl.Utf8)):
+                normalized_map = {str(k).upper(): v for k, v in rule["value_map"].items()}
+                src = src.str.to_uppercase().replace(normalized_map)
+            else:
+                src = src.replace(rule["value_map"])
 
         if isinstance(dtype, (pl.String, pl.Utf8)):
             src = self._apply_string_rules(src, rule)
