@@ -64,7 +64,7 @@ def run(args: argparse.Namespace) -> int:
         args (argparse.Namespace): The parsed command-line arguments.
 
     Returns:
-        int: Standard POSIX exit code (0 for match/success, 1 for mismatch/error).
+        int: Standard POSIX exit code (0 for match, 1 for data mismatch, 2 for fatal error).
 
     Notes:
         Heavy module imports (Polars, Pydantic) are deferred inside this function
@@ -92,10 +92,10 @@ def run(args: argparse.Namespace) -> int:
 
     except ConfigError as e:
         print(f"\nConfiguration Error:\n{e}", file=sys.stderr)
-        return 1
+        return 2
     except Exception as e:
         print(f"\nUnexpected System Error:\n{e}", file=sys.stderr)
-        return 1
+        return 2
 
 
 def main() -> None:

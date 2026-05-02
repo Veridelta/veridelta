@@ -48,7 +48,7 @@ class TestCommandLineInterface:
     def test_it_returns_exit_code_one_when_datasets_do_not_match(
         self, mocker: MockerFixture, default_args: argparse.Namespace
     ) -> None:
-        """Ensure a failed comparison returns a 1 exit code to halt pipelines."""
+        """Ensure a failed comparison returns a 1 exit code."""
         mock_load = mocker.patch("veridelta.config.load_config")
         mock_engine = mocker.patch("veridelta.engine.DiffEngine")
 
@@ -84,37 +84,37 @@ class TestCommandLineInterface:
         assert "Artifacts saved to:" in captured.out
         assert "diffs" in captured.out
 
-    def test_it_catches_config_errors_and_returns_exit_code_one_via_stderr(
+    def test_it_catches_config_errors_and_returns_exit_code_two_via_stderr(
         self,
         mocker: MockerFixture,
         default_args: argparse.Namespace,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Ensure validation errors gracefully halt execution and print to standard error."""
+        """Ensure validation errors gracefully halt execution and return Exit 2."""
         mock_load = mocker.patch("veridelta.config.load_config")
         mock_load.side_effect = ConfigError("Invalid schema mode")
 
         exit_code = run(default_args)
         captured = capsys.readouterr()
 
-        assert exit_code == 1
+        assert exit_code == 2
         assert "Configuration Error" in captured.err
         assert "Invalid schema mode" in captured.err
 
-    def test_it_catches_unexpected_exceptions_and_returns_exit_code_one_via_stderr(
+    def test_it_catches_unexpected_exceptions_and_returns_exit_code_two_via_stderr(
         self,
         mocker: MockerFixture,
         default_args: argparse.Namespace,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Ensure unhandled system errors do not crash the runner ungracefully."""
+        """Ensure unhandled system errors halt the runner and return Exit 2."""
         mock_load = mocker.patch("veridelta.config.load_config")
         mock_load.side_effect = RuntimeError("Disk full")
 
         exit_code = run(default_args)
         captured = capsys.readouterr()
 
-        assert exit_code == 1
+        assert exit_code == 2
         assert "Unexpected System Error" in captured.err
         assert "Disk full" in captured.err
 
