@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
@@ -20,7 +20,7 @@ from veridelta.models import (
     DiffConfig,
     IcebergConfig,
     SnowflakeConfig,
-    SourceConfig,
+    SourceRef,
 )
 
 __all__ = [
@@ -28,24 +28,47 @@ __all__ = [
     "DeltaLakeConfig",
     "IcebergConfig",
     "SnowflakeConfig",
+    "SourceRef",
     "load_config",
 ]
 
+_SOURCE_REF_ADAPTER: TypeAdapter[SourceRef] = TypeAdapter(SourceRef)
 
-def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfig]:
+
+def _parse_source_ref(raw: Any, *, label: str) -> SourceRef:
+    """Validate a YAML source/target block as a discriminated `SourceRef`.
+
+    Args:
+        raw (Any): Parsed YAML mapping for the block.
+        label (str): `source` or `target`, used in error messages.
+
+    Returns:
+        SourceRef: File, warehouse, or lakehouse configuration.
+
+    Raises:
+        ConfigError: If the block is not a mapping or fails schema validation.
+    """
+    if not isinstance(raw, dict):
+        raise ConfigError(f"The '{label}' block must be a mapping.")
+    payload = cast("dict[str, Any]", dict(raw))
+    if "type" not in payload:
+        payload["type"] = "file"
+    return _SOURCE_REF_ADAPTER.validate_python(payload)
+
+
+def load_config(path: str | Path) -> tuple[DiffConfig, SourceRef, SourceRef]:
     """Loads and validates a Veridelta configuration from a YAML file.
 
     The parser extracts the explicit `source` and `target` definition blocks,
     then evaluates all remaining root-level YAML parameters as the master
-    `DiffConfig`.
+    `DiffConfig`. File sources may omit `type` (defaults to `file`).
 
     Args:
         path (str | Path): The file system path to the YAML configuration.
 
     Returns:
-        tuple[DiffConfig, SourceConfig, SourceConfig]: A tuple containing the
-            validated master configuration, source configuration, and target
-            configuration objects respectively.
+        tuple[DiffConfig, SourceRef, SourceRef]: Master configuration plus
+            validated source and target references.
 
     Raises:
         ConfigError: If the file cannot be located, contains invalid YAML syntax,
@@ -74,8 +97,8 @@ def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfi
         raw_source = raw_config.pop("source")
         raw_target = raw_config.pop("target")
 
-        source_cfg = SourceConfig.model_validate(raw_source)
-        target_cfg = SourceConfig.model_validate(raw_target)
+        source_cfg = _parse_source_ref(raw_source, label="source")
+        target_cfg = _parse_source_ref(raw_target, label="target")
         diff_cfg = DiffConfig.model_validate(raw_config)
 
         return diff_cfg, source_cfg, target_cfg

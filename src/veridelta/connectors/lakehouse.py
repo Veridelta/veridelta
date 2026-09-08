@@ -75,6 +75,19 @@ class DeltaLakeConnector(VerideltaConnector):
             raise ConnectorError(_UNCONNECTED)
         return self._frame.collect_schema()
 
+    def lazyframe(self) -> pl.LazyFrame:
+        """Return the unevaluated Delta scan established by `connect()`.
+
+        Returns:
+            pl.LazyFrame: Lazy table scan.
+
+        Raises:
+            ConnectorError: If `connect()` has not been called.
+        """
+        if self._frame is None:
+            raise ConnectorError(_UNCONNECTED)
+        return self._frame
+
 
 class IcebergConnector(VerideltaConnector):
     """Apache Iceberg scanner backed by `pl.scan_iceberg`."""
@@ -132,3 +145,16 @@ class IcebergConnector(VerideltaConnector):
         if self._frame is None:
             raise ConnectorError(_UNCONNECTED)
         return self._frame.collect_schema()
+
+    def lazyframe(self) -> pl.LazyFrame:
+        """Return the unevaluated Iceberg scan established by `connect()`.
+
+        Returns:
+            pl.LazyFrame: Lazy table scan.
+
+        Raises:
+            ConnectorError: If `connect()` has not been called.
+        """
+        if self._frame is None:
+            raise ConnectorError(_UNCONNECTED)
+        return self._frame

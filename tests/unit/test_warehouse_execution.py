@@ -25,6 +25,7 @@ def _snowflake_config() -> SnowflakeConfig:
         database="ANALYTICS",
         schema_name="PUBLIC",
         role="SYSADMIN",
+        table="ANALYTICS.PUBLIC.LEGACY_EVENTS",
     )
 
 
@@ -36,6 +37,7 @@ def _databricks_config() -> DatabricksConfig:
         access_token="dapi",
         catalog="main",
         schema_name="default",
+        table="main.default.legacy_events",
     )
 
 

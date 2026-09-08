@@ -9,7 +9,7 @@ schema definition for the YAML configuration files.
 """
 
 import re
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
@@ -60,9 +60,10 @@ WhitespaceMode = Literal[
 
 
 class SourceConfig(BaseModel):
-    """Configuration for a specific data source.
+    """Configuration for a specific file-backed data source.
 
     Attributes:
+        type (Literal["file"]): Discriminator for YAML source routing.
         path (str): File system path or URI to the data.
         format (SourceType): The format of the file (e.g., 'csv', 'parquet').
         options (dict[str, Any]): Format-specific keyword arguments passed
@@ -71,6 +72,7 @@ class SourceConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    type: Literal["file"] = Field("file", description="Discriminator for file-backed sources.")
     path: str = Field(..., description="File system path or URI to the data.")
     format: SourceType = Field("csv", description="The format of the file.")
     options: dict[str, Any] = Field(
@@ -459,6 +461,8 @@ class SnowflakeConfig(BaseModel):
     """Immutable connection settings for Snowflake warehouse pushdown.
 
     Attributes:
+        type (Literal["snowflake"]): Discriminator for YAML source routing.
+        table (str): Fully qualified table or view to compare.
         account (str): Snowflake account identifier.
         user (str): Login name used to authenticate the session.
         warehouse (str): Virtual warehouse that executes pushdown SQL.
@@ -470,6 +474,8 @@ class SnowflakeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    type: Literal["snowflake"] = Field("snowflake", description="Discriminator for Snowflake.")
+    table: str = Field(..., description="Fully qualified table or view to compare.")
     account: str = Field(..., description="Snowflake account identifier.")
     user: str = Field(..., description="Login name used to authenticate the session.")
     warehouse: str = Field(..., description="Virtual warehouse that executes pushdown SQL.")
@@ -487,6 +493,8 @@ class DatabricksConfig(BaseModel):
     """Immutable connection settings for Databricks SQL warehouse pushdown.
 
     Attributes:
+        type (Literal["databricks"]): Discriminator for YAML source routing.
+        table (str): Fully qualified table or view to compare.
         server_hostname (str): Workspace hostname for the SQL warehouse.
         http_path (str): HTTP path of the SQL warehouse or cluster.
         access_token (str | None): Optional personal access token.
@@ -496,6 +504,8 @@ class DatabricksConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    type: Literal["databricks"] = Field("databricks", description="Discriminator for Databricks.")
+    table: str = Field(..., description="Fully qualified table or view to compare.")
     server_hostname: str = Field(..., description="Workspace hostname for the SQL warehouse.")
     http_path: str = Field(..., description="HTTP path of the SQL warehouse or cluster.")
     access_token: str | None = Field(default=None, description="Optional personal access token.")
@@ -507,6 +517,7 @@ class DeltaLakeConfig(BaseModel):
     """Immutable settings for a Delta Lake table scan.
 
     Attributes:
+        type (Literal["delta"]): Discriminator for YAML source routing.
         table_uri (str): Filesystem path or object-store URI of the table.
         version (int | None): Optional table version to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
@@ -514,6 +525,7 @@ class DeltaLakeConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    type: Literal["delta"] = Field("delta", description="Discriminator for Delta Lake.")
     table_uri: str = Field(..., description="Filesystem path or object-store URI of the table.")
     version: int | None = Field(default=None, description="Optional table version to time-travel.")
     storage_options: dict[str, str] = Field(
@@ -526,14 +538,23 @@ class IcebergConfig(BaseModel):
     """Immutable settings for an Apache Iceberg table scan.
 
     Attributes:
+        type (Literal["iceberg"]): Discriminator for YAML source routing.
         table_uri (str): Catalog identifier or filesystem URI of the table.
         storage_options (dict[str, str]): Object-store credentials and options.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    type: Literal["iceberg"] = Field("iceberg", description="Discriminator for Apache Iceberg.")
     table_uri: str = Field(..., description="Catalog identifier or filesystem URI of the table.")
     storage_options: dict[str, str] = Field(
         default_factory=dict,
         description="Object-store credentials and options passed to Polars.",
     )
+
+
+SourceRef = Annotated[
+    SourceConfig | SnowflakeConfig | DatabricksConfig | DeltaLakeConfig | IcebergConfig,
+    Field(discriminator="type"),
+]
+"""YAML/Python source or target: file, warehouse, or lakehouse."""

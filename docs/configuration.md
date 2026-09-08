@@ -19,6 +19,69 @@ target:
 primary_keys: ["user_id"]
 ```
 
+File sources may omit `type` (it defaults to `file`) and continue to use `path`, `format`, and optional `options`.
+
+## Warehouse and lakehouse sources
+
+Set `type` on `source` and `target` to select a connector. Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (account, user, warehouse, database, schema, role, and password for Snowflake; host, HTTP path, token, catalog, and schema for Databricks), and the `table` names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
+
+```yaml
+source:
+  type: snowflake
+  table: ANALYTICS.PUBLIC.LEGACY_EVENTS
+  account: xy12345
+  user: analyst
+  warehouse: COMPUTE_WH
+  database: ANALYTICS
+  schema_name: PUBLIC
+
+target:
+  type: snowflake
+  table: ANALYTICS.PUBLIC.MODERN_EVENTS
+  account: xy12345
+  user: analyst
+  warehouse: COMPUTE_WH
+  database: ANALYTICS
+  schema_name: PUBLIC
+
+primary_keys: ["event_id"]
+```
+
+```yaml
+source:
+  type: databricks
+  table: main.default.legacy_events
+  server_hostname: adb.azuredatabricks.net
+  http_path: /sql/1.0/warehouses/abc
+  catalog: main
+  schema_name: default
+
+target:
+  type: databricks
+  table: main.default.modern_events
+  server_hostname: adb.azuredatabricks.net
+  http_path: /sql/1.0/warehouses/abc
+  catalog: main
+  schema_name: default
+
+primary_keys: ["event_id"]
+```
+
+Lakehouse tables are scanned as unevaluated Polars LazyFrames (install the `delta` or `iceberg` extra):
+
+```yaml
+source:
+  type: delta
+  table_uri: s3://lake/legacy_events
+  version: 12
+
+target:
+  type: iceberg
+  table_uri: s3://lake/iceberg/modern_events
+
+primary_keys: ["event_id"]
+```
+
 ## Engine Directives
 
 Global directives control the strictness of the underlying Polars evaluation engine.

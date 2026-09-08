@@ -32,6 +32,7 @@ def _snowflake_config() -> SnowflakeConfig:
         warehouse="COMPUTE_WH",
         database="ANALYTICS",
         schema_name="PUBLIC",
+        table="ANALYTICS.PUBLIC.LEGACY_EVENTS",
     )
 
 
@@ -40,6 +41,7 @@ def _databricks_config() -> DatabricksConfig:
     return DatabricksConfig(
         server_hostname="adb.azuredatabricks.net",
         http_path="/sql/1.0/warehouses/abc",
+        table="main.default.legacy_events",
     )
 
 
@@ -72,6 +74,7 @@ class TestConnectorConfigValidation:
                 warehouse="COMPUTE_WH",
                 database="ANALYTICS",
                 schema_name="PUBLIC",
+                table="ANALYTICS.PUBLIC.LEGACY_EVENTS",
                 region="us-east-1",  # type: ignore[call-arg]
             )
 
@@ -81,6 +84,7 @@ class TestConnectorConfigValidation:
             DatabricksConfig(
                 server_hostname="adb.azuredatabricks.net",
                 http_path="/sql/1.0/warehouses/abc",
+                table="main.default.legacy_events",
                 cluster_id="ignored",  # type: ignore[call-arg]
             )
 
@@ -160,7 +164,11 @@ class TestLakehouseConnectors:
         with pytest.raises(ConnectorError, match="not connected"):
             delta.fetch_schema()
         with pytest.raises(ConnectorError, match="not connected"):
+            delta.lazyframe()
+        with pytest.raises(ConnectorError, match="not connected"):
             iceberg.fetch_schema()
+        with pytest.raises(ConnectorError, match="not connected"):
+            iceberg.lazyframe()
 
     def test_it_rejects_sql_pushdown_on_lakehouse_connectors(self) -> None:
         """Ensure lakehouse backends do not accept warehouse SQL."""
@@ -194,6 +202,7 @@ class TestLakehouseConnectors:
             storage_options={"AWS_REGION": "us-east-1"},
             version=3,
         )
+        assert connector.lazyframe() is lazy
         assert schema.names() == ["id", "amount"]
         assert isinstance(lazy, pl.LazyFrame)
 
@@ -217,6 +226,7 @@ class TestLakehouseConnectors:
             "s3://lake/iceberg/events",
             storage_options={"AWS_REGION": "us-east-1"},
         )
+        assert connector.lazyframe() is lazy
         assert schema.names() == ["id", "amount"]
 
     def test_it_wraps_missing_delta_extra_as_connector_error(self, mocker: MockerFixture) -> None:

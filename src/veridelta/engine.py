@@ -14,11 +14,18 @@ from typing import Any, ClassVar
 
 import polars as pl
 
-from veridelta.exceptions import ConfigError
+from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
+from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
+    DatabricksConfig,
+    DeltaLakeConfig,
     DiffConfig,
     DiffSummary,
+    IcebergConfig,
+    SnowflakeConfig,
     SourceConfig,
+    SourceRef,
 )
 
 
@@ -99,6 +106,165 @@ class LoaderFactory:
             )
         return loader
 
+    @classmethod
+    def load(cls, config: SourceRef) -> pl.LazyFrame:
+        """Load a file or lakehouse source into an unevaluated LazyFrame.
+
+        Args:
+            config (SourceRef): File, Delta, or Iceberg configuration.
+
+        Returns:
+            pl.LazyFrame: Unevaluated scan graph.
+
+        Raises:
+            ConnectorError: If `config` is a warehouse source.
+            NotImplementedError: If the file format has no loader.
+        """
+        if isinstance(config, DeltaLakeConfig):
+            delta_connector = DeltaLakeConnector(config)
+            delta_connector.connect()
+            return delta_connector.lazyframe()
+        if isinstance(config, IcebergConfig):
+            iceberg_connector = IcebergConnector(config)
+            iceberg_connector.connect()
+            return iceberg_connector.lazyframe()
+        if isinstance(config, SourceConfig):
+            return cls.get_loader(config.format).load(config)
+        raise ConnectorError(
+            "Warehouse sources cannot be loaded via LoaderFactory; "
+            "use DiffEngine.run_from_configs for SQL pushdown."
+        )
+
+
+def _is_warehouse(config: SourceRef) -> bool:
+    """Return whether a source reference is a warehouse connection.
+
+    Args:
+        config (SourceRef): Parsed source or target configuration.
+
+    Returns:
+        bool: True for Snowflake or Databricks configs.
+    """
+    return isinstance(config, (SnowflakeConfig, DatabricksConfig))
+
+
+def _snowflake_fingerprint(config: SnowflakeConfig) -> tuple[object, ...]:
+    """Return connection identity excluding the compared table name.
+
+    Args:
+        config (SnowflakeConfig): Snowflake source or target.
+
+    Returns:
+        tuple[object, ...]: Account, user, warehouse, database, schema, secrets.
+    """
+    return (
+        config.account,
+        config.user,
+        config.warehouse,
+        config.database,
+        config.schema_name,
+        config.password,
+        config.role,
+    )
+
+
+def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
+    """Return connection identity excluding the compared table name.
+
+    Args:
+        config (DatabricksConfig): Databricks source or target.
+
+    Returns:
+        tuple[object, ...]: Host, path, token, catalog, and schema.
+    """
+    return (
+        config.server_hostname,
+        config.http_path,
+        config.access_token,
+        config.catalog,
+        config.schema_name,
+    )
+
+
+def _summary_from_pushdown(diff: DiffConfig, changed: pl.DataFrame) -> DiffSummary:
+    """Map inner-join pushdown rows to a DiffSummary.
+
+    Added/removed anti-joins are not computed by warehouse SQL. `changed_count`
+    is the result height; `is_match` uses `diff.threshold` against that count.
+
+    Args:
+        diff (DiffConfig): Comparison rules including `threshold`.
+        changed (pl.DataFrame): Rows returned by `execute_pushdown`.
+
+    Returns:
+        DiffSummary: Inner-join mismatch report.
+    """
+    changed_count = changed.height
+    mismatch_ratio = float(changed_count) / float(max(changed_count, 1))
+    return DiffSummary(
+        total_rows_source=changed_count,
+        total_rows_target=changed_count,
+        added_count=0,
+        removed_count=0,
+        changed_count=changed_count,
+        column_mismatches={},
+        is_match=mismatch_ratio <= diff.threshold,
+        report_limit=diff.report_top_columns_limit,
+    )
+
+
+def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffSummary:
+    """Execute same-warehouse SQL pushdown or raise for unsupported pairings.
+
+    Args:
+        diff (DiffConfig): Master comparison rules and keys.
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        DiffSummary: Inner-join mismatch report from `execute_pushdown`.
+
+    Raises:
+        ConnectorError: If backends are mixed, dialects differ, or connections
+            do not share a fingerprint.
+    """
+    source_wh = _is_warehouse(source)
+    target_wh = _is_warehouse(target)
+    if source_wh != target_wh:
+        raise ConnectorError("Mixed file/lakehouse and warehouse backends are unsupported.")
+    if type(source) is not type(target):
+        raise ConnectorError(
+            "Cross-dialect warehouse pushdown is unsupported. "
+            "Source and target must use the same Snowflake or Databricks connection."
+        )
+    if isinstance(source, SnowflakeConfig) and isinstance(target, SnowflakeConfig):
+        if _snowflake_fingerprint(source) != _snowflake_fingerprint(target):
+            raise ConnectorError(
+                "Cross-account warehouse pushdown is unsupported. "
+                "Source and target Snowflake connections must match."
+            )
+        snowflake = SnowflakeConnector(source)
+        snowflake.connect()
+        statement = snowflake.compiler.compile_query(
+            source.table, target.table, diff.primary_keys, diff.rules
+        )
+        changed = snowflake.execute_pushdown(statement).collect()
+        return _summary_from_pushdown(diff, changed)
+    if isinstance(source, DatabricksConfig) and isinstance(target, DatabricksConfig):
+        if _databricks_fingerprint(source) != _databricks_fingerprint(target):
+            raise ConnectorError(
+                "Cross-account warehouse pushdown is unsupported. "
+                "Source and target Databricks connections must match."
+            )
+        databricks = DatabricksConnector(source)
+        databricks.connect()
+        statement = databricks.compiler.compile_query(
+            source.table, target.table, diff.primary_keys, diff.rules
+        )
+        changed = databricks.execute_pushdown(statement).collect()
+        return _summary_from_pushdown(diff, changed)
+    raise ConnectorError("Mixed file/lakehouse and warehouse backends are unsupported.")
+
 
 class DataIngestor:
     """Coordinates the loading, renaming, and structural alignment of datasets.
@@ -108,14 +274,14 @@ class DataIngestor:
     """
 
     def __init__(
-        self, diff_config: DiffConfig, source_config: SourceConfig, target_config: SourceConfig
+        self, diff_config: DiffConfig, source_config: SourceRef, target_config: SourceRef
     ) -> None:
         """Initializes the ingestor.
 
         Args:
             diff_config (DiffConfig): The master comparison configuration.
-            source_config (SourceConfig): File and format settings for the source.
-            target_config (SourceConfig): File and format settings for the target.
+            source_config (SourceRef): File or lakehouse settings for the source.
+            target_config (SourceRef): File or lakehouse settings for the target.
         """
         self.config = diff_config
         self.source_config = source_config
@@ -178,17 +344,14 @@ class DataIngestor:
         Returns:
             tuple[pl.LazyFrame, pl.LazyFrame]: The prepared (source_df, target_df).
         """
-        source_loader = LoaderFactory.get_loader(self.source_config.format)
-        target_loader = LoaderFactory.get_loader(self.target_config.format)
-
         source_df = (
-            source_loader.load(self.source_config)
+            LoaderFactory.load(self.source_config)
             .pipe(self._normalize_headers)
             .pipe(self._align_columns, is_source=True)
         )
 
         target_df = (
-            target_loader.load(self.target_config)
+            LoaderFactory.load(self.target_config)
             .pipe(self._normalize_headers)
             .pipe(self._align_columns, is_source=False)
         )
@@ -212,6 +375,32 @@ class DiffEngine:
         self.config = config
         self.source = source_df
         self.target = target_df
+
+    @classmethod
+    def run_from_configs(
+        cls, diff: DiffConfig, source: SourceRef, target: SourceRef
+    ) -> DiffSummary:
+        """Route a comparison to warehouse pushdown or local Polars evaluation.
+
+        Args:
+            diff (DiffConfig): Master comparison rules and keys.
+            source (SourceRef): Source file, lakehouse, or warehouse config.
+            target (SourceRef): Target file, lakehouse, or warehouse config.
+
+        Returns:
+            DiffSummary: Pushdown inner-join mismatches or full Polars diff.
+
+        Raises:
+            ConnectorError: If warehouse backends are mixed or connections differ.
+        """
+        source_is_warehouse = _is_warehouse(source)
+        target_is_warehouse = _is_warehouse(target)
+        if source_is_warehouse or target_is_warehouse:
+            return _run_warehouse_pushdown(diff, source, target)
+
+        ingestor = DataIngestor(diff, source, target)
+        source_df, target_df = ingestor.get_dataframes()
+        return cls(diff, source_df, target_df).run()
 
     def _get_effective_rule(self, col_name: str) -> dict[str, Any]:
         """Resolves all rules (Specific > Pattern > Global) into a unified dictionary.
