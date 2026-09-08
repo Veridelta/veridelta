@@ -12,6 +12,7 @@ Veridelta is a high-performance data comparison engine designed to validate chan
 * **Declarative Configuration:** Define numeric tolerances, string normalization, and type coercion in standardized YAML.
 * **Omni-Channel Deployment:** Execute via CLI in CI/CD pipelines (GitHub Actions, GitLab CI) or as a Python library in data orchestrators (Airflow, Dagster).
 * **Schema Evolution Support:** Manage structural drift with strict, intersection, or additive schema enforcement modes.
+* **Warehouse and Lakehouse Connectors:** Push Snowflake or Databricks comparisons into SQL, or scan Delta Lake and Iceberg tables. See the [Configuration Guide](configuration.md) for YAML, extras, and routing rules.
 
 ## Installation
 
@@ -58,6 +59,6 @@ veridelta run -c veridelta.yaml
 ## Documentation Directory
 
 * [**Tutorials**](examples/quickstart_cli.ipynb): Progressive guides covering CLI execution, programmatic Python usage, and advanced semantic rules.
-* [**Configuration Guide**](configuration.md): Complete specification for tolerance rules, schema enforcement, and I/O settings.
+* [**Configuration Guide**](configuration.md): Complete specification for tolerance rules, schema enforcement, connectors, and I/O settings.
 * [**API Reference**](api.md): Developer documentation for the internal Python classes and methods.
-* [**Roadmap**](roadmap.md): Upcoming framework capabilities, including warehouse pushdown and Lakehouse integrations.
+* [**Roadmap**](roadmap.md): Upcoming capabilities such as BigQuery pushdown, fuzzy matching, and interactive reports.

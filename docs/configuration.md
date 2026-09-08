@@ -23,7 +23,32 @@ File sources may omit `type` (it defaults to `file`) and continue to use `path`,
 
 ## Warehouse and lakehouse sources
 
-Set `type` on `source` and `target` to select a connector. Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (account, user, warehouse, database, schema, role, and password for Snowflake; host, HTTP path, token, catalog, and schema for Databricks), and the `table` names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
+Set `type` on `source` and `target` to select a connector. Warehouse and lakehouse drivers are optional extras:
+
+```bash
+uv add 'veridelta[snowflake]'
+uv add 'veridelta[databricks]'
+uv add 'veridelta[delta]'
+uv add 'veridelta[iceberg]'
+uv add 'veridelta[all]'
+```
+
+Do not commit `password` or `access_token` in YAML. Inject secrets from the environment or your orchestrator's secret store at runtime.
+
+Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (account, user, warehouse, database, schema, role, and password for Snowflake; host, HTTP path, token, catalog, and schema for Databricks), and the `table` names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
+
+`table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Pattern-only `DiffRule` entries are not compiled to SQL; they raise `ConnectorError` on the warehouse path.
+
+Pushdown executes three queries (inner-join mismatches, target-only added rows, source-only removed rows) and fills `changed_count`, `added_count`, and `removed_count`. `column_mismatches` stays empty because pushdown SQL projects keys only.
+
+From Python, load YAML then route through the same path the CLI uses:
+
+```python
+from veridelta import DiffEngine, load_config
+
+diff, source, target = load_config("veridelta.yaml")
+summary = DiffEngine.run_from_configs(diff, source, target)
+```
 
 ```yaml
 source:
