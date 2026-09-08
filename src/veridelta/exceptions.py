@@ -36,3 +36,12 @@ class DataIntegrityError(VerideltaError):
     error prevents catastrophic join explosions and Out-Of-Memory (OOM)
     crashes during the Polars evaluation phase.
     """
+
+
+class ConnectorError(VerideltaError):
+    """Raised when a warehouse or lakehouse connector cannot complete an operation.
+
+    This covers unimplemented pushdown backends, missing optional extras
+    required for native table scans, and calls made before a session or
+    lazy scan handle has been established.
+    """

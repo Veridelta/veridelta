@@ -453,3 +453,87 @@ class DiffSummary(BaseModel):
             col_report += f"- {col}: {count:,} mismatches\n"
 
         return base_report + col_report
+
+
+class SnowflakeConfig(BaseModel):
+    """Immutable connection settings for Snowflake warehouse pushdown.
+
+    Attributes:
+        account (str): Snowflake account identifier.
+        user (str): Login name used to authenticate the session.
+        warehouse (str): Virtual warehouse that executes pushdown SQL.
+        database (str): Default database for unqualified object names.
+        schema_name (str): Default schema for unqualified object names.
+        password (str | None): Optional password; omitted when using SSO.
+        role (str | None): Optional role assumed after authentication.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    account: str = Field(..., description="Snowflake account identifier.")
+    user: str = Field(..., description="Login name used to authenticate the session.")
+    warehouse: str = Field(..., description="Virtual warehouse that executes pushdown SQL.")
+    database: str = Field(..., description="Default database for unqualified object names.")
+    schema_name: str = Field(..., description="Default schema for unqualified object names.")
+    password: str | None = Field(
+        default=None, description="Optional password; omitted when using SSO."
+    )
+    role: str | None = Field(
+        default=None, description="Optional role assumed after authentication."
+    )
+
+
+class DatabricksConfig(BaseModel):
+    """Immutable connection settings for Databricks SQL warehouse pushdown.
+
+    Attributes:
+        server_hostname (str): Workspace hostname for the SQL warehouse.
+        http_path (str): HTTP path of the SQL warehouse or cluster.
+        access_token (str | None): Optional personal access token.
+        catalog (str | None): Optional Unity Catalog name.
+        schema_name (str | None): Optional default schema name.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    server_hostname: str = Field(..., description="Workspace hostname for the SQL warehouse.")
+    http_path: str = Field(..., description="HTTP path of the SQL warehouse or cluster.")
+    access_token: str | None = Field(default=None, description="Optional personal access token.")
+    catalog: str | None = Field(default=None, description="Optional Unity Catalog name.")
+    schema_name: str | None = Field(default=None, description="Optional default schema name.")
+
+
+class DeltaLakeConfig(BaseModel):
+    """Immutable settings for a Delta Lake table scan.
+
+    Attributes:
+        table_uri (str): Filesystem path or object-store URI of the table.
+        version (int | None): Optional table version to time-travel.
+        storage_options (dict[str, str]): Object-store credentials and options.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    table_uri: str = Field(..., description="Filesystem path or object-store URI of the table.")
+    version: int | None = Field(default=None, description="Optional table version to time-travel.")
+    storage_options: dict[str, str] = Field(
+        default_factory=dict,
+        description="Object-store credentials and options passed to Polars.",
+    )
+
+
+class IcebergConfig(BaseModel):
+    """Immutable settings for an Apache Iceberg table scan.
+
+    Attributes:
+        table_uri (str): Catalog identifier or filesystem URI of the table.
+        storage_options (dict[str, str]): Object-store credentials and options.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    table_uri: str = Field(..., description="Catalog identifier or filesystem URI of the table.")
+    storage_options: dict[str, str] = Field(
+        default_factory=dict,
+        description="Object-store credentials and options passed to Polars.",
+    )

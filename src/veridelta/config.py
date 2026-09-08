@@ -14,7 +14,22 @@ import yaml
 from pydantic import ValidationError
 
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffConfig, SourceConfig
+from veridelta.models import (
+    DatabricksConfig,
+    DeltaLakeConfig,
+    DiffConfig,
+    IcebergConfig,
+    SnowflakeConfig,
+    SourceConfig,
+)
+
+__all__ = [
+    "DatabricksConfig",
+    "DeltaLakeConfig",
+    "IcebergConfig",
+    "SnowflakeConfig",
+    "load_config",
+]
 
 
 def load_config(path: str | Path) -> tuple[DiffConfig, SourceConfig, SourceConfig]:
