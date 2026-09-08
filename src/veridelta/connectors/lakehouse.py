@@ -44,8 +44,7 @@ class DeltaLakeConnector(VerideltaConnector):
             )
         except (ImportError, pl.exceptions.PolarsError) as exc:
             raise ConnectorError(
-                "Delta Lake scan failed. Install the optional deltalake extra "
-                "or verify the table URI."
+                "Delta Lake scan failed. Install the optional extra with: uv sync --extra delta"
             ) from exc
 
     def execute_pushdown(self, statement: str) -> pl.LazyFrame:
@@ -103,7 +102,7 @@ class IcebergConnector(VerideltaConnector):
             )
         except (ImportError, pl.exceptions.PolarsError) as exc:
             raise ConnectorError(
-                "Iceberg scan failed. Install the optional pyiceberg extra or verify the table URI."
+                "Iceberg scan failed. Install the optional extra with: uv sync --extra iceberg"
             ) from exc
 
     def execute_pushdown(self, statement: str) -> pl.LazyFrame:

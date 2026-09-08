@@ -118,26 +118,32 @@ class TestConnectorInterface:
         with pytest.raises(TypeError, match="abstract"):
             VerideltaConnector()  # type: ignore[abstract]
 
-    def test_it_raises_connector_error_for_unimplemented_snowflake_methods(self) -> None:
-        """Ensure Snowflake runtime methods stay blocked until extras exist."""
+    def test_it_raises_connector_error_when_snowflake_extra_is_missing(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure Snowflake runtime methods fail without the optional extra."""
+        mocker.patch("veridelta.connectors.warehouse.snowflake_connector", None)
         connector = SnowflakeConnector(_snowflake_config())
 
-        with pytest.raises(ConnectorError, match="Snowflake warehouse pushdown"):
+        with pytest.raises(ConnectorError, match="uv sync --extra snowflake"):
             connector.connect()
-        with pytest.raises(ConnectorError, match="Snowflake warehouse pushdown"):
+        with pytest.raises(ConnectorError, match="uv sync --extra snowflake"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="Snowflake warehouse pushdown"):
+        with pytest.raises(ConnectorError, match="uv sync --extra snowflake"):
             connector.fetch_schema()
 
-    def test_it_raises_connector_error_for_unimplemented_databricks_methods(self) -> None:
-        """Ensure Databricks runtime methods stay blocked until extras exist."""
+    def test_it_raises_connector_error_when_databricks_extra_is_missing(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure Databricks runtime methods fail without the optional extra."""
+        mocker.patch("veridelta.connectors.warehouse.databricks_sql", None)
         connector = DatabricksConnector(_databricks_config())
 
-        with pytest.raises(ConnectorError, match="Databricks warehouse pushdown"):
+        with pytest.raises(ConnectorError, match="uv sync --extra databricks"):
             connector.connect()
-        with pytest.raises(ConnectorError, match="Databricks warehouse pushdown"):
+        with pytest.raises(ConnectorError, match="uv sync --extra databricks"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="Databricks warehouse pushdown"):
+        with pytest.raises(ConnectorError, match="uv sync --extra databricks"):
             connector.fetch_schema()
 
 
@@ -221,7 +227,7 @@ class TestLakehouseConnectors:
         )
         connector = DeltaLakeConnector(_delta_config())
 
-        with pytest.raises(ConnectorError, match="deltalake"):
+        with pytest.raises(ConnectorError, match="uv sync --extra delta"):
             connector.connect()
 
     def test_it_wraps_missing_iceberg_extra_as_connector_error(self, mocker: MockerFixture) -> None:
@@ -232,5 +238,5 @@ class TestLakehouseConnectors:
         )
         connector = IcebergConnector(_iceberg_config())
 
-        with pytest.raises(ConnectorError, match="pyiceberg"):
+        with pytest.raises(ConnectorError, match="uv sync --extra iceberg"):
             connector.connect()
