@@ -13,6 +13,15 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
+SQL_IDENTIFIER_SEGMENT_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
+"""Unquoted SQL identifier: letter or underscore, then alphanumeric or underscore."""
+
+SQL_IDENTIFIER_SEGMENT = re.compile(SQL_IDENTIFIER_SEGMENT_PATTERN)
+"""Compiled allowlist applied by the warehouse SQL compiler before quoting."""
+
+SQL_RELATION_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$"
+"""Warehouse table path: one to three identifier segments joined by dots."""
+
 SourceType = Literal[
     "csv",
     "json",
@@ -125,10 +134,16 @@ class DiffRule(BaseModel):
     )
 
     absolute_tolerance: float | None = Field(
-        default=None, ge=0.0, description="Absolute tolerance for numeric differences."
+        default=None,
+        ge=0.0,
+        strict=True,
+        description="Absolute tolerance for numeric differences.",
     )
     relative_tolerance: float | None = Field(
-        default=None, ge=0.0, description="Relative tolerance (e.g., 0.01 for 1%)."
+        default=None,
+        ge=0.0,
+        strict=True,
+        description="Relative tolerance (e.g., 0.01 for 1%).",
     )
 
     case_insensitive: bool | None = Field(
@@ -272,10 +287,16 @@ class DiffConfig(BaseModel):
     )
 
     default_absolute_tolerance: float = Field(
-        default=0.0, ge=0.0, description="Global absolute tolerance for numeric columns."
+        default=0.0,
+        ge=0.0,
+        strict=True,
+        description="Global absolute tolerance for numeric columns.",
     )
     default_relative_tolerance: float = Field(
-        default=0.0, ge=0.0, description="Global relative tolerance for numeric columns."
+        default=0.0,
+        ge=0.0,
+        strict=True,
+        description="Global relative tolerance for numeric columns.",
     )
     default_treat_null_as_equal: bool = Field(
         default=True, description="Globally treat NULL == NULL as a match."
@@ -475,7 +496,11 @@ class SnowflakeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: Literal["snowflake"] = Field("snowflake", description="Discriminator for Snowflake.")
-    table: str = Field(..., description="Fully qualified table or view to compare.")
+    table: str = Field(
+        ...,
+        pattern=SQL_RELATION_PATTERN,
+        description="Fully qualified table or view to compare.",
+    )
     account: str = Field(..., description="Snowflake account identifier.")
     user: str = Field(..., description="Login name used to authenticate the session.")
     warehouse: str = Field(..., description="Virtual warehouse that executes pushdown SQL.")
@@ -505,7 +530,11 @@ class DatabricksConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: Literal["databricks"] = Field("databricks", description="Discriminator for Databricks.")
-    table: str = Field(..., description="Fully qualified table or view to compare.")
+    table: str = Field(
+        ...,
+        pattern=SQL_RELATION_PATTERN,
+        description="Fully qualified table or view to compare.",
+    )
     server_hostname: str = Field(..., description="Workspace hostname for the SQL warehouse.")
     http_path: str = Field(..., description="HTTP path of the SQL warehouse or cluster.")
     access_token: str | None = Field(default=None, description="Optional personal access token.")
@@ -527,7 +556,12 @@ class DeltaLakeConfig(BaseModel):
 
     type: Literal["delta"] = Field("delta", description="Discriminator for Delta Lake.")
     table_uri: str = Field(..., description="Filesystem path or object-store URI of the table.")
-    version: int | None = Field(default=None, description="Optional table version to time-travel.")
+    version: int | None = Field(
+        default=None,
+        ge=0,
+        strict=True,
+        description="Optional table version to time-travel.",
+    )
     storage_options: dict[str, str] = Field(
         default_factory=dict,
         description="Object-store credentials and options passed to Polars.",
@@ -549,7 +583,10 @@ class IcebergConfig(BaseModel):
     type: Literal["iceberg"] = Field("iceberg", description="Discriminator for Apache Iceberg.")
     table_uri: str = Field(..., description="Catalog identifier or filesystem URI of the table.")
     snapshot_id: int | None = Field(
-        default=None, description="Optional snapshot identifier to time-travel."
+        default=None,
+        ge=0,
+        strict=True,
+        description="Optional snapshot identifier to time-travel.",
     )
     storage_options: dict[str, str] = Field(
         default_factory=dict,

@@ -1,0 +1,24 @@
+---
+description: SQL pushdown safety, identifier allowlists, and execution-boundary isolation
+globs: src/veridelta/**/*.py
+alwaysApply: false
+---
+
+# Veridelta Security
+
+Apply these rules when modifying files inside `src/veridelta/`.
+
+## Warehouse SQL assembly
+
+- Assemble warehouse SQL only in `connectors/sql.py`. Do not f-string or concatenate YAML/user strings in `warehouse.py` or `engine.py`.
+- `execute_pushdown` runs compiler-produced `statement` only. Do not concatenate config fields into a second SQL string.
+- Identifiers: allowlist each segment (`SQL_IDENTIFIER_SEGMENT` / `SQL_RELATION_PATTERN` in `models.py`) then dialect-quote (Snowflake `"`, Databricks backticks). Fail closed with `ConnectorError` on disallowed characters.
+- Do not apply SQL identifier regex to file-source `column_names`, `primary_keys`, credentials, hostnames, tokens, or lakehouse `table_uri`.
+- Data literals (`value_map`, `null_values`, `regex_replace`) go through `_literal` (`'` → `''`). Do not treat them as identifiers.
+- Numeric SQL operands (`absolute_tolerance`, `relative_tolerance`, `version`, `snapshot_id`) stay strict `float`/`int` fields. Do not coerce strings into SQL or Polars kwargs.
+- Do not add sanitization libraries. Quoting plus allowlists plus strict types is the control.
+
+## Execution boundary
+
+- Drivers receive compiled SQL or native scan kwargs. Never interpolate passwords, tokens, or URIs into SQL.
+- Pattern-only `DiffRule` values and unimplemented rule fields stay rejected at compile time.

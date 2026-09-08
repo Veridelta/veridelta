@@ -11,7 +11,7 @@ removed rows without extracting source tables.
 from enum import Enum
 
 from veridelta.exceptions import ConnectorError
-from veridelta.models import DiffRule
+from veridelta.models import SQL_IDENTIFIER_SEGMENT, DiffRule
 
 
 class SQLDialect(str, Enum):
@@ -346,14 +346,13 @@ class SQLPushdownCompiler:
             str: Dialect-quoted identifier.
 
         Raises:
-            ConnectorError: If `name` is empty or whitespace-only.
+            ConnectorError: If `name` is not a valid unquoted identifier segment.
         """
-        trimmed = name.strip()
-        if not trimmed:
-            raise ConnectorError("SQL identifier must be a non-empty string.")
+        if SQL_IDENTIFIER_SEGMENT.fullmatch(name) is None:
+            raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
         if self.dialect is SQLDialect.SNOWFLAKE:
-            return '"' + trimmed.replace('"', '""') + '"'
-        return "`" + trimmed.replace("`", "``") + "`"
+            return '"' + name.replace('"', '""') + '"'
+        return "`" + name.replace("`", "``") + "`"
 
     def _quote_relation(self, name: str) -> str:
         """Quote a possibly dotted table, schema, or catalog path.
@@ -365,12 +364,16 @@ class SQLPushdownCompiler:
             str: Each path segment quoted independently.
 
         Raises:
-            ConnectorError: If the relation name is empty.
+            ConnectorError: If the relation name is empty, has more than three
+                segments, or contains a disallowed identifier.
         """
         trimmed = name.strip()
         if not trimmed:
             raise ConnectorError("Table name must be a non-empty string.")
-        return ".".join(self._quote_ident(part) for part in trimmed.split("."))
+        parts = trimmed.split(".")
+        if len(parts) > 3:
+            raise ConnectorError("Table name must have at most three dotted segments.")
+        return ".".join(self._quote_ident(part) for part in parts)
 
     def _qualify(self, alias: str, column: str) -> str:
         """Return `alias.column` with both parts quoted.

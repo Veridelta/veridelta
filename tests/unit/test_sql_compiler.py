@@ -338,6 +338,22 @@ class TestCompilerErrors:
         with pytest.raises(ConnectorError, match="identifier"):
             _snowflake().compile_column_predicate(DiffRule(), "  ")
 
+    def test_it_rejects_sql_metacharacters_in_keys_and_tables(self) -> None:
+        """Ensure injected SQL in identifiers fails closed before quoting."""
+        with pytest.raises(ConnectorError, match="identifier"):
+            _snowflake().compile_query("src_tbl", "tgt_tbl", ["id; DROP TABLE t"], [])
+        with pytest.raises(ConnectorError, match="identifier"):
+            _snowflake().compile_query('src"; DROP', "tgt_tbl", ["id"], [])
+        with pytest.raises(ConnectorError, match="identifier"):
+            _databricks().compile_missing_query("src_tbl", "tgt`x", ["id"])
+        with pytest.raises(ConnectorError, match="identifier"):
+            _snowflake().compile_added_query("src_tbl", "tgt_tbl", ["id dropped"])
+
+    def test_it_rejects_relations_with_more_than_three_segments(self) -> None:
+        """Ensure catalog.schema.table is the longest allowed relation path."""
+        with pytest.raises(ConnectorError, match="three dotted segments"):
+            _snowflake().compile_query("a.b.c.d", "tgt_tbl", ["id"], [])
+
     def test_it_rejects_pattern_only_rules(self) -> None:
         """Ensure pattern rules cannot expand without a resolved column list."""
         with pytest.raises(ConnectorError, match="Pattern-only"):
