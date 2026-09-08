@@ -1,0 +1,314 @@
+# Copyright 2026 The Veridelta Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+"""Unit tests for dialect-specific SQL pushdown compilation."""
+
+import pytest
+
+from veridelta.connectors import SQLDialect, SQLPushdownCompiler
+from veridelta.exceptions import ConnectorError
+from veridelta.models import DiffRule
+
+
+def _snowflake() -> SQLPushdownCompiler:
+    """Return a Snowflake-targeted compiler."""
+    return SQLPushdownCompiler(SQLDialect.SNOWFLAKE)
+
+
+def _databricks() -> SQLPushdownCompiler:
+    """Return a Databricks-targeted compiler."""
+    return SQLPushdownCompiler(SQLDialect.DATABRICKS)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestSQLDialect:
+    """Validate the warehouse dialect enum."""
+
+    def test_it_exposes_snowflake_and_databricks_values(self) -> None:
+        """Ensure the enum is a closed set of supported warehouse dialects."""
+        assert SQLDialect.SNOWFLAKE.value == "snowflake"
+        assert SQLDialect.DATABRICKS.value == "databricks"
+        assert {member.value for member in SQLDialect} == {"snowflake", "databricks"}
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestIdentifierQuoting:
+    """Validate identifier quoting and literal escaping."""
+
+    def test_it_quotes_snowflake_identifiers_with_double_quotes(self) -> None:
+        """Ensure Snowflake column refs use double quotes."""
+        sql = _snowflake().compile_column_predicate(DiffRule(column_names=["amount"]), "amount")
+        assert '"src"."amount"' in sql
+        assert '"tgt"."amount"' in sql
+
+    def test_it_quotes_databricks_identifiers_with_backticks(self) -> None:
+        """Ensure Databricks column refs use backticks."""
+        sql = _databricks().compile_column_predicate(DiffRule(column_names=["amount"]), "amount")
+        assert "`src`.`amount`" in sql
+        assert "`tgt`.`amount`" in sql
+
+    def test_it_escapes_apostrophes_in_maps_sentinels_and_regex(self) -> None:
+        """Ensure SQL string literals double embedded apostrophes."""
+        rule = DiffRule(
+            column_names=["status"],
+            value_map={"O'Brien": "OB"},
+            null_values=["N/A'"],
+            regex_replace={"x'": "y'"},
+        )
+        sql = _snowflake().compile_column_predicate(rule, "status")
+        assert "O''Brien" in sql
+        assert "N/A''" in sql
+        assert "x''" in sql
+        assert "y''" in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestPredicateCompilation:
+    """Validate DiffRule field translation into SQL fragments."""
+
+    def test_it_emits_nested_regexp_replace_on_both_sides(self) -> None:
+        """Ensure regex sanitization uses REGEXP_REPLACE in rule order."""
+        rule = DiffRule(
+            column_names=["amount"],
+            regex_replace={"[^0-9.]": "", "^\\$": ""},
+        )
+        sql = _snowflake().compile_column_predicate(rule, "amount")
+        assert sql.count("REGEXP_REPLACE(") == 4
+        assert "'[^0-9.]'" in sql
+        assert "'^\\$'" in sql or r"'^\$'" in sql
+
+    def test_it_emits_snowflake_iff_for_value_map(self) -> None:
+        """Ensure Snowflake value maps nest IFF expressions on the source side."""
+        rule = DiffRule(column_names=["status"], value_map={"M": "Male", "F": "Female"})
+        sql = _snowflake().compile_column_predicate(rule, "status")
+        assert "IFF(" in sql
+        assert "CASE " not in sql
+        assert "'M'" in sql
+        assert "'Male'" in sql
+        assert '"tgt"."status"' in sql
+        assert sql.count("IFF(") == 2
+
+    def test_it_emits_databricks_case_for_value_map(self) -> None:
+        """Ensure Databricks value maps use CASE WHEN on the source side."""
+        rule = DiffRule(column_names=["status"], value_map={"M": "Male", "F": "Female"})
+        sql = _databricks().compile_column_predicate(rule, "status")
+        assert "CASE " in sql
+        assert "WHEN " in sql
+        assert "IFF(" not in sql
+        assert "`tgt`.`status`" in sql
+
+    def test_it_nests_nullif_for_sentinel_values(self) -> None:
+        """Ensure each null sentinel becomes a nested NULLIF on both sides."""
+        rule = DiffRule(column_names=["status"], null_values=["N/A", "-999"])
+        sql = _snowflake().compile_column_predicate(rule, "status")
+        assert sql.count("NULLIF(") == 4
+        assert "'N/A'" in sql
+        assert "'-999'" in sql
+
+    def test_it_uses_equal_null_on_snowflake_when_nulls_match(self) -> None:
+        """Ensure Snowflake exact equality uses EQUAL_NULL when requested."""
+        rule = DiffRule(column_names=["status"], treat_null_as_equal=True)
+        sql = _snowflake().compile_column_predicate(rule, "status")
+        assert "EQUAL_NULL(" in sql
+        assert "<=>" not in sql
+
+    def test_it_uses_null_safe_eq_on_databricks_when_nulls_match(self) -> None:
+        """Ensure Databricks exact equality uses <=> when requested."""
+        rule = DiffRule(column_names=["status"], treat_null_as_equal=True)
+        sql = _databricks().compile_column_predicate(rule, "status")
+        assert "<=>" in sql
+        assert "EQUAL_NULL(" not in sql
+
+    def test_it_emits_engine_tolerance_formula(self) -> None:
+        """Ensure numeric compare matches ABS(tgt-src) <= abs + rel * ABS(src)."""
+        rule = DiffRule(
+            column_names=["amount"],
+            absolute_tolerance=0.01,
+            relative_tolerance=0.05,
+        )
+        sql = _snowflake().compile_column_predicate(rule, "amount")
+        assert 'ABS("tgt"."amount" - "src"."amount")' in sql
+        assert "<= 0.01 + (0.05 * ABS(" in sql
+
+    def test_it_emits_exact_equality_when_tolerances_are_zero(self) -> None:
+        """Ensure zero tolerances compile to `=` rather than ABS predicates."""
+        rule = DiffRule(
+            column_names=["amount"],
+            absolute_tolerance=0.0,
+            relative_tolerance=0.0,
+        )
+        sql = _snowflake().compile_column_predicate(rule, "amount")
+        assert '"src"."amount" = "tgt"."amount"' in sql
+        assert "ABS(" not in sql
+
+    def test_it_disjoins_null_equality_with_numeric_tolerance(self) -> None:
+        """Ensure null-safe numeric compare ORs both-null with the ABS predicate."""
+        rule = DiffRule(
+            column_names=["amount"],
+            absolute_tolerance=0.1,
+            treat_null_as_equal=True,
+        )
+        sql = _databricks().compile_column_predicate(rule, "amount")
+        assert "IS NULL AND" in sql
+        assert "ABS(" in sql
+        assert "<=>" not in sql
+
+    def test_it_applies_trim_and_lower_for_string_normalization(self) -> None:
+        """Ensure whitespace and case flags emit TRIM/LTRIM/RTRIM and LOWER."""
+        both = _snowflake().compile_column_predicate(
+            DiffRule(column_names=["name"], whitespace_mode="both", case_insensitive=True),
+            "name",
+        )
+        left = _snowflake().compile_column_predicate(
+            DiffRule(column_names=["name"], whitespace_mode="left"),
+            "name",
+        )
+        right = _snowflake().compile_column_predicate(
+            DiffRule(column_names=["name"], whitespace_mode="right"),
+            "name",
+        )
+        assert "TRIM(" in both
+        assert "LOWER(" in both
+        assert "LTRIM(" in left
+        assert "RTRIM(" in right
+
+    def test_it_uses_rename_to_as_the_target_identifier(self) -> None:
+        """Ensure rename_to selects a different target column name."""
+        rule = DiffRule(column_names=["user_id"], rename_to="customer_id")
+        sql = _snowflake().compile_column_predicate(rule, "user_id", "customer_id")
+        assert '"src"."user_id"' in sql
+        assert '"tgt"."customer_id"' in sql
+        assert '"tgt"."user_id"' not in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestQueryAssembly:
+    """Validate SELECT / JOIN / WHERE assembly."""
+
+    def test_it_builds_changed_row_query_with_two_keys_and_two_rules(self) -> None:
+        """Ensure the full statement shape uses INNER JOIN and WHERE NOT."""
+        rules = [
+            DiffRule(column_names=["status"], treat_null_as_equal=True),
+            DiffRule(column_names=["amount"], absolute_tolerance=0.01),
+        ]
+        sql = _snowflake().compile_query(
+            "analytics.public.source_orders",
+            "analytics.public.target_orders",
+            ["id", "line_id"],
+            rules,
+        )
+        assert sql.startswith('SELECT "src"."id", "src"."line_id"')
+        assert 'FROM "analytics"."public"."source_orders" AS "src"' in sql
+        assert 'INNER JOIN "analytics"."public"."target_orders" AS "tgt"' in sql
+        assert 'ON "src"."id" = "tgt"."id" AND "src"."line_id" = "tgt"."line_id"' in sql
+        assert "WHERE NOT (" in sql
+        assert "EQUAL_NULL(" in sql
+        assert "ABS(" in sql
+
+    def test_it_omits_ignored_columns_from_the_where_clause(self) -> None:
+        """Ensure ignore rules do not contribute match predicates."""
+        sql = _snowflake().compile_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [
+                DiffRule(column_names=["notes"], ignore=True),
+                DiffRule(column_names=["status"]),
+            ],
+        )
+        assert '"src"."status"' in sql
+        assert '"src"."notes"' not in sql
+        assert "WHERE NOT" in sql
+
+    def test_it_omits_where_when_every_rule_is_ignored(self) -> None:
+        """Ensure join-only SQL is emitted when no compare columns remain."""
+        sql = _databricks().compile_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [DiffRule(column_names=["notes"], ignore=True)],
+        )
+        assert "INNER JOIN" in sql
+        assert "WHERE" not in sql
+
+    def test_it_expands_multi_column_rules_into_separate_predicates(self) -> None:
+        """Ensure one DiffRule with two names produces two match predicates."""
+        sql = _snowflake().compile_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [DiffRule(column_names=["a", "b"])],
+        )
+        assert '"src"."a" = "tgt"."a"' in sql
+        assert '"src"."b" = "tgt"."b"' in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestCompilerErrors:
+    """Validate ConnectorError guards for unsupported or invalid input."""
+
+    def test_it_rejects_empty_primary_keys(self) -> None:
+        """Ensure joins cannot be compiled without keys."""
+        with pytest.raises(ConnectorError, match="primary key"):
+            _snowflake().compile_query("src_tbl", "tgt_tbl", [], [])
+
+    def test_it_rejects_empty_table_names(self) -> None:
+        """Ensure blank source or target relations raise ConnectorError."""
+        with pytest.raises(ConnectorError, match="Table name"):
+            _snowflake().compile_query(" ", "tgt_tbl", ["id"], [])
+        with pytest.raises(ConnectorError, match="Table name"):
+            _snowflake().compile_query("src_tbl", "", ["id"], [])
+
+    def test_it_rejects_empty_column_identifiers(self) -> None:
+        """Ensure blank column names cannot be quoted."""
+        with pytest.raises(ConnectorError, match="identifier"):
+            _snowflake().compile_column_predicate(DiffRule(), "  ")
+
+    def test_it_rejects_pattern_only_rules(self) -> None:
+        """Ensure pattern rules cannot expand without a resolved column list."""
+        with pytest.raises(ConnectorError, match="Pattern-only"):
+            _snowflake().compile_query(
+                "src_tbl",
+                "tgt_tbl",
+                ["id"],
+                [DiffRule(pattern="^AMT_")],
+            )
+
+    def test_it_rejects_rename_to_with_multiple_columns(self) -> None:
+        """Ensure rename_to stays restricted to single-column rules."""
+        with pytest.raises(ConnectorError, match="rename_to"):
+            _snowflake().compile_query(
+                "src_tbl",
+                "tgt_tbl",
+                ["id"],
+                [DiffRule(column_names=["a", "b"], rename_to="c")],
+            )
+
+    def test_it_rejects_unimplemented_rule_fields(self) -> None:
+        """Ensure pad_zeros, datetime, timezone, and cast_to are blocked."""
+        compiler = _snowflake()
+        with pytest.raises(ConnectorError, match="pad_zeros"):
+            compiler.compile_column_predicate(
+                DiffRule(column_names=["id"], pad_zeros=5),
+                "id",
+            )
+        with pytest.raises(ConnectorError, match="datetime_format"):
+            compiler.compile_column_predicate(
+                DiffRule(column_names=["id"], datetime_format="%Y-%m-%d"),
+                "id",
+            )
+        with pytest.raises(ConnectorError, match="timezone"):
+            compiler.compile_column_predicate(
+                DiffRule(column_names=["id"], timezone="UTC"),
+                "id",
+            )
+        with pytest.raises(ConnectorError, match="cast_to"):
+            compiler.compile_column_predicate(
+                DiffRule(column_names=["id"], cast_to="Float64"),
+                "id",
+            )
