@@ -759,12 +759,13 @@
 
 
 <h1 id="veridelta-roadmap">Veridelta Roadmap</h1>
-<p>Veridelta is currently in <strong>v0.1.0</strong>. The core execution engine is stable. The following roadmap outlines the strategic expansion of the framework's ecosystem, intelligence, and developer tooling.</p>
+<p>Veridelta is currently in <strong>v0.2.0</strong>. The core execution engine is stable. The following roadmap outlines the strategic expansion of the framework's ecosystem, intelligence, and developer tooling.</p>
 <h2 id="1-enterprise-ecosystem-integration">1. Enterprise Ecosystem Integration</h2>
-<p>While file-based architectures (CSV, Parquet) are fully supported, mission-critical pipelines often operate directly on distributed storage and warehouse compute.</p>
+<p>File sources (CSV, Parquet), <strong>Snowflake</strong> and <strong>Databricks</strong> SQL pushdown, and <strong>Delta Lake</strong> / <strong>Apache Iceberg</strong> scans are available today. See the <a href="../configuration/">Configuration Guide</a> for YAML, optional extras, and routing rules.</p>
+<p>Still planned:</p>
 <ul>
-<li><strong>Lakehouse Native:</strong> Direct integration with <strong>Delta Lake</strong> and <strong>Apache Iceberg</strong> table formats.</li>
-<li><strong>Warehouse Pushdown:</strong> Native SQL translation layers for <strong>Snowflake</strong>, <strong>Databricks</strong>, and <strong>BigQuery</strong>, enabling out-of-core evaluation without extracting data into local memory.</li>
+<li><strong>BigQuery Pushdown:</strong> Native SQL translation so comparisons run in BigQuery without extracting tables into local memory.</li>
+<li>Additional warehouse dialects as demand requires.</li>
 </ul>
 <h2 id="2-advanced-heuristics-ml">2. Advanced Heuristics &amp; ML</h2>
 <ul>
@@ -831,7 +832,7 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.1.0"}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.2.0"}</script>
     
     
       <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>

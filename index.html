@@ -768,6 +768,7 @@
 <li><strong>Declarative Configuration:</strong> Define numeric tolerances, string normalization, and type coercion in standardized YAML.</li>
 <li><strong>Omni-Channel Deployment:</strong> Execute via CLI in CI/CD pipelines (GitHub Actions, GitLab CI) or as a Python library in data orchestrators (Airflow, Dagster).</li>
 <li><strong>Schema Evolution Support:</strong> Manage structural drift with strict, intersection, or additive schema enforcement modes.</li>
+<li><strong>Warehouse and Lakehouse Connectors:</strong> Push Snowflake or Databricks comparisons into SQL, or scan Delta Lake and Iceberg tables. See the <a href="configuration/">Configuration Guide</a> for YAML, extras, and routing rules.</li>
 </ul>
 <h2 id="installation">Installation</h2>
 <p>Install via <code>uv</code> (Recommended):</p>
@@ -798,9 +799,9 @@
 <h2 id="documentation-directory">Documentation Directory</h2>
 <ul>
 <li><a href="examples/quickstart_cli/"><strong>Tutorials</strong></a>: Progressive guides covering CLI execution, programmatic Python usage, and advanced semantic rules.</li>
-<li><a href="configuration/"><strong>Configuration Guide</strong></a>: Complete specification for tolerance rules, schema enforcement, and I/O settings.</li>
+<li><a href="configuration/"><strong>Configuration Guide</strong></a>: Complete specification for tolerance rules, schema enforcement, connectors, and I/O settings.</li>
 <li><a href="api/"><strong>API Reference</strong></a>: Developer documentation for the internal Python classes and methods.</li>
-<li><a href="roadmap/"><strong>Roadmap</strong></a>: Upcoming framework capabilities, including warehouse pushdown and Lakehouse integrations.</li>
+<li><a href="roadmap/"><strong>Roadmap</strong></a>: Upcoming capabilities such as BigQuery pushdown, fuzzy matching, and interactive reports.</li>
 </ul>
 
 
@@ -851,7 +852,7 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.1.0"}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.2.0"}</script>
     
     
       <script src="assets/javascripts/bundle.79ae519e.min.js"></script>

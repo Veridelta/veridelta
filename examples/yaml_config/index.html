@@ -1524,7 +1524,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DataIngestor</span><span class="p">,</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">load_config</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">load_config</span>
 
 <span class="c1"># 1. Mock production data (e.g., Nightly User LTV Pipeline)</span>
 <span class="n">src_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
@@ -1572,7 +1572,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 
 import polars as pl
 
-from veridelta import DataIngestor, DiffEngine, load_config
+from veridelta import DiffEngine, load_config
 
 # 1. Mock production data (e.g., Nightly User LTV Pipeline)
 src_df = pl.DataFrame(
@@ -1657,12 +1657,7 @@ print("Production config and mock artifacts generated.")
 <span class="sd">        config_path: Path to the veridelta.yaml file.</span>
 <span class="sd">    """</span>
     <span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">load_config</span><span class="p">(</span><span class="n">config_path</span><span class="p">)</span>
-
-    <span class="n">ingestor</span> <span class="o">=</span> <span class="n">DataIngestor</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span>
-    <span class="n">source_df</span><span class="p">,</span> <span class="n">target_df</span> <span class="o">=</span> <span class="n">ingestor</span><span class="o">.</span><span class="n">get_dataframes</span><span class="p">()</span>
-
-    <span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">source_df</span><span class="p">,</span> <span class="n">target_df</span><span class="p">)</span>
-    <span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+    <span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="o">.</span><span class="n">run_from_configs</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span>
 
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">' CI/CD PIPELINE VALIDATION '</span><span class="si">:</span><span class="s2">=^50</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="p">:</span>
@@ -1688,12 +1683,7 @@ print("Production config and mock artifacts generated.")
         config_path: Path to the veridelta.yaml file.
     """
     diff_cfg, src_cfg, tgt_cfg = load_config(config_path)
-
-    ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-    source_df, target_df = ingestor.get_dataframes()
-
-    engine = DiffEngine(diff_cfg, source_df, target_df)
-    summary = engine.run()
+    summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg)
 
     print(f"{' CI/CD PIPELINE VALIDATION ':=^50}")
     if summary.is_match:
@@ -1827,7 +1817,7 @@ for f in ["prod_source.parquet", "prod_target.parquet", "veridelta.yaml"]:
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.1.0"}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": "0.2.0"}</script>
     
     
       <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
