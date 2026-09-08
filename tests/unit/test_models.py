@@ -6,7 +6,16 @@
 import pytest
 from pydantic import ValidationError
 
-from veridelta.models import DiffConfig, DiffRule, DiffSummary, SourceConfig
+from veridelta.models import (
+    DatabricksConfig,
+    DeltaLakeConfig,
+    DiffConfig,
+    DiffRule,
+    DiffSummary,
+    IcebergConfig,
+    SnowflakeConfig,
+    SourceConfig,
+)
 
 
 @pytest.mark.unit
@@ -28,6 +37,74 @@ class TestDiffRuleValidation:
         """Ensure negative values for absolute or relative tolerance are rejected."""
         with pytest.raises(ValidationError):
             DiffRule(column_names=["col"], absolute_tolerance=-1.0)
+
+
+def _snowflake_table(table: str) -> SnowflakeConfig:
+    """Build a Snowflake config with a caller-supplied table name."""
+    return SnowflakeConfig(
+        account="xy12345",
+        user="analyst",
+        warehouse="COMPUTE_WH",
+        database="ANALYTICS",
+        schema_name="PUBLIC",
+        table=table,
+    )
+
+
+def _databricks_table(table: str) -> DatabricksConfig:
+    """Build a Databricks config with a caller-supplied table name."""
+    return DatabricksConfig(
+        server_hostname="adb.azuredatabricks.net",
+        http_path="/sql/1.0/warehouses/abc",
+        table=table,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestWarehouseTableAllowlist:
+    """Validate dotted SQL identifier allowlists on warehouse table fields."""
+
+    def test_it_accepts_one_to_three_identifier_segments(self) -> None:
+        """Ensure catalog.schema.table paths used in YAML remain valid."""
+        assert _snowflake_table("ANALYTICS.PUBLIC.SRC").table == "ANALYTICS.PUBLIC.SRC"
+        assert _databricks_table("main.default.events").table == "main.default.events"
+        assert _snowflake_table("EVENTS").table == "EVENTS"
+
+    def test_it_rejects_sql_metacharacters_spaces_and_extra_segments(self) -> None:
+        """Ensure injected SQL, quotes, spaces, and four-part paths fail at parse time."""
+        with pytest.raises(ValidationError, match="String should match pattern"):
+            _snowflake_table("src; DROP")
+        with pytest.raises(ValidationError, match="String should match pattern"):
+            _snowflake_table("a.b.c.d")
+        with pytest.raises(ValidationError, match="String should match pattern"):
+            _databricks_table('tgt"')
+        with pytest.raises(ValidationError, match="String should match pattern"):
+            _databricks_table("main default events")
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestStrictNumericFields:
+    """Validate that SQL-adjacent numerics reject string coercion."""
+
+    def test_it_rejects_string_tolerances(self) -> None:
+        """Ensure tolerance strings cannot reach SQL numeric literals."""
+        with pytest.raises(ValidationError):
+            DiffRule.model_validate({"column_names": ["col"], "absolute_tolerance": "0.01"})
+        with pytest.raises(ValidationError):
+            DiffConfig.model_validate(
+                {"primary_keys": ["id"], "default_relative_tolerance": "0.05"}
+            )
+
+    def test_it_rejects_string_time_travel_arguments(self) -> None:
+        """Ensure version and snapshot_id cannot be injected as strings."""
+        with pytest.raises(ValidationError):
+            DeltaLakeConfig.model_validate({"table_uri": "s3://lake/events", "version": "12"})
+        with pytest.raises(ValidationError):
+            IcebergConfig.model_validate(
+                {"table_uri": "s3://lake/iceberg/events", "snapshot_id": "12;"}
+            )
 
 
 @pytest.mark.unit

@@ -3,10 +3,13 @@
 Veridelta is currently in **v{{ config.extra.version }}**. The core execution engine is stable. The following roadmap outlines the strategic expansion of the framework's ecosystem, intelligence, and developer tooling.
 
 ## 1. Enterprise Ecosystem Integration
-While file-based architectures (CSV, Parquet) are fully supported, mission-critical pipelines often operate directly on distributed storage and warehouse compute.
 
-* **Lakehouse Native:** Direct integration with **Delta Lake** and **Apache Iceberg** table formats.
-* **Warehouse Pushdown:** Native SQL translation layers for **Snowflake**, **Databricks**, and **BigQuery**, enabling out-of-core evaluation without extracting data into local memory.
+File sources (CSV, Parquet), **Snowflake** and **Databricks** SQL pushdown, and **Delta Lake** / **Apache Iceberg** scans are available today. See the [Configuration Guide](configuration.md) for YAML, optional extras, and routing rules.
+
+Still planned:
+
+* **BigQuery Pushdown:** Native SQL translation so comparisons run in BigQuery without extracting tables into local memory.
+* Additional warehouse dialects as demand requires.
 
 ## 2. Advanced Heuristics & ML
 * **Fuzzy Matching:** Implementation of Levenshtein and Jaro-Winkler distance thresholds to bypass non-deterministic typographical errors without explicit regex definition.

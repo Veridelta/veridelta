@@ -96,6 +96,17 @@ class TestStructuralAlignment:
         with pytest.raises(ConfigError, match="EXACT schema match failed"):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
+    def test_it_validates_schemas_from_zero_row_frames_without_comparing(self) -> None:
+        """Ensure validate_schemas enforces SchemaMode on metadata-only frames."""
+        src = pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Float64}).lazy()
+        drifted = pl.DataFrame(schema={"id": pl.Int64, "surcharge": pl.Float64}).lazy()
+        config = DiffConfig(primary_keys=["id"], schema_mode="exact")
+
+        DiffEngine.validate_schemas(config, src, src)
+
+        with pytest.raises(ConfigError, match="EXACT schema match failed"):
+            DiffEngine.validate_schemas(config, src, drifted)
+
     def test_schema_mode_allow_additions_passes_when_target_has_new_columns(self) -> None:
         """Ensure 'allow_additions' permits structural drift where target has extra columns."""
         src = pl.DataFrame({"id": [1]})
@@ -347,11 +358,12 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
 
         config = DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet")
-        DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
         assert (tmp_path / "added_rows.parquet").exists()
         assert (tmp_path / "removed_rows.parquet").exists()
         assert (tmp_path / "changed_rows.parquet").exists()
+        assert summary.artifacts_written is True
 
     def test_it_skips_artifact_export_when_dataset_is_completely_empty(
         self, tmp_path: Path
@@ -361,11 +373,12 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [1], "val": ["A"]})
 
         config = DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet")
-        DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
         assert not (tmp_path / "added_rows.parquet").exists()
         assert not (tmp_path / "removed_rows.parquet").exists()
         assert not (tmp_path / "changed_rows.parquet").exists()
+        assert summary.artifacts_written is False
 
     def test_it_raises_not_implemented_error_when_exporting_to_unsupported_formats(
         self, tmp_path: Path

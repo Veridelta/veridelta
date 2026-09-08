@@ -34,6 +34,14 @@ The custom exception hierarchy. Consumers of the Python API should handle these 
       show_root_heading: false
       show_source: true
 
+## Connectors
+Warehouse SQL pushdown and lakehouse-native scanners. `VerideltaConnector` is the session contract; `SQLPushdownCompiler` emits dialect-specific comparison SQL.
+
+::: veridelta.connectors
+    options:
+      show_root_heading: false
+      show_source: true
+
 ## Datasets
 Built-in data utilities with network-resilient caching for testing, onboarding, and tutorials.
 

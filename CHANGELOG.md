@@ -1,3 +1,20 @@
+## Unreleased
+
+### Feat
+
+- add Snowflake and Databricks warehouse extras with Arrow SQL pushdown
+- add Delta Lake and Iceberg lakehouse scans, including Iceberg `snapshot_id` time travel
+- route YAML `source`/`target` through a discriminated `SourceRef` union and `DiffEngine.run_from_configs`
+- compile warehouse anti-joins so pushdown reports added, removed, and changed counts
+- allowlist dotted warehouse table identifiers and reject string-coerced numeric config fields
+- count warehouse rows so `threshold` and match-rate metrics apply to SQL pushdown
+- enforce `schema_mode` and primary-key existence on warehouse relations via zero-row column probes
+- report artifact persistence through `DiffSummary.artifacts_written` and add `make docs` with a strict MkDocs build in CI
+
+### Fix
+
+- stop the CLI from announcing discrepancy artifacts that warehouse pushdown never writes
+
 ## 0.2.0 (2026-04-30)
 
 ### Feat

@@ -1,4 +1,4 @@
-.PHONY: install format lint test all clean
+.PHONY: install format lint test docs docs-serve all clean
 
 install:
 	uv sync --all-extras
@@ -16,7 +16,13 @@ lint:
 test:
 	uv run pytest tests/ --cov=src/veridelta --cov-report=term-missing
 
-all: format lint test
+docs:
+	uv run mkdocs build --strict
+
+docs-serve:
+	uv run mkdocs serve
+
+all: format lint test docs
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache

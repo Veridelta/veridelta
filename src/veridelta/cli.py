@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from veridelta.config import load_config
-from veridelta.engine import DataIngestor, DiffEngine
-from veridelta.exceptions import ConfigError
+from veridelta.engine import DiffEngine
+from veridelta.exceptions import ConfigError, VerideltaError
 
 if TYPE_CHECKING:
-    from veridelta.models import DiffConfig, SourceConfig
+    from veridelta.models import DiffConfig, SourceRef
 
 
 def run(args: argparse.Namespace) -> int:
@@ -36,27 +36,25 @@ def run(args: argparse.Namespace) -> int:
     try:
         print(f"Loading configuration from {config_path}...")
         diff_config: DiffConfig
-        source_config: SourceConfig
-        target_config: SourceConfig
+        source_config: SourceRef
+        target_config: SourceRef
         diff_config, source_config, target_config = load_config(config_path)
 
-        print("Ingesting and aligning datasets...")
-        ingestor = DataIngestor(diff_config, source_config, target_config)
-        source_df, target_df = ingestor.get_dataframes()
-
         print("Executing semantic diff...")
-        engine = DiffEngine(diff_config, source_df, target_df)
-        summary = engine.run()
+        summary = DiffEngine.run_from_configs(diff_config, source_config, target_config)
 
         print(f"\n{summary.report_summary}\n")
 
-        if diff_config.output_path and not summary.is_match:
+        if diff_config.output_path and summary.artifacts_written:
             print(f"Artifacts saved to: {Path(diff_config.output_path).absolute()}\n")
 
         return 0 if summary.is_match else 1
 
     except ConfigError as e:
         print(f"\nConfiguration Error:\n{e}", file=sys.stderr)
+        return 1
+    except VerideltaError as e:
+        print(f"\n{type(e).__name__}:\n{e}", file=sys.stderr)
         return 1
     except Exception as e:
         print(f"\nUnexpected System Error:\n{e}", file=sys.stderr)

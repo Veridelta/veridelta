@@ -22,6 +22,14 @@ data regressions at scale.
 uv add veridelta
 ```
 
+Warehouse and lakehouse drivers are optional extras (`snowflake`, `databricks`, `delta`, `iceberg`, or `all`):
+
+```bash
+uv add 'veridelta[snowflake]'
+```
+
+YAML examples, routing rules, and time travel live in the [configuration guide](https://veridelta.github.io/veridelta/configuration/).
+
 ---
 
 ## Usage
@@ -96,18 +104,19 @@ if not summary.is_match:
 
 * **Structural Alignment:** Map legacy column names to modern schemas automatically.
 * **Semantic Normalization:** Coerce string markers to nulls, standardize whitespace, and cast types dynamically before mathematical comparison.
+* **Warehouse Pushdown:** Compile comparison SQL for Snowflake and Databricks so diffs run in-warehouse (changed, added, and removed counts) without extracting full tables.
+* **Lakehouse Native:** Scan Delta Lake and Apache Iceberg tables as unevaluated Polars LazyFrames, including optional version and snapshot time travel.
 * **Discrepancy Artifacts:** Export isolated Parquet files detailing `added`, `removed`, and `changed` records for downstream auditing.
 
 ---
 
 ## Roadmap
 
-Upcoming enterprise integrations:
+Upcoming work:
 
-* **Warehouse Pushdown:** Direct SQL execution for Snowflake and Databricks.
-* **Lakehouse Native:** First-class support for Delta Lake and Apache Iceberg.
 * **Advanced Heuristics:** Fuzzy string matching and ML-driven schema mapping.
 * **Reporting:** Interactive HTML diff dashboards and CI/CD status checks.
+* **Additional warehouses:** BigQuery pushdown.
 
 [View Detailed Roadmap](https://veridelta.github.io/veridelta/roadmap/)
 

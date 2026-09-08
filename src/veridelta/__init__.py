@@ -11,6 +11,7 @@ from veridelta.models import (
     DiffRule,
     DiffSummary,
     SourceConfig,
+    SourceRef,
 )
 
 __version__ = "0.2.0"
@@ -22,6 +23,7 @@ __all__ = [
     "DiffRule",
     "DiffSummary",
     "SourceConfig",
+    "SourceRef",
     "datasets",
     "load_config",
 ]

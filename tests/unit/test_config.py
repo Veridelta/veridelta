@@ -9,6 +9,7 @@ import pytest
 
 from veridelta.config import load_config
 from veridelta.exceptions import ConfigError
+from veridelta.models import SourceConfig
 
 
 @pytest.mark.unit
@@ -92,8 +93,11 @@ class TestYAMLConfigurationParsing:
 
         diff_cfg, src_cfg, tgt_cfg = load_config(str(valid_yaml))
 
+        assert isinstance(src_cfg, SourceConfig)
+        assert isinstance(tgt_cfg, SourceConfig)
         assert diff_cfg.primary_keys == ["id"]
         assert src_cfg.path == "a.csv"
+        assert src_cfg.type == "file"
         assert tgt_cfg.path == "b.csv"
 
     def test_it_successfully_loads_and_validates_a_complete_configuration_file(
@@ -117,6 +121,8 @@ class TestYAMLConfigurationParsing:
 
         diff_cfg, src_cfg, tgt_cfg = load_config(valid_yaml)
 
+        assert isinstance(src_cfg, SourceConfig)
+        assert isinstance(tgt_cfg, SourceConfig)
         assert src_cfg.path == "source_data.parquet"
         assert src_cfg.format == "parquet"
         assert tgt_cfg.path == "target_data.csv"
