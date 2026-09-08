@@ -4,14 +4,17 @@
 """Zero-dependency SQL pushdown compiler for warehouse dialects.
 
 Translates `DiffRule` models into Snowflake and Databricks SQL predicates and
-assembles inner-join mismatch queries plus anti-join queries for added and
-removed rows without extracting source tables.
+assembles inner-join mismatch queries, anti-join queries for added and removed
+rows, row counts, and column probes without extracting source tables.
 """
 
 from enum import Enum
 
 from veridelta.exceptions import ConnectorError
 from veridelta.models import SQL_IDENTIFIER_SEGMENT, DiffRule
+
+COUNT_ALIAS = "_veridelta_total"
+"""Column alias projected by `compile_count_query` so results stay dialect-neutral."""
 
 
 class SQLDialect(str, Enum):
@@ -207,6 +210,42 @@ class SQLPushdownCompiler:
             source_alias=source_alias,
             target_alias=target_alias,
         )
+
+    def compile_count_query(self, table: str) -> str:
+        """Assemble a total row count query for one relation.
+
+        The count supplies the denominator for `DiffSummary.mismatch_ratio`, so
+        warehouse runs honor `threshold` the same way local comparisons do.
+
+        Args:
+            table (str): Relation to count (optionally dotted catalog path).
+
+        Returns:
+            str: `SELECT COUNT(*) AS alias FROM relation` with the alias quoted
+            for the active dialect.
+
+        Raises:
+            ConnectorError: If the relation name is empty or not allowlisted.
+        """
+        return (
+            f"SELECT COUNT(*) AS {self._quote_ident(COUNT_ALIAS)} "
+            f"FROM {self._quote_relation(table)}"
+        )
+
+    def compile_schema_probe_query(self, table: str) -> str:
+        """Assemble a zero-row projection used to read a relation's columns.
+
+        Args:
+            table (str): Relation to probe (optionally dotted catalog path).
+
+        Returns:
+            str: `SELECT * FROM relation WHERE 1 = 0`, which returns column
+            metadata without scanning rows.
+
+        Raises:
+            ConnectorError: If the relation name is empty or not allowlisted.
+        """
+        return f"SELECT * FROM {self._quote_relation(table)} WHERE 1 = 0"
 
     def _compile_anti_join(
         self,

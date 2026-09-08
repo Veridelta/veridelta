@@ -109,6 +109,21 @@ class TestSnowflakeExecution:
         assert collected.columns == ["id", "status"]
         assert collected.height == 2
 
+    def test_it_executes_count_and_probe_statements_verbatim(self, mocker: MockerFixture) -> None:
+        """Ensure count and schema round-trips reach the cursor unmodified."""
+        count_table = pl.DataFrame({"_veridelta_total": [4096]}).to_arrow()
+        _session, cursor = _patch_snowflake_session(mocker, count_table)
+        connector = SnowflakeConnector(_snowflake_config())
+        connector.connect()
+
+        count_sql = connector.compiler.compile_count_query("analytics.public.source_orders")
+        probe_sql = connector.compiler.compile_schema_probe_query("analytics.public.source_orders")
+        count_frame = connector.execute_pushdown(count_sql, query_type="count")
+        connector.execute_pushdown(probe_sql, query_type="schema")
+
+        assert [call.args[0] for call in cursor.execute.call_args_list] == [count_sql, probe_sql]
+        assert count_frame.collect().item() == 4096
+
     def test_it_fetches_schema_with_a_limit_zero_query(self, mocker: MockerFixture) -> None:
         """Ensure fetch_schema wraps the last statement in LIMIT 0."""
         table = _arrow_table()

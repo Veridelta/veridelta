@@ -6,6 +6,7 @@
 import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
+from veridelta.connectors.sql import COUNT_ALIAS
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DiffRule
 
@@ -314,6 +315,44 @@ class TestAntiJoinAssembly:
             _snowflake().compile_missing_query("src_tbl", "tgt_tbl", [])
         with pytest.raises(ConnectorError, match="primary key"):
             _snowflake().compile_added_query("src_tbl", "tgt_tbl", [])
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestCountAndProbeAssembly:
+    """Validate the row-count and column-probe statements backing DiffSummary."""
+
+    def test_it_counts_snowflake_rows_under_a_stable_alias(self) -> None:
+        """Ensure counts project a dialect-neutral alias for scalar extraction."""
+        sql = _snowflake().compile_count_query("analytics.public.src")
+
+        assert sql == 'SELECT COUNT(*) AS "_veridelta_total" FROM "analytics"."public"."src"'
+        assert COUNT_ALIAS == "_veridelta_total"
+
+    def test_it_counts_databricks_rows_with_backtick_quoting(self) -> None:
+        """Ensure the count query honors the Databricks quoting style."""
+        sql = _databricks().compile_count_query("main.default.tgt")
+
+        assert sql == "SELECT COUNT(*) AS `_veridelta_total` FROM `main`.`default`.`tgt`"
+
+    def test_it_probes_columns_without_scanning_rows(self) -> None:
+        """Ensure schema probes select every column but filter all rows out."""
+        snowflake_sql = _snowflake().compile_schema_probe_query("analytics.public.src")
+        databricks_sql = _databricks().compile_schema_probe_query("main.default.src")
+
+        assert snowflake_sql == 'SELECT * FROM "analytics"."public"."src" WHERE 1 = 0'
+        assert databricks_sql == "SELECT * FROM `main`.`default`.`src` WHERE 1 = 0"
+
+    def test_it_rejects_unsafe_relations_on_counts_and_probes(self) -> None:
+        """Ensure the identifier allowlist covers the count and probe statements."""
+        with pytest.raises(ConnectorError, match="identifier"):
+            _snowflake().compile_count_query('src"; DROP TABLE t')
+        with pytest.raises(ConnectorError, match="identifier"):
+            _snowflake().compile_schema_probe_query("src tbl")
+        with pytest.raises(ConnectorError, match="Table name"):
+            _databricks().compile_count_query("  ")
+        with pytest.raises(ConnectorError, match="three dotted segments"):
+            _databricks().compile_schema_probe_query("a.b.c.d")
 
 
 @pytest.mark.unit

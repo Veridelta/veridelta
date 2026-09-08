@@ -76,7 +76,9 @@ class TestCommandLineInterface:
         mock_diff_config = MagicMock(output_path="/tmp/diffs")
         mock_load.return_value = (mock_diff_config, MagicMock(), MagicMock())
 
-        mock_summary = MagicMock(is_match=False, report_summary="Status: FAILED")
+        mock_summary = MagicMock(
+            is_match=False, artifacts_written=True, report_summary="Status: FAILED"
+        )
         mock_engine.run_from_configs.return_value = mock_summary
 
         run(default_args)
@@ -84,6 +86,30 @@ class TestCommandLineInterface:
 
         assert "Artifacts saved to:" in captured.out
         assert "diffs" in captured.out
+
+    def test_it_omits_artifact_paths_when_no_files_were_written(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure warehouse pushdown failures do not advertise nonexistent artifacts."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+
+        mock_diff_config = MagicMock(output_path="/tmp/diffs")
+        mock_load.return_value = (mock_diff_config, MagicMock(), MagicMock())
+
+        mock_summary = MagicMock(
+            is_match=False, artifacts_written=False, report_summary="Status: FAILED"
+        )
+        mock_engine.run_from_configs.return_value = mock_summary
+
+        exit_code = run(default_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == 1
+        assert "Artifacts saved to:" not in captured.out
 
     def test_it_catches_config_errors_and_returns_exit_code_one_via_stderr(
         self,

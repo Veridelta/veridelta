@@ -39,7 +39,11 @@ Same-warehouse SQL pushdown runs only when both sides are Snowflake or both side
 
 `table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Pattern-only `DiffRule` entries are not compiled to SQL; they raise `ConnectorError` on the warehouse path.
 
-Pushdown executes three queries (inner-join mismatches, target-only added rows, source-only removed rows) and fills `changed_count`, `added_count`, and `removed_count`. `column_mismatches` stays empty because pushdown SQL projects keys only.
+Pushdown issues seven statements per run: a zero-row column probe and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, and source-only removed rows. Those fill `changed_count`, `added_count`, `removed_count`, `total_rows_source`, and `total_rows_target`, so `threshold` and `match_rate_percentage` mean the same thing they do for local comparisons. `column_mismatches` stays empty because the comparison SQL projects keys only.
+
+The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase).
+
+Two behaviors differ from the file and lakehouse path. `output_path` produces no artifacts, because pushdown never extracts rows; the CLI reports counts only and `DiffSummary.artifacts_written` stays `False`. Primary-key uniqueness is also not verified, so duplicate keys inflate the inner-join mismatch count instead of raising `DataIntegrityError`.
 
 From Python, load YAML then route through the same path the CLI uses:
 

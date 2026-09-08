@@ -370,6 +370,9 @@ class DiffSummary(BaseModel):
             status report intended for CI/CD logs or PR comments.
         report_limit (int): Internal configuration dictating the max columns to display
             in the `report_summary`. Implicitly excluded from JSON serialization.
+        artifacts_written (bool): Whether discrepancy files were persisted to
+            `output_path`. Stays False for warehouse pushdown, which reports counts
+            without extracting rows. Implicitly excluded from JSON serialization.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -383,6 +386,7 @@ class DiffSummary(BaseModel):
     is_match: bool
 
     report_limit: int = Field(default=5, exclude=True)
+    artifacts_written: bool = Field(default=False, exclude=True)
 
     @computed_field
     @property

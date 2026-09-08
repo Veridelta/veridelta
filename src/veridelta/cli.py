@@ -45,7 +45,7 @@ def run(args: argparse.Namespace) -> int:
 
         print(f"\n{summary.report_summary}\n")
 
-        if diff_config.output_path and not summary.is_match:
+        if diff_config.output_path and summary.artifacts_written:
             print(f"Artifacts saved to: {Path(diff_config.output_path).absolute()}\n")
 
         return 0 if summary.is_match else 1
