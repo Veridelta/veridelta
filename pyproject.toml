@@ -36,7 +36,9 @@ Issues = "https://github.com/Veridelta/veridelta/issues"
 [project.optional-dependencies]
 snowflake = [
     "snowflake-connector-python>=3.0.0",
-    "pyarrow>=10.0.1",
+    "pyarrow>=10.0.1; python_version < '3.14'",
+    # The driver warns on any pyarrow outside this range once running on 3.14.
+    "pyarrow>=14.0.1,<24; python_version >= '3.14'",
 ]
 databricks = [
     "databricks-sql-connector>=3.0.0",
