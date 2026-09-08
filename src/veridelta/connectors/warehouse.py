@@ -12,7 +12,7 @@ from typing import Any
 
 import polars as pl
 
-from veridelta.connectors.base import VerideltaConnector
+from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DatabricksConfig, SnowflakeConfig
@@ -151,11 +151,15 @@ class SnowflakeConnector(VerideltaConnector):
         except Exception as exc:
             raise ConnectorError(f"Failed to connect to Snowflake: {exc}") from exc
 
-    def execute_pushdown(self, statement: str) -> pl.LazyFrame:
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
         """Execute compiler SQL on Snowflake and return a LazyFrame.
 
         Args:
-            statement (str): SQL produced by `SQLPushdownCompiler.compile_query`.
+            statement (str): SQL produced by `SQLPushdownCompiler`.
+            query_type (PushdownQueryType): Which comparison round-trip this
+                statement represents.
 
         Returns:
             pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
@@ -164,6 +168,7 @@ class SnowflakeConnector(VerideltaConnector):
             ConnectorError: If the extra is missing, the session is closed, or
                 the cursor does not return a table.
         """
+        _ = query_type
         self._require_session()
         table, _description = _run_arrow_query(self._session, statement, "fetch_arrow_all")
         self._last_statement = statement
@@ -233,11 +238,15 @@ class DatabricksConnector(VerideltaConnector):
         except Exception as exc:
             raise ConnectorError(f"Failed to connect to Databricks: {exc}") from exc
 
-    def execute_pushdown(self, statement: str) -> pl.LazyFrame:
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
         """Execute compiler SQL on Databricks and return a LazyFrame.
 
         Args:
-            statement (str): SQL produced by `SQLPushdownCompiler.compile_query`.
+            statement (str): SQL produced by `SQLPushdownCompiler`.
+            query_type (PushdownQueryType): Which comparison round-trip this
+                statement represents.
 
         Returns:
             pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
@@ -246,6 +255,7 @@ class DatabricksConnector(VerideltaConnector):
             ConnectorError: If the extra is missing, the session is closed, or
                 the cursor does not return a table.
         """
+        _ = query_type
         self._require_session()
         table, _description = _run_arrow_query(self._session, statement, "fetchall_arrow")
         self._last_statement = statement

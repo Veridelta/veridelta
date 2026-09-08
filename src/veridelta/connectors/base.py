@@ -4,8 +4,12 @@
 """Abstract connector interface for warehouse and lakehouse backends."""
 
 from abc import ABC, abstractmethod
+from typing import Literal
 
 import polars as pl
+
+PushdownQueryType = Literal["mismatch", "added", "missing"]
+"""Warehouse pushdown round-trip: inner-join mismatches or anti-join added/missing rows."""
 
 
 class VerideltaConnector(ABC):
@@ -20,11 +24,15 @@ class VerideltaConnector(ABC):
         """
 
     @abstractmethod
-    def execute_pushdown(self, statement: str) -> pl.LazyFrame:
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
         """Execute dialect-specific compute and return an unevaluated LazyFrame.
 
         Args:
             statement (str): SQL (warehouse) or deferred predicate payload.
+            query_type (PushdownQueryType): Which comparison round-trip the SQL
+                represents (`mismatch`, `added`, or `missing`).
 
         Returns:
             pl.LazyFrame: Unevaluated result graph. Must not be collected here.

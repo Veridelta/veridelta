@@ -540,6 +540,7 @@ class IcebergConfig(BaseModel):
     Attributes:
         type (Literal["iceberg"]): Discriminator for YAML source routing.
         table_uri (str): Catalog identifier or filesystem URI of the table.
+        snapshot_id (int | None): Optional snapshot to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
     """
 
@@ -547,6 +548,9 @@ class IcebergConfig(BaseModel):
 
     type: Literal["iceberg"] = Field("iceberg", description="Discriminator for Apache Iceberg.")
     table_uri: str = Field(..., description="Catalog identifier or filesystem URI of the table.")
+    snapshot_id: int | None = Field(
+        default=None, description="Optional snapshot identifier to time-travel."
+    )
     storage_options: dict[str, str] = Field(
         default_factory=dict,
         description="Object-store credentials and options passed to Polars.",

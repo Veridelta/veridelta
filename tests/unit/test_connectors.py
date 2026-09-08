@@ -229,6 +229,40 @@ class TestLakehouseConnectors:
         assert connector.lazyframe() is lazy
         assert schema.names() == ["id", "amount"]
 
+    def test_it_passes_snapshot_id_into_scan_iceberg_when_configured(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure Iceberg time travel forwards snapshot_id to Polars."""
+        lazy = _sample_lazy_frame()
+        scan = mocker.patch("veridelta.connectors.lakehouse.pl.scan_iceberg", return_value=lazy)
+        connector = IcebergConnector(
+            IcebergConfig(table_uri="s3://lake/iceberg/events", snapshot_id=42)
+        )
+
+        connector.connect()
+
+        scan.assert_called_once_with(
+            "s3://lake/iceberg/events",
+            snapshot_id=42,
+            storage_options=None,
+        )
+        assert connector.lazyframe() is lazy
+
+    def test_it_wraps_invalid_iceberg_snapshot_as_connector_error(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure an invalid snapshot Polars error is wrapped as ConnectorError."""
+        mocker.patch(
+            "veridelta.connectors.lakehouse.pl.scan_iceberg",
+            side_effect=pl.exceptions.ComputeError("snapshot_id 99 not found"),
+        )
+        connector = IcebergConnector(
+            IcebergConfig(table_uri="s3://lake/iceberg/events", snapshot_id=99)
+        )
+
+        with pytest.raises(ConnectorError, match="uv sync --extra iceberg"):
+            connector.connect()
+
     def test_it_wraps_missing_delta_extra_as_connector_error(self, mocker: MockerFixture) -> None:
         """Ensure ImportError from pl.scan_delta becomes ConnectorError."""
         mocker.patch(

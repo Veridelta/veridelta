@@ -249,6 +249,75 @@ class TestQueryAssembly:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestAntiJoinAssembly:
+    """Validate LEFT/RIGHT JOIN SQL for added and removed warehouse rows."""
+
+    def test_it_builds_snowflake_left_join_for_missing_source_rows(self) -> None:
+        """Ensure removed rows use LEFT JOIN with target keys IS NULL."""
+        sql = _snowflake().compile_missing_query("src_tbl", "tgt_tbl", ["id"])
+        assert sql.startswith('SELECT "src"."id"')
+        assert 'FROM "src_tbl" AS "src"' in sql
+        assert 'LEFT JOIN "tgt_tbl" AS "tgt"' in sql
+        assert 'ON "src"."id" = "tgt"."id"' in sql
+        assert 'WHERE "tgt"."id" IS NULL' in sql
+        assert "INNER JOIN" not in sql
+        assert "RIGHT JOIN" not in sql
+
+    def test_it_builds_snowflake_right_join_for_added_target_rows(self) -> None:
+        """Ensure added rows use RIGHT JOIN with source keys IS NULL."""
+        sql = _snowflake().compile_added_query("src_tbl", "tgt_tbl", ["id"])
+        assert sql.startswith('SELECT "tgt"."id"')
+        assert 'FROM "src_tbl" AS "src"' in sql
+        assert 'RIGHT JOIN "tgt_tbl" AS "tgt"' in sql
+        assert 'ON "src"."id" = "tgt"."id"' in sql
+        assert 'WHERE "src"."id" IS NULL' in sql
+        assert "LEFT JOIN" not in sql
+
+    def test_it_quotes_databricks_anti_joins_with_backticks(self) -> None:
+        """Ensure Databricks anti-joins use backtick identifiers."""
+        missing = _databricks().compile_missing_query(
+            "catalog.schema.src", "catalog.schema.tgt", ["id"]
+        )
+        added = _databricks().compile_added_query(
+            "catalog.schema.src", "catalog.schema.tgt", ["id"]
+        )
+        assert "LEFT JOIN `catalog`.`schema`.`tgt` AS `tgt`" in missing
+        assert "WHERE `tgt`.`id` IS NULL" in missing
+        assert "RIGHT JOIN `catalog`.`schema`.`tgt` AS `tgt`" in added
+        assert "WHERE `src`.`id` IS NULL" in added
+        assert "`src`.`id`" in missing
+        assert "`tgt`.`id`" in added
+
+    def test_it_ands_composite_keys_on_join_and_null_filters(self) -> None:
+        """Ensure composite keys appear in ON and every missing-side IS NULL check."""
+        missing = _snowflake().compile_missing_query(
+            "analytics.public.src",
+            "analytics.public.tgt",
+            ["id", "line_id"],
+        )
+        added = _snowflake().compile_added_query(
+            "analytics.public.src",
+            "analytics.public.tgt",
+            ["id", "line_id"],
+        )
+        on_clause = 'ON "src"."id" = "tgt"."id" AND "src"."line_id" = "tgt"."line_id"'
+        assert on_clause in missing
+        assert on_clause in added
+        assert 'WHERE "tgt"."id" IS NULL AND "tgt"."line_id" IS NULL' in missing
+        assert 'WHERE "src"."id" IS NULL AND "src"."line_id" IS NULL' in added
+        assert missing.startswith('SELECT "src"."id", "src"."line_id"')
+        assert added.startswith('SELECT "tgt"."id", "tgt"."line_id"')
+
+    def test_it_rejects_empty_primary_keys_on_anti_joins(self) -> None:
+        """Ensure anti-joins cannot be compiled without keys."""
+        with pytest.raises(ConnectorError, match="primary key"):
+            _snowflake().compile_missing_query("src_tbl", "tgt_tbl", [])
+        with pytest.raises(ConnectorError, match="primary key"):
+            _snowflake().compile_added_query("src_tbl", "tgt_tbl", [])
+
+
+@pytest.mark.unit
+@pytest.mark.fast
 class TestCompilerErrors:
     """Validate ConnectorError guards for unsupported or invalid input."""
 

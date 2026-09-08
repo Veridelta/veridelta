@@ -4,7 +4,8 @@
 """Zero-dependency SQL pushdown compiler for warehouse dialects.
 
 Translates `DiffRule` models into Snowflake and Databricks SQL predicates and
-assembles inner-join queries that isolate changed rows without extracting data.
+assembles inner-join mismatch queries plus anti-join queries for added and
+removed rows without extracting source tables.
 """
 
 from enum import Enum
@@ -114,9 +115,8 @@ class SQLPushdownCompiler:
         quoted_tgt_alias = self._quote_ident(target_alias)
 
         select_list = ", ".join(self._qualify(source_alias, pk) for pk in primary_keys)
-        on_clause = " AND ".join(
-            f"{self._qualify(source_alias, pk)} = {self._qualify(target_alias, pk)}"
-            for pk in primary_keys
+        on_clause = self._join_on_clause(
+            primary_keys, source_alias=source_alias, target_alias=target_alias
         )
 
         predicates: list[str] = []
@@ -137,6 +137,146 @@ class SQLPushdownCompiler:
             joined = " AND ".join(f"({pred})" for pred in predicates)
             statement = f"{statement} WHERE NOT ({joined})"
         return statement
+
+    def compile_missing_query(
+        self,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        *,
+        source_alias: str = "src",
+        target_alias: str = "tgt",
+    ) -> str:
+        """Assemble a LEFT JOIN anti-join for rows present only in the source.
+
+        Args:
+            source_table (str): Source relation (optionally dotted catalog path).
+            target_table (str): Target relation (optionally dotted catalog path).
+            primary_keys (list[str]): Join keys present on both relations.
+            source_alias (str): Alias assigned to the source relation.
+            target_alias (str): Alias assigned to the target relation.
+
+        Returns:
+            str: `SELECT src keys FROM src LEFT JOIN tgt ON ... WHERE tgt keys IS NULL`.
+
+        Raises:
+            ConnectorError: If tables or keys are empty.
+        """
+        return self._compile_anti_join(
+            source_table,
+            target_table,
+            primary_keys,
+            join_kind="LEFT",
+            select_alias=source_alias,
+            null_alias=target_alias,
+            source_alias=source_alias,
+            target_alias=target_alias,
+        )
+
+    def compile_added_query(
+        self,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        *,
+        source_alias: str = "src",
+        target_alias: str = "tgt",
+    ) -> str:
+        """Assemble a RIGHT JOIN anti-join for rows present only in the target.
+
+        Args:
+            source_table (str): Source relation (optionally dotted catalog path).
+            target_table (str): Target relation (optionally dotted catalog path).
+            primary_keys (list[str]): Join keys present on both relations.
+            source_alias (str): Alias assigned to the source relation.
+            target_alias (str): Alias assigned to the target relation.
+
+        Returns:
+            str: `SELECT tgt keys FROM src RIGHT JOIN tgt ON ... WHERE src keys IS NULL`.
+
+        Raises:
+            ConnectorError: If tables or keys are empty.
+        """
+        return self._compile_anti_join(
+            source_table,
+            target_table,
+            primary_keys,
+            join_kind="RIGHT",
+            select_alias=target_alias,
+            null_alias=source_alias,
+            source_alias=source_alias,
+            target_alias=target_alias,
+        )
+
+    def _compile_anti_join(
+        self,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        *,
+        join_kind: str,
+        select_alias: str,
+        null_alias: str,
+        source_alias: str,
+        target_alias: str,
+    ) -> str:
+        """Assemble a LEFT or RIGHT JOIN anti-join selecting keys from one side.
+
+        Args:
+            source_table (str): Source relation.
+            target_table (str): Target relation.
+            primary_keys (list[str]): Join keys present on both relations.
+            join_kind (str): `LEFT` or `RIGHT`.
+            select_alias (str): Alias whose primary keys are projected.
+            null_alias (str): Alias whose keys must be NULL (the missing side).
+            source_alias (str): Alias assigned to the source relation.
+            target_alias (str): Alias assigned to the target relation.
+
+        Returns:
+            str: Anti-join SELECT statement.
+
+        Raises:
+            ConnectorError: If tables or keys are empty.
+        """
+        if not primary_keys:
+            raise ConnectorError("At least one primary key is required for pushdown joins.")
+
+        quoted_source = self._quote_relation(source_table)
+        quoted_target = self._quote_relation(target_table)
+        quoted_src_alias = self._quote_ident(source_alias)
+        quoted_tgt_alias = self._quote_ident(target_alias)
+        select_list = ", ".join(self._qualify(select_alias, pk) for pk in primary_keys)
+        on_clause = self._join_on_clause(
+            primary_keys, source_alias=source_alias, target_alias=target_alias
+        )
+        where_clause = " AND ".join(
+            f"{self._qualify(null_alias, pk)} IS NULL" for pk in primary_keys
+        )
+        return (
+            f"SELECT {select_list} "
+            f"FROM {quoted_source} AS {quoted_src_alias} "
+            f"{join_kind} JOIN {quoted_target} AS {quoted_tgt_alias} "
+            f"ON {on_clause} "
+            f"WHERE {where_clause}"
+        )
+
+    def _join_on_clause(
+        self, primary_keys: list[str], *, source_alias: str, target_alias: str
+    ) -> str:
+        """Build the equality ON clause for warehouse joins.
+
+        Args:
+            primary_keys (list[str]): Join keys present on both relations.
+            source_alias (str): Source relation alias.
+            target_alias (str): Target relation alias.
+
+        Returns:
+            str: `src.key = tgt.key` predicates joined with AND.
+        """
+        return " AND ".join(
+            f"{self._qualify(source_alias, pk)} = {self._qualify(target_alias, pk)}"
+            for pk in primary_keys
+        )
 
     def _predicates_for_rule(
         self, rule: DiffRule, *, source_alias: str, target_alias: str

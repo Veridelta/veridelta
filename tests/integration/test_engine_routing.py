@@ -45,9 +45,24 @@ def _databricks_config(*, table: str, host: str = "adb.azuredatabricks.net") -> 
     )
 
 
-def _pushdown_frame() -> pl.LazyFrame:
-    """Return inner-join mismatch rows as an unevaluated LazyFrame."""
-    return pl.DataFrame({"id": [1], "amount_source": [10.0], "amount_target": [11.0]}).lazy()
+def _frame_with_ids(height: int) -> pl.LazyFrame:
+    """Return a LazyFrame whose height matches the requested row count."""
+    return pl.DataFrame({"id": list(range(height))}).lazy()
+
+
+def _pushdown_by_query_type(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+    """Return distinct-height frames so DiffSummary counts are independently asserted."""
+    _ = statement
+    heights = {"mismatch": 2, "added": 3, "missing": 4}
+    return _frame_with_ids(heights[query_type])
+
+
+def _configure_warehouse_compiler(connector: Any) -> None:
+    """Stub compile_* helpers with distinct SQL strings for call assertions."""
+    connector.compiler.compile_query.return_value = "SELECT mismatch"
+    connector.compiler.compile_added_query.return_value = "SELECT added"
+    connector.compiler.compile_missing_query.return_value = "SELECT missing"
+    connector.execute_pushdown.side_effect = _pushdown_by_query_type
 
 
 @pytest.mark.integration
@@ -88,8 +103,7 @@ class TestEngineConnectorRouting:
         connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
         ingestor_cls = mocker.patch("veridelta.engine.DataIngestor")
         connector: Any = connector_cls.return_value
-        connector.compiler.compile_query.return_value = "SELECT 1"
-        connector.execute_pushdown.return_value = _pushdown_frame()
+        _configure_warehouse_compiler(connector)
 
         source = _snowflake_config(table="ANALYTICS.PUBLIC.SRC")
         target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
@@ -102,10 +116,19 @@ class TestEngineConnectorRouting:
         connector.compiler.compile_query.assert_called_once_with(
             "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"], []
         )
-        connector.execute_pushdown.assert_called_once_with("SELECT 1")
-        assert summary.changed_count == 1
-        assert summary.added_count == 0
-        assert summary.removed_count == 0
+        connector.compiler.compile_added_query.assert_called_once_with(
+            "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"]
+        )
+        connector.compiler.compile_missing_query.assert_called_once_with(
+            "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"]
+        )
+        assert connector.execute_pushdown.call_count == 3
+        connector.execute_pushdown.assert_any_call("SELECT mismatch", query_type="mismatch")
+        connector.execute_pushdown.assert_any_call("SELECT added", query_type="added")
+        connector.execute_pushdown.assert_any_call("SELECT missing", query_type="missing")
+        assert summary.changed_count == 2
+        assert summary.added_count == 3
+        assert summary.removed_count == 4
         assert summary.is_match is False
 
     def test_it_pushdown_executes_matching_databricks_fingerprints_without_file_loaders(
@@ -115,8 +138,7 @@ class TestEngineConnectorRouting:
         connector_cls = mocker.patch("veridelta.engine.DatabricksConnector")
         ingestor_cls = mocker.patch("veridelta.engine.DataIngestor")
         connector: Any = connector_cls.return_value
-        connector.compiler.compile_query.return_value = "SELECT 1"
-        connector.execute_pushdown.return_value = _pushdown_frame()
+        _configure_warehouse_compiler(connector)
 
         source = _databricks_config(table="main.default.src")
         target = _databricks_config(table="main.default.tgt")
@@ -129,10 +151,19 @@ class TestEngineConnectorRouting:
         connector.compiler.compile_query.assert_called_once_with(
             "main.default.src", "main.default.tgt", ["id"], []
         )
-        connector.execute_pushdown.assert_called_once_with("SELECT 1")
-        assert summary.changed_count == 1
-        assert summary.added_count == 0
-        assert summary.removed_count == 0
+        connector.compiler.compile_added_query.assert_called_once_with(
+            "main.default.src", "main.default.tgt", ["id"]
+        )
+        connector.compiler.compile_missing_query.assert_called_once_with(
+            "main.default.src", "main.default.tgt", ["id"]
+        )
+        assert connector.execute_pushdown.call_count == 3
+        connector.execute_pushdown.assert_any_call("SELECT mismatch", query_type="mismatch")
+        connector.execute_pushdown.assert_any_call("SELECT added", query_type="added")
+        connector.execute_pushdown.assert_any_call("SELECT missing", query_type="missing")
+        assert summary.changed_count == 2
+        assert summary.added_count == 3
+        assert summary.removed_count == 4
 
     def test_it_raises_connector_error_for_cross_dialect_warehouse_pairs(self) -> None:
         """Ensure Snowflake source plus Databricks target is rejected."""

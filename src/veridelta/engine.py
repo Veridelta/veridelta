@@ -186,31 +186,74 @@ def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
     )
 
 
-def _summary_from_pushdown(diff: DiffConfig, changed: pl.DataFrame) -> DiffSummary:
-    """Map inner-join pushdown rows to a DiffSummary.
+def _summary_from_pushdown(
+    diff: DiffConfig,
+    changed: pl.DataFrame,
+    added: pl.DataFrame,
+    removed: pl.DataFrame,
+) -> DiffSummary:
+    """Map mismatch and anti-join pushdown rows to a DiffSummary.
 
-    Added/removed anti-joins are not computed by warehouse SQL. `changed_count`
-    is the result height; `is_match` uses `diff.threshold` against that count.
+    Warehouse SQL does not return full table counts. Totals are discrepancy-side
+    lower bounds: source sees changed+removed, target sees changed+added.
 
     Args:
         diff (DiffConfig): Comparison rules including `threshold`.
-        changed (pl.DataFrame): Rows returned by `execute_pushdown`.
+        changed (pl.DataFrame): Inner-join mismatch rows.
+        added (pl.DataFrame): Target-only anti-join rows.
+        removed (pl.DataFrame): Source-only anti-join rows.
 
     Returns:
-        DiffSummary: Inner-join mismatch report.
+        DiffSummary: Counts from the three pushdown result heights.
     """
     changed_count = changed.height
-    mismatch_ratio = float(changed_count) / float(max(changed_count, 1))
+    added_count = added.height
+    removed_count = removed.height
+    total_mismatches = added_count + removed_count + changed_count
+    mismatch_ratio = float(total_mismatches) / float(max(total_mismatches, 1))
     return DiffSummary(
-        total_rows_source=changed_count,
-        total_rows_target=changed_count,
-        added_count=0,
-        removed_count=0,
+        total_rows_source=changed_count + removed_count,
+        total_rows_target=changed_count + added_count,
+        added_count=added_count,
+        removed_count=removed_count,
         changed_count=changed_count,
         column_mismatches={},
         is_match=mismatch_ratio <= diff.threshold,
         report_limit=diff.report_top_columns_limit,
     )
+
+
+def _collect_pushdown_summary(
+    connector: SnowflakeConnector | DatabricksConnector,
+    source_table: str,
+    target_table: str,
+    diff: DiffConfig,
+) -> DiffSummary:
+    """Compile and collect mismatch, added, and missing warehouse queries.
+
+    Args:
+        connector (SnowflakeConnector | DatabricksConnector): Connected warehouse
+            session whose compiler matches the dialect.
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+        diff (DiffConfig): Master comparison rules and keys.
+
+    Returns:
+        DiffSummary: Heights from the three collected LazyFrames.
+    """
+    mismatch_sql = connector.compiler.compile_query(
+        source_table, target_table, diff.primary_keys, diff.rules
+    )
+    added_sql = connector.compiler.compile_added_query(
+        source_table, target_table, diff.primary_keys
+    )
+    missing_sql = connector.compiler.compile_missing_query(
+        source_table, target_table, diff.primary_keys
+    )
+    changed = connector.execute_pushdown(mismatch_sql, query_type="mismatch").collect()
+    added = connector.execute_pushdown(added_sql, query_type="added").collect()
+    removed = connector.execute_pushdown(missing_sql, query_type="missing").collect()
+    return _summary_from_pushdown(diff, changed, added, removed)
 
 
 def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffSummary:
@@ -222,7 +265,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
         target (SourceRef): Target configuration.
 
     Returns:
-        DiffSummary: Inner-join mismatch report from `execute_pushdown`.
+        DiffSummary: Mismatch and anti-join counts from three pushdown queries.
 
     Raises:
         ConnectorError: If backends are mixed, dialects differ, or connections
@@ -245,11 +288,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
             )
         snowflake = SnowflakeConnector(source)
         snowflake.connect()
-        statement = snowflake.compiler.compile_query(
-            source.table, target.table, diff.primary_keys, diff.rules
-        )
-        changed = snowflake.execute_pushdown(statement).collect()
-        return _summary_from_pushdown(diff, changed)
+        return _collect_pushdown_summary(snowflake, source.table, target.table, diff)
     if isinstance(source, DatabricksConfig) and isinstance(target, DatabricksConfig):
         if _databricks_fingerprint(source) != _databricks_fingerprint(target):
             raise ConnectorError(
@@ -258,11 +297,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
             )
         databricks = DatabricksConnector(source)
         databricks.connect()
-        statement = databricks.compiler.compile_query(
-            source.table, target.table, diff.primary_keys, diff.rules
-        )
-        changed = databricks.execute_pushdown(statement).collect()
-        return _summary_from_pushdown(diff, changed)
+        return _collect_pushdown_summary(databricks, source.table, target.table, diff)
     raise ConnectorError("Mixed file/lakehouse and warehouse backends are unsupported.")
 
 
@@ -388,7 +423,8 @@ class DiffEngine:
             target (SourceRef): Target file, lakehouse, or warehouse config.
 
         Returns:
-            DiffSummary: Pushdown inner-join mismatches or full Polars diff.
+            DiffSummary: Pushdown mismatch and anti-join counts, or a full Polars
+                diff for file and lakehouse pairs.
 
         Raises:
             ConnectorError: If warehouse backends are mixed or connections differ.

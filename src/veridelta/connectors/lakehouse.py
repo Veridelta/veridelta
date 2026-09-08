@@ -9,7 +9,7 @@ Scanners return unevaluated Polars LazyFrames. Optional extras (`deltalake`,
 
 import polars as pl
 
-from veridelta.connectors.base import VerideltaConnector
+from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
@@ -47,11 +47,14 @@ class DeltaLakeConnector(VerideltaConnector):
                 "Delta Lake scan failed. Install the optional extra with: uv sync --extra delta"
             ) from exc
 
-    def execute_pushdown(self, statement: str) -> pl.LazyFrame:
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
         """Reject SQL pushdown; lakehouse work stays on the lazy scan.
 
         Args:
             statement (str): Unused SQL payload reserved by the ABC.
+            query_type (PushdownQueryType): Unused warehouse round-trip tag.
 
         Returns:
             pl.LazyFrame: Never returned; lakehouse diffs use `connect()`.
@@ -60,6 +63,7 @@ class DeltaLakeConnector(VerideltaConnector):
             ConnectorError: Always; SQL pushdown is warehouse-only.
         """
         _ = statement
+        _ = query_type
         raise ConnectorError(_PUSHDOWN_UNSUPPORTED)
 
     def fetch_schema(self) -> pl.Schema:
@@ -109,20 +113,30 @@ class IcebergConnector(VerideltaConnector):
         """
         storage_options = self._config.storage_options or None
         try:
-            self._frame = pl.scan_iceberg(
-                self._config.table_uri,
-                storage_options=storage_options,
-            )
+            if self._config.snapshot_id is not None:
+                self._frame = pl.scan_iceberg(
+                    self._config.table_uri,
+                    snapshot_id=self._config.snapshot_id,
+                    storage_options=storage_options,
+                )
+            else:
+                self._frame = pl.scan_iceberg(
+                    self._config.table_uri,
+                    storage_options=storage_options,
+                )
         except (ImportError, pl.exceptions.PolarsError) as exc:
             raise ConnectorError(
                 "Iceberg scan failed. Install the optional extra with: uv sync --extra iceberg"
             ) from exc
 
-    def execute_pushdown(self, statement: str) -> pl.LazyFrame:
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
         """Reject SQL pushdown; lakehouse work stays on the lazy scan.
 
         Args:
             statement (str): Unused SQL payload reserved by the ABC.
+            query_type (PushdownQueryType): Unused warehouse round-trip tag.
 
         Returns:
             pl.LazyFrame: Never returned; lakehouse diffs use `connect()`.
@@ -131,6 +145,7 @@ class IcebergConnector(VerideltaConnector):
             ConnectorError: Always; SQL pushdown is warehouse-only.
         """
         _ = statement
+        _ = query_type
         raise ConnectorError(_PUSHDOWN_UNSUPPORTED)
 
     def fetch_schema(self) -> pl.Schema:

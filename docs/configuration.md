@@ -78,6 +78,7 @@ source:
 target:
   type: iceberg
   table_uri: s3://lake/iceberg/modern_events
+  snapshot_id: 883142
 
 primary_keys: ["event_id"]
 ```
