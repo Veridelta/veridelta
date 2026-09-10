@@ -21,6 +21,7 @@ from veridelta.models import (
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
+    DiffRule,
     DiffSummary,
     IcebergConfig,
     SnowflakeConfig,
@@ -186,6 +187,173 @@ def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
     )
 
 
+def _match_rule(rules: list[DiffRule], column: str) -> DiffRule | None:
+    """Resolve the single rule governing a column, exact names before patterns.
+
+    Args:
+        rules (list[DiffRule]): Declared rules, in configuration order.
+        column (str): Column name to resolve.
+
+    Returns:
+        DiffRule | None: First exact-name match, else first pattern match, else None.
+    """
+    for rule in rules:
+        if column in rule.column_names:
+            return rule
+    for rule in rules:
+        if rule.pattern and re.match(rule.pattern, column):
+            return rule
+    return None
+
+
+def _resolve_pushdown_rules(
+    diff: DiffConfig, source_columns: list[str], target_columns: list[str]
+) -> list[DiffRule]:
+    """Expand configuration into one fully specified rule per compared column.
+
+    The compiler reads semantics from `DiffRule` alone, while the local engine
+    layers each rule over the `default_*` settings. Without this expansion a
+    warehouse run would ignore global tolerances and would skip every column
+    lacking an explicit rule, reporting all joined rows as changed. Columns are
+    resolved from the raw probe names so `rename_to` still pairs the two sides.
+
+    Args:
+        diff (DiffConfig): Master comparison rules, keys, and global defaults.
+        source_columns (list[str]): Column names probed from the source relation.
+        target_columns (list[str]): Column names probed from the target relation.
+
+    Returns:
+        list[DiffRule]: One rule per shared, non-key, non-ignored column, with
+            global defaults already folded in.
+    """
+    target_lookup = set(target_columns)
+    keys = set(diff.primary_keys)
+
+    resolved: list[DiffRule] = []
+    for column in source_columns:
+        if column in keys:
+            continue
+
+        rule = _match_rule(diff.rules, column)
+        if rule is not None and rule.ignore:
+            continue
+
+        rename_to = None
+        if rule is not None and rule.rename_to is not None and len(rule.column_names) == 1:
+            rename_to = rule.rename_to
+        if (rename_to or column) not in target_lookup:
+            continue
+
+        base = rule if rule is not None else DiffRule()
+        resolved.append(
+            DiffRule(
+                column_names=[column],
+                rename_to=rename_to,
+                absolute_tolerance=(
+                    base.absolute_tolerance
+                    if base.absolute_tolerance is not None
+                    else diff.default_absolute_tolerance
+                ),
+                relative_tolerance=(
+                    base.relative_tolerance
+                    if base.relative_tolerance is not None
+                    else diff.default_relative_tolerance
+                ),
+                treat_null_as_equal=(
+                    base.treat_null_as_equal
+                    if base.treat_null_as_equal is not None
+                    else diff.default_treat_null_as_equal
+                ),
+                whitespace_mode=(
+                    base.whitespace_mode
+                    if base.whitespace_mode is not None
+                    else diff.default_whitespace_mode
+                ),
+                null_values=(
+                    base.null_values if base.null_values is not None else diff.default_null_values
+                ),
+                case_insensitive=base.case_insensitive,
+                regex_replace=base.regex_replace,
+                value_map=base.value_map,
+                pad_zeros=base.pad_zeros,
+                datetime_format=base.datetime_format,
+                timezone=base.timezone,
+                cast_to=base.cast_to,
+            )
+        )
+    return resolved
+
+
+def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
+    """Reduce the single-row mismatch tally to positive per-column counts.
+
+    Args:
+        frame (pl.DataFrame): Result of `compile_column_mismatch_query`.
+
+    Returns:
+        dict[str, int]: Columns with at least one mismatch. Columns that fully
+            matched are dropped, matching the local engine's filtering.
+
+    Raises:
+        ConnectorError: If the aggregate is not a single row of numbers.
+    """
+    if frame.height != 1:
+        raise ConnectorError("Column mismatch query did not return exactly one row.")
+
+    counts: dict[str, int] = {}
+    for column, value in frame.row(0, named=True).items():
+        # SUM over an empty join returns NULL rather than zero.
+        if value is None:
+            continue
+        try:
+            count = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ConnectorError(f"Column mismatch count for '{column}' was not numeric.") from exc
+        if count > 0:
+            counts[column] = count
+    return counts
+
+
+def _export_artifacts(
+    frames: dict[str, pl.DataFrame], output_path: str, output_format: str
+) -> bool:
+    """Persist non-empty discrepancy frames to the configured directory.
+
+    Shared by the local and pushdown paths so both report `artifacts_written`
+    from the same rules about what actually reaches disk.
+
+    Args:
+        frames (dict[str, pl.DataFrame]): Artifact base name mapped to its rows.
+        output_path (str): Directory to create and write into.
+        output_format (str): Either `csv` or `parquet`.
+
+    Returns:
+        bool: True when at least one file was written. Empty frames are skipped,
+            so a clean comparison leaves no artifacts behind.
+
+    Raises:
+        NotImplementedError: If `output_format` has no writer.
+    """
+    out_dir = Path(output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = False
+    for name, frame in frames.items():
+        if frame.height == 0:
+            continue
+        file_path = out_dir / f"{name}.{output_format}"
+        if output_format == "csv":
+            frame.write_csv(file_path)
+        elif output_format == "parquet":
+            frame.write_parquet(file_path)
+        else:
+            raise NotImplementedError(
+                f"Export support for format '{output_format}' is not yet implemented."
+            )
+        written = True
+    return written
+
+
 def _summary_from_pushdown(
     diff: DiffConfig,
     changed: pl.DataFrame,
@@ -193,6 +361,8 @@ def _summary_from_pushdown(
     removed: pl.DataFrame,
     source_total: int,
     target_total: int,
+    column_mismatches: dict[str, int],
+    artifacts_written: bool,
 ) -> DiffSummary:
     """Map mismatch and anti-join pushdown rows to a DiffSummary.
 
@@ -203,6 +373,8 @@ def _summary_from_pushdown(
         removed (pl.DataFrame): Source-only anti-join rows.
         source_total (int): `COUNT(*)` of the source relation.
         target_total (int): `COUNT(*)` of the target relation.
+        column_mismatches (dict[str, int]): Per-column drift counts from the tally.
+        artifacts_written (bool): Whether key artifacts reached disk.
 
     Returns:
         DiffSummary: Counts from the three pushdown result heights, ratioed
@@ -219,9 +391,10 @@ def _summary_from_pushdown(
         added_count=added_count,
         removed_count=removed_count,
         changed_count=changed_count,
-        column_mismatches={},
+        column_mismatches=column_mismatches,
         is_match=mismatch_ratio <= diff.threshold,
         report_limit=diff.report_top_columns_limit,
+        artifacts_written=artifacts_written,
     )
 
 
@@ -259,7 +432,7 @@ def _validate_pushdown_schema(
     source_table: str,
     target_table: str,
     diff: DiffConfig,
-) -> None:
+) -> tuple[list[str], list[str]]:
     """Enforce `schema_mode` against warehouse relations before comparing them.
 
     Zero-row probes expose the stored column names, so misconfigured keys surface
@@ -272,6 +445,10 @@ def _validate_pushdown_schema(
         target_table (str): Target relation name.
         diff (DiffConfig): Master comparison rules and keys.
 
+    Returns:
+        tuple[list[str], list[str]]: Raw source and target column names, before
+            any rename or drop, for downstream rule resolution.
+
     Raises:
         ConfigError: If primary keys are missing or schema constraints are violated.
     """
@@ -282,6 +459,7 @@ def _validate_pushdown_schema(
         connector.compiler.compile_schema_probe_query(target_table), query_type="schema"
     )
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
+    return source_probe.collect_schema().names(), target_probe.collect_schema().names()
 
 
 def _collect_pushdown_summary(
@@ -306,12 +484,18 @@ def _collect_pushdown_summary(
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
             primary key.
+        ConnectorError: If a rule uses a field the compiler cannot express or the
+            warehouse returns a malformed aggregate.
     """
-    _validate_pushdown_schema(connector, source_table, target_table, diff)
+    source_columns, target_columns = _validate_pushdown_schema(
+        connector, source_table, target_table, diff
+    )
+    rules = _resolve_pushdown_rules(diff, source_columns, target_columns)
+
     source_total = _pushdown_row_count(connector, source_table)
     target_total = _pushdown_row_count(connector, target_table)
     mismatch_sql = connector.compiler.compile_query(
-        source_table, target_table, diff.primary_keys, diff.rules
+        source_table, target_table, diff.primary_keys, rules
     )
     added_sql = connector.compiler.compile_added_query(
         source_table, target_table, diff.primary_keys
@@ -322,7 +506,39 @@ def _collect_pushdown_summary(
     changed = connector.execute_pushdown(mismatch_sql, query_type="mismatch").collect()
     added = connector.execute_pushdown(added_sql, query_type="added").collect()
     removed = connector.execute_pushdown(missing_sql, query_type="missing").collect()
-    return _summary_from_pushdown(diff, changed, added, removed, source_total, target_total)
+
+    column_mismatches: dict[str, int] = {}
+    columns_sql = connector.compiler.compile_column_mismatch_query(
+        source_table, target_table, diff.primary_keys, rules
+    )
+    if columns_sql is not None:
+        tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
+        column_mismatches = _column_mismatches_from_frame(tally)
+
+    artifacts_written = False
+    if isinstance(diff.output_path, str):
+        # Pushdown projects primary keys only, never full rows, so the suffix
+        # keeps these files from being mistaken for local artifacts.
+        artifacts_written = _export_artifacts(
+            {
+                "added_rows_pks_only": added,
+                "removed_rows_pks_only": removed,
+                "changed_rows_pks_only": changed,
+            },
+            diff.output_path,
+            diff.output_format,
+        )
+
+    return _summary_from_pushdown(
+        diff,
+        changed,
+        added,
+        removed,
+        source_total,
+        target_total,
+        column_mismatches,
+        artifacts_written,
+    )
 
 
 def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffSummary:
@@ -547,21 +763,14 @@ class DiffEngine:
             "case_insensitive": False,
             "regex_replace": None,
             "value_map": None,
+            "pad_zeros": None,
+            "datetime_format": None,
+            "timezone": None,
             "cast_to": None,
             "ignore": False,
         }
 
-        matched_rule = None
-        for rule in self.config.rules:
-            if col_name in rule.column_names:
-                matched_rule = rule
-                break
-
-        if not matched_rule:
-            for rule in self.config.rules:
-                if rule.pattern and re.match(rule.pattern, col_name):
-                    matched_rule = rule
-                    break
+        matched_rule = _match_rule(self.config.rules, col_name)
 
         if matched_rule:
             if matched_rule.absolute_tolerance is not None:
@@ -579,6 +788,9 @@ class DiffEngine:
 
             eff["regex_replace"] = matched_rule.regex_replace
             eff["value_map"] = matched_rule.value_map
+            eff["pad_zeros"] = matched_rule.pad_zeros
+            eff["datetime_format"] = matched_rule.datetime_format
+            eff["timezone"] = matched_rule.timezone
             eff["cast_to"] = matched_rule.cast_to
             eff["ignore"] = matched_rule.ignore
 
@@ -611,35 +823,194 @@ class DiffEngine:
                 f"Found {dupes} duplicate rows. Clean your data before diffing."
             )
 
-    def _apply_string_rules(self, series: pl.Expr, rule: dict[str, Any]) -> pl.Expr:
-        """Applies whitespace, casing, and regex cleaning to a string expression.
+    def _normalize_frame(self, frame: pl.LazyFrame, *, is_source: bool) -> pl.LazyFrame:
+        """Apply stages 1 through 7 of the canonical transform order to one dataset.
+
+        Normalization runs per frame before any join, so primary keys are treated
+        exactly like compared columns and a rule naming a target-only column still
+        fires. See `DiffRule` for the authoritative stage ordering.
 
         Args:
-            series (pl.Expr): The Polars expression representing the string column.
-            rule (dict[str, Any]): The operational parameters for string transformation.
+            frame (pl.LazyFrame): Structurally aligned source or target dataset.
+            is_source (bool): True when normalizing the source, which is the only
+                side `value_map` rewrites.
 
         Returns:
-            pl.Expr: The transformed string expression ready for comparison.
+            pl.LazyFrame: Frame with the normalization expressions appended lazily.
+
+        Raises:
+            ConfigError: If `timezone` targets a column that is not timezone-aware
+                or names a zone Polars does not recognize.
         """
-        if rule["regex_replace"]:
-            for pattern, replacement in rule["regex_replace"].items():
-                series = series.str.replace_all(pattern, replacement)
+        schema = frame.collect_schema()
+        rules = {column: self._get_effective_rule(column) for column in schema.names()}
 
-        mode = rule["whitespace"]
-        if mode == "left":
-            series = series.str.strip_chars_start()
-        elif mode == "right":
-            series = series.str.strip_chars_end()
-        elif mode == "both":
-            series = series.str.strip_chars()
+        value_exprs: list[pl.Expr] = []
+        for column, rule in rules.items():
+            if rule["ignore"]:
+                continue
+            value_expr = self._normalize_value_expr(
+                column, rule, schema[column], is_source=is_source
+            )
+            if value_expr is not None:
+                value_exprs.append(value_expr)
+        if value_exprs:
+            frame = frame.with_columns(value_exprs)
 
-        if rule["case_insensitive"]:
-            series = series.str.to_lowercase()
+        if not any(rule["timezone"] or rule["cast_to"] for rule in rules.values()):
+            return frame
 
-        return series
+        # Stage 6a can turn a String column into a Datetime, so the timezone guard
+        # has to inspect the post-parse schema rather than the original one.
+        parsed_schema = frame.collect_schema()
+        temporal_exprs: list[pl.Expr] = []
+        for column, rule in rules.items():
+            if rule["ignore"]:
+                continue
+            temporal_expr = self._normalize_temporal_expr(column, rule, parsed_schema[column])
+            if temporal_expr is not None:
+                temporal_exprs.append(temporal_expr)
+        if temporal_exprs:
+            frame = frame.with_columns(temporal_exprs)
+        return frame
+
+    def _normalize_value_expr(
+        self, column: str, rule: dict[str, Any], dtype: pl.DataType, *, is_source: bool
+    ) -> pl.Expr | None:
+        """Build stages 1 through 6a for one column: sentinels through datetime parsing.
+
+        Text stages are gated on the column actually holding text, so a global
+        `default_null_values` or `default_whitespace_mode` cannot fail a run that
+        also contains numeric or temporal columns.
+
+        Args:
+            column (str): Column being normalized.
+            rule (dict[str, Any]): Parameters resolved by `_get_effective_rule`.
+            dtype (pl.DataType): Current dtype of the column within its own frame.
+            is_source (bool): True when normalizing the source frame.
+
+        Returns:
+            pl.Expr | None: Aliased expression, or None when no stage applies.
+        """
+        expr = pl.col(column)
+        applied = False
+        is_text = isinstance(dtype, (pl.String, pl.Utf8))
+
+        if is_text:
+            if rule["null_values"]:
+                expr = pl.when(expr.is_in(rule["null_values"])).then(None).otherwise(expr)
+                applied = True
+
+            if rule["regex_replace"]:
+                for pattern, replacement in rule["regex_replace"].items():
+                    expr = expr.str.replace_all(pattern, replacement)
+                applied = True
+
+            mode = rule["whitespace"]
+            if mode == "left":
+                expr = expr.str.strip_chars_start()
+                applied = True
+            elif mode == "right":
+                expr = expr.str.strip_chars_end()
+                applied = True
+            elif mode == "both":
+                expr = expr.str.strip_chars()
+                applied = True
+
+            if rule["case_insensitive"]:
+                expr = expr.str.to_lowercase()
+                applied = True
+
+            if is_source and rule["value_map"]:
+                expr = expr.replace(rule["value_map"])
+                applied = True
+
+        if rule["pad_zeros"] is not None:
+            # Stringify first so a numeric 123 and a text '00123' converge.
+            expr = expr.cast(pl.String).str.zfill(rule["pad_zeros"])
+            applied = True
+            is_text = True
+
+        if rule["datetime_format"] and is_text:
+            expr = expr.str.strptime(pl.Datetime, format=rule["datetime_format"], strict=False)
+            applied = True
+
+        return expr.alias(column) if applied else None
+
+    def _normalize_temporal_expr(
+        self, column: str, rule: dict[str, Any], dtype: pl.DataType
+    ) -> pl.Expr | None:
+        """Build stages 6b and 7 for one column: timezone conversion, then cast.
+
+        Args:
+            column (str): Column being normalized.
+            rule (dict[str, Any]): Parameters resolved by `_get_effective_rule`.
+            dtype (pl.DataType): Dtype after the value stages have been applied.
+
+        Returns:
+            pl.Expr | None: Aliased expression, or None when no stage applies.
+
+        Raises:
+            ConfigError: If `timezone` cannot be applied to the column.
+        """
+        expr = pl.col(column)
+        applied = False
+
+        if rule["timezone"]:
+            expr = self._convert_time_zone(column, expr, dtype, rule["timezone"])
+            applied = True
+
+        if rule["cast_to"]:
+            target_dtype = getattr(pl, rule["cast_to"], None)
+            if target_dtype:
+                expr = expr.cast(target_dtype)
+                applied = True
+
+        return expr.alias(column) if applied else None
+
+    def _convert_time_zone(
+        self, column: str, expr: pl.Expr, dtype: pl.DataType, zone: str
+    ) -> pl.Expr:
+        """Convert a timezone-aware column to `zone`, refusing to guess for naive data.
+
+        Polars would happily read a naive timestamp as UTC here, which silently
+        shifts every value by the real offset, so naive input is rejected outright.
+
+        Args:
+            column (str): Column being converted, used for error messages.
+            expr (pl.Expr): Expression produced by the earlier stages.
+            dtype (pl.DataType): Dtype of the column after datetime parsing.
+            zone (str): Target timezone name.
+
+        Returns:
+            pl.Expr: Expression converted to the requested zone.
+
+        Raises:
+            ConfigError: If the column is not a timestamp, carries no timezone, or
+                the zone name is unknown.
+        """
+        if not isinstance(dtype, pl.Datetime):
+            raise ConfigError(
+                f"Column '{column}' sets timezone='{zone}' but holds {dtype}, not a "
+                "timestamp. Parse it with datetime_format first."
+            )
+        if dtype.time_zone is None:
+            raise ConfigError(
+                f"Column '{column}' sets timezone='{zone}' but its timestamps are "
+                "timezone-naive. Veridelta will not assume an origin zone, because "
+                "guessing wrong shifts every value silently. Supply timezone-aware "
+                "data, or use a datetime_format carrying an offset such as '%z'."
+            )
+        try:
+            return expr.dt.convert_time_zone(zone)
+        except pl.exceptions.ComputeError as exc:
+            raise ConfigError(f"Column '{column}' sets an unusable timezone. {exc}") from exc
 
     def _build_match_expr(self, col_name: str, rule: dict[str, Any], dtype: pl.DataType) -> pl.Expr:
-        """Builds a robust comparison expression based on data type and user rules.
+        """Builds stages 8 and 9 of the transform order: comparison and null equality.
+
+        Both sides have already been normalized by `_normalize_frame`, so this
+        evaluates the aligned pair without applying any further transformations.
 
         Implicit Type Alignment:
             Polars is strictly typed. Comparing a Float64 to an Int64 or String raises
@@ -671,22 +1042,10 @@ class DiffEngine:
             else:
                 tgt = tgt.cast(dtype, strict=False)
 
-        if rule["value_map"]:
-            src = src.replace(rule["value_map"])
-
-        if isinstance(dtype, (pl.String, pl.Utf8)):
-            src = self._apply_string_rules(src, rule)
-            tgt = self._apply_string_rules(tgt, rule)
-            val_match = src == tgt
-
-        elif dtype.is_numeric():
-            if rule["abs_tol"] == 0.0 and rule["rel_tol"] == 0.0:
-                val_match = src == tgt
-            else:
-                abs_diff = (tgt - src).abs()
-                threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
-                val_match = abs_diff <= threshold
-
+        if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
+            abs_diff = (tgt - src).abs()
+            threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
+            val_match = abs_diff <= threshold
         else:
             val_match = src == tgt
 
@@ -789,10 +1148,10 @@ class DiffEngine:
         Execution Pipeline:
             1. Structural Alignment: Maps and prunes schemas to establish the
                Target as the authoritative structural contract.
-            2. Validation & Integrity: Asserts primary key existence and uniqueness
-               (triggering a localized collection), and enforces the `SchemaMode`.
-            3. Lazy Graph Construction: Builds the computation DAG for semantic
-               normalization (regex sanitization) and type coercion.
+            2. Validation: Asserts primary key existence and enforces the `SchemaMode`.
+            3. Semantic Normalization: Applies stages 1-7 of the `DiffRule` transform
+               order to each dataset independently, then asserts key uniqueness on
+               the normalized keys (triggering a localized collection).
             4. Relational Joins: Formulates the lazy anti-joins ('Added', 'Removed')
                and inner-joins ('Changed') to isolate discrepancies.
             5. Graph Execution: Executes the computation DAG via `.collect()` to
@@ -811,53 +1170,14 @@ class DiffEngine:
         """
         self._align_structure()
         self._validate_schema()
+
+        self.source = self._normalize_frame(self.source, is_source=True)
+        self.target = self._normalize_frame(self.target, is_source=False)
+
+        # Runs after normalization: case folding or sentinel coercion on a key
+        # column can collapse distinct rows into duplicates, and that must fail
+        # here rather than silently exploding the joins below.
         self._check_uniqueness()
-
-        src_cols = self.source.collect_schema().names()
-        tgt_cols = self.target.collect_schema().names()
-
-        for col in src_cols:
-            rule = self._get_effective_rule(col)
-
-            if rule["null_values"]:
-                null_list = rule["null_values"]
-                if col in src_cols:
-                    self.source = self.source.with_columns(
-                        pl.when(pl.col(col).is_in(null_list))
-                        .then(None)
-                        .otherwise(pl.col(col))
-                        .alias(col)
-                    )
-                if col in tgt_cols:
-                    self.target = self.target.with_columns(
-                        pl.when(pl.col(col).is_in(null_list))
-                        .then(None)
-                        .otherwise(pl.col(col))
-                        .alias(col)
-                    )
-
-            if rule["regex_replace"]:
-                for pattern, replacement in rule["regex_replace"].items():
-                    if col in src_cols and isinstance(
-                        self.source.collect_schema().get(col), (pl.String, pl.Utf8)
-                    ):
-                        self.source = self.source.with_columns(
-                            pl.col(col).str.replace_all(pattern, replacement)
-                        )
-                    if col in tgt_cols and isinstance(
-                        self.target.collect_schema().get(col), (pl.String, pl.Utf8)
-                    ):
-                        self.target = self.target.with_columns(
-                            pl.col(col).str.replace_all(pattern, replacement)
-                        )
-
-            if rule["cast_to"]:
-                dtype = getattr(pl, rule["cast_to"], None)
-                if dtype:
-                    if col in src_cols:
-                        self.source = self.source.with_columns(pl.col(col).cast(dtype))
-                    if col in tgt_cols:
-                        self.target = self.target.with_columns(pl.col(col).cast(dtype))
 
         added_lazy = self.target.join(self.source, on=self.config.primary_keys, how="anti")
         removed_lazy = self.source.join(self.target, on=self.config.primary_keys, how="anti")
@@ -920,32 +1240,15 @@ class DiffEngine:
         is_match = mismatch_ratio <= self.config.threshold
 
         artifacts_written = False
-        output_path_str = getattr(self.config, "output_path", None)
-        if isinstance(output_path_str, str):
-            out_dir = Path(output_path_str)
-            out_dir.mkdir(parents=True, exist_ok=True)
-            fmt = getattr(self.config, "output_format", "parquet")
-
-            def _export_artifact(df: pl.DataFrame, name: str) -> bool:
-                if df.height == 0:
-                    return False
-                file_path = out_dir / f"{name}.{fmt}"
-                if fmt == "csv":
-                    df.write_csv(file_path)
-                elif fmt == "parquet":
-                    df.write_parquet(file_path)
-                else:
-                    raise NotImplementedError(
-                        f"Export support for format '{fmt}' is not yet implemented."
-                    )
-                return True
-
-            artifacts_written = any(
-                [
-                    _export_artifact(added_df, "added_rows"),
-                    _export_artifact(removed_df, "removed_rows"),
-                    _export_artifact(changed_df, "changed_rows"),
-                ]
+        if isinstance(self.config.output_path, str):
+            artifacts_written = _export_artifacts(
+                {
+                    "added_rows": added_df,
+                    "removed_rows": removed_df,
+                    "changed_rows": changed_df,
+                },
+                self.config.output_path,
+                self.config.output_format,
             )
 
         return DiffSummary(

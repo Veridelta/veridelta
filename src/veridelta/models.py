@@ -93,6 +93,31 @@ class SourceConfig(BaseModel):
 class DiffRule(BaseModel):
     """Specific overrides for one or more columns using exact names or regex.
 
+    Transform Order:
+        This sequence is the canonical contract. Both the local Polars engine and
+        the SQL pushdown compiler apply transforms in exactly this order, so a rule
+        produces the same verdict whether it runs in-process or inside a warehouse.
+
+        1. Null sentinels (`null_values`)
+        2. Regex replace (`regex_replace`)
+        3. Whitespace, then case (`whitespace_mode`, `case_insensitive`)
+        4. Source-side value map (`value_map`)
+        5. Pad zeros (`pad_zeros`)
+        6. Datetime parsing, then timezone (`datetime_format`, `timezone`)
+        7. Explicit cast (`cast_to`)
+        8. Comparison (equality, or numeric tolerance)
+        9. Null-safe equality (`treat_null_as_equal`)
+
+        Stages 1 through 7 normalize each dataset independently and run before any
+        join, so they apply to primary keys as well as compared columns. Stages 8
+        and 9 evaluate the aligned pair. Sentinels are neutralized first so later
+        stages never operate on placeholder text, and `cast_to` runs last so it
+        casts already-sanitized values.
+
+        Warehouse pushdown implements stages 1 through 4, 8, and 9. Rules using
+        `pad_zeros`, `datetime_format`, `timezone`, or `cast_to` raise
+        `ConnectorError` rather than comparing on a silently different pipeline.
+
     Attributes:
         column_names (list[str]): Exact names of the columns in the source dataset.
         pattern (str | None): Regex pattern to match multiple columns (e.g., '^AMT_.*').
@@ -104,21 +129,27 @@ class DiffRule(BaseModel):
         whitespace_mode (WhitespaceMode | None): Granular control over stripping
             leading/trailing whitespace prior to string comparison.
         regex_replace (dict[str, str] | None): Dictionary of `{pattern: replacement}`
-            to sanitize text. Implicitly executed *before* type coercion to ensure
-            text sanitization completes safely before casting.
-        pad_zeros (int | None): Left-pad numeric strings to this exact length
-            (e.g., 5 -> '00123').
+            to sanitize text. Applied to string columns only.
+        pad_zeros (int | None): Left-pad values to this exact length
+            (e.g., 5 -> '00123'). Non-string columns are stringified first, so a
+            numeric `123` and a text `'00123'` compare as equal.
         value_map (dict[str, str] | None): Translate Source values to Target values
             before comparison (e.g., `{'M': 'Male'}`).
         null_values (list[str] | None): Specific string values to actively coerce
-            to NULL (e.g., `['N/A', '-999']`).
+            to NULL (e.g., `['N/A', '-999']`). Applied to string columns only, so
+            a global default is safe to set on a mixed schema.
         treat_null_as_equal (bool | None): If True, evaluates NULL == NULL as a
             successful match rather than a missing value mismatch.
         datetime_format (str | None): Expected strptime format for dates
-            (e.g., '%Y-%m-%d %H:%M:%S').
-        timezone (str | None): Target timezone to normalize dates to before comparison.
+            (e.g., '%Y-%m-%d %H:%M:%S'). Parses string columns into datetimes, so
+            the column is compared as a datetime rather than as text. Values that
+            do not match the format become NULL and therefore mismatch.
+        timezone (str | None): Target timezone to convert timestamps to before
+            comparison (e.g., 'UTC'). Requires timezone-aware data; naive
+            timestamps raise `ConfigError` rather than being assigned a guessed
+            zone, since guessing silently shifts comparisons.
         cast_to (str | None): Explicitly cast column to this Polars datatype
-            (e.g., 'Float64'). Evaluated *after* string transformations.
+            (e.g., 'Float64').
         ignore (bool): Whether to skip this column entirely during comparison.
         rename_to (str | None): The name in the target dataset if it differs from
             the source. Only valid when `column_names` contains exactly one entry.
@@ -160,6 +191,7 @@ class DiffRule(BaseModel):
     pad_zeros: int | None = Field(
         default=None,
         ge=0,
+        strict=True,
         description="Left-pad numeric strings to this length (e.g., 5 -> '00123').",
     )
 
@@ -371,8 +403,8 @@ class DiffSummary(BaseModel):
         report_limit (int): Internal configuration dictating the max columns to display
             in the `report_summary`. Implicitly excluded from JSON serialization.
         artifacts_written (bool): Whether discrepancy files were persisted to
-            `output_path`. Stays False for warehouse pushdown, which reports counts
-            without extracting rows. Implicitly excluded from JSON serialization.
+            `output_path`. Warehouse pushdown writes primary keys only, under
+            `_pks_only` filenames. Implicitly excluded from JSON serialization.
     """
 
     model_config = ConfigDict(extra="forbid")

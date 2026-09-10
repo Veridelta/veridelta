@@ -357,6 +357,125 @@ class TestCountAndProbeAssembly:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestColumnMismatchAggregate:
+    """Validate the per-column tally backing DiffSummary.column_mismatches."""
+
+    def test_it_sums_one_case_expression_per_column_for_snowflake(self) -> None:
+        """Ensure a single-column tally compiles to an exact, quoted aggregate."""
+        sql = _snowflake().compile_column_mismatch_query(
+            "src_tbl", "tgt_tbl", ["id"], [DiffRule(column_names=["amount"])]
+        )
+
+        assert sql == (
+            'SELECT SUM(CASE WHEN COALESCE("src"."amount" = "tgt"."amount", FALSE) '
+            'THEN 0 ELSE 1 END) AS "amount" '
+            'FROM "src_tbl" AS "src" '
+            'INNER JOIN "tgt_tbl" AS "tgt" '
+            'ON "src"."id" = "tgt"."id"'
+        )
+
+    def test_it_quotes_the_databricks_aggregate_with_backticks(self) -> None:
+        """Ensure the tally honors the Databricks quoting style."""
+        sql = _databricks().compile_column_mismatch_query(
+            "main.default.src", "main.default.tgt", ["id"], [DiffRule(column_names=["amount"])]
+        )
+
+        assert sql is not None
+        assert "COALESCE(`src`.`amount` = `tgt`.`amount`, FALSE)" in sql
+        assert "AS `amount`" in sql
+        assert "INNER JOIN `main`.`default`.`tgt` AS `tgt`" in sql
+
+    def test_it_coalesces_null_predicates_so_they_count_as_mismatches(self) -> None:
+        """Ensure three-valued logic cannot silently score NULL comparisons as matches."""
+        sql = _snowflake().compile_column_mismatch_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [DiffRule(column_names=["amount"], absolute_tolerance=0.5)],
+        )
+
+        assert sql is not None
+        assert sql.count("COALESCE(") == 1
+        assert "COALESCE(ABS(" in sql
+        assert ", FALSE) THEN 0 ELSE 1 END)" in sql
+
+    def test_it_aliases_renamed_columns_by_their_target_name(self) -> None:
+        """Ensure the tally key matches the post-alignment name the local engine reports."""
+        sql = _snowflake().compile_column_mismatch_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [DiffRule(column_names=["legacy_amt"], rename_to="amount")],
+        )
+
+        assert sql is not None
+        assert '"src"."legacy_amt" = "tgt"."amount"' in sql
+        assert 'AS "amount"' in sql
+        assert 'AS "legacy_amt"' not in sql
+
+    def test_it_emits_one_term_per_column_across_composite_keys(self) -> None:
+        """Ensure multi-column rules and composite keys expand correctly."""
+        sql = _snowflake().compile_column_mismatch_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id", "line_id"],
+            [DiffRule(column_names=["a", "b"])],
+        )
+
+        assert sql is not None
+        assert sql.count("SUM(CASE WHEN") == 2
+        assert 'AS "a"' in sql
+        assert 'AS "b"' in sql
+        assert 'ON "src"."id" = "tgt"."id" AND "src"."line_id" = "tgt"."line_id"' in sql
+
+    def test_it_keeps_the_first_rule_when_two_rules_name_one_column(self) -> None:
+        """Ensure duplicate aliases cannot reach the select list, matching rule precedence."""
+        sql = _snowflake().compile_column_mismatch_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [
+                DiffRule(column_names=["amount"], absolute_tolerance=0.5),
+                DiffRule(column_names=["amount"], case_insensitive=True),
+            ],
+        )
+
+        assert sql is not None
+        assert sql.count('AS "amount"') == 1
+        assert "ABS(" in sql
+        assert "LOWER(" not in sql
+
+    def test_it_returns_none_when_no_column_is_comparable(self) -> None:
+        """Ensure an all-ignored or empty rule set skips the round trip entirely."""
+        compiler = _snowflake()
+
+        assert compiler.compile_column_mismatch_query("src_tbl", "tgt_tbl", ["id"], []) is None
+        assert (
+            compiler.compile_column_mismatch_query(
+                "src_tbl", "tgt_tbl", ["id"], [DiffRule(column_names=["notes"], ignore=True)]
+            )
+            is None
+        )
+
+    def test_it_rejects_unsafe_identifiers_and_empty_keys(self) -> None:
+        """Ensure the allowlist and key guard cover the aggregate statement too."""
+        compiler = _snowflake()
+        with pytest.raises(ConnectorError, match="primary key"):
+            compiler.compile_column_mismatch_query(
+                "src_tbl", "tgt_tbl", [], [DiffRule(column_names=["amount"])]
+            )
+        with pytest.raises(ConnectorError, match="identifier"):
+            compiler.compile_column_mismatch_query(
+                "src_tbl", "tgt_tbl", ["id"], [DiffRule(column_names=["amount; DROP TABLE t"])]
+            )
+        with pytest.raises(ConnectorError, match="identifier"):
+            compiler.compile_column_mismatch_query(
+                'src"; DROP', "tgt_tbl", ["id"], [DiffRule(column_names=["amount"])]
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
 class TestCompilerErrors:
     """Validate ConnectorError guards for unsupported or invalid input."""
 

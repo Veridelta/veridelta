@@ -39,11 +39,17 @@ Same-warehouse SQL pushdown runs only when both sides are Snowflake or both side
 
 `table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Pattern-only `DiffRule` entries are not compiled to SQL; they raise `ConnectorError` on the warehouse path.
 
-Pushdown issues seven statements per run: a zero-row column probe and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, and source-only removed rows. Those fill `changed_count`, `added_count`, `removed_count`, `total_rows_source`, and `total_rows_target`, so `threshold` and `match_rate_percentage` mean the same thing they do for local comparisons. `column_mismatches` stays empty because the comparison SQL projects keys only.
+Pushdown issues eight statements per run: a zero-row column probe and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally. Those fill every `DiffSummary` field including `column_mismatches`, so `threshold`, `match_rate_percentage`, and the drift report mean the same thing they do for local comparisons.
+
+Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global `default_*` settings, so a `default_absolute_tolerance` applies in the warehouse too. Columns marked `ignore` are excluded, and `rename_to` pairs a source column with its renamed target counterpart.
 
 The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase).
 
-Two behaviors differ from the file and lakehouse path. `output_path` produces no artifacts, because pushdown never extracts rows; the CLI reports counts only and `DiffSummary.artifacts_written` stays `False`. Primary-key uniqueness is also not verified, so duplicate keys inflate the inner-join mismatch count instead of raising `DataIntegrityError`.
+Three behaviors differ from the file and lakehouse path:
+
+- Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
+- Primary-key uniqueness is not verified, so duplicate keys inflate the inner-join mismatch count instead of raising `DataIntegrityError`.
+- `pad_zeros`, `datetime_format`, `timezone`, and `cast_to` have no SQL equivalent and raise `ConnectorError` rather than being silently skipped.
 
 From Python, load YAML then route through the same path the CLI uses:
 
@@ -125,7 +131,25 @@ Global directives control the strictness of the underlying Polars evaluation eng
 
 ## Column-Level Overrides (Rules)
 
-The `rules` array defines granular, per-column or regex-pattern tolerances. 
+The `rules` array defines granular, per-column or regex-pattern tolerances.
+
+### Transform order
+
+Rules are not applied in the order you write them. Every column follows one fixed pipeline, and both the local engine and the warehouse compiler honor it, so a rule produces the same verdict wherever it runs:
+
+1. Null sentinels (`null_values`)
+2. Regex replace (`regex_replace`)
+3. Whitespace, then case (`whitespace_mode`, `case_insensitive`)
+4. Source-side value map (`value_map`)
+5. Pad zeros (`pad_zeros`)
+6. Datetime parsing, then timezone (`datetime_format`, `timezone`)
+7. Explicit cast (`cast_to`)
+8. Comparison (equality, or numeric tolerance)
+9. Null-safe equality (`treat_null_as_equal`)
+
+Stages 1 through 7 normalize each dataset on its own, before any join. That means they apply to primary keys as well: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion.
+
+Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global `default_null_values` or `default_whitespace_mode` is safe to set on a mixed schema.
 
 ### 1. Numeric Tolerances
 Bypass floating-point anomalies or acceptable system rounding differences.
@@ -138,21 +162,40 @@ rules:
 ```
 
 ### 2. String Normalization & Sanitization
-Execute string mutations prior to type evaluation. `regex_replace` is processed first, ensuring text is sanitized before any subsequent `cast_to` operations.
+Execute string mutations before type evaluation. Sanitization always precedes `cast_to`, so text is cleaned before it is coerced.
 
 ```yaml
 rules:
   - column_names: ["user_email"]
     case_insensitive: true
     whitespace_mode: "both"
-    
+
   - column_names: ["balance"]
     regex_replace:
       "\\$": ""  # Strip currency symbols before casting
     cast_to: "Float64"
 ```
 
-### 3. Value Mapping (Crosswalks)
+### 3. Padding, Dates, and Timezones
+Reconcile identifiers and timestamps that two systems store in different shapes.
+
+`pad_zeros` left-pads to a fixed width. The value is stringified first, so a numeric `123` in one system matches a text `"00123"` in the other. The width must be a real integer: `pad_zeros: "5"` is rejected rather than quietly coerced.
+
+`datetime_format` parses text into timestamps using a [strptime](https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes) pattern, so the column is compared as a timestamp instead of as text. Values that do not fit the pattern become NULL, which counts as a mismatch unless `treat_null_as_equal` is set.
+
+`timezone` converts timestamps to a common zone before comparison. It requires timezone-aware data. Naive timestamps raise `ConfigError`, because assuming an origin zone would shift every value by a real offset without telling you. To normalize text timestamps that carry an offset, parse them first with a format containing `%z`.
+
+```yaml
+rules:
+  - column_names: ["account_number"]
+    pad_zeros: 10
+
+  - column_names: ["created_at"]
+    datetime_format: "%Y-%m-%d %H:%M:%S%z"
+    timezone: "UTC"
+```
+
+### 4. Value Mapping (Crosswalks)
 Translate legacy enumerations or system-specific codes to modern equivalents during evaluation.
 
 ```yaml
@@ -164,7 +207,7 @@ rules:
       "2": "PENDING"
 ```
 
-### 4. Exclusion Routing
+### 5. Exclusion Routing
 Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.
 
 ```yaml

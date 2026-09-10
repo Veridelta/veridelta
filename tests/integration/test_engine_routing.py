@@ -19,6 +19,7 @@ from veridelta.models import (
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
+    DiffRule,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -68,8 +69,23 @@ def _pushdown_by_query_type(statement: str, query_type: str = "mismatch") -> pl.
         is_source = statement.upper().endswith("SRC")
         total = SOURCE_TOTAL if is_source else TARGET_TOTAL
         return pl.DataFrame({COUNT_ALIAS: [total]}).lazy()
+    if query_type == "columns":
+        # A fully matching column is included so the zero-count filter is exercised.
+        return pl.DataFrame({"amount": [5], "quantity": [0]}).lazy()
     heights = {"mismatch": 2, "added": 3, "missing": 4}
     return _frame_with_ids(heights[query_type])
+
+
+def _synthesized_amount_rule() -> DiffRule:
+    """Return the rule the engine derives for the unruled probed 'amount' column."""
+    return DiffRule(
+        column_names=["amount"],
+        absolute_tolerance=0.0,
+        relative_tolerance=0.0,
+        treat_null_as_equal=True,
+        whitespace_mode="none",
+        null_values=[],
+    )
 
 
 def _configure_warehouse_compiler(connector: Any) -> None:
@@ -77,6 +93,7 @@ def _configure_warehouse_compiler(connector: Any) -> None:
     connector.compiler.compile_query.return_value = "SELECT mismatch"
     connector.compiler.compile_added_query.return_value = "SELECT added"
     connector.compiler.compile_missing_query.return_value = "SELECT missing"
+    connector.compiler.compile_column_mismatch_query.return_value = "SELECT columns"
     connector.compiler.compile_count_query.side_effect = lambda table: f"SELECT count FROM {table}"
     connector.compiler.compile_schema_probe_query.side_effect = lambda table: (
         f"SELECT probe FROM {table}"
@@ -133,7 +150,10 @@ class TestEngineConnectorRouting:
         ingestor_cls.assert_not_called()
         connector.connect.assert_called_once()
         connector.compiler.compile_query.assert_called_once_with(
-            "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"], []
+            "ANALYTICS.PUBLIC.SRC",
+            "ANALYTICS.PUBLIC.TGT",
+            ["id"],
+            [_synthesized_amount_rule()],
         )
         connector.compiler.compile_added_query.assert_called_once_with(
             "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"]
@@ -141,10 +161,11 @@ class TestEngineConnectorRouting:
         connector.compiler.compile_missing_query.assert_called_once_with(
             "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"]
         )
-        assert connector.execute_pushdown.call_count == 7
+        assert connector.execute_pushdown.call_count == 8
         connector.execute_pushdown.assert_any_call("SELECT mismatch", query_type="mismatch")
         connector.execute_pushdown.assert_any_call("SELECT added", query_type="added")
         connector.execute_pushdown.assert_any_call("SELECT missing", query_type="missing")
+        connector.execute_pushdown.assert_any_call("SELECT columns", query_type="columns")
         connector.execute_pushdown.assert_any_call(
             "SELECT count FROM ANALYTICS.PUBLIC.SRC", query_type="count"
         )
@@ -157,6 +178,7 @@ class TestEngineConnectorRouting:
         assert summary.total_rows_source == SOURCE_TOTAL
         assert summary.total_rows_target == TARGET_TOTAL
         assert summary.is_match is False
+        assert summary.column_mismatches == {"amount": 5}
 
     def test_it_pushdown_executes_matching_databricks_fingerprints_without_file_loaders(
         self, mocker: MockerFixture
@@ -176,7 +198,7 @@ class TestEngineConnectorRouting:
         ingestor_cls.assert_not_called()
         connector.connect.assert_called_once()
         connector.compiler.compile_query.assert_called_once_with(
-            "main.default.src", "main.default.tgt", ["id"], []
+            "main.default.src", "main.default.tgt", ["id"], [_synthesized_amount_rule()]
         )
         connector.compiler.compile_added_query.assert_called_once_with(
             "main.default.src", "main.default.tgt", ["id"]
@@ -184,7 +206,7 @@ class TestEngineConnectorRouting:
         connector.compiler.compile_missing_query.assert_called_once_with(
             "main.default.src", "main.default.tgt", ["id"]
         )
-        assert connector.execute_pushdown.call_count == 7
+        assert connector.execute_pushdown.call_count == 8
         connector.execute_pushdown.assert_any_call("SELECT mismatch", query_type="mismatch")
         connector.execute_pushdown.assert_any_call("SELECT added", query_type="added")
         connector.execute_pushdown.assert_any_call("SELECT missing", query_type="missing")
@@ -212,19 +234,122 @@ class TestEngineConnectorRouting:
         assert summary.mismatch_ratio == pytest.approx(0.009)
         assert summary.is_match is True
 
-    def test_it_reports_no_artifacts_for_pushdown_runs(self, mocker: MockerFixture) -> None:
-        """Ensure pushdown never claims discrepancy files it cannot write."""
+    def test_it_writes_pushdown_artifacts_under_a_primary_key_only_suffix(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure pushdown files are persisted and named for their key-only contents."""
         connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
         connector: Any = connector_cls.return_value
         _configure_warehouse_compiler(connector)
 
         summary = DiffEngine.run_from_configs(
-            DiffConfig(primary_keys=["id"], output_path="./diff_results"),
+            DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="csv"),
+            _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+            _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+        )
+
+        assert summary.artifacts_written is True
+        assert sorted(path.name for path in tmp_path.iterdir()) == [
+            "added_rows_pks_only.csv",
+            "changed_rows_pks_only.csv",
+            "removed_rows_pks_only.csv",
+        ]
+        assert pl.read_csv(tmp_path / "added_rows_pks_only.csv").columns == ["id"]
+
+    def test_it_omits_pushdown_artifacts_when_no_output_path_is_configured(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure pushdown writes nothing when the user asked for no artifacts."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        summary = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]),
             _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
             _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
         )
 
         assert summary.artifacts_written is False
+
+    def test_it_keeps_explicit_rules_and_skips_ignored_columns_during_synthesis(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure synthesis fills only unruled shared columns and honors ignore."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        def _wide_probe(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "schema":
+                return pl.DataFrame(
+                    schema={
+                        "id": pl.Int64,
+                        "amount": pl.Float64,
+                        "notes": pl.String,
+                        "legacy": pl.String,
+                    }
+                ).lazy()
+            if query_type == "columns":
+                return pl.DataFrame({"amount": [1], "notes": [2]}).lazy()
+            return _pushdown_by_query_type(statement, query_type)
+
+        connector.execute_pushdown.side_effect = _wide_probe
+        explicit = DiffRule(column_names=["amount"], absolute_tolerance=0.5)
+
+        DiffEngine.run_from_configs(
+            DiffConfig(
+                primary_keys=["id"],
+                rules=[explicit, DiffRule(column_names=["legacy"], ignore=True)],
+            ),
+            _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+            _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+        )
+
+        compiled: list[DiffRule] = connector.compiler.compile_query.call_args.args[3]
+        assert [rule.column_names for rule in compiled] == [["amount"], ["notes"]]
+        assert compiled[0].absolute_tolerance == 0.5
+        connector.compiler.compile_column_mismatch_query.assert_called_once_with(
+            "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"], compiled
+        )
+
+    def test_it_skips_the_tally_when_no_column_is_comparable(self, mocker: MockerFixture) -> None:
+        """Ensure a None aggregate leaves column_mismatches empty without a round trip."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+        connector.compiler.compile_column_mismatch_query.return_value = None
+
+        summary = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]),
+            _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+            _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+        )
+
+        assert summary.column_mismatches == {}
+        assert connector.execute_pushdown.call_count == 7
+
+    def test_it_raises_connector_error_when_the_tally_returns_multiple_rows(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a malformed aggregate fails loudly instead of reporting partial drift."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        def _multi_row_tally(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "columns":
+                return pl.DataFrame({"amount": [1, 2]}).lazy()
+            return _pushdown_by_query_type(statement, query_type)
+
+        connector.execute_pushdown.side_effect = _multi_row_tally
+
+        with pytest.raises(ConnectorError, match="did not return exactly one row"):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"]),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+            )
 
     def test_it_raises_config_error_when_probed_columns_violate_exact_schema(
         self, mocker: MockerFixture

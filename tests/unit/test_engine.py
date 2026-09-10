@@ -3,6 +3,7 @@
 
 """Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
 
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -395,3 +396,182 @@ class TestDataIntegrityAndSetDifferences:
 
         with pytest.raises(NotImplementedError, match="not yet implemented"):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+
+def _normalized(config: DiffConfig, frame: pl.DataFrame) -> pl.DataFrame:
+    """Run one frame through the source-side normalizer and materialize it."""
+    engine = DiffEngine(config, frame.lazy(), frame.lazy())
+    return engine._normalize_frame(  # pyright: ignore[reportPrivateUsage]
+        frame.lazy(), is_source=True
+    ).collect()
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestCanonicalTransformPipeline:
+    """Validate the single normalization pass shared by keys and compared columns."""
+
+    def test_it_applies_regex_replace_exactly_once(self) -> None:
+        """Ensure a non-idempotent pattern is not applied twice across two code paths."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["code"], regex_replace={"a": "aa"})],
+        )
+        result = _normalized(config, pl.DataFrame({"id": [1], "code": ["a"]}))
+
+        assert result["code"][0] == "aa"
+
+    def test_it_normalizes_primary_keys_so_they_join_after_cleaning(self) -> None:
+        """Ensure whitespace and casing rules now reach key columns before the join."""
+        src = pl.DataFrame({"id": ["  A  "], "val": [1]})
+        tgt = pl.DataFrame({"id": ["a"], "val": [1]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["id"], whitespace_mode="both", case_insensitive=True)],
+        )
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert summary.added_count == 0
+        assert summary.removed_count == 0
+        assert summary.is_match is True
+
+    def test_it_detects_duplicate_keys_created_by_normalization(self) -> None:
+        """Ensure uniqueness is asserted on normalized keys, not the raw ones."""
+        frame = pl.DataFrame({"id": ["A", "a"], "val": [1, 2]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["id"], case_insensitive=True)]
+        )
+
+        with pytest.raises(DataIntegrityError, match="not unique in SOURCE dataset"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    def test_it_skips_string_sentinels_on_numeric_columns(self) -> None:
+        """Ensure a global null_values list cannot fail a run containing numbers."""
+        src = pl.DataFrame({"id": [1], "amount": [10.0], "status": ["N/A"]})
+        tgt = pl.DataFrame({"id": [1], "amount": [10.0], "status": [None]})
+
+        config = DiffConfig(primary_keys=["id"], default_null_values=["N/A"])
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert summary.is_match is True
+
+    def test_it_pads_both_sides_so_numeric_and_text_codes_converge(self) -> None:
+        """Ensure pad_zeros stringifies first, letting 123 match '00123'."""
+        src = pl.DataFrame({"id": [1], "code": [123]})
+        tgt = pl.DataFrame({"id": [1], "code": ["00123"]})
+
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["code"], pad_zeros=5)]
+        )
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert summary.is_match is True
+        assert summary.changed_count == 0
+
+    def test_it_parses_strings_into_datetimes_so_they_compare_as_timestamps(self) -> None:
+        """Ensure datetime_format crosses the dtype branch instead of comparing text."""
+        src = pl.DataFrame({"id": [1], "ts": ["2024-01-05 10:00:00"]})
+        tgt = pl.DataFrame({"id": [1], "ts": [datetime(2024, 1, 5, 10, 0, 0)]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S")],
+        )
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert summary.is_match is True
+
+    def test_it_nulls_values_that_do_not_match_the_datetime_format(self) -> None:
+        """Ensure unparseable timestamps become NULL rather than aborting the run."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d")],
+        )
+        result = _normalized(config, pl.DataFrame({"id": [1], "ts": ["not-a-date"]}))
+
+        assert result["ts"][0] is None
+        assert result.schema["ts"] == pl.Datetime("us")
+
+    def test_it_converts_timezone_aware_columns_to_the_requested_zone(self) -> None:
+        """Ensure tz-aware timestamps are shifted into the configured zone."""
+        frame = pl.DataFrame({"id": [1], "ts": [datetime(2024, 1, 5, 15, 0)]}).with_columns(
+            pl.col("ts").dt.replace_time_zone("UTC")
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], timezone="America/New_York")],
+        )
+        result = _normalized(config, frame)
+        dtype = result.schema["ts"]
+
+        assert isinstance(dtype, pl.Datetime)
+        assert dtype.time_zone == "America/New_York"
+        assert result["ts"][0].hour == 10
+
+    def test_it_refuses_to_guess_a_zone_for_naive_timestamps(self) -> None:
+        """Ensure naive data fails loudly rather than being silently read as UTC."""
+        frame = pl.DataFrame({"id": [1], "ts": [datetime(2024, 1, 5, 15, 0)]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["ts"], timezone="UTC")]
+        )
+
+        with pytest.raises(ConfigError, match="timezone-naive"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    def test_it_rejects_a_timezone_rule_on_a_non_timestamp_column(self) -> None:
+        """Ensure a zone cannot be applied to text that was never parsed."""
+        frame = pl.DataFrame({"id": [1], "ts": ["2024-01-05"]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["ts"], timezone="UTC")]
+        )
+
+        with pytest.raises(ConfigError, match=r"not a\s+timestamp"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    def test_it_rejects_an_unknown_timezone_name(self) -> None:
+        """Ensure a typo surfaces as a ConfigError naming the column, not a raw Polars error."""
+        frame = pl.DataFrame({"id": [1], "ts": [datetime(2024, 1, 5, 15, 0)]}).with_columns(
+            pl.col("ts").dt.replace_time_zone("UTC")
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], timezone="Americas/New_York")],
+        )
+
+        with pytest.raises(ConfigError, match="unusable timezone"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    def test_it_parses_then_converts_when_the_format_carries_an_offset(self) -> None:
+        """Ensure stage 6a feeds stage 6b, so parsed offsets become convertible."""
+        frame = pl.DataFrame({"id": [1], "ts": ["2024-01-05 15:00:00+0000"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["ts"],
+                    datetime_format="%Y-%m-%d %H:%M:%S%z",
+                    timezone="America/New_York",
+                )
+            ],
+        )
+        result = _normalized(config, frame)
+        dtype = result.schema["ts"]
+
+        assert isinstance(dtype, pl.Datetime)
+        assert dtype.time_zone == "America/New_York"
+        assert result["ts"][0].hour == 10
+
+    def test_it_applies_the_value_map_to_the_source_side_only(self) -> None:
+        """Ensure the crosswalk rewrites source values without touching the target."""
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["tier"], value_map={"M": "Male"})]
+        )
+        frame = pl.DataFrame({"id": [1], "tier": ["M"]})
+        engine = DiffEngine(config, frame.lazy(), frame.lazy())
+        target = engine._normalize_frame(  # pyright: ignore[reportPrivateUsage]
+            frame.lazy(), is_source=False
+        ).collect()
+
+        assert _normalized(config, frame)["tier"][0] == "Male"
+        assert target["tier"][0] == "M"

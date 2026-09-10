@@ -8,8 +8,8 @@ from typing import Literal
 
 import polars as pl
 
-PushdownQueryType = Literal["mismatch", "added", "missing", "count", "schema"]
-"""Warehouse pushdown round-trip: comparison rows, row totals, or column probes."""
+PushdownQueryType = Literal["mismatch", "added", "missing", "count", "columns", "schema"]
+"""Warehouse pushdown round-trip: comparison rows, tallies, totals, or probes."""
 
 
 class VerideltaConnector(ABC):
@@ -32,7 +32,7 @@ class VerideltaConnector(ABC):
         Args:
             statement (str): SQL (warehouse) or deferred predicate payload.
             query_type (PushdownQueryType): Which round-trip the SQL represents
-                (`mismatch`, `added`, `missing`, `count`, or `schema`).
+                (`mismatch`, `added`, `missing`, `count`, `columns`, or `schema`).
 
         Returns:
             pl.LazyFrame: Unevaluated result graph. Must not be collected here.
