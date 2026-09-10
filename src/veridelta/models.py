@@ -349,8 +349,8 @@ class DiffConfig(BaseModel):
             in the generated markdown report summary.
         output_path (str | None): Optional path to save the resulting diff report
             and artifacts (added, removed, and changed rows).
-        output_format (str): The file format for exported discrepancy artifacts
-            (e.g., 'parquet', 'csv').
+        output_format (str): The file format for exported discrepancy artifacts.
+            Either 'parquet' or 'csv'; anything else raises `ConfigError`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -413,7 +413,7 @@ class DiffConfig(BaseModel):
     )
     output_format: str = Field(
         default="parquet",
-        description="The file format for exported discrepancy artifacts (e.g., 'parquet', 'csv').",
+        description="File format for exported discrepancy artifacts: 'parquet' or 'csv'.",
     )
 
     @field_validator("default_null_values")
