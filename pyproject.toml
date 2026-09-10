@@ -56,6 +56,7 @@ all = [
 [dependency-groups]
 dev = [
     "commitizen>=4.13.10",
+    "duckdb>=1.5.0",
     "ipykernel>=7.2.0",
     "mkdocs>=1.6.1",
     "mkdocs-jupyter>=0.26.3",

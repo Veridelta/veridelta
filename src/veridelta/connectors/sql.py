@@ -7,15 +7,21 @@ Translates `DiffRule` models into Snowflake and Databricks SQL predicates and
 assembles inner-join mismatch queries, per-column mismatch tallies, anti-join
 queries for added and removed rows, row counts, and column probes without
 extracting source tables.
+
+Every dialect-specific spelling lives in a table at module scope rather than in
+the method that needs it. Adding a dialect is then a matter of filling in the
+tables, and a missing entry fails loudly instead of inheriting some other
+dialect's syntax.
 """
 
 from collections.abc import Mapping, Sequence
 from enum import Enum
+from typing import Final
 
 import polars as pl
 
-from veridelta.exceptions import ConnectorError
-from veridelta.models import SQL_IDENTIFIER_SEGMENT, DiffRule, SentinelValue
+from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.models import SQL_IDENTIFIER_SEGMENT, CastTarget, DiffRule, SentinelValue
 from veridelta.sentinels import usable_sentinels
 
 ColumnTypes = Mapping[str, pl.DataType]
@@ -26,10 +32,131 @@ COUNT_ALIAS = "_veridelta_total"
 
 
 class SQLDialect(str, Enum):
-    """Warehouse SQL dialects supported by the pushdown compiler."""
+    """Warehouse SQL dialects supported by the pushdown compiler.
+
+    `DUCKDB` has no connector or config model. It exists so the differential
+    test harness can execute real compiler output instead of a rewritten
+    approximation of it.
+    """
 
     SNOWFLAKE = "snowflake"
     DATABRICKS = "databricks"
+    DUCKDB = "duckdb"
+
+
+_CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
+    SQLDialect.SNOWFLAKE: {
+        "Int64": "BIGINT",
+        "Float64": "FLOAT",
+        "String": "VARCHAR",
+        "Boolean": "BOOLEAN",
+        "Date": "DATE",
+        "Datetime": "TIMESTAMP_NTZ",
+    },
+    SQLDialect.DATABRICKS: {
+        "Int64": "BIGINT",
+        "Float64": "DOUBLE",
+        "String": "STRING",
+        "Boolean": "BOOLEAN",
+        "Date": "DATE",
+        "Datetime": "TIMESTAMP",
+    },
+    SQLDialect.DUCKDB: {
+        "Int64": "BIGINT",
+        "Float64": "DOUBLE",
+        "String": "VARCHAR",
+        "Boolean": "BOOLEAN",
+        "Date": "DATE",
+        "Datetime": "TIMESTAMP",
+    },
+}
+"""`cast_to` value to the type keyword each dialect spells it with.
+
+A type name is the one thing in a `CAST` that cannot be quoted or bound as a
+parameter, so this table is the boundary that keeps configuration text out of
+the emitted SQL grammar. Nothing outside it ever reaches a `CAST`.
+"""
+
+_IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: '"',
+    SQLDialect.DATABRICKS: "`",
+    SQLDialect.DUCKDB: '"',
+}
+"""Character each dialect quotes identifiers with, doubled to escape itself."""
+
+_STRPTIME_DIRECTIVES: Final[dict[SQLDialect, dict[str, str]]] = {
+    SQLDialect.SNOWFLAKE: {
+        "Y": "YYYY",
+        "m": "MM",
+        "d": "DD",
+        "H": "HH24",
+        "M": "MI",
+        "S": "SS",
+        "f": "FF6",
+        "z": "TZHTZM",
+        "%": '"%"',
+    },
+    SQLDialect.DATABRICKS: {
+        "Y": "yyyy",
+        "m": "MM",
+        "d": "dd",
+        "H": "HH",
+        "M": "mm",
+        "S": "ss",
+        "f": "SSSSSS",
+        "z": "XX",
+        "%": "'%'",
+    },
+    SQLDialect.DUCKDB: {
+        "Y": "%Y",
+        "m": "%m",
+        "d": "%d",
+        "H": "%H",
+        "M": "%M",
+        "S": "%S",
+        "f": "%f",
+        "z": "%z",
+        "%": "%%",
+    },
+}
+"""Python `strptime` directive to its spelling in each dialect's format language.
+
+Three different languages: Snowflake's own, Java `DateTimeFormatter` for
+Databricks, and Python's own for DuckDB. Membership here is the allowlist, and
+anything absent is refused rather than passed through. A directive that survives
+translation unrecognized parses to NULL, which reads as a clean match rather
+than as an error.
+"""
+
+_FORMAT_LITERAL_QUOTES: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: '"',
+    SQLDialect.DATABRICKS: "'",
+    SQLDialect.DUCKDB: "",
+}
+"""Character each dialect wraps a literal run of a format string in.
+
+DuckDB reads Python directives directly, so its literals need no wrapper.
+"""
+
+_FORMAT_LITERALS: Final[frozenset[str]] = frozenset(" -/:.,_T")
+"""Characters allowed between directives in a `datetime_format`.
+
+Small on purpose. Every separator in a real timestamp format is here, and the
+set excludes both quote characters, so a literal run can be wrapped in either
+dialect's quoting without any escaping and without a way to close the quote
+early.
+"""
+
+_PARSE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: "TRY_TO_TIMESTAMP",
+    SQLDialect.DATABRICKS: "try_to_timestamp",
+    SQLDialect.DUCKDB: "try_strptime",
+}
+"""Each dialect's non-throwing parse, matching Polars `strptime(strict=False)`.
+
+The strict variants abort the whole statement on one unparseable row where the
+local engine yields a null and keeps going.
+"""
 
 
 class SQLPushdownCompiler:
@@ -57,9 +184,9 @@ class SQLPushdownCompiler:
         """Compile a boolean match predicate for one source/target column pair.
 
         Follows the canonical transform order documented on `DiffRule`, which is
-        the single source of truth shared with the local engine. This compiler
-        implements stages 1 through 4, 8, and 9; the stages it cannot express are
-        rejected by `_reject_unimplemented` rather than skipped.
+        the single source of truth shared with the local engine. All nine stages
+        compile, so a pushdown run and a local run evaluate the same pipeline
+        rather than differing by whatever the warehouse happened to support.
 
         Args:
             rule (DiffRule): Semantic comparison overrides for the column.
@@ -78,23 +205,34 @@ class SQLPushdownCompiler:
             str: Boolean SQL expression that is true when the column values match.
 
         Raises:
-            ConnectorError: If identifiers are empty or the rule uses unimplemented
-                fields (`pad_zeros`, `datetime_format`, `timezone`, `cast_to`).
+            ConfigError: If `datetime_format` uses a directive this dialect
+                cannot express.
+            ConnectorError: If identifiers are empty or not allowlisted.
         """
-        self._reject_unimplemented(rule)
         tgt_name = target_column if target_column is not None else source_column
         src_expr = self._qualify(source_alias, source_column)
         tgt_expr = self._qualify(target_alias, tgt_name)
 
         src_expr = self._apply_null_values(src_expr, self._sentinels_for(rule, source_dtype))
         tgt_expr = self._apply_null_values(tgt_expr, self._sentinels_for(rule, target_dtype))
-        src_expr = self._apply_regex_replace(src_expr, rule)
-        tgt_expr = self._apply_regex_replace(tgt_expr, rule)
-        src_expr = self._apply_whitespace(src_expr, rule)
-        tgt_expr = self._apply_whitespace(tgt_expr, rule)
-        src_expr = self._apply_case(src_expr, rule)
-        tgt_expr = self._apply_case(tgt_expr, rule)
-        src_expr = self._apply_value_map(src_expr, rule)
+        if self._is_text_side(source_dtype):
+            src_expr = self._apply_regex_replace(src_expr, rule)
+            src_expr = self._apply_whitespace(src_expr, rule)
+            src_expr = self._apply_case(src_expr, rule)
+            src_expr = self._apply_value_map(src_expr, rule)
+        if self._is_text_side(target_dtype):
+            tgt_expr = self._apply_regex_replace(tgt_expr, rule)
+            tgt_expr = self._apply_whitespace(tgt_expr, rule)
+            tgt_expr = self._apply_case(tgt_expr, rule)
+        src_expr = self._apply_pad_zeros(src_expr, rule)
+        tgt_expr = self._apply_pad_zeros(tgt_expr, rule)
+        src_expr = self._apply_datetime_format(src_expr, rule, source_dtype)
+        tgt_expr = self._apply_datetime_format(tgt_expr, rule, target_dtype)
+        # Stage 6b, `timezone`, emits nothing on purpose. See
+        # `_reject_unzoned_timezone` in the engine for why, and for the
+        # validation that takes its place.
+        src_expr = self._apply_cast(src_expr, rule, source_dtype)
+        tgt_expr = self._apply_cast(tgt_expr, rule, target_dtype)
 
         return self._compare(src_expr, tgt_expr, rule)
 
@@ -512,25 +650,6 @@ class SQLPushdownCompiler:
             )
         return pairs
 
-    def _reject_unimplemented(self, rule: DiffRule) -> None:
-        """Raise when the rule uses fields the compiler cannot emit yet.
-
-        Args:
-            rule (DiffRule): Rule to inspect.
-
-        Raises:
-            ConnectorError: If an unimplemented field is set.
-        """
-        unimplemented = (
-            ("pad_zeros", rule.pad_zeros),
-            ("datetime_format", rule.datetime_format),
-            ("timezone", rule.timezone),
-            ("cast_to", rule.cast_to),
-        )
-        for field_name, value in unimplemented:
-            if value is not None:
-                raise ConnectorError(f"SQL pushdown does not support DiffRule.{field_name}.")
-
     def _quote_ident(self, name: str) -> str:
         """Quote a single SQL identifier for the active dialect.
 
@@ -545,9 +664,8 @@ class SQLPushdownCompiler:
         """
         if SQL_IDENTIFIER_SEGMENT.fullmatch(name) is None:
             raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
-        if self.dialect is SQLDialect.SNOWFLAKE:
-            return '"' + name.replace('"', '""') + '"'
-        return "`" + name.replace("`", "``") + "`"
+        quote = _IDENTIFIER_QUOTES[self.dialect]
+        return quote + name.replace(quote, quote * 2) + quote
 
     def _quote_relation(self, name: str) -> str:
         """Quote a possibly dotted table, schema, or catalog path.
@@ -715,7 +833,12 @@ class SQLPushdownCompiler:
         return expr
 
     def _apply_value_map(self, expr: str, rule: DiffRule) -> str:
-        """Map source values using Snowflake `IFF` or Databricks `CASE`.
+        """Map source values with nested `IFF` on Snowflake, `CASE` elsewhere.
+
+        The two forms are equivalent. This is the one place the dialects differ
+        structurally rather than by a keyword, so it is a branch instead of a
+        table: Databricks and DuckDB both take the `CASE` path, DuckDB because
+        it has no `IFF` at all.
 
         Args:
             expr (str): Source-side SQL expression.
@@ -737,6 +860,210 @@ class SQLPushdownCompiler:
             for key, value in rule.value_map.items()
         )
         return f"CASE {branches} ELSE {expr} END"
+
+    def _is_text_side(self, dtype: pl.DataType | None) -> bool:
+        """Return whether stages 2 through 4 apply to one side of a comparison.
+
+        Matches the local engine's gate exactly, including its narrowness:
+        `Categorical` and `Enum` are excluded there because the Polars `.str`
+        namespace rejects them, so a warehouse that would happily run `TRIM` on
+        the same column must decline too. Parity is with the engine's behavior,
+        not with what the dialect could manage.
+
+        Args:
+            dtype (pl.DataType | None): Probed dtype, or None when no schema was
+                supplied and the caller has taken responsibility for the types.
+
+        Returns:
+            bool: True when the text stages should be emitted for this side.
+        """
+        return dtype is None or isinstance(dtype, (pl.String, pl.Utf8))
+
+    def _apply_pad_zeros(self, expr: str, rule: DiffRule) -> str:
+        """Left-pad with zeros the way Python's `str.zfill` does.
+
+        `LPAD` alone is not a substitute. It pads in front of a sign, turning
+        `-12` into `0-12` where Polars produces `-012`, and it truncates input
+        longer than the target width where Polars leaves it untouched. Both
+        divergences are silent, so the padding is spelled out instead.
+
+        The cast to text happens even at width zero, because the local engine
+        stringifies unconditionally and later stages branch on whether the
+        column is text by then.
+
+        Args:
+            expr (str): SQL expression to pad.
+            rule (DiffRule): Rule providing `pad_zeros`.
+
+        Returns:
+            str: Padded expression, or `expr` when `pad_zeros` is unset. NULL
+            input stays NULL: every branch below propagates it.
+        """
+        if rule.pad_zeros is None:
+            return expr
+        text = f"CAST({expr} AS {self._cast_keyword('String')})"
+        width = rule.pad_zeros
+        if width == 0:
+            return text
+        sign = f"SUBSTR({text}, 1, 1)"
+        return (
+            f"CASE WHEN LENGTH({text}) >= {width} THEN {text} "
+            f"WHEN {sign} IN ('-', '+') "
+            f"THEN {sign} || LPAD(SUBSTR({text}, 2), {width - 1}, '0') "
+            f"ELSE LPAD({text}, {width}, '0') END"
+        )
+
+    def _apply_datetime_format(self, expr: str, rule: DiffRule, dtype: pl.DataType | None) -> str:
+        """Parse text timestamps with the dialect's non-throwing parser.
+
+        Gated on the value being text by this point, exactly as the local engine
+        gates it: either the column is text or stage 5 stringified it.
+
+        Args:
+            expr (str): SQL expression to parse.
+            rule (DiffRule): Rule providing `datetime_format`.
+            dtype (pl.DataType | None): Probed dtype for this side.
+
+        Returns:
+            str: Parse call, or `expr` when the stage does not apply.
+
+        Raises:
+            ConfigError: If the format uses a directive or literal character
+                this dialect cannot express.
+        """
+        if not rule.datetime_format:
+            return expr
+        if rule.pad_zeros is None and not self._is_text_side(dtype):
+            return expr
+        pattern = self._translate_datetime_format(rule.datetime_format)
+        return f"{_PARSE_FUNCTIONS[self.dialect]}({expr}, {self._literal(pattern)})"
+
+    def _translate_datetime_format(self, fmt: str) -> str:
+        """Rewrite a Python `strptime` format in the dialect's format language.
+
+        Walks the string one token at a time against `_STRPTIME_DIRECTIVES`
+        rather than substituting patterns over the whole string. A substitution
+        pass has no way to tell a directive from the same letters appearing as
+        literal text, and it leaves anything it does not recognize in place,
+        where it becomes part of the emitted format.
+
+        Runs of literal text are wrapped in the dialect's quoting so a separator
+        can never be mistaken for a format element.
+
+        Args:
+            fmt (str): Python/C `strptime` format string from the config.
+
+        Returns:
+            str: Equivalent format in the active dialect's language.
+
+        Raises:
+            ConfigError: If a directive is unsupported, a literal character is
+                outside `_FORMAT_LITERALS`, or the string ends mid-directive.
+        """
+        directives = _STRPTIME_DIRECTIVES[self.dialect]
+        quote = _FORMAT_LITERAL_QUOTES[self.dialect]
+        out: list[str] = []
+        literal: list[str] = []
+
+        def flush() -> None:
+            if literal:
+                out.append(f"{quote}{''.join(literal)}{quote}")
+                literal.clear()
+
+        index = 0
+        while index < len(fmt):
+            char = fmt[index]
+            if char != "%":
+                if char not in _FORMAT_LITERALS:
+                    allowed = "".join(sorted(_FORMAT_LITERALS))
+                    raise ConfigError(
+                        f"datetime_format '{fmt}' contains the literal character "
+                        f"'{char}', which SQL pushdown cannot quote. Allowed "
+                        f"separators: {allowed!r}."
+                    )
+                literal.append(char)
+                index += 1
+                continue
+
+            if index + 1 >= len(fmt):
+                raise ConfigError(f"datetime_format '{fmt}' ends with a dangling '%'.")
+            code = fmt[index + 1]
+            mapped = directives.get(code)
+            if mapped is None:
+                supported = ", ".join(f"%{key}" for key in directives)
+                raise ConfigError(
+                    f"datetime_format '{fmt}' uses '%{code}', which SQL pushdown "
+                    f"cannot translate for {self.dialect.value}. Supported "
+                    f"directives: {supported}."
+                )
+            flush()
+            out.append(mapped)
+            index += 2
+
+        flush()
+        return "".join(out)
+
+    def _apply_cast(self, expr: str, rule: DiffRule, dtype: pl.DataType | None) -> str:
+        """Cast to the configured target type using the dialect's keyword.
+
+        Args:
+            expr (str): SQL expression to cast.
+            rule (DiffRule): Rule providing `cast_to`.
+            dtype (pl.DataType | None): Probed dtype for this side, used to
+                detect the float-to-integer case below.
+
+        Returns:
+            str: `CAST(expr AS keyword)`, or `expr` when `cast_to` is unset.
+
+        Raises:
+            ConnectorError: If `cast_to` has no keyword for this dialect.
+        """
+        if rule.cast_to is None:
+            return expr
+        if rule.cast_to == "Int64" and self._precast_is_float(rule, dtype):
+            # Polars truncates a float toward zero on the way to an integer.
+            # Snowflake and DuckDB round instead, so 10.7 would compare as 11
+            # under pushdown and 10 locally. Truncate explicitly rather than
+            # inherit whichever behavior the warehouse happens to have.
+            expr = f"CASE WHEN {expr} < 0 THEN CEIL({expr}) ELSE FLOOR({expr}) END"
+        return f"CAST({expr} AS {self._cast_keyword(rule.cast_to)})"
+
+    def _precast_is_float(self, rule: DiffRule, dtype: pl.DataType | None) -> bool:
+        """Return whether stage 7 receives a floating-point value on this side.
+
+        Only floats need the truncation guard. `Decimal` rounds to integers in
+        Polars exactly as SQL does, and every earlier stage that fires leaves
+        text or a timestamp behind rather than a float.
+
+        Args:
+            rule (DiffRule): Rule whose earlier stages may have changed the type.
+            dtype (pl.DataType | None): Probed dtype, or None when unprobed.
+
+        Returns:
+            bool: True only when the value reaching the cast is still a float.
+        """
+        if rule.pad_zeros is not None or rule.datetime_format or rule.timezone:
+            return False
+        return dtype is not None and dtype.is_float()
+
+    def _cast_keyword(self, target: CastTarget) -> str:
+        """Look up the dialect keyword for a cast target.
+
+        Args:
+            target (CastTarget): Validated `cast_to` value.
+
+        Returns:
+            str: SQL type keyword for the active dialect.
+
+        Raises:
+            ConnectorError: If the target has no mapping. Unreachable through a
+                validated config, and deliberately fatal if a new cast target is
+                ever added without a keyword for every dialect.
+        """
+        keyword = _CAST_KEYWORDS[self.dialect].get(target)
+        if keyword is None:
+            raise ConnectorError(f"SQL pushdown has no {self.dialect.value} type for '{target}'.")
+        return keyword
 
     def _has_tolerance(self, rule: DiffRule) -> bool:
         """Return whether numeric tolerance predicates should be emitted.
@@ -786,6 +1113,8 @@ class SQLPushdownCompiler:
         if rule.treat_null_as_equal:
             if self.dialect is SQLDialect.SNOWFLAKE:
                 return f"EQUAL_NULL({src_expr}, {tgt_expr})"
-            return f"{src_expr} <=> {tgt_expr}"
+            if self.dialect is SQLDialect.DATABRICKS:
+                return f"{src_expr} <=> {tgt_expr}"
+            return f"{src_expr} IS NOT DISTINCT FROM {tgt_expr}"
 
         return f"{src_expr} = {tgt_expr}"

@@ -15,10 +15,12 @@ from typing import Any, ClassVar, Final
 
 import polars as pl
 
+from veridelta.connectors.base import PushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
+    CastTarget,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -54,6 +56,44 @@ def _unusable_sentinel_error(
         f"null_values {list(sentinels)!r} configured for it. Quote text sentinels "
         "and leave numbers unquoted so each one matches its column type."
     )
+
+
+def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None:
+    """Enforce the local engine's `timezone` preconditions on a warehouse column.
+
+    The compiler emits nothing for stage 6b, because Polars' `convert_time_zone`
+    only rewrites a column's timezone label: every downstream cast and
+    comparison still reads the underlying UTC instant, so the conversion cannot
+    change a verdict. Warehouses have no per-column zone label to rewrite --
+    Spark most notably, whose `TIMESTAMP` is a bare instant -- and any function
+    that looks like the equivalent instead shifts the value to a wall clock,
+    which would make pushdown disagree with a local run.
+
+    What the rule does carry is a precondition, and that has to survive
+    pushdown. A run that would fail locally on naive or non-temporal data must
+    fail here too, rather than quietly comparing columns the local engine
+    refuses to touch.
+
+    Args:
+        column (str): Column the rule resolved to.
+        dtype (pl.DataType): Probed type for that side of the comparison.
+        zone (str): Configured target timezone.
+
+    Raises:
+        ConfigError: If the column is not a timestamp or carries no timezone.
+    """
+    if not isinstance(dtype, pl.Datetime):
+        raise ConfigError(
+            f"Column '{column}' sets timezone='{zone}' but holds {dtype}, not a "
+            "timestamp. Parse it with datetime_format first."
+        )
+    if dtype.time_zone is None:
+        raise ConfigError(
+            f"Column '{column}' sets timezone='{zone}' but its timestamps are "
+            "timezone-naive. Veridelta will not assume an origin zone, because "
+            "guessing wrong shifts every value silently. Store the column with a "
+            "timezone, or compare it without a timezone rule."
+        )
 
 
 class BaseLoader(ABC):
@@ -255,7 +295,8 @@ def _resolve_pushdown_rules(
 
     Raises:
         ConfigError: If a column carries an explicit `null_values` rule whose
-            sentinels none of its probed types can hold.
+            sentinels none of its probed types can hold, or a `timezone` rule
+            the probed types cannot satisfy.
     """
     target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
@@ -276,11 +317,17 @@ def _resolve_pushdown_rules(
             continue
 
         base = rule if rule is not None else DiffRule()
+        sides = ((column, source_schema), (rename_to or column, target_schema))
         if base.null_values:
-            for name, schema in ((column, source_schema), (rename_to or column, target_schema)):
+            for name, schema in sides:
                 dtype = schema.get(name)
                 if dtype is not None and not usable_sentinels(base.null_values, dtype):
                     raise _unusable_sentinel_error(name, dtype, base.null_values)
+        if base.timezone:
+            for name, schema in sides:
+                dtype = schema.get(name)
+                if dtype is not None:
+                    _reject_unzoned_timezone(name, dtype, base.timezone)
 
         resolved.append(
             DiffRule(
@@ -349,6 +396,19 @@ def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
         if count > 0:
             counts[column] = count
     return counts
+
+
+_CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
+    "Int64": pl.Int64(),
+    "Float64": pl.Float64(),
+    "String": pl.String(),
+    "Boolean": pl.Boolean(),
+    "Date": pl.Date(),
+    "Datetime": pl.Datetime(),
+}
+"""`cast_to` name to the dtype it resolves to. An explicit table rather than a
+`getattr(pl, ...)` lookup, which returned None for anything unrecognized and
+skipped the cast without a word."""
 
 
 _ARTIFACT_WRITERS: Final[dict[str, Callable[[pl.DataFrame, Path], None]]] = {
@@ -444,13 +504,13 @@ def _summary_from_pushdown(
 
 
 def _pushdown_row_count(
-    connector: SnowflakeConnector | DatabricksConnector,
+    connector: PushdownSession,
     table: str,
 ) -> int:
     """Collect a single `COUNT(*)` scalar from a warehouse relation.
 
     Args:
-        connector (SnowflakeConnector | DatabricksConnector): Connected session.
+        connector (PushdownSession): Connected session with a matching compiler.
         table (str): Relation to count.
 
     Returns:
@@ -473,7 +533,7 @@ def _pushdown_row_count(
 
 
 def _validate_pushdown_schema(
-    connector: SnowflakeConnector | DatabricksConnector,
+    connector: PushdownSession,
     source_table: str,
     target_table: str,
     diff: DiffConfig,
@@ -485,7 +545,7 @@ def _validate_pushdown_schema(
     compared exactly as the compiler quotes them, without case folding.
 
     Args:
-        connector (SnowflakeConnector | DatabricksConnector): Connected session.
+        connector (PushdownSession): Connected session with a matching compiler.
         source_table (str): Source relation name.
         target_table (str): Target relation name.
         diff (DiffConfig): Master comparison rules and keys.
@@ -509,7 +569,7 @@ def _validate_pushdown_schema(
 
 
 def _collect_pushdown_summary(
-    connector: SnowflakeConnector | DatabricksConnector,
+    connector: PushdownSession,
     source_table: str,
     target_table: str,
     diff: DiffConfig,
@@ -517,8 +577,8 @@ def _collect_pushdown_summary(
     """Compile and collect the warehouse count, mismatch, and anti-join queries.
 
     Args:
-        connector (SnowflakeConnector | DatabricksConnector): Connected warehouse
-            session whose compiler matches the dialect.
+        connector (PushdownSession): Connected warehouse session whose compiler
+            matches the dialect.
         source_table (str): Source relation name.
         target_table (str): Target relation name.
         diff (DiffConfig): Master comparison rules and keys.
@@ -1016,7 +1076,8 @@ class DiffEngine:
             pl.Expr | None: Aliased expression, or None when no stage applies.
 
         Raises:
-            ConfigError: If `timezone` cannot be applied to the column.
+            ConfigError: If `timezone` cannot be applied to the column, or
+                `cast_to` names a type outside `_CAST_TARGETS`.
         """
         expr = pl.col(column)
         applied = False
@@ -1026,10 +1087,15 @@ class DiffEngine:
             applied = True
 
         if rule["cast_to"]:
-            target_dtype = getattr(pl, rule["cast_to"], None)
-            if target_dtype:
-                expr = expr.cast(target_dtype)
-                applied = True
+            target_dtype = _CAST_TARGETS.get(rule["cast_to"])
+            if target_dtype is None:
+                supported = ", ".join(_CAST_TARGETS)
+                raise ConfigError(
+                    f"Column '{column}' sets cast_to='{rule['cast_to']}', which is not a "
+                    f"supported cast target. Supported: {supported}."
+                )
+            expr = expr.cast(target_dtype)
+            applied = True
 
         return expr.alias(column) if applied else None
 

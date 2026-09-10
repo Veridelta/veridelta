@@ -197,6 +197,23 @@ class TestSemanticNormalization:
         assert summary.is_match is True
         assert summary.changed_count == 0
 
+    def test_it_rejects_a_cast_target_it_cannot_resolve(self) -> None:
+        """Ensure an unresolvable cast target fails instead of being skipped.
+
+        `cast_to` is a closed `Literal`, so this needs `model_construct` to get
+        past validation. The guard is what makes the old failure mode -- an
+        unrecognized name resolving to nothing and leaving the column uncast --
+        impossible for any config built programmatically.
+        """
+        src = pl.DataFrame({"id": [1], "n": ["1"]})
+        tgt = pl.DataFrame({"id": [1], "n": [1]})
+        # Deliberately off the Literal: the point is the runtime guard behind it.
+        rule = DiffRule.model_construct(column_names=["n"], cast_to="Int128")  # type: ignore[arg-type]
+        config = DiffConfig.model_construct(primary_keys=["id"], rules=[rule])
+
+        with pytest.raises(ConfigError, match="Int128"):
+            DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
     def test_it_evaluates_strings_as_matches_when_casing_and_whitespace_rules_are_applied(
         self,
     ) -> None:

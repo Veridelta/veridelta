@@ -8,7 +8,7 @@ import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
 from veridelta.connectors.sql import COUNT_ALIAS
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
 
 
@@ -22,16 +22,26 @@ def _databricks() -> SQLPushdownCompiler:
     return SQLPushdownCompiler(SQLDialect.DATABRICKS)
 
 
+def _duckdb() -> SQLPushdownCompiler:
+    """Return a DuckDB-targeted compiler."""
+    return SQLPushdownCompiler(SQLDialect.DUCKDB)
+
+
 @pytest.mark.unit
 @pytest.mark.fast
 class TestSQLDialect:
     """Validate the warehouse dialect enum."""
 
-    def test_it_exposes_snowflake_and_databricks_values(self) -> None:
-        """Ensure the enum is a closed set of supported warehouse dialects."""
+    def test_it_exposes_the_supported_dialect_values(self) -> None:
+        """Ensure the enum is a closed set of compilable dialects."""
         assert SQLDialect.SNOWFLAKE.value == "snowflake"
         assert SQLDialect.DATABRICKS.value == "databricks"
-        assert {member.value for member in SQLDialect} == {"snowflake", "databricks"}
+        assert SQLDialect.DUCKDB.value == "duckdb"
+        assert {member.value for member in SQLDialect} == {
+            "snowflake",
+            "databricks",
+            "duckdb",
+        }
 
 
 @pytest.mark.unit
@@ -576,26 +586,232 @@ class TestCompilerErrors:
                 [DiffRule(column_names=["a", "b"], rename_to="c")],
             )
 
-    def test_it_rejects_unimplemented_rule_fields(self) -> None:
-        """Ensure pad_zeros, datetime, timezone, and cast_to are blocked."""
+    def test_it_compiles_every_transform_stage(self) -> None:
+        """Ensure no rule field is rejected as unimplemented any more."""
         compiler = _snowflake()
-        with pytest.raises(ConnectorError, match="pad_zeros"):
-            compiler.compile_column_predicate(
-                DiffRule(column_names=["id"], pad_zeros=5),
-                "id",
-            )
-        with pytest.raises(ConnectorError, match="datetime_format"):
-            compiler.compile_column_predicate(
-                DiffRule(column_names=["id"], datetime_format="%Y-%m-%d"),
-                "id",
-            )
-        with pytest.raises(ConnectorError, match="timezone"):
-            compiler.compile_column_predicate(
-                DiffRule(column_names=["id"], timezone="UTC"),
-                "id",
-            )
-        with pytest.raises(ConnectorError, match="cast_to"):
-            compiler.compile_column_predicate(
-                DiffRule(column_names=["id"], cast_to="Float64"),
-                "id",
-            )
+        rule = DiffRule(
+            column_names=["ts"],
+            pad_zeros=8,
+            datetime_format="%Y-%m-%d",
+            timezone="UTC",
+            cast_to="Date",
+        )
+
+        sql = compiler.compile_column_predicate(rule, "ts")
+
+        assert "LPAD" in sql
+        assert "TRY_TO_TIMESTAMP" in sql
+        assert "CAST" in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestCastCompilation:
+    """Validate stage 7 across the dialect keyword table."""
+
+    @pytest.mark.parametrize(
+        ("target", "keyword"),
+        [
+            ("Int64", "BIGINT"),
+            ("Float64", "FLOAT"),
+            ("String", "VARCHAR"),
+            ("Boolean", "BOOLEAN"),
+            ("Date", "DATE"),
+            ("Datetime", "TIMESTAMP_NTZ"),
+        ],
+    )
+    def test_it_maps_snowflake_cast_keywords(self, target: str, keyword: str) -> None:
+        """Ensure each cast target resolves to its Snowflake type name."""
+        rule = DiffRule(column_names=["c"], cast_to=target)  # type: ignore[arg-type]
+
+        sql = _snowflake().compile_column_predicate(rule, "c")
+
+        assert f'CAST("src"."c" AS {keyword})' in sql
+
+    @pytest.mark.parametrize(
+        ("target", "keyword"),
+        [
+            ("Int64", "BIGINT"),
+            ("Float64", "DOUBLE"),
+            ("String", "STRING"),
+            ("Boolean", "BOOLEAN"),
+            ("Date", "DATE"),
+            ("Datetime", "TIMESTAMP"),
+        ],
+    )
+    def test_it_maps_databricks_cast_keywords(self, target: str, keyword: str) -> None:
+        """Ensure each cast target resolves to its Databricks type name."""
+        rule = DiffRule(column_names=["c"], cast_to=target)  # type: ignore[arg-type]
+
+        sql = _databricks().compile_column_predicate(rule, "c")
+
+        assert f"CAST(`src`.`c` AS {keyword})" in sql
+
+    def test_it_truncates_a_float_bound_for_an_integer(self) -> None:
+        """Ensure the float-to-integer cast truncates instead of rounding.
+
+        Polars truncates toward zero where SQL rounds, so the guard has to be
+        emitted whenever the probed dtype says a float reaches the cast.
+        """
+        rule = DiffRule(column_names=["n"], cast_to="Int64")
+
+        sql = _snowflake().compile_column_predicate(
+            rule, "n", source_dtype=pl.Float64(), target_dtype=pl.Float64()
+        )
+
+        assert 'CASE WHEN "src"."n" < 0 THEN CEIL("src"."n") ELSE FLOOR("src"."n") END' in sql
+
+    def test_it_skips_truncation_when_an_earlier_stage_changed_the_type(self) -> None:
+        """Ensure the float guard is dropped once stage 5 has stringified.
+
+        The probed dtype describes the column, not the value reaching stage 7.
+        Comparing a padded string against zero would be a type error.
+        """
+        rule = DiffRule(column_names=["n"], pad_zeros=4, cast_to="Int64")
+
+        sql = _snowflake().compile_column_predicate(
+            rule, "n", source_dtype=pl.Float64(), target_dtype=pl.Float64()
+        )
+
+        assert "FLOOR" not in sql
+
+    def test_it_leaves_an_integer_cast_alone(self) -> None:
+        """Ensure a non-float source skips the truncation guard."""
+        rule = DiffRule(column_names=["n"], cast_to="Int64")
+
+        sql = _snowflake().compile_column_predicate(
+            rule, "n", source_dtype=pl.Int32(), target_dtype=pl.Int32()
+        )
+
+        assert "FLOOR" not in sql
+        assert 'CAST("src"."n" AS BIGINT)' in sql
+
+    def test_it_rejects_a_cast_target_with_no_keyword(self) -> None:
+        """Ensure an unmapped cast target fails closed rather than reaching SQL.
+
+        Unreachable through a validated config. It exists so that adding a new
+        `CastTarget` without filling in every dialect breaks loudly instead of
+        emitting an unquoted config string into a `CAST`.
+        """
+        with pytest.raises(ConnectorError, match="Decimal"):
+            _snowflake()._cast_keyword("Decimal")  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestPadZerosCompilation:
+    """Validate stage 5, which has no single-function SQL equivalent."""
+
+    def test_it_pads_after_a_sign(self) -> None:
+        """Ensure the emitted SQL splits the sign off before padding."""
+        rule = DiffRule(column_names=["c"], pad_zeros=4)
+
+        sql = _duckdb().compile_column_predicate(rule, "c")
+
+        assert "SUBSTR(CAST(\"src\".\"c\" AS VARCHAR), 1, 1) IN ('-', '+')" in sql
+        assert 'LPAD(SUBSTR(CAST("src"."c" AS VARCHAR), 2), 3, \'0\')' in sql
+
+    def test_it_leaves_over_long_values_untouched(self) -> None:
+        """Ensure a length guard precedes any `LPAD`, which would truncate."""
+        rule = DiffRule(column_names=["c"], pad_zeros=4)
+
+        sql = _duckdb().compile_column_predicate(rule, "c")
+
+        assert 'CASE WHEN LENGTH(CAST("src"."c" AS VARCHAR)) >= 4' in sql
+
+    def test_it_still_stringifies_at_width_zero(self) -> None:
+        """Ensure width zero casts to text without emitting a pad."""
+        rule = DiffRule(column_names=["c"], pad_zeros=0)
+
+        sql = _duckdb().compile_column_predicate(rule, "c")
+
+        assert 'CAST("src"."c" AS VARCHAR)' in sql
+        assert "LPAD" not in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestDatetimeFormatCompilation:
+    """Validate stage 6a, whose translation tables DuckDB cannot exercise.
+
+    The differential harness runs DuckDB, which reads Python directives
+    natively. These string assertions are the only coverage the Snowflake and
+    Databricks format languages get.
+    """
+
+    def test_it_translates_a_snowflake_format(self) -> None:
+        """Ensure directives become Snowflake elements and literals are quoted."""
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S")
+
+        sql = _snowflake().compile_column_predicate(rule, "ts")
+
+        assert 'TRY_TO_TIMESTAMP("src"."ts", \'YYYY"-"MM"-"DD" "HH24":"MI":"SS\')' in sql
+
+    def test_it_translates_a_databricks_format(self) -> None:
+        """Ensure directives become Java pattern letters with quoted literals.
+
+        Databricks parses with `DateTimeFormatter`, where every unquoted letter
+        is a pattern symbol. The literal quoting is what keeps a separator from
+        being read as one.
+        """
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d")
+
+        sql = _databricks().compile_column_predicate(rule, "ts")
+
+        assert "try_to_timestamp(`src`.`ts`, 'yyyy''-''MM''-''dd')" in sql
+
+    def test_it_translates_a_duckdb_format(self) -> None:
+        """Ensure DuckDB keeps the Python directives it already understands."""
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d")
+
+        sql = _duckdb().compile_column_predicate(rule, "ts")
+
+        assert 'try_strptime("src"."ts", \'%Y-%m-%d\')' in sql
+
+    def test_it_translates_a_literal_percent(self) -> None:
+        """Ensure `%%` becomes a quoted literal rather than a directive."""
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y%%")
+
+        assert "'YYYY\"%\"'" in _snowflake().compile_column_predicate(rule, "ts")
+        assert "'yyyy''%'''" in _databricks().compile_column_predicate(rule, "ts")
+        assert "'%Y%%'" in _duckdb().compile_column_predicate(rule, "ts")
+
+    def test_it_rejects_an_untranslatable_directive(self) -> None:
+        """Ensure an unsupported directive fails closed.
+
+        A blind substitution would leave `%j` in the emitted format, where the
+        warehouse parses nothing and returns NULL for every row -- which reads
+        as a clean match rather than as an error.
+        """
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%j")
+
+        with pytest.raises(ConfigError, match="%j"):
+            _snowflake().compile_column_predicate(rule, "ts")
+
+    def test_it_rejects_an_unquotable_literal(self) -> None:
+        """Ensure a literal outside the separator allowlist is refused.
+
+        The allowlist excludes both quote characters, so no literal run can
+        close the quoting the translator wraps it in.
+        """
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y'X")
+
+        with pytest.raises(ConfigError, match="literal character"):
+            _snowflake().compile_column_predicate(rule, "ts")
+
+    def test_it_rejects_a_dangling_percent(self) -> None:
+        """Ensure a truncated directive is an error, not a silent literal."""
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%")
+
+        with pytest.raises(ConfigError, match="dangling"):
+            _snowflake().compile_column_predicate(rule, "ts")
+
+    def test_it_skips_parsing_a_non_text_column(self) -> None:
+        """Ensure a native timestamp column is not fed to a text parser."""
+        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d")
+
+        sql = _duckdb().compile_column_predicate(
+            rule, "ts", source_dtype=pl.Datetime(), target_dtype=pl.Datetime()
+        )
+
+        assert "try_strptime" not in sql
