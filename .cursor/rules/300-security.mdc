@@ -14,7 +14,8 @@ Apply these rules when modifying files inside `src/veridelta/`.
 - `execute_pushdown` runs compiler-produced `statement` only. Do not concatenate config fields into a second SQL string.
 - Identifiers: allowlist each segment (`SQL_IDENTIFIER_SEGMENT` / `SQL_RELATION_PATTERN` in `models.py`) then dialect-quote (Snowflake `"`, Databricks backticks). Fail closed with `ConnectorError` on disallowed characters.
 - Do not apply SQL identifier regex to file-source `column_names`, `primary_keys`, credentials, hostnames, tokens, or lakehouse `table_uri`.
-- Data literals (`value_map`, `null_values`, `regex_replace`) go through `_literal` (`'` → `''`). Do not treat them as identifiers.
+- Data literals (`value_map`, `regex_replace`) go through `_literal` (`'` → `''`). Do not treat them as identifiers.
+- `null_values` accepts mixed scalars, so it renders through `_sentinel_literal`: strings still go through `_literal`, while numbers and booleans emit unquoted so they cannot break a numeric column's cast. Only `str` can reach `_literal`, so the escaping guarantee is unchanged. Sentinels are also filtered against the probed dtype (`sentinels.py`) before rendering, which is a correctness control, not a security one.
 - Numeric SQL operands (`absolute_tolerance`, `relative_tolerance`, `version`, `snapshot_id`) stay strict `float`/`int` fields. Do not coerce strings into SQL or Polars kwargs.
 - Do not add sanitization libraries. Quoting plus allowlists plus strict types is the control.
 

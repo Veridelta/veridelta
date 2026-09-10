@@ -149,7 +149,7 @@ Rules are not applied in the order you write them. Every column follows one fixe
 
 Stages 1 through 7 normalize each dataset on its own, before any join. That means they apply to primary keys as well: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion.
 
-Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global `default_null_values` or `default_whitespace_mode` is safe to set on a mixed schema.
+Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global `default_whitespace_mode` is safe to set on a mixed schema. Stage 1 is filtered per column instead, as described below.
 
 ### 1. Numeric Tolerances
 Bypass floating-point anomalies or acceptable system rounding differences.
@@ -161,7 +161,26 @@ rules:
     relative_tolerance: 0.005
 ```
 
-### 2. String Normalization & Sanitization
+### 2. Null Sentinels
+Declare the placeholder values a system writes instead of NULL. Sentinels are not limited to text: a list can mix strings, numbers, and booleans.
+
+Each sentinel is applied only to columns whose type can hold it. A text sentinel reaches string, categorical, and enum columns; a number reaches any numeric column, including decimals; a boolean reaches boolean columns only. Sentinels that do not fit a given column are dropped for that column alone, so one global list can cover a mixed schema without failing.
+
+Quoting therefore carries meaning. `-999` is a numeric sentinel that nulls out `-999` in an integer column and is ignored on a text column, while `"-999"` is the text sentinel and behaves the other way around. List both if a value appears in both shapes.
+
+```yaml
+default_null_values: ["N/A", "", -999]
+
+rules:
+  - column_names: ["is_verified"]
+    null_values: [false]
+```
+
+The distinction between the global default and an explicit rule is what happens when nothing fits. `default_null_values` is expected to span a mixed schema, so unusable combinations are skipped silently. An explicit `null_values` on a named column is a direct instruction, so if none of its sentinels can apply to that column's type, Veridelta raises `ConfigError` rather than silently doing nothing. Warehouse pushdown enforces the same rule against the probed schema.
+
+`.nan` and `.inf` are rejected at load time. NaN never compares equal to itself, and infinity has no portable SQL literal.
+
+### 3. String Normalization & Sanitization
 Execute string mutations before type evaluation. Sanitization always precedes `cast_to`, so text is cleaned before it is coerced.
 
 ```yaml
@@ -176,7 +195,7 @@ rules:
     cast_to: "Float64"
 ```
 
-### 3. Padding, Dates, and Timezones
+### 4. Padding, Dates, and Timezones
 Reconcile identifiers and timestamps that two systems store in different shapes.
 
 `pad_zeros` left-pads to a fixed width. The value is stringified first, so a numeric `123` in one system matches a text `"00123"` in the other. The width must be a real integer: `pad_zeros: "5"` is rejected rather than quietly coerced.
@@ -195,7 +214,7 @@ rules:
     timezone: "UTC"
 ```
 
-### 4. Value Mapping (Crosswalks)
+### 5. Value Mapping (Crosswalks)
 Translate legacy enumerations or system-specific codes to modern equivalents during evaluation.
 
 ```yaml
@@ -207,7 +226,7 @@ rules:
       "2": "PENDING"
 ```
 
-### 5. Exclusion Routing
+### 6. Exclusion Routing
 Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.
 
 ```yaml

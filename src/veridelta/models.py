@@ -8,7 +8,9 @@ comparison rules, and format the output summaries. It acts as the strict
 schema definition for the YAML configuration files.
 """
 
+import math
 import re
+from collections.abc import Iterable
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
@@ -53,6 +55,13 @@ SchemaMode = Literal[
 * `"intersection"`: Only diff columns that exist in both datasets, ignoring all others. (Default)
 """
 
+SentinelValue = str | int | float | bool
+"""A single `null_values` entry. Sentinels keep the type written in the config.
+
+YAML preserves the distinction natively, so `-999` is an integer sentinel while
+`"-999"` is a text one, and each is only applied to columns of a matching type.
+"""
+
 WhitespaceMode = Literal[
     "none",
     "left",
@@ -88,6 +97,26 @@ class SourceConfig(BaseModel):
         default_factory=dict,
         description="Format-specific options (e.g., {'separator': ';'}).",
     )
+
+
+def _reject_non_finite_sentinels(values: Iterable[SentinelValue] | None) -> None:
+    """Reject NaN and infinity in a sentinel list.
+
+    Neither can do the job: NaN never equals itself, so it could never match a
+    value, and infinities have no portable SQL literal.
+
+    Args:
+        values (Iterable[SentinelValue] | None): Configured sentinels, if any.
+
+    Raises:
+        ValueError: If any entry is a non-finite float.
+    """
+    for value in values or ():
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(
+                f"null_values cannot contain the non-finite value {value!r}. "
+                "NaN never compares equal, and infinities have no SQL literal."
+            )
 
 
 class DiffRule(BaseModel):
@@ -135,9 +164,13 @@ class DiffRule(BaseModel):
             numeric `123` and a text `'00123'` compare as equal.
         value_map (dict[str, str] | None): Translate Source values to Target values
             before comparison (e.g., `{'M': 'Male'}`).
-        null_values (list[str] | None): Specific string values to actively coerce
-            to NULL (e.g., `['N/A', '-999']`). Applied to string columns only, so
-            a global default is safe to set on a mixed schema.
+        null_values (list[SentinelValue] | None): Values to actively coerce to
+            NULL (e.g., `['N/A', -999, false]`). Sentinels keep their configured
+            type and are applied only to columns that can hold them, so a mixed
+            list is safe across a mixed schema. Text sentinels reach string,
+            categorical, and enum columns; numbers reach any numeric column
+            including decimals; booleans reach boolean columns only. An explicit
+            rule whose sentinels all fail that test raises `ConfigError`.
         treat_null_as_equal (bool | None): If True, evaluates NULL == NULL as a
             successful match rather than a missing value mismatch.
         datetime_format (str | None): Expected strptime format for dates
@@ -198,8 +231,10 @@ class DiffRule(BaseModel):
     value_map: dict[str, str] | None = Field(
         default=None, description="Translate Source values to Target values (e.g., {'M': 'Male'})."
     )
-    null_values: list[str] | None = Field(
-        default=None, description="Specific string values to treat as NULL (e.g., ['N/A', '-999'])."
+    null_values: list[SentinelValue] | None = Field(
+        default=None,
+        strict=True,
+        description="Values to treat as NULL (e.g., ['N/A', -999, false]).",
     )
     treat_null_as_equal: bool | None = Field(
         default=None, description="Treat missing values (NULL/None) in both sources as a match."
@@ -245,6 +280,23 @@ class DiffRule(BaseModel):
                 raise ValueError(f"Invalid regex pattern '{v}': {err}") from err
         return v
 
+    @field_validator("null_values")
+    @classmethod
+    def validate_null_values(cls, v: list[SentinelValue] | None) -> list[SentinelValue] | None:
+        """Ensures every sentinel is a value that can actually be matched.
+
+        Args:
+            v (list[SentinelValue] | None): The configured sentinel list.
+
+        Returns:
+            list[SentinelValue] | None: The validated list.
+
+        Raises:
+            ValueError: If any entry is a non-finite float.
+        """
+        _reject_non_finite_sentinels(v)
+        return v
+
     @field_validator("regex_replace")
     @classmethod
     def validate_regex_replace(cls, v: dict[str, str] | None) -> dict[str, str] | None:
@@ -286,8 +338,9 @@ class DiffConfig(BaseModel):
         default_relative_tolerance (float): Global relative tolerance for numeric columns.
         default_treat_null_as_equal (bool): Global setting for handling NULL == NULL.
         default_whitespace_mode (WhitespaceMode): Global string whitespace stripping mode.
-        default_null_values (list[str]): Global list of string values to aggressively
-            coerce to NULL.
+        default_null_values (list[SentinelValue]): Global list of values to
+            coerce to NULL. Each is applied only to columns whose type can hold
+            it, and unusable combinations are skipped rather than raising.
         rules (list[DiffRule]): List of per-column comparison overrides. Specific
             `column_names` take precedence over regex `pattern` rules.
         threshold (float): Allowed mismatch ratio (0.0 to 1.0) before the `is_match`
@@ -337,8 +390,10 @@ class DiffConfig(BaseModel):
         default="none",
         description="Global string whitespace stripping mode: 'none', 'left', 'right', or 'both'.",
     )
-    default_null_values: list[str] = Field(
-        default_factory=list, description="Global list of string values to coerce to NULL."
+    default_null_values: list[SentinelValue] = Field(
+        default_factory=list,
+        strict=True,
+        description="Global list of values to coerce to NULL, applied per matching dtype.",
     )
 
     rules: list[DiffRule] = Field(default_factory=list, description="Column overrides.")
@@ -360,6 +415,23 @@ class DiffConfig(BaseModel):
         default="parquet",
         description="The file format for exported discrepancy artifacts (e.g., 'parquet', 'csv').",
     )
+
+    @field_validator("default_null_values")
+    @classmethod
+    def validate_default_null_values(cls, v: list[SentinelValue]) -> list[SentinelValue]:
+        """Ensures every global sentinel is a value that can actually be matched.
+
+        Args:
+            v (list[SentinelValue]): The configured global sentinel list.
+
+        Returns:
+            list[SentinelValue]: The validated list.
+
+        Raises:
+            ValueError: If any entry is a non-finite float.
+        """
+        _reject_non_finite_sentinels(v)
+        return v
 
     @model_validator(mode="after")
     def apply_schema_normalization(self) -> "DiffConfig":

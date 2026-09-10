@@ -56,9 +56,13 @@ def _frame_with_ids(height: int) -> pl.LazyFrame:
     return pl.DataFrame({"id": list(range(height))}).lazy()
 
 
+PROBE_SCHEMA = pl.Schema({"id": pl.Int64, "amount": pl.Float64})
+"""Types the stubbed probe reports, which the compiler uses to filter sentinels."""
+
+
 def _probe_frame() -> pl.LazyFrame:
     """Return a zero-row frame standing in for a warehouse column probe."""
-    return pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Float64}).lazy()
+    return pl.DataFrame(schema=PROBE_SCHEMA).lazy()
 
 
 def _pushdown_by_query_type(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
@@ -154,6 +158,8 @@ class TestEngineConnectorRouting:
             "ANALYTICS.PUBLIC.TGT",
             ["id"],
             [_synthesized_amount_rule()],
+            source_types=PROBE_SCHEMA,
+            target_types=PROBE_SCHEMA,
         )
         connector.compiler.compile_added_query.assert_called_once_with(
             "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"]
@@ -198,7 +204,12 @@ class TestEngineConnectorRouting:
         ingestor_cls.assert_not_called()
         connector.connect.assert_called_once()
         connector.compiler.compile_query.assert_called_once_with(
-            "main.default.src", "main.default.tgt", ["id"], [_synthesized_amount_rule()]
+            "main.default.src",
+            "main.default.tgt",
+            ["id"],
+            [_synthesized_amount_rule()],
+            source_types=PROBE_SCHEMA,
+            target_types=PROBE_SCHEMA,
         )
         connector.compiler.compile_added_query.assert_called_once_with(
             "main.default.src", "main.default.tgt", ["id"]
@@ -280,16 +291,13 @@ class TestEngineConnectorRouting:
         connector: Any = connector_cls.return_value
         _configure_warehouse_compiler(connector)
 
+        wide_schema = pl.Schema(
+            {"id": pl.Int64, "amount": pl.Float64, "notes": pl.String, "legacy": pl.String}
+        )
+
         def _wide_probe(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
             if query_type == "schema":
-                return pl.DataFrame(
-                    schema={
-                        "id": pl.Int64,
-                        "amount": pl.Float64,
-                        "notes": pl.String,
-                        "legacy": pl.String,
-                    }
-                ).lazy()
+                return pl.DataFrame(schema=wide_schema).lazy()
             if query_type == "columns":
                 return pl.DataFrame({"amount": [1], "notes": [2]}).lazy()
             return _pushdown_by_query_type(statement, query_type)
@@ -310,8 +318,50 @@ class TestEngineConnectorRouting:
         assert [rule.column_names for rule in compiled] == [["amount"], ["notes"]]
         assert compiled[0].absolute_tolerance == 0.5
         connector.compiler.compile_column_mismatch_query.assert_called_once_with(
-            "ANALYTICS.PUBLIC.SRC", "ANALYTICS.PUBLIC.TGT", ["id"], compiled
+            "ANALYTICS.PUBLIC.SRC",
+            "ANALYTICS.PUBLIC.TGT",
+            ["id"],
+            compiled,
+            source_types=wide_schema,
+            target_types=wide_schema,
         )
+
+    def test_it_rejects_a_pushdown_rule_the_probed_type_cannot_match(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure the probe catches unusable explicit sentinels before any scan."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        with pytest.raises(ConfigError, match="cannot hold any of the null_values"):
+            DiffEngine.run_from_configs(
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["amount"], null_values=["N/A"])],
+                ),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+            )
+
+        connector.compiler.compile_query.assert_not_called()
+
+    def test_it_forwards_global_sentinels_to_the_compiler_unfiltered(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a global list survives synthesis so the compiler filters per column."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"], default_null_values=["N/A", -999]),
+            _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+            _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+        )
+
+        compiled: list[DiffRule] = connector.compiler.compile_query.call_args.args[3]
+        assert compiled[0].null_values == ["N/A", -999]
 
     def test_it_skips_the_tally_when_no_column_is_comparable(self, mocker: MockerFixture) -> None:
         """Ensure a None aggregate leaves column_mismatches empty without a round trip."""

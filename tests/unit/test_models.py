@@ -107,6 +107,27 @@ class TestStrictNumericFields:
         assert DiffRule.model_validate({"column_names": ["zip"], "pad_zeros": 5}).pad_zeros == 5
         assert DiffRule(column_names=["zip"]).pad_zeros is None
 
+    def test_it_preserves_the_declared_type_of_every_sentinel(self) -> None:
+        """Ensure -999 stays an int, since coercion would retarget the sentinel."""
+        rule = DiffRule.model_validate(
+            {"column_names": ["col"], "null_values": ["-999", -999, -9.5, False]}
+        )
+        assert rule.null_values is not None
+        assert [type(value) for value in rule.null_values] == [str, int, float, bool]
+
+        config = DiffConfig.model_validate({"primary_keys": ["id"], "default_null_values": [0]})
+        assert config.default_null_values == [0]
+        assert type(config.default_null_values[0]) is int
+
+    def test_it_rejects_sentinels_that_could_never_match(self) -> None:
+        """Ensure NaN and infinity are refused rather than silently never firing."""
+        with pytest.raises(ValidationError, match="non-finite"):
+            DiffRule.model_validate({"column_names": ["col"], "null_values": [float("nan")]})
+        with pytest.raises(ValidationError, match="non-finite"):
+            DiffConfig.model_validate(
+                {"primary_keys": ["id"], "default_null_values": [float("inf")]}
+            )
+
     def test_it_rejects_string_time_travel_arguments(self) -> None:
         """Ensure version and snapshot_id cannot be injected as strings."""
         with pytest.raises(ValidationError):
