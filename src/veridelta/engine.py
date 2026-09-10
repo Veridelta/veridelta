@@ -9,6 +9,7 @@ and the `DiffEngine` which performs the high-performance Polars comparisons.
 
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -24,10 +25,35 @@ from veridelta.models import (
     DiffRule,
     DiffSummary,
     IcebergConfig,
+    SentinelValue,
     SnowflakeConfig,
     SourceConfig,
     SourceRef,
 )
+from veridelta.sentinels import usable_sentinels
+
+
+def _unusable_sentinel_error(
+    column: str, dtype: pl.DataType, sentinels: Sequence[SentinelValue]
+) -> ConfigError:
+    """Build the error for an explicit rule whose sentinels can never match.
+
+    Only explicit rules raise. A global `default_null_values` is expected to
+    cover a mixed schema, so columns it cannot apply to are skipped instead.
+
+    Args:
+        column (str): Column the rule resolved to.
+        dtype (pl.DataType): Type that column actually holds.
+        sentinels (Sequence[SentinelValue]): Sentinels configured for it.
+
+    Returns:
+        ConfigError: Error naming the column, its type, and the sentinels.
+    """
+    return ConfigError(
+        f"Column '{column}' has type {dtype}, which cannot hold any of the "
+        f"null_values {list(sentinels)!r} configured for it. Quote text sentinels "
+        "and leave numbers unquoted so each one matches its column type."
+    )
 
 
 class BaseLoader(ABC):
@@ -207,7 +233,7 @@ def _match_rule(rules: list[DiffRule], column: str) -> DiffRule | None:
 
 
 def _resolve_pushdown_rules(
-    diff: DiffConfig, source_columns: list[str], target_columns: list[str]
+    diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
     """Expand configuration into one fully specified rule per compared column.
 
@@ -219,18 +245,22 @@ def _resolve_pushdown_rules(
 
     Args:
         diff (DiffConfig): Master comparison rules, keys, and global defaults.
-        source_columns (list[str]): Column names probed from the source relation.
-        target_columns (list[str]): Column names probed from the target relation.
+        source_schema (pl.Schema): Schema probed from the source relation.
+        target_schema (pl.Schema): Schema probed from the target relation.
 
     Returns:
         list[DiffRule]: One rule per shared, non-key, non-ignored column, with
             global defaults already folded in.
+
+    Raises:
+        ConfigError: If a column carries an explicit `null_values` rule whose
+            sentinels none of its probed types can hold.
     """
-    target_lookup = set(target_columns)
+    target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
 
     resolved: list[DiffRule] = []
-    for column in source_columns:
+    for column in source_schema.names():
         if column in keys:
             continue
 
@@ -245,6 +275,12 @@ def _resolve_pushdown_rules(
             continue
 
         base = rule if rule is not None else DiffRule()
+        if base.null_values:
+            for name, schema in ((column, source_schema), (rename_to or column, target_schema)):
+                dtype = schema.get(name)
+                if dtype is not None and not usable_sentinels(base.null_values, dtype):
+                    raise _unusable_sentinel_error(name, dtype, base.null_values)
+
         resolved.append(
             DiffRule(
                 column_names=[column],
@@ -432,7 +468,7 @@ def _validate_pushdown_schema(
     source_table: str,
     target_table: str,
     diff: DiffConfig,
-) -> tuple[list[str], list[str]]:
+) -> tuple[pl.Schema, pl.Schema]:
     """Enforce `schema_mode` against warehouse relations before comparing them.
 
     Zero-row probes expose the stored column names, so misconfigured keys surface
@@ -446,8 +482,9 @@ def _validate_pushdown_schema(
         diff (DiffConfig): Master comparison rules and keys.
 
     Returns:
-        tuple[list[str], list[str]]: Raw source and target column names, before
-            any rename or drop, for downstream rule resolution.
+        tuple[pl.Schema, pl.Schema]: Raw source and target schemas, before any
+            rename or drop. The driver's Arrow result carries dtypes as well as
+            names, and the compiler needs both to filter null sentinels.
 
     Raises:
         ConfigError: If primary keys are missing or schema constraints are violated.
@@ -459,7 +496,7 @@ def _validate_pushdown_schema(
         connector.compiler.compile_schema_probe_query(target_table), query_type="schema"
     )
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
-    return source_probe.collect_schema().names(), target_probe.collect_schema().names()
+    return source_probe.collect_schema(), target_probe.collect_schema()
 
 
 def _collect_pushdown_summary(
@@ -487,15 +524,20 @@ def _collect_pushdown_summary(
         ConnectorError: If a rule uses a field the compiler cannot express or the
             warehouse returns a malformed aggregate.
     """
-    source_columns, target_columns = _validate_pushdown_schema(
+    source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff
     )
-    rules = _resolve_pushdown_rules(diff, source_columns, target_columns)
+    rules = _resolve_pushdown_rules(diff, source_schema, target_schema)
 
     source_total = _pushdown_row_count(connector, source_table)
     target_total = _pushdown_row_count(connector, target_table)
     mismatch_sql = connector.compiler.compile_query(
-        source_table, target_table, diff.primary_keys, rules
+        source_table,
+        target_table,
+        diff.primary_keys,
+        rules,
+        source_types=source_schema,
+        target_types=target_schema,
     )
     added_sql = connector.compiler.compile_added_query(
         source_table, target_table, diff.primary_keys
@@ -509,7 +551,12 @@ def _collect_pushdown_summary(
 
     column_mismatches: dict[str, int] = {}
     columns_sql = connector.compiler.compile_column_mismatch_query(
-        source_table, target_table, diff.primary_keys, rules
+        source_table,
+        target_table,
+        diff.primary_keys,
+        rules,
+        source_types=source_schema,
+        target_types=target_schema,
     )
     if columns_sql is not None:
         tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
@@ -760,6 +807,7 @@ class DiffEngine:
             "treat_null": self.config.default_treat_null_as_equal,
             "whitespace": self.config.default_whitespace_mode,
             "null_values": self.config.default_null_values,
+            "null_values_explicit": False,
             "case_insensitive": False,
             "regex_replace": None,
             "value_map": None,
@@ -783,6 +831,9 @@ class DiffEngine:
                 eff["whitespace"] = matched_rule.whitespace_mode
             if matched_rule.null_values is not None:
                 eff["null_values"] = matched_rule.null_values
+                # A global default silently skips columns it cannot apply to,
+                # whereas an explicit rule that can never fire is a config error.
+                eff["null_values_explicit"] = True
             if matched_rule.case_insensitive is not None:
                 eff["case_insensitive"] = matched_rule.case_insensitive
 
@@ -894,13 +945,18 @@ class DiffEngine:
         """
         expr = pl.col(column)
         applied = False
+        # Deliberately narrower than `is_text_dtype`: `is_in` accepts Categorical
+        # and Enum, but the `.str` namespace used below rejects both.
         is_text = isinstance(dtype, (pl.String, pl.Utf8))
 
-        if is_text:
-            if rule["null_values"]:
-                expr = pl.when(expr.is_in(rule["null_values"])).then(None).otherwise(expr)
-                applied = True
+        sentinels = usable_sentinels(rule["null_values"], dtype)
+        if sentinels:
+            expr = pl.when(expr.is_in(sentinels)).then(None).otherwise(expr)
+            applied = True
+        elif rule["null_values"] and rule["null_values_explicit"]:
+            raise _unusable_sentinel_error(column, dtype, rule["null_values"])
 
+        if is_text:
             if rule["regex_replace"]:
                 for pattern, replacement in rule["regex_replace"].items():
                     expr = expr.str.replace_all(pattern, replacement)

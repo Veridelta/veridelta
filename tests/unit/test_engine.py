@@ -456,6 +456,58 @@ class TestCanonicalTransformPipeline:
 
         assert summary.is_match is True
 
+    def test_it_applies_each_sentinel_only_to_columns_of_a_matching_type(self) -> None:
+        """Ensure one mixed list nulls the right value in every column type."""
+        frame = pl.DataFrame(
+            {
+                "text": ["N/A", "keep"],
+                "whole": [-999, 7],
+                "ratio": [0.0, 1.5],
+                "flag": [False, True],
+            }
+        )
+        config = DiffConfig(primary_keys=["text"], default_null_values=["N/A", -999, 0, False])
+
+        result = _normalized(config, frame)
+
+        assert result["text"].to_list() == [None, "keep"]
+        assert result["whole"].to_list() == [None, 7]
+        # 0 is an int sentinel, but numeric sentinels span the whole family.
+        assert result["ratio"].to_list() == [None, 1.5]
+        assert result["flag"].to_list() == [None, True]
+
+    def test_it_keeps_quoted_and_unquoted_sentinels_distinct(self) -> None:
+        """Ensure '-999' targets text while -999 targets numbers."""
+        frame = pl.DataFrame({"code": ["-999", "x"], "amount": [-999, 1]})
+        config = DiffConfig(primary_keys=["code"], default_null_values=["-999"])
+
+        result = _normalized(config, frame)
+
+        assert result["code"].to_list() == [None, "x"]
+        assert result["amount"].to_list() == [-999, 1]
+
+    def test_it_nulls_sentinels_on_categorical_columns(self) -> None:
+        """Ensure dictionary-encoded text, as Snowflake returns, is covered."""
+        frame = pl.DataFrame(
+            {"id": [1, 2], "status": ["N/A", "OPEN"]},
+            schema={"id": pl.Int64, "status": pl.Categorical},
+        )
+        config = DiffConfig(primary_keys=["id"], default_null_values=["N/A"])
+
+        result = _normalized(config, frame)
+
+        assert result["status"].to_list() == [None, "OPEN"]
+
+    def test_it_rejects_an_explicit_rule_no_sentinel_can_ever_match(self) -> None:
+        """Ensure a named column with unusable sentinels fails loudly."""
+        frame = pl.DataFrame({"id": [1], "amount": [10]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["amount"], null_values=["N/A"])]
+        )
+
+        with pytest.raises(ConfigError, match="cannot hold any of the null_values"):
+            _normalized(config, frame)
+
     def test_it_pads_both_sides_so_numeric_and_text_codes_converge(self) -> None:
         """Ensure pad_zeros stringifies first, letting 123 match '00123'."""
         src = pl.DataFrame({"id": [1], "code": [123]})

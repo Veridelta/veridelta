@@ -3,6 +3,7 @@
 
 """Unit tests for dialect-specific SQL pushdown compilation."""
 
+import polars as pl
 import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
@@ -101,13 +102,56 @@ class TestPredicateCompilation:
         assert "IFF(" not in sql
         assert "`tgt`.`status`" in sql
 
-    def test_it_nests_nullif_for_sentinel_values(self) -> None:
-        """Ensure each null sentinel becomes a nested NULLIF on both sides."""
+    def test_it_nulls_sentinel_values_with_a_single_case_per_side(self) -> None:
+        """Ensure sentinels collapse into one IN list on each side."""
         rule = DiffRule(column_names=["status"], null_values=["N/A", "-999"])
         sql = _snowflake().compile_column_predicate(rule, "status")
-        assert sql.count("NULLIF(") == 4
-        assert "'N/A'" in sql
-        assert "'-999'" in sql
+        assert sql.count("IN ('N/A', '-999') THEN NULL") == 2
+        assert "NULLIF(" not in sql
+
+    def test_it_emits_numeric_and_boolean_sentinels_unquoted(self) -> None:
+        """Ensure only text sentinels are quoted, since quoting breaks casts."""
+        sql = _snowflake().compile_column_predicate(
+            DiffRule(column_names=["amount"], null_values=[-999, 0.5]), "amount"
+        )
+        assert "IN (-999, 0.5)" in sql
+        assert "'-999'" not in sql
+
+        flag_sql = _snowflake().compile_column_predicate(
+            DiffRule(column_names=["flag"], null_values=[False, True]), "flag"
+        )
+        assert "IN (FALSE, TRUE)" in flag_sql
+
+    def test_it_drops_sentinels_the_probed_column_cannot_hold(self) -> None:
+        """Ensure a mixed list is narrowed to the sentinels each dtype accepts."""
+        rule = DiffRule(column_names=["amount"], null_values=["N/A", -999, False])
+        sql = _snowflake().compile_column_predicate(
+            rule, "amount", source_dtype=pl.Float64(), target_dtype=pl.String()
+        )
+        assert 'CASE WHEN "src"."amount" IN (-999) THEN NULL' in sql
+        assert 'CASE WHEN "tgt"."amount" IN (\'N/A\') THEN NULL' in sql
+        assert "FALSE)" not in sql
+
+    def test_it_skips_the_case_wrapper_when_no_sentinel_applies(self) -> None:
+        """Ensure a column no sentinel fits compares as a bare identifier."""
+        rule = DiffRule(column_names=["amount"], null_values=["N/A"])
+        sql = _snowflake().compile_column_predicate(
+            rule, "amount", source_dtype=pl.Int64(), target_dtype=pl.Int64()
+        )
+        assert "CASE" not in sql
+        assert sql == '"src"."amount" = "tgt"."amount"'
+
+    def test_it_filters_sentinels_per_dialect_in_aggregate_queries(self) -> None:
+        """Ensure probed types reach predicates built by the query compilers."""
+        rules = [DiffRule(column_names=["amount"], null_values=["N/A", -999])]
+        schema = pl.Schema({"id": pl.Int64(), "amount": pl.Int64()})
+        for compiler, quote in ((_snowflake(), '"'), (_databricks(), "`")):
+            sql = compiler.compile_column_mismatch_query(
+                "SRC", "TGT", ["id"], rules, source_types=schema, target_types=schema
+            )
+            assert sql is not None
+            assert f"{quote}src{quote}.{quote}amount{quote} IN (-999)" in sql
+            assert "'N/A'" not in sql
 
     def test_it_uses_equal_null_on_snowflake_when_nulls_match(self) -> None:
         """Ensure Snowflake exact equality uses EQUAL_NULL when requested."""

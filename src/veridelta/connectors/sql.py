@@ -9,10 +9,17 @@ queries for added and removed rows, row counts, and column probes without
 extracting source tables.
 """
 
+from collections.abc import Mapping, Sequence
 from enum import Enum
 
+import polars as pl
+
 from veridelta.exceptions import ConnectorError
-from veridelta.models import SQL_IDENTIFIER_SEGMENT, DiffRule
+from veridelta.models import SQL_IDENTIFIER_SEGMENT, DiffRule, SentinelValue
+from veridelta.sentinels import usable_sentinels
+
+ColumnTypes = Mapping[str, pl.DataType]
+"""Column name to dtype, as probed from a warehouse relation."""
 
 COUNT_ALIAS = "_veridelta_total"
 """Column alias projected by `compile_count_query` so results stay dialect-neutral."""
@@ -44,6 +51,8 @@ class SQLPushdownCompiler:
         *,
         source_alias: str = "src",
         target_alias: str = "tgt",
+        source_dtype: pl.DataType | None = None,
+        target_dtype: pl.DataType | None = None,
     ) -> str:
         """Compile a boolean match predicate for one source/target column pair.
 
@@ -59,6 +68,11 @@ class SQLPushdownCompiler:
                 to `source_column` when omitted.
             source_alias (str): SQL alias of the source relation.
             target_alias (str): SQL alias of the target relation.
+            source_dtype (pl.DataType | None): Probed source dtype, used to drop
+                sentinels the column cannot hold. Each side is filtered
+                separately because the two relations can disagree on a type.
+                When None, sentinels are emitted unfiltered.
+            target_dtype (pl.DataType | None): Probed target dtype.
 
         Returns:
             str: Boolean SQL expression that is true when the column values match.
@@ -72,8 +86,8 @@ class SQLPushdownCompiler:
         src_expr = self._qualify(source_alias, source_column)
         tgt_expr = self._qualify(target_alias, tgt_name)
 
-        src_expr = self._apply_null_values(src_expr, rule)
-        tgt_expr = self._apply_null_values(tgt_expr, rule)
+        src_expr = self._apply_null_values(src_expr, self._sentinels_for(rule, source_dtype))
+        tgt_expr = self._apply_null_values(tgt_expr, self._sentinels_for(rule, target_dtype))
         src_expr = self._apply_regex_replace(src_expr, rule)
         tgt_expr = self._apply_regex_replace(tgt_expr, rule)
         src_expr = self._apply_whitespace(src_expr, rule)
@@ -93,6 +107,8 @@ class SQLPushdownCompiler:
         *,
         source_alias: str = "src",
         target_alias: str = "tgt",
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
     ) -> str:
         """Assemble a changed-row inner-join query from tables, keys, and rules.
 
@@ -103,6 +119,10 @@ class SQLPushdownCompiler:
             rules (list[DiffRule]): Per-column semantic overrides.
             source_alias (str): Alias assigned to the source relation.
             target_alias (str): Alias assigned to the target relation.
+            source_types (ColumnTypes | None): Probed source dtypes, used to drop
+                null sentinels the column cannot hold. When None, sentinels are
+                emitted unfiltered.
+            target_types (ColumnTypes | None): Probed target dtypes.
 
         Returns:
             str: `SELECT ... FROM src INNER JOIN tgt ON ...` statement. A `WHERE NOT`
@@ -128,7 +148,11 @@ class SQLPushdownCompiler:
         predicates = [
             predicate
             for _, predicate in self._collect_predicates(
-                rules, source_alias=source_alias, target_alias=target_alias
+                rules,
+                source_alias=source_alias,
+                target_alias=target_alias,
+                source_types=source_types,
+                target_types=target_types,
             )
         ]
 
@@ -222,6 +246,8 @@ class SQLPushdownCompiler:
         *,
         source_alias: str = "src",
         target_alias: str = "tgt",
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
     ) -> str | None:
         """Assemble a per-column mismatch tally over the joined rows.
 
@@ -239,6 +265,10 @@ class SQLPushdownCompiler:
             rules (list[DiffRule]): Per-column semantic overrides.
             source_alias (str): Alias assigned to the source relation.
             target_alias (str): Alias assigned to the target relation.
+            source_types (ColumnTypes | None): Probed source dtypes, used to drop
+                null sentinels the column cannot hold. When None, sentinels are
+                emitted unfiltered.
+            target_types (ColumnTypes | None): Probed target dtypes.
 
         Returns:
             str | None: Single-row aggregate statement, or None when no rule
@@ -253,7 +283,11 @@ class SQLPushdownCompiler:
             raise ConnectorError("At least one primary key is required for pushdown joins.")
 
         pairs = self._collect_predicates(
-            rules, source_alias=source_alias, target_alias=target_alias
+            rules,
+            source_alias=source_alias,
+            target_alias=target_alias,
+            source_types=source_types,
+            target_types=target_types,
         )
         if not pairs:
             return None
@@ -380,7 +414,13 @@ class SQLPushdownCompiler:
         )
 
     def _collect_predicates(
-        self, rules: list[DiffRule], *, source_alias: str, target_alias: str
+        self,
+        rules: list[DiffRule],
+        *,
+        source_alias: str,
+        target_alias: str,
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
     ) -> list[tuple[str, str]]:
         """Expand every rule into deduplicated result-alias and predicate pairs.
 
@@ -392,6 +432,9 @@ class SQLPushdownCompiler:
             rules (list[DiffRule]): Rules to compile, in declaration order.
             source_alias (str): Source relation alias.
             target_alias (str): Target relation alias.
+            source_types (ColumnTypes | None): Probed source dtypes for sentinel
+                filtering. When None, sentinels are emitted unfiltered.
+            target_types (ColumnTypes | None): Probed target dtypes.
 
         Returns:
             list[tuple[str, str]]: Result alias paired with its match predicate.
@@ -402,13 +445,23 @@ class SQLPushdownCompiler:
         collected: dict[str, str] = {}
         for rule in rules:
             for alias, predicate in self._predicates_for_rule(
-                rule, source_alias=source_alias, target_alias=target_alias
+                rule,
+                source_alias=source_alias,
+                target_alias=target_alias,
+                source_types=source_types,
+                target_types=target_types,
             ):
                 collected.setdefault(alias, predicate)
         return list(collected.items())
 
     def _predicates_for_rule(
-        self, rule: DiffRule, *, source_alias: str, target_alias: str
+        self,
+        rule: DiffRule,
+        *,
+        source_alias: str,
+        target_alias: str,
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
     ) -> list[tuple[str, str]]:
         """Expand one rule into per-column result aliases and match predicates.
 
@@ -419,6 +472,9 @@ class SQLPushdownCompiler:
             rule (DiffRule): Rule to compile.
             source_alias (str): Source relation alias.
             target_alias (str): Target relation alias.
+            source_types (ColumnTypes | None): Probed source dtypes for sentinel
+                filtering. When None, sentinels are emitted unfiltered.
+            target_types (ColumnTypes | None): Probed target dtypes.
 
         Returns:
             list[tuple[str, str]]: Alias and predicate pairs. Empty when ignored.
@@ -447,6 +503,10 @@ class SQLPushdownCompiler:
                         target_column,
                         source_alias=source_alias,
                         target_alias=target_alias,
+                        source_dtype=None if source_types is None else source_types.get(column),
+                        target_dtype=(
+                            None if target_types is None else target_types.get(target_column)
+                        ),
                     ),
                 )
             )
@@ -544,22 +604,63 @@ class SQLPushdownCompiler:
         """
         return repr(value)
 
-    def _apply_null_values(self, expr: str, rule: DiffRule) -> str:
-        """Wrap an expression in nested `NULLIF` calls for sentinel strings.
+    def _apply_null_values(self, expr: str, sentinels: Sequence[SentinelValue]) -> str:
+        """Coerce sentinel values to NULL with a single `CASE` expression.
+
+        Sentinels are stage 1, so `expr` is always a bare qualified column here
+        and repeating it costs nothing.
 
         Args:
             expr (str): SQL expression to sanitize.
-            rule (DiffRule): Rule providing `null_values`.
+            sentinels (Sequence[SentinelValue]): Sentinels already filtered to
+                the ones this column's type can hold.
 
         Returns:
-            str: Expression with sentinels coerced to NULL.
+            str: `CASE WHEN expr IN (...) THEN NULL ELSE expr END`, or the
+            original expression when no sentinel applies.
+        """
+        if not sentinels:
+            return expr
+        rendered = ", ".join(self._sentinel_literal(value) for value in sentinels)
+        return f"CASE WHEN {expr} IN ({rendered}) THEN NULL ELSE {expr} END"
+
+    def _sentinel_literal(self, value: SentinelValue) -> str:
+        """Render one sentinel as a SQL literal of its own type.
+
+        Numbers and booleans must not be quoted. Emitting `'-999'` against a
+        numeric column reintroduces the cast error that type filtering exists to
+        prevent. Only strings can carry SQL text, and those still go through
+        `_literal` for apostrophe escaping.
+
+        Args:
+            value (SentinelValue): Configured sentinel.
+
+        Returns:
+            str: Dialect-portable literal.
+        """
+        # bool first, since isinstance(True, int) is True in Python.
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, (int, float)):
+            return self._number(value)
+        return self._literal(value)
+
+    def _sentinels_for(self, rule: DiffRule, dtype: pl.DataType | None) -> list[SentinelValue]:
+        """Select the sentinels applicable to one side of a comparison.
+
+        Args:
+            rule (DiffRule): Rule providing `null_values`.
+            dtype (pl.DataType | None): Probed dtype for that side. When None,
+                no schema was supplied and every sentinel is emitted as-is.
+
+        Returns:
+            list[SentinelValue]: Sentinels to emit for this side.
         """
         if not rule.null_values:
-            return expr
-        wrapped = expr
-        for sentinel in rule.null_values:
-            wrapped = f"NULLIF({wrapped}, {self._literal(sentinel)})"
-        return wrapped
+            return []
+        if dtype is None:
+            return list(rule.null_values)
+        return usable_sentinels(rule.null_values, dtype)
 
     def _apply_regex_replace(self, expr: str, rule: DiffRule) -> str:
         """Apply `REGEXP_REPLACE` for each pattern/replacement pair.
