@@ -9,9 +9,9 @@ and the `DiffEngine` which performs the high-performance Polars comparisons.
 
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 import polars as pl
 
@@ -124,12 +124,13 @@ class LoaderFactory:
             BaseLoader: An instantiated data loader.
 
         Raises:
-            NotImplementedError: If the requested format is not yet supported.
+            ConfigError: If the requested format has no loader.
         """
         loader = cls._loaders.get(source_type)
-        if not loader:
-            raise NotImplementedError(
-                f"Support for '{source_type}' is planned but not yet implemented."
+        if loader is None:
+            supported = ", ".join(sorted(cls._loaders))
+            raise ConfigError(
+                f"Source format '{source_type}' has no loader. Supported formats: {supported}."
             )
         return loader
 
@@ -145,7 +146,7 @@ class LoaderFactory:
 
         Raises:
             ConnectorError: If `config` is a warehouse source.
-            NotImplementedError: If the file format has no loader.
+            ConfigError: If the file format has no loader.
         """
         if isinstance(config, DeltaLakeConfig):
             delta_connector = DeltaLakeConnector(config)
@@ -350,6 +351,14 @@ def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
     return counts
 
 
+_ARTIFACT_WRITERS: Final[dict[str, Callable[[pl.DataFrame, Path], None]]] = {
+    "csv": lambda frame, path: frame.write_csv(path),
+    "parquet": lambda frame, path: frame.write_parquet(path),
+}
+"""Artifact format to writer. Single source of truth for the guard and dispatch,
+so a format can never be accepted without something actually writing it."""
+
+
 def _export_artifacts(
     frames: dict[str, pl.DataFrame], output_path: str, output_format: str
 ) -> bool:
@@ -368,8 +377,16 @@ def _export_artifacts(
             so a clean comparison leaves no artifacts behind.
 
     Raises:
-        NotImplementedError: If `output_format` has no writer.
+        ConfigError: If `output_format` has no writer.
     """
+    # Checked before the loop so a misconfigured format fails the same way on a
+    # clean run as on a drifted one, rather than only when a frame reaches disk.
+    if output_format not in _ARTIFACT_WRITERS:
+        supported = ", ".join(sorted(_ARTIFACT_WRITERS))
+        raise ConfigError(
+            f"Artifact format '{output_format}' has no writer. Supported formats: {supported}."
+        )
+
     out_dir = Path(output_path)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -377,15 +394,7 @@ def _export_artifacts(
     for name, frame in frames.items():
         if frame.height == 0:
             continue
-        file_path = out_dir / f"{name}.{output_format}"
-        if output_format == "csv":
-            frame.write_csv(file_path)
-        elif output_format == "parquet":
-            frame.write_parquet(file_path)
-        else:
-            raise NotImplementedError(
-                f"Export support for format '{output_format}' is not yet implemented."
-            )
+        _ARTIFACT_WRITERS[output_format](frame, out_dir / f"{name}.{output_format}")
         written = True
     return written
 
@@ -1220,9 +1229,9 @@ class DiffEngine:
                 and column-level drift metrics.
 
         Raises:
-            ConfigError: If schema constraints or primary keys are violated post-alignment.
+            ConfigError: If schema constraints or primary keys are violated
+                post-alignment, or the requested artifact export format has no writer.
             DataIntegrityError: If duplicate primary keys prevent deterministic joins.
-            NotImplementedError: If the requested artifact export format is unsupported.
         """
         self._align_structure()
         self._validate_schema()

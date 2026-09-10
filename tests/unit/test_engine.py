@@ -19,9 +19,9 @@ from veridelta.models import DiffConfig, DiffRule, SourceConfig
 class TestDataIngestorAndLoaders:
     """Validate data ingestion, loader factories, and pre-engine dataset preparation."""
 
-    def test_it_raises_not_implemented_error_for_unsupported_source_types(self) -> None:
-        """Ensure the LoaderFactory guards against unsupported file formats."""
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
+    def test_it_raises_config_error_for_unsupported_source_types(self) -> None:
+        """Ensure an unloadable format fails as configuration, naming what works."""
+        with pytest.raises(ConfigError, match="csv, parquet"):
             LoaderFactory.get_loader("json")
 
     def test_it_normalizes_headers_by_stripping_and_lowercasing_when_configured(self) -> None:
@@ -381,10 +381,10 @@ class TestDataIntegrityAndSetDifferences:
         assert not (tmp_path / "changed_rows.parquet").exists()
         assert summary.artifacts_written is False
 
-    def test_it_raises_not_implemented_error_when_exporting_to_unsupported_formats(
+    def test_it_raises_config_error_when_exporting_to_unsupported_formats(
         self, tmp_path: Path
     ) -> None:
-        """Ensure the I/O layer guards against unsupported artifact export formats."""
+        """Ensure an unwritable artifact format fails as configuration."""
         src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
         tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
 
@@ -394,8 +394,23 @@ class TestDataIntegrityAndSetDifferences:
             output_format="excel",
         )
 
-        with pytest.raises(NotImplementedError, match="not yet implemented"):
+        with pytest.raises(ConfigError, match="csv, parquet"):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+    def test_it_rejects_an_unsupported_export_format_even_without_drift(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure the format check does not depend on there being rows to write."""
+        frame = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            output_path=str(tmp_path),
+            output_format="excel",
+        )
+
+        with pytest.raises(ConfigError, match="csv, parquet"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
 
 
 def _normalized(config: DiffConfig, frame: pl.DataFrame) -> pl.DataFrame:

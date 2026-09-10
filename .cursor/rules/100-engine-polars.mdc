@@ -1,0 +1,27 @@
+---
+description: Standards for Veridelta execution engine, models, and data pipelines
+globs: src/veridelta/**/*.py
+alwaysApply: false
+---
+
+# Veridelta Engine and Modeling
+
+Apply these rules when modifying files inside `src/veridelta/`.
+
+## Data manipulation
+
+- Prefer Polars lazy execution (`pl.LazyFrame`, `scan_*`) wherever feasible.
+- Do not convert Polars frames to Python dicts or lists on performance-critical paths.
+- Keep column schemas deterministically typed. Avoid schema inference inside hot loops.
+
+## Models and configuration
+
+- Validate config with Pydantic `BaseModel` and `extra="forbid"`. Prefer `frozen=True` for new immutable models.
+- Raise `veridelta.exceptions.VerideltaError` subclasses (`ConfigError`, `DataIntegrityError`). Do not raise generic runtime exceptions for domain failures.
+- Keep the module split: schema parsing in `config.py`, execution in `engine.py`, representations in `models.py`. Do not invent new packages.
+
+## Loaders
+
+- New file formats go through `LoaderFactory` and `BaseLoader`.
+- Unimplemented `SourceType` values (including `netcdf`) and unimplemented `output_format` values raise `ConfigError`, not `NotImplementedError`. Choosing a format is a config decision, so it belongs in the same error class as the rest of them and must reach the CLI's `VerideltaError` handler.
+- Derive the supported-format list in those messages from the registry that backs it (`LoaderFactory._loaders`, `_ARTIFACT_WRITERS`). Do not hardcode it, and do not accept a format into a registry without a matching implementation.
