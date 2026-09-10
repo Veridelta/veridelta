@@ -1,3 +1,34 @@
+## v0.5.0 (2026-09-09)
+
+Null sentinels are no longer strings only. `null_values` and `default_null_values`
+accept mixed scalars, and quoting now carries meaning: `-999` nulls out `-999` in a
+numeric column and is ignored on a text column, while `"-999"` behaves the other way
+around. A list that previously read `["N/A", "-999"]` still works unchanged; add the
+unquoted form if the value also appears as a number.
+
+### Feat
+
+- widen `null_values` and `default_null_values` from `list[str]` to a mixed union of
+  `str | int | float | bool`, with `strict=True` so Pydantic preserves the exact type
+  each sentinel was written as
+- filter sentinels against each column's dtype before use, in both the local engine and
+  the warehouse compiler, so one global list can span a mixed schema. Text sentinels
+  reach string, categorical, and enum columns; numbers reach any numeric column
+  including decimals; booleans reach boolean columns only
+- carry probed dtypes out of the warehouse schema probe into both pushdown query
+  builders, filtering each side independently since the two relations can disagree
+- raise `ConfigError` when an explicit per-column `null_values` rule holds no sentinel
+  its column's type can match, locally and against the probed warehouse schema. A global
+  `default_null_values` still skips silently, since spanning a mixed schema is its purpose
+- reject `.nan` and `.inf` sentinels at load time, as NaN never compares equal to itself
+  and infinity has no portable SQL literal
+
+### Refactor
+
+- emit one `CASE WHEN col IN (...) THEN NULL ELSE col END` per side instead of nested
+  `NULLIF` calls, rendering numbers and booleans unquoted so they cannot break a numeric
+  column's cast. Strings still route through `_literal` for apostrophe escaping
+
 ## v0.4.0 (2026-09-09)
 
 Transforms now apply uniformly to every column, primary keys included, before the

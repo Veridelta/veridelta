@@ -41,7 +41,7 @@ plugins:
             show_root_heading: true
 
 extra:
-  version: 0.4.0
+  version: 0.5.0
 
 markdown_extensions:
   - admonition
