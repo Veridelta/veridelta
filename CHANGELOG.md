@@ -1,3 +1,20 @@
+## v0.5.1 (2026-09-10)
+
+Unsupported formats now raise `ConfigError` instead of `NotImplementedError`. Code
+catching `NotImplementedError` around `LoaderFactory` or a diff run should catch
+`ConfigError`, or `VerideltaError` for all framework failures.
+
+### Fix
+
+- raise `ConfigError` rather than `NotImplementedError` for a source format with no
+  loader or an `output_format` with no writer, so the CLI reports "Configuration Error"
+  instead of "Unexpected System Error" for an ordinary misconfiguration
+- validate the artifact format before writing rather than inside the write loop. The
+  check previously ran after the empty-frame guard, so a bad `output_format` was caught
+  only when there was drift to write and a clean comparison passed silently
+- name the supported formats in both messages, derived from the registry that backs the
+  behavior so the message cannot drift from what actually works
+
 ## v0.5.0 (2026-09-09)
 
 Null sentinels are no longer strings only. `null_values` and `default_null_values`
