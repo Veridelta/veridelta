@@ -702,10 +702,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#2-string-normalization-sanitization" class="md-nav__link">
+  <a href="#2-null-sentinels" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. String Normalization &amp; Sanitization
+        2. Null Sentinels
       
     </span>
   </a>
@@ -713,10 +713,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#3-padding-dates-and-timezones" class="md-nav__link">
+  <a href="#3-string-normalization-sanitization" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Padding, Dates, and Timezones
+        3. String Normalization &amp; Sanitization
       
     </span>
   </a>
@@ -724,10 +724,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#4-value-mapping-crosswalks" class="md-nav__link">
+  <a href="#4-padding-dates-and-timezones" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Value Mapping (Crosswalks)
+        4. Padding, Dates, and Timezones
       
     </span>
   </a>
@@ -735,10 +735,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#5-exclusion-routing" class="md-nav__link">
+  <a href="#5-value-mapping-crosswalks" class="md-nav__link">
     <span class="md-ellipsis">
       
-        5. Exclusion Routing
+        5. Value Mapping (Crosswalks)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-exclusion-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Exclusion Routing
       
     </span>
   </a>
@@ -969,7 +980,7 @@
 <li>Null-safe equality (<code>treat_null_as_equal</code>)</li>
 </ol>
 <p>Stages 1 through 7 normalize each dataset on its own, before any join. That means they apply to primary keys as well: a <code>case_insensitive</code> rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, <code>DataIntegrityError</code> is raised rather than allowing a join explosion.</p>
-<p>Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global <code>default_null_values</code> or <code>default_whitespace_mode</code> is safe to set on a mixed schema.</p>
+<p>Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global <code>default_whitespace_mode</code> is safe to set on a mixed schema. Stage 1 is filtered per column instead, as described below.</p>
 <h3 id="1-numeric-tolerances">1. Numeric Tolerances</h3>
 <p>Bypass floating-point anomalies or acceptable system rounding differences.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">rules</span><span class="p">:</span>
@@ -977,45 +988,57 @@
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">absolute_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.01</span>
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="nt">relative_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.005</span>
 </code></pre></div>
-<h3 id="2-string-normalization-sanitization">2. String Normalization &amp; Sanitization</h3>
-<p>Execute string mutations before type evaluation. Sanitization always precedes <code>cast_to</code>, so text is cleaned before it is coerced.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;user_email&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">case_insensitive</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="nt">whitespace_mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;both&quot;</span>
-<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
-<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;balance&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">    </span><span class="nt">regex_replace</span><span class="p">:</span>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">      </span><span class="s">&quot;\\$&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">  </span><span class="c1"># Strip currency symbols before casting</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">    </span><span class="nt">cast_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Float64&quot;</span>
+<h3 id="2-null-sentinels">2. Null Sentinels</h3>
+<p>Declare the placeholder values a system writes instead of NULL. Sentinels are not limited to text: a list can mix strings, numbers, and booleans.</p>
+<p>Each sentinel is applied only to columns whose type can hold it. A text sentinel reaches string, categorical, and enum columns; a number reaches any numeric column, including decimals; a boolean reaches boolean columns only. Sentinels that do not fit a given column are dropped for that column alone, so one global list can cover a mixed schema without failing.</p>
+<p>Quoting therefore carries meaning. <code>-999</code> is a numeric sentinel that nulls out <code>-999</code> in an integer column and is ignored on a text column, while <code>"-999"</code> is the text sentinel and behaves the other way around. List both if a value appears in both shapes.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">default_null_values</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;N/A&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-999</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;is_verified&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="nt">null_values</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">false</span><span class="p p-Indicator">]</span>
 </code></pre></div>
-<h3 id="3-padding-dates-and-timezones">3. Padding, Dates, and Timezones</h3>
+<p>The distinction between the global default and an explicit rule is what happens when nothing fits. <code>default_null_values</code> is expected to span a mixed schema, so unusable combinations are skipped silently. An explicit <code>null_values</code> on a named column is a direct instruction, so if none of its sentinels can apply to that column's type, Veridelta raises <code>ConfigError</code> rather than silently doing nothing. Warehouse pushdown enforces the same rule against the probed schema.</p>
+<p><code>.nan</code> and <code>.inf</code> are rejected at load time. NaN never compares equal to itself, and infinity has no portable SQL literal.</p>
+<h3 id="3-string-normalization-sanitization">3. String Normalization &amp; Sanitization</h3>
+<p>Execute string mutations before type evaluation. Sanitization always precedes <code>cast_to</code>, so text is cleaned before it is coerced.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;user_email&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">case_insensitive</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="nt">whitespace_mode</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;both&quot;</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;balance&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">    </span><span class="nt">regex_replace</span><span class="p">:</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">      </span><span class="s">&quot;\\$&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">  </span><span class="c1"># Strip currency symbols before casting</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">    </span><span class="nt">cast_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Float64&quot;</span>
+</code></pre></div>
+<h3 id="4-padding-dates-and-timezones">4. Padding, Dates, and Timezones</h3>
 <p>Reconcile identifiers and timestamps that two systems store in different shapes.</p>
 <p><code>pad_zeros</code> left-pads to a fixed width. The value is stringified first, so a numeric <code>123</code> in one system matches a text <code>"00123"</code> in the other. The width must be a real integer: <code>pad_zeros: "5"</code> is rejected rather than quietly coerced.</p>
 <p><code>datetime_format</code> parses text into timestamps using a <a href="https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes">strptime</a> pattern, so the column is compared as a timestamp instead of as text. Values that do not fit the pattern become NULL, which counts as a mismatch unless <code>treat_null_as_equal</code> is set.</p>
 <p><code>timezone</code> converts timestamps to a common zone before comparison. It requires timezone-aware data. Naive timestamps raise <code>ConfigError</code>, because assuming an origin zone would shift every value by a real offset without telling you. To normalize text timestamps that carry an offset, parse them first with a format containing <code>%z</code>.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;account_number&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">pad_zeros</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;created_at&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="nt">datetime_format</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;%Y-%m-%d</span><span class="nv"> </span><span class="s">%H:%M:%S%z&quot;</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">    </span><span class="nt">timezone</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;UTC&quot;</span>
-</code></pre></div>
-<h3 id="4-value-mapping-crosswalks">4. Value Mapping (Crosswalks)</h3>
-<p>Translate legacy enumerations or system-specific codes to modern equivalents during evaluation.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;status_code&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">value_map</span><span class="p">:</span>
-<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">      </span><span class="s">&quot;0&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;INACTIVE&quot;</span>
-<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">      </span><span class="s">&quot;1&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;ACTIVE&quot;</span>
-<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">      </span><span class="s">&quot;2&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;PENDING&quot;</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;account_number&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">pad_zeros</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;created_at&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">    </span><span class="nt">datetime_format</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;%Y-%m-%d</span><span class="nv"> </span><span class="s">%H:%M:%S%z&quot;</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a><span class="w">    </span><span class="nt">timezone</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;UTC&quot;</span>
 </code></pre></div>
-<h3 id="5-exclusion-routing">5. Exclusion Routing</h3>
-<p>Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.</p>
+<h3 id="5-value-mapping-crosswalks">5. Value Mapping (Crosswalks)</h3>
+<p>Translate legacy enumerations or system-specific codes to modern equivalents during evaluation.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;^etl_loaded_at_.*&quot;</span>
-<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">ignore</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;status_code&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">value_map</span><span class="p">:</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">      </span><span class="s">&quot;0&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;INACTIVE&quot;</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">      </span><span class="s">&quot;1&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;ACTIVE&quot;</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">      </span><span class="s">&quot;2&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;PENDING&quot;</span>
+</code></pre></div>
+<h3 id="6-exclusion-routing">6. Exclusion Routing</h3>
+<p>Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;^etl_loaded_at_.*&quot;</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">    </span><span class="nt">ignore</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
 
 
