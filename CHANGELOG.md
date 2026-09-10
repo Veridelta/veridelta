@@ -1,3 +1,45 @@
+## v0.6.0 (2026-09-10)
+
+Warehouse pushdown now implements all nine transform stages. `pad_zeros`,
+`datetime_format`, `timezone`, and `cast_to` previously raised `ConnectorError` on the
+warehouse path, so any rule using them could only run locally.
+
+`cast_to` is now a closed set of `Int64`, `Float64`, `String`, `Boolean`, `Date`, and
+`Datetime`. Any other value is rejected at load time rather than silently skipping the
+cast, so a config with a typo that previously reported a clean diff will now fail
+validation. Configs already using valid Polars type names are unaffected.
+
+### Feat
+
+- compile `pad_zeros` as a sign-aware, non-truncating expression rather than an `LPAD`,
+  which pads in front of a minus sign (`0-12` where Python's `zfill` gives `-012`) and
+  discards characters past the target width
+- compile `cast_to` through a per-dialect keyword table, truncating toward zero on a
+  float-to-integer cast to match Polars where Snowflake and DuckDB round
+- compile `datetime_format` by translating one directive at a time against a per-dialect
+  table, with literal runs restricted to a separator allowlist and wrapped in the
+  dialect's quoting. An untranslatable directive raises `ConfigError` rather than passing
+  through, since an unrecognized directive parses nothing and returns NULL for every row
+- enforce the `timezone` precondition against the probed warehouse schema, so a naive or
+  non-temporal column fails the same way it does locally. The conversion itself emits no
+  SQL: Polars rewrites only a column's timezone label and every downstream cast still
+  reads the UTC instant, while warehouses have no per-column label to rewrite
+- add a differential test harness that runs both engines over the same frames and
+  compares the results, executing real compiler output through DuckDB
+
+### Fix
+
+- skip the text transform stages on non-text columns during pushdown, matching the local
+  engine. A currency string compared against a native float previously asked the
+  warehouse to run `REGEXP_REPLACE` over a number
+
+### BREAKING CHANGE
+
+- `cast_to` is constrained to a `Literal` of supported Polars type names. It previously
+  accepted any string and resolved it with `getattr`, so an unrecognized name left the
+  column uncast and the diff green. The field also reaches SQL as `CAST(x AS <type>)`,
+  where a type name cannot be quoted or bound as a parameter
+
 ## v0.5.1 (2026-09-10)
 
 Unsupported formats now raise `ConfigError` instead of `NotImplementedError`. Code
