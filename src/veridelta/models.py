@@ -62,6 +62,24 @@ YAML preserves the distinction natively, so `-999` is an integer sentinel while
 `"-999"` is a text one, and each is only applied to columns of a matching type.
 """
 
+CastTarget = Literal[
+    "Int64",
+    "Float64",
+    "String",
+    "Boolean",
+    "Date",
+    "Datetime",
+]
+"""Polars datatype a column may be cast to before comparison.
+
+A closed set rather than a free-form name, for two reasons. Unrecognized names
+used to resolve to nothing and skip the cast in silence, so a typo produced a
+green diff of uncast columns. And because the SQL compiler renders this field
+into `CAST(x AS <type>)`, where a type name cannot be quoted or parameterized,
+an enumerated set is the only thing standing between the config file and
+arbitrary SQL. Every member maps to a fixed per-dialect keyword.
+"""
+
 WhitespaceMode = Literal[
     "none",
     "left",
@@ -143,9 +161,19 @@ class DiffRule(BaseModel):
         stages never operate on placeholder text, and `cast_to` runs last so it
         casts already-sanitized values.
 
-        Warehouse pushdown implements stages 1 through 4, 8, and 9. Rules using
-        `pad_zeros`, `datetime_format`, `timezone`, or `cast_to` raise
-        `ConnectorError` rather than comparing on a silently different pipeline.
+        Warehouse pushdown implements every stage, so no rule silently changes
+        meaning by running in a warehouse. Two stages need explaining:
+
+        * `pad_zeros` is emitted as a sign-aware, non-truncating expression
+          rather than a bare `LPAD`, which pads in front of a minus sign and
+          discards characters past the target width.
+        * `timezone` emits no SQL. Polars rewrites only a column's timezone
+          label, and every downstream cast and comparison still reads the
+          underlying UTC instant, so the conversion cannot change a verdict.
+          Warehouses have no per-column label to rewrite, and the functions
+          that resemble the conversion shift the value to a wall clock instead.
+          The rule's precondition -- timezone-aware timestamps -- is enforced
+          against the probed schema, so a run that fails locally fails here.
 
     Attributes:
         column_names (list[str]): Exact names of the columns in the source dataset.
@@ -176,13 +204,17 @@ class DiffRule(BaseModel):
         datetime_format (str | None): Expected strptime format for dates
             (e.g., '%Y-%m-%d %H:%M:%S'). Parses string columns into datetimes, so
             the column is compared as a datetime rather than as text. Values that
-            do not match the format become NULL and therefore mismatch.
+            do not match the format become NULL and therefore mismatch. Pushdown
+            translates the directives into each dialect's own format language
+            from a fixed table, and raises `ConfigError` for anything absent
+            from it rather than passing the directive through untranslated.
         timezone (str | None): Target timezone to convert timestamps to before
             comparison (e.g., 'UTC'). Requires timezone-aware data; naive
             timestamps raise `ConfigError` rather than being assigned a guessed
             zone, since guessing silently shifts comparisons.
-        cast_to (str | None): Explicitly cast column to this Polars datatype
-            (e.g., 'Float64').
+        cast_to (CastTarget | None): Explicitly cast column to this Polars
+            datatype (e.g., 'Float64'). Restricted to a closed set: an
+            unrecognized name used to skip the cast without complaint.
         ignore (bool): Whether to skip this column entirely during comparison.
         rename_to (str | None): The name in the target dataset if it differs from
             the source. Only valid when `column_names` contains exactly one entry.
@@ -247,7 +279,7 @@ class DiffRule(BaseModel):
         default=None, description="Target timezone to normalize dates to before comparison."
     )
 
-    cast_to: str | None = Field(
+    cast_to: CastTarget | None = Field(
         default=None,
         description="Explicitly cast column to this Polars datatype (e.g., 'Float64').",
     )

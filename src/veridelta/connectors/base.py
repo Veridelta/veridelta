@@ -4,12 +4,41 @@
 """Abstract connector interface for warehouse and lakehouse backends."""
 
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 import polars as pl
 
+from veridelta.connectors.sql import SQLPushdownCompiler
+
 PushdownQueryType = Literal["mismatch", "added", "missing", "count", "columns", "schema"]
 """Warehouse pushdown round-trip: comparison rows, tallies, totals, or probes."""
+
+
+@runtime_checkable
+class PushdownSession(Protocol):
+    """The two members the pushdown summary actually needs from a connector.
+
+    Narrower than `VerideltaConnector`, which also covers lakehouse scans that
+    have no compiler. Stating the requirement structurally keeps the summary
+    reusable by anything that can compile and execute, including the
+    differential test harness.
+    """
+
+    compiler: SQLPushdownCompiler
+
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
+        """Execute compiled SQL and return an unevaluated result graph.
+
+        Args:
+            statement (str): Compiler-produced SQL.
+            query_type (PushdownQueryType): Which round-trip this represents.
+
+        Returns:
+            pl.LazyFrame: Unevaluated result graph.
+        """
+        ...
 
 
 class VerideltaConnector(ABC):

@@ -16,10 +16,13 @@ Apply these rules when modifying files inside `src/veridelta/`.
 - Do not apply SQL identifier regex to file-source `column_names`, `primary_keys`, credentials, hostnames, tokens, or lakehouse `table_uri`.
 - Data literals (`value_map`, `regex_replace`) go through `_literal` (`'` → `''`). Do not treat them as identifiers.
 - `null_values` accepts mixed scalars, so it renders through `_sentinel_literal`: strings still go through `_literal`, while numbers and booleans emit unquoted so they cannot break a numeric column's cast. Only `str` can reach `_literal`, so the escaping guarantee is unchanged. Sentinels are also filtered against the probed dtype (`sentinels.py`) before rendering, which is a correctness control, not a security one.
-- Numeric SQL operands (`absolute_tolerance`, `relative_tolerance`, `version`, `snapshot_id`) stay strict `float`/`int` fields. Do not coerce strings into SQL or Polars kwargs.
+- Numeric SQL operands (`absolute_tolerance`, `relative_tolerance`, `version`, `snapshot_id`, `pad_zeros`) stay strict `float`/`int` fields. Do not coerce strings into SQL or Polars kwargs.
+- `cast_to` is a closed `CastTarget` literal rendered through `_CAST_KEYWORDS`. A type name cannot be quoted or bound inside `CAST(x AS ...)`, so the table is the whole control. Never interpolate the config value directly, and never widen the literal without adding a keyword for every dialect.
+- `datetime_format` is translated one token at a time against `_STRPTIME_DIRECTIVES`, with literal runs restricted to `_FORMAT_LITERALS` and wrapped in the dialect's quoting. The allowlist excludes both quote characters, so no literal run can close its own quoting. Do not replace this with a regex substitution pass, which cannot tell a directive from literal text and leaves unrecognized input in the emitted format.
 - Do not add sanitization libraries. Quoting plus allowlists plus strict types is the control.
 
 ## Execution boundary
 
 - Drivers receive compiled SQL or native scan kwargs. Never interpolate passwords, tokens, or URIs into SQL.
-- Pattern-only `DiffRule` values and unimplemented rule fields stay rejected at compile time.
+- Pattern-only `DiffRule` values stay rejected at compile time.
+- Every dialect-specific keyword, quote character, or function name belongs in a module-scope table in `sql.py` keyed by `SQLDialect`, so a missing entry raises instead of inheriting another dialect's syntax. Where dialects differ structurally rather than by a token, name every dialect explicitly in the branch.
