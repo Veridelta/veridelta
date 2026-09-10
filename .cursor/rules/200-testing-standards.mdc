@@ -1,0 +1,22 @@
+---
+description: Standards for unit, integration, and smoke test suites
+globs: tests/**/*.py
+alwaysApply: false
+---
+
+# Veridelta Testing Standards
+
+Apply these rules when writing or updating tests in `tests/`.
+
+## Architecture
+
+- Framework: `pytest` via `uv run pytest` or `make test`.
+- Organization:
+  - `tests/unit/`: isolated logic; no I/O or network.
+  - `tests/integration/`: module interaction and dataset ingestion.
+  - `tests/smoke/`: installation and packaging.
+  - `tests/e2e/`: full CLI and end-to-end workflows.
+- Shared fixtures belong in `tests/conftest.py`. Type every fixture return value (typically `pl.DataFrame`).
+- Mark tests with `unit`, `integration`, `e2e`, `smoke`, `fast`, or `slow`.
+- Mock only external side effects. Use real `polars.DataFrame` instances for tabular computations.
+- Coverage gate is 90% (`fail_under` in `pyproject.toml`).

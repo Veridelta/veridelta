@@ -628,5 +628,41 @@ class TestHarnessSensitivity:
             ],
         )
 
-        assert run_local(strict, src, tgt).changed_count == 1
-        assert run_pushdown(lenient, src, tgt)[0].changed_count == 0
+        assert run_local(strict, src, tgt).summary.changed_count == 1
+        assert run_pushdown(lenient, src, tgt)[0].summary.changed_count == 0
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestPushdownRowAccess:
+    """Validate what a pushdown result can and cannot hand back."""
+
+    def test_it_returns_primary_keys_only(self) -> None:
+        """Ensure a pushdown result is flagged and carries keys rather than values.
+
+        The comparison SQL never projects values, so the frames hold keys and
+        the flag is what tells a caller not to expect more.
+        """
+        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "CHANGED"]})
+
+        result, _ = run_pushdown(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        assert result.keys_only is True
+        assert result.changed.columns == ["id"]
+        assert result.get_mismatches("val").to_dicts() == [{"id": 2}]
+
+    def test_it_still_rejects_a_column_that_was_not_compared(self) -> None:
+        """Ensure the uncompared-column guard survives the keys-only path.
+
+        Pushdown frames cannot reveal which columns were compared, so the
+        result records them explicitly. Without that, a mistyped name would
+        silently return every changed key.
+        """
+        src = pl.DataFrame({"id": [1], "val": ["A"]})
+        tgt = pl.DataFrame({"id": [1], "val": ["B"]})
+
+        result, _ = run_pushdown(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        with pytest.raises(ConfigError, match="was not compared"):
+            result.get_mismatches("vla")

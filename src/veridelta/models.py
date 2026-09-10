@@ -11,9 +11,16 @@ schema definition for the YAML configuration files.
 import math
 import re
 from collections.abc import Iterable
-from typing import Annotated, Any, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
+import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+
+from veridelta.exceptions import ConfigError
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 SQL_IDENTIFIER_SEGMENT_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
 """Unquoted SQL identifier: letter or underscore, then alphanumeric or underscore."""
@@ -616,6 +623,87 @@ class DiffSummary(BaseModel):
             col_report += f"- {col}: {count:,} mismatches\n"
 
         return base_report + col_report
+
+
+@dataclass(frozen=True)
+class DiffResult:
+    """A completed comparison: the metrics plus the rows behind them.
+
+    `DiffSummary` stays a pure value object that serializes to JSON, so it
+    cannot carry frames. This wraps it with the discrepancy rows the engine
+    already materialized, which previously were computed, counted, and thrown
+    away. Reaching them no longer requires exporting artifacts to disk.
+
+    Attributes:
+        summary (DiffSummary): Counts, ratios, and the formatted report.
+        added (pl.DataFrame): Rows present only in the target.
+        removed (pl.DataFrame): Rows present only in the source.
+        changed (pl.DataFrame): Rows present in both with at least one
+            differing column. Local runs carry `{column}_source`,
+            `{column}_target`, and `{column}_is_match` for every compared
+            column; pushdown runs carry primary keys alone.
+        primary_keys (tuple[str, ...]): Join keys, in configured order.
+        compared_columns (tuple[str, ...]): Columns actually evaluated, after
+            renames and exclusions. Recorded explicitly so a mistyped column
+            name is caught on both paths, including pushdown, where the frames
+            themselves cannot reveal which columns were compared.
+        keys_only (bool): True for warehouse pushdown, which compares in place
+            and projects primary keys rather than extracting rows.
+    """
+
+    summary: DiffSummary
+    added: pl.DataFrame
+    removed: pl.DataFrame
+    changed: pl.DataFrame
+    primary_keys: tuple[str, ...] = ()
+    compared_columns: tuple[str, ...] = ()
+    keys_only: bool = False
+
+    def get_mismatches(self, column: str) -> pl.DataFrame:
+        """Isolate the rows where one column disagreed.
+
+        Args:
+            column (str): Compared column to isolate, named as it appears after
+                any `rename_to`.
+
+        Returns:
+            pl.DataFrame: Primary keys alongside the source and target values,
+            restricted to rows where this column differed. Pushdown runs return
+            every changed primary key instead, since the warehouse never
+            projected the values and cannot attribute a row to one column.
+
+        Raises:
+            ConfigError: If the column was not part of the comparison.
+        """
+        if column not in self.compared_columns:
+            compared = ", ".join(self.compared_columns) or "none"
+            raise ConfigError(
+                f"Column '{column}' was not compared, so it has no mismatches to "
+                f"report. Compared columns: {compared}."
+            )
+        if self.keys_only:
+            return self.changed
+        return self.changed.filter(~pl.col(f"{column}_is_match")).select(
+            [*self.primary_keys, f"{column}_source", f"{column}_target"]
+        )
+
+    def to_pandas(self) -> "pd.DataFrame":
+        """Convert the changed rows to pandas for notebook use.
+
+        Returns:
+            pd.DataFrame: `changed` as a pandas DataFrame. The other frames
+            convert the same way through Polars' own `to_pandas`.
+
+        Raises:
+            ConfigError: If pandas or pyarrow is not installed.
+        """
+        try:
+            return self.changed.to_pandas()
+        except ImportError as exc:
+            raise ConfigError(
+                "Converting to pandas requires pandas and pyarrow, which Veridelta "
+                f"does not depend on. Install them to use this method. ({exc})"
+            ) from exc
 
 
 class SnowflakeConfig(BaseModel):

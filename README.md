@@ -92,7 +92,7 @@ config = DiffConfig(
 )
 
 engine = DiffEngine(config, source_lazy, target_lazy)
-summary = engine.run()
+summary = engine.run().summary
 
 if not summary.is_match:
     print(f"Regression detected: {summary.changed_count} rows differ.")

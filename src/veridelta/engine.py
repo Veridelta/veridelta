@@ -24,6 +24,7 @@ from veridelta.models import (
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
+    DiffResult,
     DiffRule,
     DiffSummary,
     IcebergConfig,
@@ -573,7 +574,7 @@ def _collect_pushdown_summary(
     source_table: str,
     target_table: str,
     diff: DiffConfig,
-) -> DiffSummary:
+) -> DiffResult:
     """Compile and collect the warehouse count, mismatch, and anti-join queries.
 
     Args:
@@ -584,8 +585,10 @@ def _collect_pushdown_summary(
         diff (DiffConfig): Master comparison rules and keys.
 
     Returns:
-        DiffSummary: Heights from the three collected LazyFrames, ratioed against
-            the source relation's total row count.
+        DiffResult: Heights from the three collected LazyFrames, ratioed against
+            the source relation's total row count, alongside the primary-key
+            frames themselves. Flagged `keys_only`, since the comparison SQL
+            never projects values.
 
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
@@ -645,19 +648,29 @@ def _collect_pushdown_summary(
             diff.output_format,
         )
 
-    return _summary_from_pushdown(
-        diff,
-        changed,
-        added,
-        removed,
-        source_total,
-        target_total,
-        column_mismatches,
-        artifacts_written,
+    return DiffResult(
+        summary=_summary_from_pushdown(
+            diff,
+            changed,
+            added,
+            removed,
+            source_total,
+            target_total,
+            column_mismatches,
+            artifacts_written,
+        ),
+        added=added,
+        removed=removed,
+        changed=changed,
+        primary_keys=tuple(diff.primary_keys),
+        # Post-rename names, matching what the local path records, so the same
+        # column reads the same way whichever engine ran it.
+        compared_columns=tuple(rule.rename_to or rule.column_names[0] for rule in rules),
+        keys_only=True,
     )
 
 
-def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffSummary:
+def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
     """Execute same-warehouse SQL pushdown or raise for unsupported pairings.
 
     Args:
@@ -666,7 +679,8 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
         target (SourceRef): Target configuration.
 
     Returns:
-        DiffSummary: Mismatch and anti-join counts from the pushdown statements.
+        DiffResult: Mismatch and anti-join counts from the pushdown statements,
+            with the primary-key frames they were derived from.
 
     Raises:
         ConfigError: If the probed relations violate `schema_mode`.
@@ -814,9 +828,7 @@ class DiffEngine:
         self.target = target_df
 
     @classmethod
-    def run_from_configs(
-        cls, diff: DiffConfig, source: SourceRef, target: SourceRef
-    ) -> DiffSummary:
+    def run_from_configs(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
         """Route a comparison to warehouse pushdown or local Polars evaluation.
 
         Args:
@@ -825,7 +837,7 @@ class DiffEngine:
             target (SourceRef): Target file, lakehouse, or warehouse config.
 
         Returns:
-            DiffSummary: Pushdown mismatch and anti-join counts, or a full Polars
+            DiffResult: Pushdown mismatch and anti-join counts, or a full Polars
                 diff for file and lakehouse pairs.
 
         Raises:
@@ -1269,7 +1281,7 @@ class DiffEngine:
                     f"Target contains unauthorized additional columns: {extra_in_target}"
                 )
 
-    def run(self) -> DiffSummary:
+    def run(self) -> DiffResult:
         """Execute the end-to-end dataset comparison pipeline lazily.
 
         Builds an optimized Polars computation graph (DAG) to guarantee deterministic
@@ -1291,7 +1303,7 @@ class DiffEngine:
                to the configured storage backend, if requested.
 
         Returns:
-            DiffSummary: Execution report detailing match status, discrepancy counts,
+            DiffResult: Execution report detailing match status, discrepancy counts,
                 and column-level drift metrics.
 
         Raises:
@@ -1382,14 +1394,21 @@ class DiffEngine:
                 self.config.output_format,
             )
 
-        return DiffSummary(
-            total_rows_source=src_total,
-            total_rows_target=tgt_total,
-            added_count=added_df.height,
-            removed_count=removed_df.height,
-            changed_count=changed_count,
-            column_mismatches=column_mismatches,
-            is_match=is_match,
-            report_limit=self.config.report_top_columns_limit,
-            artifacts_written=artifacts_written,
+        return DiffResult(
+            summary=DiffSummary(
+                total_rows_source=src_total,
+                total_rows_target=tgt_total,
+                added_count=added_df.height,
+                removed_count=removed_df.height,
+                changed_count=changed_count,
+                column_mismatches=column_mismatches,
+                is_match=is_match,
+                report_limit=self.config.report_top_columns_limit,
+                artifacts_written=artifacts_written,
+            ),
+            added=added_df,
+            removed=removed_df,
+            changed=changed_df,
+            primary_keys=tuple(self.config.primary_keys),
+            compared_columns=tuple(col.removesuffix("_is_match") for col in match_cols),
         )

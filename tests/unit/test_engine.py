@@ -52,7 +52,7 @@ class TestStructuralAlignment:
             primary_keys=["user_id"],
             rules=[DiffRule(column_names=["id"], rename_to="user_id")],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_mismatches == 0
@@ -65,7 +65,7 @@ class TestStructuralAlignment:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["secret_hash"], ignore=True)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_mismatches == 0
@@ -114,7 +114,7 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"id": [1], "new_modern_col": ["A"]})
         config = DiffConfig(primary_keys=["id"], schema_mode="allow_additions")
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
         assert summary.is_match is True
 
     def test_schema_mode_allow_additions_fails_when_target_is_missing_source_columns(self) -> None:
@@ -132,7 +132,7 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"id": [1]})
         config = DiffConfig(primary_keys=["id"], schema_mode="allow_removals")
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
         assert summary.is_match is True
 
     def test_schema_mode_allow_removals_fails_when_target_adds_unauthorized_columns(self) -> None:
@@ -150,7 +150,7 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"id": [1], "shared": ["A"], "only_target": [2]})
         config = DiffConfig(primary_keys=["id"], schema_mode="intersection")
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_mismatches == 0
@@ -169,7 +169,7 @@ class TestSemanticNormalization:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(pattern=r"^amt_.*", absolute_tolerance=0.05)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -192,7 +192,7 @@ class TestSemanticNormalization:
                 ),
             ],
         )
-        summary = DiffEngine(config, complex_src.lazy(), complex_tgt.lazy()).run()
+        summary = DiffEngine(config, complex_src.lazy(), complex_tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.changed_count == 0
@@ -225,7 +225,7 @@ class TestSemanticNormalization:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["name"], whitespace_mode="both", case_insensitive=True)],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -238,7 +238,7 @@ class TestSemanticNormalization:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["cost"], regex_replace={r"\$|€": ""})],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -253,7 +253,7 @@ class TestSemanticNormalization:
                 DiffRule(column_names=["status"], null_values=["N/A"], treat_null_as_equal=True)
             ],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -266,7 +266,7 @@ class TestSemanticNormalization:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["metric"], relative_tolerance=0.05)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
         assert summary.changed_count == 1
@@ -280,7 +280,7 @@ class TestSemanticNormalization:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["noise"], ignore=True)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.changed_count == 0
@@ -297,7 +297,7 @@ class TestEvaluationStrictness:
         tgt = pl.DataFrame({"id": [1], "val": [10]})
 
         config = DiffConfig(primary_keys=["id"], strict_types=True)
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
 
@@ -307,7 +307,7 @@ class TestEvaluationStrictness:
         tgt = pl.DataFrame({"id": [1], "val": [10]})
 
         config = DiffConfig(primary_keys=["id"], strict_types=False)
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -317,7 +317,7 @@ class TestEvaluationStrictness:
         tgt = pl.DataFrame({"id": [1], "val": [None]}, schema={"id": pl.Int64, "val": pl.Utf8})
 
         config = DiffConfig(primary_keys=["id"], default_treat_null_as_equal=False)
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
         assert summary.changed_count == 1
@@ -352,7 +352,7 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [2, 3], "val": ["B", "C"]})
         config = DiffConfig(primary_keys=["id"])
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.removed_count == 1
         assert summary.added_count == 1
@@ -364,7 +364,7 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [], "val": []}, schema={"id": pl.Int64, "val": pl.Utf8})
         config = DiffConfig(primary_keys=["id"])
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -376,7 +376,7 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
 
         config = DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet")
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert (tmp_path / "added_rows.parquet").exists()
         assert (tmp_path / "removed_rows.parquet").exists()
@@ -391,7 +391,7 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [1], "val": ["A"]})
 
         config = DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet")
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert not (tmp_path / "added_rows.parquet").exists()
         assert not (tmp_path / "removed_rows.parquet").exists()
@@ -462,7 +462,7 @@ class TestCanonicalTransformPipeline:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["id"], whitespace_mode="both", case_insensitive=True)],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.added_count == 0
         assert summary.removed_count == 0
@@ -484,7 +484,7 @@ class TestCanonicalTransformPipeline:
         tgt = pl.DataFrame({"id": [1], "amount": [10.0], "status": [None]})
 
         config = DiffConfig(primary_keys=["id"], default_null_values=["N/A"])
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -548,7 +548,7 @@ class TestCanonicalTransformPipeline:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["code"], pad_zeros=5)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.changed_count == 0
@@ -562,7 +562,7 @@ class TestCanonicalTransformPipeline:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S")],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 

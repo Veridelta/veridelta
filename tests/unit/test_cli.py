@@ -36,7 +36,7 @@ class TestCommandLineInterface:
         mock_load.return_value = (mock_diff_config, mock_source, mock_target)
 
         mock_summary = MagicMock(is_match=True, report_summary="Status: PASSED")
-        mock_engine.run_from_configs.return_value = mock_summary
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
 
         exit_code = run(default_args)
 
@@ -57,7 +57,7 @@ class TestCommandLineInterface:
         mock_load.return_value = (mock_diff_config, MagicMock(), MagicMock())
 
         mock_summary = MagicMock(is_match=False, report_summary="Status: FAILED")
-        mock_engine.run_from_configs.return_value = mock_summary
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
 
         exit_code = run(default_args)
 
@@ -79,7 +79,7 @@ class TestCommandLineInterface:
         mock_summary = MagicMock(
             is_match=False, artifacts_written=True, report_summary="Status: FAILED"
         )
-        mock_engine.run_from_configs.return_value = mock_summary
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
 
         run(default_args)
         captured = capsys.readouterr()
@@ -103,7 +103,7 @@ class TestCommandLineInterface:
         mock_summary = MagicMock(
             is_match=False, artifacts_written=False, report_summary="Status: FAILED"
         )
-        mock_engine.run_from_configs.return_value = mock_summary
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
 
         exit_code = run(default_args)
         captured = capsys.readouterr()

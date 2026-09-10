@@ -32,7 +32,7 @@ class TestModuleBoundaryHandoffs:
         src_lazy, tgt_lazy = ingestor.get_dataframes()
 
         engine = DiffEngine(diff_cfg, src_lazy, tgt_lazy)
-        summary = engine.run()
+        summary = engine.run().summary
 
         assert summary.is_match is False
         assert summary.changed_count == 1
@@ -55,7 +55,7 @@ class TestModuleBoundaryHandoffs:
 
         ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
         src_lazy, tgt_lazy = ingestor.get_dataframes()
-        summary = DiffEngine(diff_cfg, src_lazy, tgt_lazy).run()
+        summary = DiffEngine(diff_cfg, src_lazy, tgt_lazy).run().summary
 
         # Because strict_types=True, 100 != "100"
         assert summary.is_match is False

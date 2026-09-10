@@ -65,8 +65,29 @@ From Python, load YAML then route through the same path the CLI uses:
 from veridelta import DiffEngine, load_config
 
 diff, source, target = load_config("veridelta.yaml")
-summary = DiffEngine.run_from_configs(diff, source, target)
+result = DiffEngine.run_from_configs(diff, source, target)
+summary = result.summary
 ```
+
+## Reading the results
+
+`DiffEngine.run()` and `DiffEngine.run_from_configs()` return a `DiffResult`. It carries the metrics on `.summary` and the rows behind them on `.added`, `.removed`, and `.changed`, so a notebook never has to export artifacts to disk just to look at the drift.
+
+```python
+result = DiffEngine(diff, source_df, target_df).run()
+
+print(result.summary.report_summary)
+
+# Just the rows where one column disagreed, with both values side by side.
+result.get_mismatches("total_amount")
+
+# The full changed set as pandas, if you have it installed.
+result.to_pandas()
+```
+
+`summary` stays a plain Pydantic model, so `summary.model_dump_json()` still produces a clean, frame-free payload for CI logs.
+
+Warehouse pushdown compares in place and never projects values, so its frames hold primary keys alone and the result is flagged `keys_only`. `get_mismatches` there returns every changed key rather than one column's values, and still rejects a column that was not part of the comparison.
 
 ```yaml
 source:

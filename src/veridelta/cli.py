@@ -41,7 +41,8 @@ def run(args: argparse.Namespace) -> int:
         diff_config, source_config, target_config = load_config(config_path)
 
         print("Executing semantic diff...")
-        summary = DiffEngine.run_from_configs(diff_config, source_config, target_config)
+        result = DiffEngine.run_from_configs(diff_config, source_config, target_config)
+        summary = result.summary
 
         print(f"\n{summary.report_summary}\n")
 

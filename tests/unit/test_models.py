@@ -3,13 +3,18 @@
 
 """Unit tests for Veridelta configuration and result data models."""
 
+import polars as pl
 import pytest
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
+from veridelta.engine import DiffEngine
+from veridelta.exceptions import ConfigError
 from veridelta.models import (
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
+    DiffResult,
     DiffRule,
     DiffSummary,
     IcebergConfig,
@@ -272,3 +277,113 @@ class TestDiffSummaryCalculations:
         assert "tiny_drift" not in report
 
         assert report.find("massive_drift") < report.find("moderate_drift")
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestDiffResultRowAccess:
+    """Validate row-level access to the discrepancies behind the summary."""
+
+    @staticmethod
+    def _run() -> DiffResult:
+        """Run a two-column comparison with drift in each column.
+
+        Returns:
+            DiffResult: Result carrying the changed rows.
+        """
+        src = pl.DataFrame({"id": [1, 2, 3], "status": ["A", "B", "C"], "amount": [10, 20, 30]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "status": ["A", "X", "C"], "amount": [10, 20, 99]})
+        return DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
+
+    def test_it_exposes_the_frames_behind_the_counts(self) -> None:
+        """Ensure the rows the engine already materialized are reachable."""
+        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
+
+        result = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
+
+        assert result.added.height == result.summary.added_count == 1
+        assert result.removed.height == result.summary.removed_count == 1
+        assert result.changed.height == result.summary.changed_count == 1
+        assert result.primary_keys == ("id",)
+        assert result.keys_only is False
+
+    def test_it_isolates_the_rows_where_one_column_drifted(self) -> None:
+        """Ensure get_mismatches narrows to a single column's disagreements."""
+        mismatches = self._run().get_mismatches("amount")
+
+        assert mismatches.columns == ["id", "amount_source", "amount_target"]
+        assert mismatches.to_dicts() == [{"id": 3, "amount_source": 30, "amount_target": 99}]
+
+    def test_it_excludes_rows_that_drifted_only_in_another_column(self) -> None:
+        """Ensure a row changed elsewhere does not appear under this column.
+
+        The changed frame holds every row with any drift, so filtering on the
+        wrong flag would report row 3 as a status mismatch.
+        """
+        mismatches = self._run().get_mismatches("status")
+
+        assert mismatches.to_dicts() == [{"id": 2, "status_source": "B", "status_target": "X"}]
+
+    def test_it_rejects_a_column_that_was_not_compared(self) -> None:
+        """Ensure a mistyped or excluded column fails loudly."""
+        with pytest.raises(ConfigError, match="was not compared"):
+            self._run().get_mismatches("amont")
+
+    def test_it_rejects_an_ignored_column(self) -> None:
+        """Ensure an ignored column is reported as uncompared, not as clean."""
+        src = pl.DataFrame({"id": [1], "val": ["A"], "audit": ["x"]})
+        tgt = pl.DataFrame({"id": [1], "val": ["A"], "audit": ["y"]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["audit"], ignore=True)]
+        )
+
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ("val",)
+        with pytest.raises(ConfigError, match="was not compared"):
+            result.get_mismatches("audit")
+
+    def test_it_names_the_column_by_its_target_name_after_a_rename(self) -> None:
+        """Ensure a renamed column is addressed the way the target spells it."""
+        src = pl.DataFrame({"legacy_id": [1], "val": ["A"]})
+        tgt = pl.DataFrame({"user_id": [1], "val": ["B"]})
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ("val",)
+        assert result.get_mismatches("val").height == 1
+
+    def test_it_returns_an_empty_frame_for_a_clean_column(self) -> None:
+        """Ensure a compared column with no drift yields zero rows, not an error."""
+        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"], "note": ["x", "CHANGED"]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "B"], "note": ["x", "y"]})
+
+        result = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
+
+        assert result.get_mismatches("val").height == 0
+        assert result.get_mismatches("note").height == 1
+
+    def test_it_converts_the_changed_rows_to_pandas(self) -> None:
+        """Ensure notebook users can reach the drift without exporting artifacts."""
+        pytest.importorskip("pandas")
+
+        frame = self._run().to_pandas()
+
+        assert list(frame.columns)[:1] == ["id"]
+        assert len(frame) == 2
+
+    def test_it_explains_a_missing_pandas_install(self, mocker: MockerFixture) -> None:
+        """Ensure the optional dependency surfaces as a Veridelta error.
+
+        Polars raises a bare `ModuleNotFoundError` here, which reaches a CLI or
+        notebook user as an unhandled traceback rather than as guidance.
+        """
+        mocker.patch.object(pl.DataFrame, "to_pandas", side_effect=ImportError("no pandas"))
+
+        with pytest.raises(ConfigError, match="requires pandas and pyarrow"):
+            self._run().to_pandas()

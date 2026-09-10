@@ -1,0 +1,19 @@
+# Cache and build artifacts
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+site/
+*.egg-info/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Large or binary data
+docs/assets/data/
+*.parquet
+*.nc
