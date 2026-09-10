@@ -97,6 +97,16 @@ class TestStrictNumericFields:
                 {"primary_keys": ["id"], "default_relative_tolerance": "0.05"}
             )
 
+    def test_it_rejects_coerced_pad_zeros_widths(self) -> None:
+        """Ensure a padding width cannot arrive as text or a float."""
+        with pytest.raises(ValidationError):
+            DiffRule.model_validate({"column_names": ["zip"], "pad_zeros": "5"})
+        with pytest.raises(ValidationError):
+            DiffRule.model_validate({"column_names": ["zip"], "pad_zeros": 5.0})
+
+        assert DiffRule.model_validate({"column_names": ["zip"], "pad_zeros": 5}).pad_zeros == 5
+        assert DiffRule(column_names=["zip"]).pad_zeros is None
+
     def test_it_rejects_string_time_travel_arguments(self) -> None:
         """Ensure version and snapshot_id cannot be injected as strings."""
         with pytest.raises(ValidationError):

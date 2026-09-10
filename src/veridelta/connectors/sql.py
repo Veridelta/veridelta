@@ -4,8 +4,9 @@
 """Zero-dependency SQL pushdown compiler for warehouse dialects.
 
 Translates `DiffRule` models into Snowflake and Databricks SQL predicates and
-assembles inner-join mismatch queries, anti-join queries for added and removed
-rows, row counts, and column probes without extracting source tables.
+assembles inner-join mismatch queries, per-column mismatch tallies, anti-join
+queries for added and removed rows, row counts, and column probes without
+extracting source tables.
 """
 
 from enum import Enum
@@ -46,8 +47,10 @@ class SQLPushdownCompiler:
     ) -> str:
         """Compile a boolean match predicate for one source/target column pair.
 
-        Transform order matches the local engine: null sentinels, regex replace,
-        whitespace/case, source-side value map, comparison, then null-safe equality.
+        Follows the canonical transform order documented on `DiffRule`, which is
+        the single source of truth shared with the local engine. This compiler
+        implements stages 1 through 4, 8, and 9; the stages it cannot express are
+        rejected by `_reject_unimplemented` rather than skipped.
 
         Args:
             rule (DiffRule): Semantic comparison overrides for the column.
@@ -122,13 +125,12 @@ class SQLPushdownCompiler:
             primary_keys, source_alias=source_alias, target_alias=target_alias
         )
 
-        predicates: list[str] = []
-        for rule in rules:
-            predicates.extend(
-                self._predicates_for_rule(
-                    rule, source_alias=source_alias, target_alias=target_alias
-                )
+        predicates = [
+            predicate
+            for _, predicate in self._collect_predicates(
+                rules, source_alias=source_alias, target_alias=target_alias
             )
+        ]
 
         statement = (
             f"SELECT {select_list} "
@@ -209,6 +211,66 @@ class SQLPushdownCompiler:
             null_alias=source_alias,
             source_alias=source_alias,
             target_alias=target_alias,
+        )
+
+    def compile_column_mismatch_query(
+        self,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        rules: list[DiffRule],
+        *,
+        source_alias: str = "src",
+        target_alias: str = "tgt",
+    ) -> str | None:
+        """Assemble a per-column mismatch tally over the joined rows.
+
+        Each column contributes one `SUM(CASE ...)` term, so a single round trip
+        fills `DiffSummary.column_mismatches` the way the local engine does.
+        `COALESCE(pred, FALSE)` is load-bearing: under three-valued logic a NULL
+        predicate is neither true nor false, and without the coalesce those rows
+        would silently count as matches instead of mismatches. The local engine
+        resolves the same case with `val_match.fill_null(False)`.
+
+        Args:
+            source_table (str): Source relation (optionally dotted catalog path).
+            target_table (str): Target relation (optionally dotted catalog path).
+            primary_keys (list[str]): Join keys present on both relations.
+            rules (list[DiffRule]): Per-column semantic overrides.
+            source_alias (str): Alias assigned to the source relation.
+            target_alias (str): Alias assigned to the target relation.
+
+        Returns:
+            str | None: Single-row aggregate statement, or None when no rule
+            yields a comparable column, mirroring the local engine's decision to
+            skip the tally when there are no match expressions.
+
+        Raises:
+            ConnectorError: If tables or keys are empty, a rule is pattern-only, or
+                `rename_to` is used with multiple `column_names`.
+        """
+        if not primary_keys:
+            raise ConnectorError("At least one primary key is required for pushdown joins.")
+
+        pairs = self._collect_predicates(
+            rules, source_alias=source_alias, target_alias=target_alias
+        )
+        if not pairs:
+            return None
+
+        select_list = ", ".join(
+            f"SUM(CASE WHEN COALESCE({predicate}, FALSE) THEN 0 ELSE 1 END) "
+            f"AS {self._quote_ident(alias)}"
+            for alias, predicate in pairs
+        )
+        on_clause = self._join_on_clause(
+            primary_keys, source_alias=source_alias, target_alias=target_alias
+        )
+        return (
+            f"SELECT {select_list} "
+            f"FROM {self._quote_relation(source_table)} AS {self._quote_ident(source_alias)} "
+            f"INNER JOIN {self._quote_relation(target_table)} AS {self._quote_ident(target_alias)} "
+            f"ON {on_clause}"
         )
 
     def compile_count_query(self, table: str) -> str:
@@ -317,10 +379,41 @@ class SQLPushdownCompiler:
             for pk in primary_keys
         )
 
+    def _collect_predicates(
+        self, rules: list[DiffRule], *, source_alias: str, target_alias: str
+    ) -> list[tuple[str, str]]:
+        """Expand every rule into deduplicated result-alias and predicate pairs.
+
+        The local engine resolves exactly one effective rule per column, so when
+        several rules name the same column the first one wins here too. That also
+        keeps aggregate select lists free of duplicate output names.
+
+        Args:
+            rules (list[DiffRule]): Rules to compile, in declaration order.
+            source_alias (str): Source relation alias.
+            target_alias (str): Target relation alias.
+
+        Returns:
+            list[tuple[str, str]]: Result alias paired with its match predicate.
+
+        Raises:
+            ConnectorError: If a rule is pattern-only or `rename_to` is invalid.
+        """
+        collected: dict[str, str] = {}
+        for rule in rules:
+            for alias, predicate in self._predicates_for_rule(
+                rule, source_alias=source_alias, target_alias=target_alias
+            ):
+                collected.setdefault(alias, predicate)
+        return list(collected.items())
+
     def _predicates_for_rule(
         self, rule: DiffRule, *, source_alias: str, target_alias: str
-    ) -> list[str]:
-        """Expand one rule into per-column match predicates.
+    ) -> list[tuple[str, str]]:
+        """Expand one rule into per-column result aliases and match predicates.
+
+        The alias is the target-side name, which is what the local engine reports
+        in `column_mismatches` after `rename_to` has been applied.
 
         Args:
             rule (DiffRule): Rule to compile.
@@ -328,7 +421,7 @@ class SQLPushdownCompiler:
             target_alias (str): Target relation alias.
 
         Returns:
-            list[str]: Match predicates. Empty when the rule is ignored.
+            list[tuple[str, str]]: Alias and predicate pairs. Empty when ignored.
 
         Raises:
             ConnectorError: If the rule is pattern-only or `rename_to` is invalid.
@@ -342,19 +435,22 @@ class SQLPushdownCompiler:
         if rule.rename_to is not None and len(rule.column_names) != 1:
             raise ConnectorError("rename_to is only valid when column_names has exactly one entry.")
 
-        predicates: list[str] = []
+        pairs: list[tuple[str, str]] = []
         for column in rule.column_names:
             target_column = rule.rename_to if rule.rename_to is not None else column
-            predicates.append(
-                self.compile_column_predicate(
-                    rule,
-                    column,
+            pairs.append(
+                (
                     target_column,
-                    source_alias=source_alias,
-                    target_alias=target_alias,
+                    self.compile_column_predicate(
+                        rule,
+                        column,
+                        target_column,
+                        source_alias=source_alias,
+                        target_alias=target_alias,
+                    ),
                 )
             )
-        return predicates
+        return pairs
 
     def _reject_unimplemented(self, rule: DiffRule) -> None:
         """Raise when the rule uses fields the compiler cannot emit yet.
