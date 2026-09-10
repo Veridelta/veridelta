@@ -680,6 +680,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#transform-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transform order
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#1-numeric-tolerances" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -702,10 +713,10 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#3-value-mapping-crosswalks" class="md-nav__link">
+  <a href="#3-padding-dates-and-timezones" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Value Mapping (Crosswalks)
+        3. Padding, Dates, and Timezones
       
     </span>
   </a>
@@ -713,10 +724,21 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#4-exclusion-routing" class="md-nav__link">
+  <a href="#4-value-mapping-crosswalks" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Exclusion Routing
+        4. Value Mapping (Crosswalks)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-exclusion-routing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Exclusion Routing
       
     </span>
   </a>
@@ -837,9 +859,15 @@
 <p>Do not commit <code>password</code> or <code>access_token</code> in YAML. Inject secrets from the environment or your orchestrator's secret store at runtime.</p>
 <p>Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (account, user, warehouse, database, schema, role, and password for Snowflake; host, HTTP path, token, catalog, and schema for Databricks), and the <code>table</code> names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise <code>ConnectorError</code>.</p>
 <p><code>table</code> must be one to three unquoted identifier segments (<code>EVENTS</code>, <code>schema.table</code>, or <code>catalog.schema.table</code>). Pattern-only <code>DiffRule</code> entries are not compiled to SQL; they raise <code>ConnectorError</code> on the warehouse path.</p>
-<p>Pushdown issues seven statements per run: a zero-row column probe and a <code>COUNT(*)</code> per side, then inner-join mismatches, target-only added rows, and source-only removed rows. Those fill <code>changed_count</code>, <code>added_count</code>, <code>removed_count</code>, <code>total_rows_source</code>, and <code>total_rows_target</code>, so <code>threshold</code> and <code>match_rate_percentage</code> mean the same thing they do for local comparisons. <code>column_mismatches</code> stays empty because the comparison SQL projects keys only.</p>
+<p>Pushdown issues eight statements per run: a zero-row column probe and a <code>COUNT(*)</code> per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally. Those fill every <code>DiffSummary</code> field including <code>column_mismatches</code>, so <code>threshold</code>, <code>match_rate_percentage</code>, and the drift report mean the same thing they do for local comparisons.</p>
+<p>Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global <code>default_*</code> settings, so a <code>default_absolute_tolerance</code> applies in the warehouse too. Columns marked <code>ignore</code> are excluded, and <code>rename_to</code> pairs a source column with its renamed target counterpart.</p>
 <p>The column probes enforce <code>schema_mode</code> and primary-key existence before any comparison runs, raising <code>ConfigError</code> on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase).</p>
-<p>Two behaviors differ from the file and lakehouse path. <code>output_path</code> produces no artifacts, because pushdown never extracts rows; the CLI reports counts only and <code>DiffSummary.artifacts_written</code> stays <code>False</code>. Primary-key uniqueness is also not verified, so duplicate keys inflate the inner-join mismatch count instead of raising <code>DataIntegrityError</code>.</p>
+<p>Three behaviors differ from the file and lakehouse path:</p>
+<ul>
+<li>Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as <code>added_rows_pks_only</code>, <code>removed_rows_pks_only</code>, and <code>changed_rows_pks_only</code> so they cannot be confused with local artifacts, which hold complete records.</li>
+<li>Primary-key uniqueness is not verified, so duplicate keys inflate the inner-join mismatch count instead of raising <code>DataIntegrityError</code>.</li>
+<li><code>pad_zeros</code>, <code>datetime_format</code>, <code>timezone</code>, and <code>cast_to</code> have no SQL equivalent and raise <code>ConnectorError</code> rather than being silently skipped.</li>
+</ul>
 <p>From Python, load YAML then route through the same path the CLI uses:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">load_config</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
@@ -926,7 +954,22 @@
 </tbody>
 </table>
 <h2 id="column-level-overrides-rules">Column-Level Overrides (Rules)</h2>
-<p>The <code>rules</code> array defines granular, per-column or regex-pattern tolerances. </p>
+<p>The <code>rules</code> array defines granular, per-column or regex-pattern tolerances.</p>
+<h3 id="transform-order">Transform order</h3>
+<p>Rules are not applied in the order you write them. Every column follows one fixed pipeline, and both the local engine and the warehouse compiler honor it, so a rule produces the same verdict wherever it runs:</p>
+<ol>
+<li>Null sentinels (<code>null_values</code>)</li>
+<li>Regex replace (<code>regex_replace</code>)</li>
+<li>Whitespace, then case (<code>whitespace_mode</code>, <code>case_insensitive</code>)</li>
+<li>Source-side value map (<code>value_map</code>)</li>
+<li>Pad zeros (<code>pad_zeros</code>)</li>
+<li>Datetime parsing, then timezone (<code>datetime_format</code>, <code>timezone</code>)</li>
+<li>Explicit cast (<code>cast_to</code>)</li>
+<li>Comparison (equality, or numeric tolerance)</li>
+<li>Null-safe equality (<code>treat_null_as_equal</code>)</li>
+</ol>
+<p>Stages 1 through 7 normalize each dataset on its own, before any join. That means they apply to primary keys as well: a <code>case_insensitive</code> rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, <code>DataIntegrityError</code> is raised rather than allowing a join explosion.</p>
+<p>Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global <code>default_null_values</code> or <code>default_whitespace_mode</code> is safe to set on a mixed schema.</p>
 <h3 id="1-numeric-tolerances">1. Numeric Tolerances</h3>
 <p>Bypass floating-point anomalies or acceptable system rounding differences.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">rules</span><span class="p">:</span>
@@ -935,7 +978,7 @@
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="nt">relative_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.005</span>
 </code></pre></div>
 <h3 id="2-string-normalization-sanitization">2. String Normalization &amp; Sanitization</h3>
-<p>Execute string mutations prior to type evaluation. <code>regex_replace</code> is processed first, ensuring text is sanitized before any subsequent <code>cast_to</code> operations.</p>
+<p>Execute string mutations before type evaluation. Sanitization always precedes <code>cast_to</code>, so text is cleaned before it is coerced.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">rules</span><span class="p">:</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;user_email&quot;</span><span class="p p-Indicator">]</span>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">case_insensitive</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
@@ -946,20 +989,33 @@
 <a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">      </span><span class="s">&quot;\\$&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">  </span><span class="c1"># Strip currency symbols before casting</span>
 <a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">    </span><span class="nt">cast_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Float64&quot;</span>
 </code></pre></div>
-<h3 id="3-value-mapping-crosswalks">3. Value Mapping (Crosswalks)</h3>
-<p>Translate legacy enumerations or system-specific codes to modern equivalents during evaluation.</p>
+<h3 id="3-padding-dates-and-timezones">3. Padding, Dates, and Timezones</h3>
+<p>Reconcile identifiers and timestamps that two systems store in different shapes.</p>
+<p><code>pad_zeros</code> left-pads to a fixed width. The value is stringified first, so a numeric <code>123</code> in one system matches a text <code>"00123"</code> in the other. The width must be a real integer: <code>pad_zeros: "5"</code> is rejected rather than quietly coerced.</p>
+<p><code>datetime_format</code> parses text into timestamps using a <a href="https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes">strptime</a> pattern, so the column is compared as a timestamp instead of as text. Values that do not fit the pattern become NULL, which counts as a mismatch unless <code>treat_null_as_equal</code> is set.</p>
+<p><code>timezone</code> converts timestamps to a common zone before comparison. It requires timezone-aware data. Naive timestamps raise <code>ConfigError</code>, because assuming an origin zone would shift every value by a real offset without telling you. To normalize text timestamps that carry an offset, parse them first with a format containing <code>%z</code>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;status_code&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">value_map</span><span class="p">:</span>
-<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">      </span><span class="s">&quot;0&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;INACTIVE&quot;</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">      </span><span class="s">&quot;1&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;ACTIVE&quot;</span>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">      </span><span class="s">&quot;2&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;PENDING&quot;</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;account_number&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="nt">pad_zeros</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;created_at&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="nt">datetime_format</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;%Y-%m-%d</span><span class="nv"> </span><span class="s">%H:%M:%S%z&quot;</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">    </span><span class="nt">timezone</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;UTC&quot;</span>
 </code></pre></div>
-<h3 id="4-exclusion-routing">4. Exclusion Routing</h3>
-<p>Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.</p>
+<h3 id="4-value-mapping-crosswalks">4. Value Mapping (Crosswalks)</h3>
+<p>Translate legacy enumerations or system-specific codes to modern equivalents during evaluation.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;^etl_loaded_at_.*&quot;</span>
-<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">ignore</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;status_code&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="nt">value_map</span><span class="p">:</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">      </span><span class="s">&quot;0&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;INACTIVE&quot;</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">      </span><span class="s">&quot;1&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;ACTIVE&quot;</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">      </span><span class="s">&quot;2&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;PENDING&quot;</span>
+</code></pre></div>
+<h3 id="5-exclusion-routing">5. Exclusion Routing</h3>
+<p>Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;^etl_loaded_at_.*&quot;</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">    </span><span class="nt">ignore</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
 
 
