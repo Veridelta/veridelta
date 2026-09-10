@@ -33,20 +33,21 @@ SQL_RELATION_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$
 
 SourceType = Literal[
     "csv",
-    "json",
     "parquet",
-    "fixed_width",
-    "netcdf",
-    "shapefile",
-    "geopackage",
-    "excel",
-    "sql",
-    "delta",
-    "avro",
-    "xml",
+    "json",
+    "ndjson",
     "arrow",
+    "excel",
 ]
-"""Supported and roadmap data formats for ingestion."""
+"""File formats Veridelta can ingest.
+
+Exactly the set `LoaderFactory` implements, enforced by a test. This once
+listed aspirational formats too, which meant a config could name `netcdf`,
+validate cleanly, and then fail at run time on a format nobody had written.
+
+Delta Lake is not here on purpose: it is a table format reached through the
+`delta_lake` source type, not a file passed to a reader.
+"""
 
 SchemaMode = Literal[
     "exact",
@@ -67,6 +68,23 @@ SentinelValue = str | int | float | bool
 
 YAML preserves the distinction natively, so `-999` is an integer sentinel while
 `"-999"` is a text one, and each is only applied to columns of a matching type.
+"""
+
+ArtifactFormat = Literal[
+    "csv",
+    "parquet",
+    "json",
+    "ndjson",
+    "arrow",
+]
+"""File format for exported discrepancy artifacts.
+
+A closed set bound to the engine's writer registry, so a typo fails when the
+config loads rather than after a comparison has already run.
+
+Narrower than `SourceType`: Excel is readable through the `excel` extra but not
+writable, because emitting a workbook needs a second dependency that a
+discrepancy dump does not justify.
 """
 
 CastTarget = Literal[
@@ -388,8 +406,8 @@ class DiffConfig(BaseModel):
             in the generated markdown report summary.
         output_path (str | None): Optional path to save the resulting diff report
             and artifacts (added, removed, and changed rows).
-        output_format (str): The file format for exported discrepancy artifacts.
-            Either 'parquet' or 'csv'; anything else raises `ConfigError`.
+        output_format (ArtifactFormat): The file format for exported discrepancy
+            artifacts.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -450,9 +468,9 @@ class DiffConfig(BaseModel):
     output_path: str | None = Field(
         default=None, description="Optional path to save the detailed diff report."
     )
-    output_format: str = Field(
+    output_format: ArtifactFormat = Field(
         default="parquet",
-        description="File format for exported discrepancy artifacts: 'parquet' or 'csv'.",
+        description="File format for exported discrepancy artifacts (e.g., 'parquet').",
     )
 
     @field_validator("default_null_values")

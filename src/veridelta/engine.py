@@ -20,6 +20,7 @@ from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
+    ArtifactFormat,
     CastTarget,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -34,6 +35,16 @@ from veridelta.models import (
     SourceRef,
 )
 from veridelta.sentinels import usable_sentinels
+
+fastexcel: Any = None
+try:
+    import fastexcel as _fastexcel
+except ImportError:
+    pass
+else:
+    fastexcel = _fastexcel
+"""Presence probe for the `excel` extra. Polars imports this itself, but only
+at call time, so checking here turns a bare ImportError into an install hint."""
 
 
 def _unusable_sentinel_error(
@@ -146,12 +157,105 @@ class ParquetLoader(BaseLoader):
         return pl.scan_parquet(config.path, **config.options)
 
 
+class NDJSONLoader(BaseLoader):
+    """Loader for newline-delimited JSON, which Polars can scan lazily."""
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads an NDJSON file into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.scan_ndjson`.
+
+        Returns:
+            pl.LazyFrame: The lazy dataset graph.
+        """
+        return pl.scan_ndjson(config.path, **config.options)
+
+
+class ArrowLoader(BaseLoader):
+    """Loader for Arrow IPC (Feather v2) files."""
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads an Arrow IPC file into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.scan_ipc`.
+
+        Returns:
+            pl.LazyFrame: The lazy dataset graph.
+        """
+        return pl.scan_ipc(config.path, **config.options)
+
+
+class JSONLoader(BaseLoader):
+    """Loader for a single JSON document holding an array of records.
+
+    Polars has no lazy JSON reader, because a JSON array cannot be parsed
+    incrementally the way newline-delimited records can. The file is therefore
+    read whole and wrapped, which is a deliberate exception to the lazy-first
+    rule. Prefer `ndjson` for anything large enough to care about.
+    """
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads a JSON file into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.read_json`.
+
+        Returns:
+            pl.LazyFrame: A lazy wrapper over the fully materialized document.
+        """
+        return pl.read_json(config.path, **config.options).lazy()
+
+
+class ExcelLoader(BaseLoader):
+    """Loader for Excel workbooks, backed by the optional `excel` extra.
+
+    Like JSON, this is eager: a spreadsheet is a random-access container with
+    no streaming reader.
+    """
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads one worksheet into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.read_excel` (for example `sheet_name`).
+
+        Returns:
+            pl.LazyFrame: A lazy wrapper over the fully materialized sheet.
+
+        Raises:
+            ConfigError: If the `excel` extra is missing, or the options select
+                more than one worksheet.
+        """
+        if fastexcel is None:
+            raise ConfigError(
+                "Reading Excel requires the optional 'excel' extra. "
+                "Install it with: uv add 'veridelta[excel]'"
+            )
+        frame = pl.read_excel(config.path, **config.options)
+        if not isinstance(frame, pl.DataFrame):
+            raise ConfigError(
+                f"Excel source '{config.path}' resolved to multiple worksheets. "
+                "Name exactly one with the 'sheet_name' or 'sheet_id' option."
+            )
+        return frame.lazy()
+
+
 class LoaderFactory:
     """Factory to return the appropriate loader based on the configured SourceType."""
 
     _loaders: ClassVar[dict[str, BaseLoader]] = {
         "csv": CSVLoader(),
         "parquet": ParquetLoader(),
+        "json": JSONLoader(),
+        "ndjson": NDJSONLoader(),
+        "arrow": ArrowLoader(),
+        "excel": ExcelLoader(),
     }
 
     @classmethod
@@ -412,16 +516,23 @@ _CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
 skipped the cast without a word."""
 
 
-_ARTIFACT_WRITERS: Final[dict[str, Callable[[pl.DataFrame, Path], None]]] = {
+_ARTIFACT_WRITERS: Final[dict[ArtifactFormat, Callable[[pl.DataFrame, Path], None]]] = {
     "csv": lambda frame, path: frame.write_csv(path),
     "parquet": lambda frame, path: frame.write_parquet(path),
+    "json": lambda frame, path: frame.write_json(path),
+    "ndjson": lambda frame, path: frame.write_ndjson(path),
+    "arrow": lambda frame, path: frame.write_ipc(path),
 }
 """Artifact format to writer. Single source of truth for the guard and dispatch,
-so a format can never be accepted without something actually writing it."""
+so a format can never be accepted without something actually writing it.
+
+Deliberately not the same set as `LoaderFactory._loaders`: Excel is readable
+through the `excel` extra but not writable, since emitting a workbook needs a
+second dependency that a discrepancy dump does not justify."""
 
 
 def _export_artifacts(
-    frames: dict[str, pl.DataFrame], output_path: str, output_format: str
+    frames: dict[str, pl.DataFrame], output_path: str, output_format: ArtifactFormat
 ) -> bool:
     """Persist non-empty discrepancy frames to the configured directory.
 
@@ -431,7 +542,8 @@ def _export_artifacts(
     Args:
         frames (dict[str, pl.DataFrame]): Artifact base name mapped to its rows.
         output_path (str): Directory to create and write into.
-        output_format (str): Either `csv` or `parquet`.
+        output_format (ArtifactFormat): Format to write, which must have an
+            entry in `_ARTIFACT_WRITERS`.
 
     Returns:
         bool: True when at least one file was written. Empty frames are skipped,

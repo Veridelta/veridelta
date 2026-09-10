@@ -21,6 +21,22 @@ primary_keys: ["user_id"]
 
 File sources may omit `type` (it defaults to `file`) and continue to use `path`, `format`, and optional `options`.
 
+### File formats
+
+`format` accepts `csv`, `parquet`, `json`, `ndjson`, `arrow`, and `excel`. Anything else is rejected when the config loads, rather than partway through a run.
+
+`options` are handed straight to the matching Polars reader, so `{"separator": ";"}` reaches `scan_csv` and `{"sheet_name": "Q3"}` reaches `read_excel`.
+
+Most formats stream. Two do not, because Polars has no lazy reader for them: a `json` document is one array that cannot be parsed incrementally, and a spreadsheet is a random-access container. Both are read whole into memory. Prefer `ndjson` over `json` for anything large.
+
+Excel needs an optional extra:
+
+```bash
+uv add 'veridelta[excel]'
+```
+
+Discrepancy artifacts write to `csv`, `parquet`, `json`, `ndjson`, or `arrow` via `output_format`. Excel is deliberately absent: writing a workbook needs a second dependency that a discrepancy dump does not justify.
+
 ## Warehouse and lakehouse sources
 
 Set `type` on `source` and `target` to select a connector. Warehouse and lakehouse drivers are optional extras:
