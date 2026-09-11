@@ -1,3 +1,40 @@
+## v0.8.0 (2026-09-11)
+
+Reporting and CLI polish. Purely additive: new flags default off, and the
+exit codes stay 0 for a match and 1 for drift.
+
+`--html PATH` writes one self-contained file. Styles and a 25-row pager are
+inlined, so an air-gapped runner can open the report without fetching anything.
+Embedded rows are capped (`--html-max-rows`, default 1000) and the truncation is
+stated. Pushdown reports are labeled as primary-keys-only. Markup in column
+names is escaped, and `<` inside the embedded JSON is rewritten so a value
+cannot close the script block.
+
+Progress chatter moved to stderr so `veridelta run --json | jq` does not have
+to strip it. `--quiet` silences that chatter. `--version` / `-V` print the
+package version.
+
+`docs/configuration.md` is now bound to `DiffConfig`, `DiffRule`, and
+`SourceConfig` by a test, so a new field cannot ship undocumented. A Getting
+Started notebook covers local diffing and the `DiffResult` accessors added in
+0.7.0.
+
+### Feat
+
+- write a standalone HTML report from the Python API or `--html`, with an
+  inlined pager and a row cap that is visible in the page
+- add `--json` so CI can read `DiffSummary` from stdout, `--quiet` to suppress
+  progress, and `--version` / `-V`
+- route every progress line to stderr, including the artifact path, so a piped
+  `--json` run stays valid JSON
+- add a Getting Started notebook and bind `docs/configuration.md` to the three
+  config models so missing fields fail the test suite
+
+### Fix
+
+- explain configuration errors as a problem with the file, not the data, and
+  point unexpected failures at the issue tracker with the exception class
+
 ## v0.7.0 (2026-09-10)
 
 Two breaking changes, both mechanical.

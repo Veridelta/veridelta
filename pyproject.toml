@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veridelta"
-version = "0.7.0"
+version = "0.8.0"
 description = "Semantic diffing for mission-critical data pipelines."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -199,7 +199,7 @@ exclude_lines = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.7.0"
+version = "0.8.0"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:version",
