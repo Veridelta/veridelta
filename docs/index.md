@@ -52,7 +52,7 @@ rules:
 veridelta run -c veridelta.yaml
 ```
 
-**3. Review the execution summary:** Evaluate the terminal output or inspect the generated `.parquet` artifacts for row-level discrepancies.
+**3. Review the execution summary:** Evaluate the terminal output. Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_format` selects Parquet, CSV, JSON, NDJSON, or Arrow.
 
 ---
 

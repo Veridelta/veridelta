@@ -14,6 +14,7 @@ alwaysApply: false
   - Config fields, formats, extras, CLI flags, warehouse and lakehouse routing: `docs/configuration.md`
   - Public Python surface: `docs/api.md` (generated; do not hand-copy signatures)
   - What is not built: `docs/roadmap.md` only
+  - Tutorials: existing notebooks under `docs/examples/`
 - Roadmap lists unimplemented work only. When a feature ships, move the how-to to `docs/configuration.md` (or a README one-liner) and delete the roadmap bullet.
 - New `DiffConfig`, `DiffRule`, or `SourceConfig` fields must appear in `docs/configuration.md`; `tests/unit/test_docs_coverage.py` fails otherwise.
 - Do not add documentation solely to restate obvious implementation details.
