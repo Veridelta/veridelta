@@ -1666,7 +1666,7 @@ print("In-memory data artifacts initialized.")
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="n">baseline_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"customer_id"</span><span class="p">])</span>
 <span class="n">engine_baseline</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">baseline_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="p">,</span> <span class="n">tgt_saas</span><span class="p">)</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="n">engine_baseline</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">engine_baseline</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
 <span class="c1"># Veridelta Execution Summary</span>
@@ -1692,7 +1692,7 @@ print("In-memory data artifacts initialized.")
 <div class="clipboard-copy-txt" id="cell-2">baseline_config = DiffConfig(primary_keys=["customer_id"])
 engine_baseline = DiffEngine(baseline_config, src_crm, tgt_saas)
 
-print(engine_baseline.run().report_summary)
+print(engine_baseline.run().summary.report_summary)
 
 # Output:
 # Veridelta Execution Summary
@@ -1766,7 +1766,7 @@ print(engine_baseline.run().report_summary)
 <span class="p">)</span>
 
 <span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">mapping_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="p">,</span> <span class="n">tgt_saas</span><span class="p">)</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
 
 <span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
@@ -1803,7 +1803,7 @@ mapping_config = DiffConfig(
 )
 
 engine = DiffEngine(mapping_config, src_crm, tgt_saas)
-summary = engine.run()
+summary = engine.run().summary
 
 print(summary.report_summary)
 
@@ -1877,7 +1877,7 @@ print(summary.report_summary)
 <span class="c1"># Baseline failure: Veridelta gracefully handles the String vs Float mismatch</span>
 <span class="c1"># (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.</span>
 <span class="n">baseline_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">]),</span> <span class="n">src_billing</span><span class="p">,</span> <span class="n">tgt_billing</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">baseline_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">baseline_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
 <span class="c1"># Veridelta Execution Summary</span>
@@ -1918,7 +1918,7 @@ tgt_billing = pl.DataFrame(
 # Baseline failure: Veridelta gracefully handles the String vs Float mismatch
 # (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.
 baseline_billing = DiffEngine(DiffConfig(primary_keys=["invoice_id"]), src_billing, tgt_billing)
-print(baseline_billing.run().report_summary)
+print(baseline_billing.run().summary.report_summary)
 
 # Output:
 # Veridelta Execution Summary
@@ -1989,7 +1989,7 @@ print(baseline_billing.run().report_summary)
 <span class="p">)</span>
 
 <span class="n">engine_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">chained_config</span><span class="p">,</span> <span class="n">src_billing</span><span class="p">,</span> <span class="n">tgt_billing</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">engine_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">engine_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
 <span class="c1"># Veridelta Execution Summary</span>
@@ -2021,7 +2021,7 @@ chained_config = DiffConfig(
 )
 
 engine_billing = DiffEngine(chained_config, src_billing, tgt_billing)
-print(engine_billing.run().report_summary)
+print(engine_billing.run().summary.report_summary)
 
 # Output:
 # Veridelta Execution Summary
@@ -2099,7 +2099,7 @@ print(engine_billing.run().report_summary)
     <span class="p">],</span>
 <span class="p">)</span>
 
-<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">asymmetry_config</span><span class="p">,</span> <span class="n">src_legacy</span><span class="p">,</span> <span class="n">tgt_modern</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">asymmetry_config</span><span class="p">,</span> <span class="n">src_legacy</span><span class="p">,</span> <span class="n">tgt_modern</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
@@ -2139,7 +2139,7 @@ asymmetry_config = DiffConfig(
     ],
 )
 
-summary = DiffEngine(asymmetry_config, src_legacy, tgt_modern).run()
+summary = DiffEngine(asymmetry_config, src_legacy, tgt_modern).run().summary
 print(summary.report_summary)
 
 # Output:

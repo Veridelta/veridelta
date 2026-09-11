@@ -1657,7 +1657,7 @@ print("Production config and mock artifacts generated.")
 <span class="sd">        config_path: Path to the veridelta.yaml file.</span>
 <span class="sd">    """</span>
     <span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">load_config</span><span class="p">(</span><span class="n">config_path</span><span class="p">)</span>
-    <span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="o">.</span><span class="n">run_from_configs</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span>
+    <span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="o">.</span><span class="n">run_from_configs</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span><span class="o">.</span><span class="n">summary</span>
 
     <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">' CI/CD PIPELINE VALIDATION '</span><span class="si">:</span><span class="s2">=^50</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="p">:</span>
@@ -1683,7 +1683,7 @@ print("Production config and mock artifacts generated.")
         config_path: Path to the veridelta.yaml file.
     """
     diff_cfg, src_cfg, tgt_cfg = load_config(config_path)
-    summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg)
+    summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg).summary
 
     print(f"{' CI/CD PIPELINE VALIDATION ':=^50}")
     if summary.is_match:
