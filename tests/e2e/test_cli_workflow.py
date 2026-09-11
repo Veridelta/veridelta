@@ -94,7 +94,9 @@ output_format: parquet
         )
 
         assert result.returncode == 1
-        assert "Artifacts saved to:" in result.stdout
+        assert "Veridelta Execution Summary" in result.stdout
+        assert "Artifacts saved to:" not in result.stdout
+        assert "Artifacts saved to:" in result.stderr
 
         added_df = pl.read_parquet(out_dir / "added_rows.parquet")
         assert added_df.height == 1

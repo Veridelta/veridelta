@@ -42,6 +42,14 @@ Warehouse SQL pushdown and lakehouse-native scanners. `VerideltaConnector` is th
       show_root_heading: false
       show_source: true
 
+## HTML Reports
+Standalone, air-gapped HTML dashboards rendered from a `DiffResult`.
+
+::: veridelta.report
+    options:
+      show_root_heading: false
+      show_source: true
+
 ## Datasets
 Built-in data utilities with network-resilient caching for testing, onboarding, and tutorials.
 

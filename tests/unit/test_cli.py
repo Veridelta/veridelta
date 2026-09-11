@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_mock import MockerFixture
 
-from veridelta.cli import main, run
+from veridelta.cli import build_parser, main, run
 from veridelta.exceptions import ConfigError, ConnectorError
 
 
@@ -21,7 +21,9 @@ class TestCommandLineInterface:
     @pytest.fixture
     def default_args(self) -> argparse.Namespace:
         """Provide a default argparse namespace for testing the run function."""
-        return argparse.Namespace(config="dummy.yaml")
+        return argparse.Namespace(
+            config="dummy.yaml", json=False, quiet=False, html=None, html_max_rows=1000
+        )
 
     def test_it_returns_exit_code_zero_when_datasets_match(
         self, mocker: MockerFixture, default_args: argparse.Namespace
@@ -84,8 +86,8 @@ class TestCommandLineInterface:
         run(default_args)
         captured = capsys.readouterr()
 
-        assert "Artifacts saved to:" in captured.out
-        assert "diffs" in captured.out
+        assert "Artifacts saved to:" in captured.err
+        assert "diffs" in captured.err
 
     def test_it_omits_artifact_paths_when_no_files_were_written(
         self,
@@ -109,7 +111,7 @@ class TestCommandLineInterface:
         captured = capsys.readouterr()
 
         assert exit_code == 1
-        assert "Artifacts saved to:" not in captured.out
+        assert "Artifacts saved to:" not in captured.err
 
     def test_it_catches_config_errors_and_returns_exit_code_one_via_stderr(
         self,
@@ -165,6 +167,97 @@ class TestCommandLineInterface:
         assert exit_code == 1
         assert "Unexpected System Error" in captured.err
         assert "Disk full" in captured.err
+
+    def test_it_prints_the_summary_as_json_on_stdout(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure `--json` produces a parseable payload and no formatted report."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
+        mock_summary = MagicMock(is_match=True, report_summary="Status: PASSED")
+        mock_summary.model_dump_json.return_value = '{"is_match": true}'
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
+        default_args.json = True
+
+        exit_code = run(default_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert captured.out.strip() == '{"is_match": true}'
+        assert "Status: PASSED" not in captured.out
+        mock_summary.model_dump_json.assert_called_once_with(indent=2)
+
+    def test_it_keeps_progress_off_of_stdout_when_emitting_json(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure `veridelta run --json | jq` does not have to strip chatter."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
+        mock_summary = MagicMock(is_match=True, report_summary="Status: PASSED")
+        mock_summary.model_dump_json.return_value = "{}"
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
+        default_args.json = True
+
+        run(default_args)
+        captured = capsys.readouterr()
+
+        assert "Loading configuration" in captured.err
+        assert "Loading configuration" not in captured.out
+
+    def test_it_writes_an_html_report_when_asked(
+        self, mocker: MockerFixture, default_args: argparse.Namespace
+    ) -> None:
+        """Ensure `--html` is the only thing that triggers a report write."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_write = mocker.patch("veridelta.cli.write_html")
+        mock_result = MagicMock(summary=MagicMock(is_match=True, report_summary="PASSED"))
+        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
+        mock_engine.run_from_configs.return_value = mock_result
+        default_args.html = "report.html"
+
+        run(default_args)
+
+        mock_write.assert_called_once_with(mock_result, "report.html", max_rows=1000)
+
+    def test_it_stays_silent_when_asked(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure `--quiet` suppresses progress without hiding the result."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
+        mock_engine.run_from_configs.return_value = MagicMock(
+            summary=MagicMock(is_match=True, report_summary="Status: PASSED")
+        )
+        default_args.quiet = True
+
+        run(default_args)
+        captured = capsys.readouterr()
+
+        assert "Loading configuration" not in captured.err
+        assert "Status: PASSED" in captured.out
+
+    def test_it_prints_the_version(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Ensure `-V` reports the package version and does not start a run."""
+        from veridelta import __version__
+
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["--version"])
+
+        assert exc.value.code == 0
+        assert __version__ in capsys.readouterr().out
 
     def test_main_parses_arguments_and_delegates_to_run(self, mocker: MockerFixture) -> None:
         """Ensure the main entrypoint correctly routes the run command and exits."""
