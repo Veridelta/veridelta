@@ -12,9 +12,11 @@ format:
 lint:
 	uv run ruff check src/ tests/
 	uv run mypy src/ tests/
+	uv run pyright src/
 
 test:
 	uv run pytest tests/ --cov=src/veridelta --cov-report=term-missing
+	uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/connectors/sql.py' --fail-under=100
 
 docs:
 	uv run mkdocs build --strict

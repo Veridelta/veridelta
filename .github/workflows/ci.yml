@@ -99,6 +99,9 @@ jobs:
       - name: Execute Core Tests (Unit & Integration)
         run: uv run pytest tests/unit tests/integration --cov=src/veridelta --cov-report=xml
 
+      - name: Gate core-module branch coverage
+        run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/connectors/sql.py' --fail-under=100
+
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
