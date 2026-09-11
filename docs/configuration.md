@@ -105,6 +105,19 @@ result.to_pandas()
 
 Warehouse pushdown compares in place and never projects values, so its frames hold primary keys alone and the result is flagged `keys_only`. `get_mismatches` there returns every changed key rather than one column's values, and still rejects a column that was not part of the comparison.
 
+## Command line
+
+```bash
+veridelta --version
+veridelta run -c veridelta.yaml
+veridelta run -c veridelta.yaml --json
+veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
+```
+
+`--json` prints `DiffSummary` as JSON on stdout. Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
+
+Exit codes stay at `0` for a match within `threshold` and `1` for drift or any failure.
+
 ```yaml
 source:
   type: snowflake
@@ -173,6 +186,25 @@ Global directives control the strictness of the underlying Polars evaluation eng
 | `strict_types` | If `false` (default), the engine dynamically soft-casts target columns to source types to prevent execution halts on mismatched types. If `true`, type mismatches automatically fail the row. |
 | `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment. |
 | `threshold` | The allowable mismatch ratio (0.0 to 1.0) before the pipeline exits with a failure code. |
+| `default_absolute_tolerance` | Global absolute numeric tolerance. A column without its own `absolute_tolerance` inherits this. |
+| `default_relative_tolerance` | Global relative numeric tolerance. A column without its own `relative_tolerance` inherits this. |
+| `default_treat_null_as_equal` | Global `NULL == NULL` policy. Defaults to `true`. A column rule can override it. |
+| `default_whitespace_mode` | Global whitespace stripping: `none` (default), `left`, `right`, or `both`. |
+| `default_null_values` | Global sentinel list. Applied only to columns whose type can hold each value. |
+| `report_top_columns_limit` | How many drifted columns to list in `report_summary`. `0` hides the section. |
+| `output_path` | Directory to write discrepancy artifacts. Omitted means no files are written. |
+| `output_format` | Artifact format: `parquet` (default), `csv`, `json`, `ndjson`, or `arrow`. |
+
+```yaml
+primary_keys: ["user_id"]
+threshold: 0.01
+default_absolute_tolerance: 0.01
+default_relative_tolerance: 0.0
+default_treat_null_as_equal: true
+report_top_columns_limit: 5
+output_path: "./artifacts"
+output_format: parquet
+```
 
 ## Column-Level Overrides (Rules)
 
