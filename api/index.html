@@ -252,7 +252,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../examples/quickstart/" class="md-tabs__link">
+        <a href="../examples/getting_started/" class="md-tabs__link">
           
   
   
@@ -448,6 +448,34 @@
 
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/getting_started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started: Local Diffing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
             
               
                 
@@ -2032,6 +2060,61 @@
         
       </ul>
     </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#html-reports" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HTML Reports
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#veridelta.report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        report
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#veridelta.report.DEFAULT_MAX_ROWS" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DEFAULT_MAX_ROWS
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#veridelta.report.render_html" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        render_html
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#veridelta.report.write_html" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        write_html
+      
+    </span>
+  </a>
   
 </li>
       
@@ -19400,6 +19483,468 @@ unimplemented.</p>
 
 </div>
 
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="html-reports">HTML Reports</h2>
+<p>Standalone, air-gapped HTML dashboards rendered from a <code>DiffResult</code>.</p>
+
+
+<div class="doc doc-object doc-module">
+
+
+
+<a id="veridelta.report"></a>
+    <div class="doc doc-contents first">
+
+        <p>Standalone HTML reporting for comparison results.</p>
+<p>Renders a <code>DiffResult</code> into one self-contained file: no CDN reference, no
+build step, no runtime dependency. Veridelta runs in CI, and CI runners are
+often air-gapped, where a report that fetches a stylesheet from the internet
+renders as unstyled text at exactly the moment someone needs to read it.</p>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h2 id="veridelta.report.DEFAULT_MAX_ROWS" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">DEFAULT_MAX_ROWS</span> <span class="o">=</span> <span class="mi">1000</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-module-attribute"><code>module-attribute</code></small>
+  </span>
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Rows embedded per table before truncation.</p>
+<p>A diff of ten million rows would otherwise produce an HTML file nobody can
+open. The report states when it has truncated, so a reader never mistakes a
+capped table for the whole story.</p>
+
+    </div>
+
+</div>
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="veridelta.report.render_html" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">render_html</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_rows</span><span class="o">=</span><span class="n">DEFAULT_MAX_ROWS</span><span class="p">)</span></code>
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Render a comparison result as a standalone HTML document.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>result</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="DiffResult
+
+
+  
+      dataclass
+   (veridelta.models.DiffResult)" href="#veridelta.models.DiffResult">DiffResult</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Completed comparison.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_rows</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Rows to embed per table before truncating.</p>
+              </div>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="DEFAULT_MAX_ROWS = 1000
+
+  
+      module-attribute
+   (veridelta.report.DEFAULT_MAX_ROWS)" href="#veridelta.report.DEFAULT_MAX_ROWS">DEFAULT_MAX_ROWS</a></code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+<th>Name</th>          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+<td><code>str</code></td>            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A complete HTML document with no external references.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/veridelta/report.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-192">192</a></span>
+<span class="normal"><a href="#__codelineno-0-193">193</a></span>
+<span class="normal"><a href="#__codelineno-0-194">194</a></span>
+<span class="normal"><a href="#__codelineno-0-195">195</a></span>
+<span class="normal"><a href="#__codelineno-0-196">196</a></span>
+<span class="normal"><a href="#__codelineno-0-197">197</a></span>
+<span class="normal"><a href="#__codelineno-0-198">198</a></span>
+<span class="normal"><a href="#__codelineno-0-199">199</a></span>
+<span class="normal"><a href="#__codelineno-0-200">200</a></span>
+<span class="normal"><a href="#__codelineno-0-201">201</a></span>
+<span class="normal"><a href="#__codelineno-0-202">202</a></span>
+<span class="normal"><a href="#__codelineno-0-203">203</a></span>
+<span class="normal"><a href="#__codelineno-0-204">204</a></span>
+<span class="normal"><a href="#__codelineno-0-205">205</a></span>
+<span class="normal"><a href="#__codelineno-0-206">206</a></span>
+<span class="normal"><a href="#__codelineno-0-207">207</a></span>
+<span class="normal"><a href="#__codelineno-0-208">208</a></span>
+<span class="normal"><a href="#__codelineno-0-209">209</a></span>
+<span class="normal"><a href="#__codelineno-0-210">210</a></span>
+<span class="normal"><a href="#__codelineno-0-211">211</a></span>
+<span class="normal"><a href="#__codelineno-0-212">212</a></span>
+<span class="normal"><a href="#__codelineno-0-213">213</a></span>
+<span class="normal"><a href="#__codelineno-0-214">214</a></span>
+<span class="normal"><a href="#__codelineno-0-215">215</a></span>
+<span class="normal"><a href="#__codelineno-0-216">216</a></span>
+<span class="normal"><a href="#__codelineno-0-217">217</a></span>
+<span class="normal"><a href="#__codelineno-0-218">218</a></span>
+<span class="normal"><a href="#__codelineno-0-219">219</a></span>
+<span class="normal"><a href="#__codelineno-0-220">220</a></span>
+<span class="normal"><a href="#__codelineno-0-221">221</a></span>
+<span class="normal"><a href="#__codelineno-0-222">222</a></span>
+<span class="normal"><a href="#__codelineno-0-223">223</a></span>
+<span class="normal"><a href="#__codelineno-0-224">224</a></span>
+<span class="normal"><a href="#__codelineno-0-225">225</a></span>
+<span class="normal"><a href="#__codelineno-0-226">226</a></span>
+<span class="normal"><a href="#__codelineno-0-227">227</a></span>
+<span class="normal"><a href="#__codelineno-0-228">228</a></span>
+<span class="normal"><a href="#__codelineno-0-229">229</a></span>
+<span class="normal"><a href="#__codelineno-0-230">230</a></span>
+<span class="normal"><a href="#__codelineno-0-231">231</a></span>
+<span class="normal"><a href="#__codelineno-0-232">232</a></span>
+<span class="normal"><a href="#__codelineno-0-233">233</a></span>
+<span class="normal"><a href="#__codelineno-0-234">234</a></span>
+<span class="normal"><a href="#__codelineno-0-235">235</a></span>
+<span class="normal"><a href="#__codelineno-0-236">236</a></span>
+<span class="normal"><a href="#__codelineno-0-237">237</a></span>
+<span class="normal"><a href="#__codelineno-0-238">238</a></span>
+<span class="normal"><a href="#__codelineno-0-239">239</a></span>
+<span class="normal"><a href="#__codelineno-0-240">240</a></span>
+<span class="normal"><a href="#__codelineno-0-241">241</a></span>
+<span class="normal"><a href="#__codelineno-0-242">242</a></span>
+<span class="normal"><a href="#__codelineno-0-243">243</a></span>
+<span class="normal"><a href="#__codelineno-0-244">244</a></span>
+<span class="normal"><a href="#__codelineno-0-245">245</a></span>
+<span class="normal"><a href="#__codelineno-0-246">246</a></span>
+<span class="normal"><a href="#__codelineno-0-247">247</a></span>
+<span class="normal"><a href="#__codelineno-0-248">248</a></span>
+<span class="normal"><a href="#__codelineno-0-249">249</a></span>
+<span class="normal"><a href="#__codelineno-0-250">250</a></span>
+<span class="normal"><a href="#__codelineno-0-251">251</a></span>
+<span class="normal"><a href="#__codelineno-0-252">252</a></span>
+<span class="normal"><a href="#__codelineno-0-253">253</a></span>
+<span class="normal"><a href="#__codelineno-0-254">254</a></span>
+<span class="normal"><a href="#__codelineno-0-255">255</a></span>
+<span class="normal"><a href="#__codelineno-0-256">256</a></span>
+<span class="normal"><a href="#__codelineno-0-257">257</a></span>
+<span class="normal"><a href="#__codelineno-0-258">258</a></span>
+<span class="normal"><a href="#__codelineno-0-259">259</a></span>
+<span class="normal"><a href="#__codelineno-0-260">260</a></span>
+<span class="normal"><a href="#__codelineno-0-261">261</a></span>
+<span class="normal"><a href="#__codelineno-0-262">262</a></span>
+<span class="normal"><a href="#__codelineno-0-263">263</a></span>
+<span class="normal"><a href="#__codelineno-0-264">264</a></span>
+<span class="normal"><a href="#__codelineno-0-265">265</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-192" name="__codelineno-0-192"></a><span class="k">def</span><span class="w"> </span><span class="nf">render_html</span><span class="p">(</span><span class="n">result</span><span class="p">:</span> <span class="n">DiffResult</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_rows</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">DEFAULT_MAX_ROWS</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+<a id="__codelineno-0-193" name="__codelineno-0-193"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Render a comparison result as a standalone HTML document.</span>
+<a id="__codelineno-0-194" name="__codelineno-0-194"></a>
+<a id="__codelineno-0-195" name="__codelineno-0-195"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-196" name="__codelineno-0-196"></a><span class="sd">        result (DiffResult): Completed comparison.</span>
+<a id="__codelineno-0-197" name="__codelineno-0-197"></a><span class="sd">        max_rows (int): Rows to embed per table before truncating.</span>
+<a id="__codelineno-0-198" name="__codelineno-0-198"></a>
+<a id="__codelineno-0-199" name="__codelineno-0-199"></a><span class="sd">    Returns:</span>
+<a id="__codelineno-0-200" name="__codelineno-0-200"></a><span class="sd">        str: A complete HTML document with no external references.</span>
+<a id="__codelineno-0-201" name="__codelineno-0-201"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-202" name="__codelineno-0-202"></a>    <span class="n">summary</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">summary</span>
+<a id="__codelineno-0-203" name="__codelineno-0-203"></a>    <span class="n">verdict</span> <span class="o">=</span> <span class="s2">&quot;PASSED&quot;</span> <span class="k">if</span> <span class="n">summary</span><span class="o">.</span><span class="n">is_match</span> <span class="k">else</span> <span class="s2">&quot;FAILED&quot;</span>
+<a id="__codelineno-0-204" name="__codelineno-0-204"></a>    <span class="n">generated</span> <span class="o">=</span> <span class="n">datetime</span><span class="o">.</span><span class="n">now</span><span class="p">(</span><span class="n">timezone</span><span class="o">.</span><span class="n">utc</span><span class="p">)</span><span class="o">.</span><span class="n">strftime</span><span class="p">(</span><span class="s2">&quot;%Y-%m-</span><span class="si">%d</span><span class="s2"> %H:%M:%S UTC&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-205" name="__codelineno-0-205"></a>
+<a id="__codelineno-0-206" name="__codelineno-0-206"></a>    <span class="n">cards</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span>
+<a id="__codelineno-0-207" name="__codelineno-0-207"></a>        <span class="p">[</span>
+<a id="__codelineno-0-208" name="__codelineno-0-208"></a>            <span class="n">_card</span><span class="p">(</span><span class="s2">&quot;Match rate&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">match_rate_percentage</span><span class="si">}</span><span class="s2">%&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-209" name="__codelineno-0-209"></a>            <span class="n">_card</span><span class="p">(</span><span class="s2">&quot;Source rows&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">total_rows_source</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-210" name="__codelineno-0-210"></a>            <span class="n">_card</span><span class="p">(</span><span class="s2">&quot;Target rows&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">total_rows_target</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-211" name="__codelineno-0-211"></a>            <span class="n">_card</span><span class="p">(</span><span class="s2">&quot;Added&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">added_count</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-212" name="__codelineno-0-212"></a>            <span class="n">_card</span><span class="p">(</span><span class="s2">&quot;Removed&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">removed_count</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-213" name="__codelineno-0-213"></a>            <span class="n">_card</span><span class="p">(</span><span class="s2">&quot;Changed&quot;</span><span class="p">,</span> <span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">changed_count</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">),</span>
+<a id="__codelineno-0-214" name="__codelineno-0-214"></a>        <span class="p">]</span>
+<a id="__codelineno-0-215" name="__codelineno-0-215"></a>    <span class="p">)</span>
+<a id="__codelineno-0-216" name="__codelineno-0-216"></a>
+<a id="__codelineno-0-217" name="__codelineno-0-217"></a>    <span class="n">keys_note</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
+<a id="__codelineno-0-218" name="__codelineno-0-218"></a>    <span class="k">if</span> <span class="n">result</span><span class="o">.</span><span class="n">keys_only</span><span class="p">:</span>
+<a id="__codelineno-0-219" name="__codelineno-0-219"></a>        <span class="n">keys_note</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-0-220" name="__codelineno-0-220"></a>            <span class="s2">&quot;&lt;p class=&#39;note&#39;&gt;This comparison ran as warehouse pushdown, which &quot;</span>
+<a id="__codelineno-0-221" name="__codelineno-0-221"></a>            <span class="s2">&quot;evaluates in place and never extracts rows. The tables below list &quot;</span>
+<a id="__codelineno-0-222" name="__codelineno-0-222"></a>            <span class="s2">&quot;primary keys rather than values.&lt;/p&gt;&quot;</span>
+<a id="__codelineno-0-223" name="__codelineno-0-223"></a>        <span class="p">)</span>
+<a id="__codelineno-0-224" name="__codelineno-0-224"></a>
+<a id="__codelineno-0-225" name="__codelineno-0-225"></a>    <span class="n">drift</span> <span class="o">=</span> <span class="s2">&quot;&lt;p class=&#39;empty&#39;&gt;No column-level drift.&lt;/p&gt;&quot;</span>
+<a id="__codelineno-0-226" name="__codelineno-0-226"></a>    <span class="k">if</span> <span class="n">summary</span><span class="o">.</span><span class="n">column_mismatches</span><span class="p">:</span>
+<a id="__codelineno-0-227" name="__codelineno-0-227"></a>        <span class="n">ranked</span> <span class="o">=</span> <span class="nb">sorted</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">column_mismatches</span><span class="o">.</span><span class="n">items</span><span class="p">(),</span> <span class="n">key</span><span class="o">=</span><span class="k">lambda</span> <span class="n">item</span><span class="p">:</span> <span class="o">-</span><span class="n">item</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+<a id="__codelineno-0-228" name="__codelineno-0-228"></a>        <span class="n">rows</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span>
+<a id="__codelineno-0-229" name="__codelineno-0-229"></a>            <span class="sa">f</span><span class="s2">&quot;&lt;tr&gt;&lt;td&gt;</span><span class="si">{</span><span class="n">_escape</span><span class="p">(</span><span class="n">col</span><span class="p">)</span><span class="si">}</span><span class="s2">&lt;/td&gt;&lt;td&gt;</span><span class="si">{</span><span class="n">count</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">&lt;/td&gt;&lt;/tr&gt;&quot;</span> <span class="k">for</span> <span class="n">col</span><span class="p">,</span> <span class="n">count</span> <span class="ow">in</span> <span class="n">ranked</span>
+<a id="__codelineno-0-230" name="__codelineno-0-230"></a>        <span class="p">)</span>
+<a id="__codelineno-0-231" name="__codelineno-0-231"></a>        <span class="n">drift</span> <span class="o">=</span> <span class="p">(</span>
+<a id="__codelineno-0-232" name="__codelineno-0-232"></a>            <span class="s2">&quot;&lt;div class=&#39;wrap&#39;&gt;&lt;table&gt;&lt;thead&gt;&lt;tr&gt;&lt;th&gt;Column&lt;/th&gt;&quot;</span>
+<a id="__codelineno-0-233" name="__codelineno-0-233"></a>            <span class="sa">f</span><span class="s2">&quot;&lt;th&gt;Mismatches&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;&lt;tbody&gt;</span><span class="si">{</span><span class="n">rows</span><span class="si">}</span><span class="s2">&lt;/tbody&gt;&lt;/table&gt;&lt;/div&gt;&quot;</span>
+<a id="__codelineno-0-234" name="__codelineno-0-234"></a>        <span class="p">)</span>
+<a id="__codelineno-0-235" name="__codelineno-0-235"></a>
+<a id="__codelineno-0-236" name="__codelineno-0-236"></a>    <span class="n">tables</span> <span class="o">=</span> <span class="s2">&quot;</span><span class="se">\n</span><span class="s2">&quot;</span><span class="o">.</span><span class="n">join</span><span class="p">(</span>
+<a id="__codelineno-0-237" name="__codelineno-0-237"></a>        <span class="p">[</span>
+<a id="__codelineno-0-238" name="__codelineno-0-238"></a>            <span class="n">_table</span><span class="p">(</span><span class="s2">&quot;Changed rows&quot;</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">changed</span><span class="p">,</span> <span class="n">max_rows</span><span class="p">),</span>
+<a id="__codelineno-0-239" name="__codelineno-0-239"></a>            <span class="n">_table</span><span class="p">(</span><span class="s2">&quot;Added rows&quot;</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">added</span><span class="p">,</span> <span class="n">max_rows</span><span class="p">),</span>
+<a id="__codelineno-0-240" name="__codelineno-0-240"></a>            <span class="n">_table</span><span class="p">(</span><span class="s2">&quot;Removed rows&quot;</span><span class="p">,</span> <span class="n">result</span><span class="o">.</span><span class="n">removed</span><span class="p">,</span> <span class="n">max_rows</span><span class="p">),</span>
+<a id="__codelineno-0-241" name="__codelineno-0-241"></a>        <span class="p">]</span>
+<a id="__codelineno-0-242" name="__codelineno-0-242"></a>    <span class="p">)</span>
+<a id="__codelineno-0-243" name="__codelineno-0-243"></a>
+<a id="__codelineno-0-244" name="__codelineno-0-244"></a>    <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;&quot;&quot;&lt;!DOCTYPE html&gt;</span>
+<a id="__codelineno-0-245" name="__codelineno-0-245"></a><span class="s2">&lt;html lang=&quot;en&quot;&gt;</span>
+<a id="__codelineno-0-246" name="__codelineno-0-246"></a><span class="s2">&lt;head&gt;</span>
+<a id="__codelineno-0-247" name="__codelineno-0-247"></a><span class="s2">&lt;meta charset=&quot;utf-8&quot;&gt;</span>
+<a id="__codelineno-0-248" name="__codelineno-0-248"></a><span class="s2">&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;</span>
+<a id="__codelineno-0-249" name="__codelineno-0-249"></a><span class="s2">&lt;title&gt;Veridelta Report &amp;mdash; </span><span class="si">{</span><span class="n">verdict</span><span class="si">}</span><span class="s2">&lt;/title&gt;</span>
+<a id="__codelineno-0-250" name="__codelineno-0-250"></a><span class="s2">&lt;style&gt;</span><span class="si">{</span><span class="n">_STYLE</span><span class="si">}</span><span class="s2">&lt;/style&gt;</span>
+<a id="__codelineno-0-251" name="__codelineno-0-251"></a><span class="s2">&lt;/head&gt;</span>
+<a id="__codelineno-0-252" name="__codelineno-0-252"></a><span class="s2">&lt;body&gt;</span>
+<a id="__codelineno-0-253" name="__codelineno-0-253"></a><span class="s2">&lt;h1&gt;Veridelta Report&lt;/h1&gt;</span>
+<a id="__codelineno-0-254" name="__codelineno-0-254"></a><span class="s2">&lt;p class=&quot;sub&quot;&gt;</span>
+<a id="__codelineno-0-255" name="__codelineno-0-255"></a><span class="s2">  &lt;span class=&quot;verdict </span><span class="si">{</span><span class="n">verdict</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span><span class="si">}</span><span class="s2">&quot;&gt;</span><span class="si">{</span><span class="n">verdict</span><span class="si">}</span><span class="s2">&lt;/span&gt; &amp;middot; generated </span><span class="si">{</span><span class="n">generated</span><span class="si">}</span>
+<a id="__codelineno-0-256" name="__codelineno-0-256"></a><span class="s2">&lt;/p&gt;</span>
+<a id="__codelineno-0-257" name="__codelineno-0-257"></a><span class="si">{</span><span class="n">keys_note</span><span class="si">}</span>
+<a id="__codelineno-0-258" name="__codelineno-0-258"></a><span class="s2">&lt;div class=&quot;cards&quot;&gt;</span><span class="si">{</span><span class="n">cards</span><span class="si">}</span><span class="s2">&lt;/div&gt;</span>
+<a id="__codelineno-0-259" name="__codelineno-0-259"></a><span class="s2">&lt;h2&gt;Column-level drift&lt;/h2&gt;</span>
+<a id="__codelineno-0-260" name="__codelineno-0-260"></a><span class="si">{</span><span class="n">drift</span><span class="si">}</span>
+<a id="__codelineno-0-261" name="__codelineno-0-261"></a><span class="si">{</span><span class="n">tables</span><span class="si">}</span>
+<a id="__codelineno-0-262" name="__codelineno-0-262"></a><span class="s2">&lt;script&gt;</span><span class="si">{</span><span class="n">_SCRIPT</span><span class="si">}</span><span class="s2">&lt;/script&gt;</span>
+<a id="__codelineno-0-263" name="__codelineno-0-263"></a><span class="s2">&lt;/body&gt;</span>
+<a id="__codelineno-0-264" name="__codelineno-0-264"></a><span class="s2">&lt;/html&gt;</span>
+<a id="__codelineno-0-265" name="__codelineno-0-265"></a><span class="s2">&quot;&quot;&quot;</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="veridelta.report.write_html" class="doc doc-heading">
+            <code class="highlight language-python"><span class="n">write_html</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_rows</span><span class="o">=</span><span class="n">DEFAULT_MAX_ROWS</span><span class="p">)</span></code>
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Write a standalone HTML report to disk.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>result</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="DiffResult
+
+
+  
+      dataclass
+   (veridelta.models.DiffResult)" href="#veridelta.models.DiffResult">DiffResult</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Completed comparison.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>path</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | <span title="pathlib.Path">Path</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Destination file. Parent directories are created.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_rows</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Rows to embed per table before truncating.</p>
+              </div>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="DEFAULT_MAX_ROWS = 1000
+
+  
+      module-attribute
+   (veridelta.report.DEFAULT_MAX_ROWS)" href="#veridelta.report.DEFAULT_MAX_ROWS">DEFAULT_MAX_ROWS</a></code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+<th>Name</th>          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+<td><code>Path</code></td>            <td>
+                  <code><span title="pathlib.Path">Path</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The file that was written.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>src/veridelta/report.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-268">268</a></span>
+<span class="normal"><a href="#__codelineno-0-269">269</a></span>
+<span class="normal"><a href="#__codelineno-0-270">270</a></span>
+<span class="normal"><a href="#__codelineno-0-271">271</a></span>
+<span class="normal"><a href="#__codelineno-0-272">272</a></span>
+<span class="normal"><a href="#__codelineno-0-273">273</a></span>
+<span class="normal"><a href="#__codelineno-0-274">274</a></span>
+<span class="normal"><a href="#__codelineno-0-275">275</a></span>
+<span class="normal"><a href="#__codelineno-0-276">276</a></span>
+<span class="normal"><a href="#__codelineno-0-277">277</a></span>
+<span class="normal"><a href="#__codelineno-0-278">278</a></span>
+<span class="normal"><a href="#__codelineno-0-279">279</a></span>
+<span class="normal"><a href="#__codelineno-0-280">280</a></span>
+<span class="normal"><a href="#__codelineno-0-281">281</a></span>
+<span class="normal"><a href="#__codelineno-0-282">282</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-268" name="__codelineno-0-268"></a><span class="k">def</span><span class="w"> </span><span class="nf">write_html</span><span class="p">(</span><span class="n">result</span><span class="p">:</span> <span class="n">DiffResult</span><span class="p">,</span> <span class="n">path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="n">Path</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_rows</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">DEFAULT_MAX_ROWS</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Path</span><span class="p">:</span>
+<a id="__codelineno-0-269" name="__codelineno-0-269"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Write a standalone HTML report to disk.</span>
+<a id="__codelineno-0-270" name="__codelineno-0-270"></a>
+<a id="__codelineno-0-271" name="__codelineno-0-271"></a><span class="sd">    Args:</span>
+<a id="__codelineno-0-272" name="__codelineno-0-272"></a><span class="sd">        result (DiffResult): Completed comparison.</span>
+<a id="__codelineno-0-273" name="__codelineno-0-273"></a><span class="sd">        path (str | Path): Destination file. Parent directories are created.</span>
+<a id="__codelineno-0-274" name="__codelineno-0-274"></a><span class="sd">        max_rows (int): Rows to embed per table before truncating.</span>
+<a id="__codelineno-0-275" name="__codelineno-0-275"></a>
+<a id="__codelineno-0-276" name="__codelineno-0-276"></a><span class="sd">    Returns:</span>
+<a id="__codelineno-0-277" name="__codelineno-0-277"></a><span class="sd">        Path: The file that was written.</span>
+<a id="__codelineno-0-278" name="__codelineno-0-278"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-279" name="__codelineno-0-279"></a>    <span class="n">destination</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<a id="__codelineno-0-280" name="__codelineno-0-280"></a>    <span class="n">destination</span><span class="o">.</span><span class="n">parent</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-281" name="__codelineno-0-281"></a>    <span class="n">destination</span><span class="o">.</span><span class="n">write_text</span><span class="p">(</span><span class="n">render_html</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">max_rows</span><span class="o">=</span><span class="n">max_rows</span><span class="p">),</span> <span class="n">encoding</span><span class="o">=</span><span class="s2">&quot;utf-8&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-282" name="__codelineno-0-282"></a>    <span class="k">return</span> <span class="n">destination</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
 
 
 

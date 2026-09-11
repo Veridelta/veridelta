@@ -12,13 +12,13 @@
         <meta name="author" content="Veridelta Maintainers">
       
       
-        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/quickstart/">
+        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/getting_started/">
       
       
-        <link rel="prev" href="../getting_started/">
+        <link rel="prev" href="../..">
       
       
-        <link rel="next" href="../quickstart_cli/">
+        <link rel="next" href="../quickstart/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Veridelta Quickstart - Veridelta</title>
+        <title>Getting Started: Local Diffing - Veridelta</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#veridelta-quickstart" class="md-skip">
+        <a href="#getting-started-local-diffing" class="md-skip">
           Skip to content
         </a>
       
@@ -120,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Veridelta Quickstart
+              Getting Started: Local Diffing
             
           </span>
         </div>
@@ -254,7 +254,7 @@
     
     
       <li class="md-tabs__item md-tabs__item--active">
-        <a href="../getting_started/" class="md-tabs__link">
+        <a href="./" class="md-tabs__link">
           
   
   
@@ -458,34 +458,6 @@
                 
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../getting_started/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Getting Started: Local Diffing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
     
   
   
@@ -505,7 +477,7 @@
   <span class="md-ellipsis">
     
   
-    Veridelta Quickstart
+    Getting Started: Local Diffing
   
 
     
@@ -523,7 +495,7 @@
   <span class="md-ellipsis">
     
   
-    Veridelta Quickstart
+    Getting Started: Local Diffing
   
 
     
@@ -549,10 +521,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-the-challenge-physical-vs-logical-equality" class="md-nav__link">
+  <a href="#1-two-frames-that-look-different-and-are-not" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. The Challenge: Physical vs. Logical Equality
+        1. Two frames that look different and are not
       
     </span>
   </a>
@@ -560,10 +532,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-defining-semantic-boundaries" class="md-nav__link">
+  <a href="#2-declare-the-comparison" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Defining Semantic Boundaries
+        2. Declare the comparison
       
     </span>
   </a>
@@ -571,10 +543,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-scale-performance-simulating-pipeline-drift" class="md-nav__link">
+  <a href="#3-inspect-the-rows-without-writing-artifacts" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Scale &amp; Performance: Simulating Pipeline Drift
+        3. Inspect the rows without writing artifacts
       
     </span>
   </a>
@@ -582,10 +554,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#architectural-highlights" class="md-nav__link">
+  <a href="#4-isolate-a-real-discrepancy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Architectural Highlights
+        4. Isolate a real discrepancy
       
     </span>
   </a>
@@ -596,6 +568,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Veridelta Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1514,35 +1514,30 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </style>
 <!-- End of mermaid configuration --><div class="jupyter-wrapper">
 <div class="jp-Notebook" data-jp-theme-light="true" data-jp-theme-name="JupyterLab Light">
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=34fafb99">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="veridelta-quickstart">Veridelta Quickstart<a class="anchor-link" href="#veridelta-quickstart">¶</a></h1><p>Veridelta is a high-performance semantic diffing engine built on Polars. Standard binary equality checks often fail in production pipelines due to trivial transformation artifacts like floating-point noise, rounding algorithm mismatches, or string formatting variance.</p>
-<p>Veridelta enables data engineers to define <strong>logical equality</strong> through declarative configuration, ensuring resilient data validation at scale.</p>
+<h1 id="getting-started-local-diffing">Getting Started: Local Diffing<a class="anchor-link" href="#getting-started-local-diffing">¶</a></h1><p>This notebook is the shortest path from two DataFrames to a verdict you can inspect without writing files. It covers constructing a comparison, reading <code>DiffResult</code>, and isolating the rows behind a single column.</p>
+<p>For YAML-driven CI, see the <a href="quickstart_cli.ipynb">CLI Quickstart</a>. For warehouse pushdown, see the <a href="../configuration.md">Configuration Guide</a>.</p>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=41abeca9">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="1-the-challenge-physical-vs-logical-equality">1. The Challenge: Physical vs. Logical Equality<a class="anchor-link" href="#1-the-challenge-physical-vs-logical-equality">¶</a></h2><p>Data migration between disparate computational environments (e.g., Python application layers to SQL data warehouses) introduces expected transformation artifacts. Two common examples include:</p>
-<ol>
-<li><strong>Rounding Algorithm Mismatches:</strong> Python utilizes "Banker's Rounding" (round half to even; <code>10.445</code> evaluates to <code>10.44</code>). SQL systems typically utilize standard rounding (round half away from zero; <code>10.445</code> evaluates to <code>10.45</code>). This generates an artificial <code>$0.01</code> variance.</li>
-<li><strong>String Casing &amp; Padding:</strong> Legacy systems may export Title Case (<code>"Pending"</code>), while modern warehouses enforce standardized, padded UPPERCASE (<code>" PENDING "</code>).</li>
-</ol>
-<p>These datasets are logically identical, yet standard physical equality checks evaluate to false.</p>
+<h2 id="1-two-frames-that-look-different-and-are-not">1. Two frames that look different and are not<a class="anchor-link" href="#1-two-frames-that-look-different-and-are-not">¶</a></h2><p>A legacy export and a warehouse table of the same accounts. Currency symbols, a sentinel for missing status, and a one-cent rounding difference are the only things standing between them.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=607dcc49">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1562,79 +1557,61 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
 
-<span class="kn">import</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">vd</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffConfig</span><span class="p">,</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">DiffRule</span>
 
-<span class="c1"># Source System (Legacy Python - Banker's Rounding, Title Case)</span>
-<span class="n">src_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+<span class="n">source</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">"transaction_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"TXN-001"</span><span class="p">,</span> <span class="s2">"TXN-002"</span><span class="p">,</span> <span class="s2">"TXN-003"</span><span class="p">],</span>
-        <span class="s2">"tax_amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.44</span><span class="p">,</span> <span class="mf">250.50</span><span class="p">,</span> <span class="mf">300.00</span><span class="p">],</span>  <span class="c1"># 10.445 rounded half-to-even</span>
-        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Cleared"</span><span class="p">,</span> <span class="s2">"Pending"</span><span class="p">,</span> <span class="s2">"Failed"</span><span class="p">],</span>
+        <span class="s2">"legacy_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="s2">"N/A"</span><span class="p">,</span> <span class="s2">"Closed"</span><span class="p">],</span>
+        <span class="s2">"balance"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"$10.00"</span><span class="p">,</span> <span class="s2">"$20.50"</span><span class="p">,</span> <span class="s2">"$5.00"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">)</span>
-
-<span class="c1"># Target System (Modern SQL - Standard Rounding, UPPERCASE with padding)</span>
-<span class="n">tgt_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+<span class="n">target</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">"transaction_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"TXN-001"</span><span class="p">,</span> <span class="s2">"TXN-002"</span><span class="p">,</span> <span class="s2">"TXN-003"</span><span class="p">],</span>
-        <span class="s2">"tax_amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.45</span><span class="p">,</span> <span class="mf">250.50</span><span class="p">,</span> <span class="mf">300.00</span><span class="p">],</span>  <span class="c1"># 10.445 rounded half-up</span>
-        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">" CLEARED "</span><span class="p">,</span> <span class="s2">" PENDING "</span><span class="p">,</span> <span class="s2">" FAILED "</span><span class="p">],</span>
+        <span class="s2">"user_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">"Closed"</span><span class="p">],</span>
+        <span class="s2">"balance"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.00</span><span class="p">,</span> <span class="mf">20.48</span><span class="p">,</span> <span class="mf">5.00</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">)</span>
-
-<span class="n">is_physically_equal</span> <span class="o">=</span> <span class="n">src_df</span><span class="o">.</span><span class="n">equals</span><span class="p">(</span><span class="n">tgt_df</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Strict Physical Equality: </span><span class="si">{</span><span class="n">is_physically_equal</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-
-<span class="c1"># Output:</span>
-<span class="c1"># Strict Physical Equality: False</span>
+<span class="n">source</span><span class="p">,</span> <span class="n">target</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-1">import polars as pl
 
-import veridelta as vd
 from veridelta import DiffConfig, DiffEngine, DiffRule
 
-# Source System (Legacy Python - Banker's Rounding, Title Case)
-src_df = pl.DataFrame(
+source = pl.DataFrame(
     {
-        "transaction_id": ["TXN-001", "TXN-002", "TXN-003"],
-        "tax_amount": [10.44, 250.50, 300.00],  # 10.445 rounded half-to-even
-        "status": ["Cleared", "Pending", "Failed"],
+        "legacy_id": [1, 2, 3],
+        "status": ["Active", "N/A", "Closed"],
+        "balance": ["$10.00", "$20.50", "$5.00"],
     }
 )
-
-# Target System (Modern SQL - Standard Rounding, UPPERCASE with padding)
-tgt_df = pl.DataFrame(
+target = pl.DataFrame(
     {
-        "transaction_id": ["TXN-001", "TXN-002", "TXN-003"],
-        "tax_amount": [10.45, 250.50, 300.00],  # 10.445 rounded half-up
-        "status": [" CLEARED ", " PENDING ", " FAILED "],
+        "user_id": [1, 2, 3],
+        "status": ["Active", None, "Closed"],
+        "balance": [10.00, 20.48, 5.00],
     }
 )
-
-is_physically_equal = src_df.equals(tgt_df)
-print(f"Strict Physical Equality: {is_physically_equal}")
-
-# Output:
-# Strict Physical Equality: False</div>
+source, target</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=49e839d7">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="2-defining-semantic-boundaries">2. Defining Semantic Boundaries<a class="anchor-link" href="#2-defining-semantic-boundaries">¶</a></h2><p>Veridelta resolves physical variance by establishing semantic boundaries. The <code>DiffConfig</code> object declaratively defines acceptable tolerances and normalization rules, masking expected migration artifacts without ignoring genuine data corruption.</p>
+<h2 id="2-declare-the-comparison">2. Declare the comparison<a class="anchor-link" href="#2-declare-the-comparison">¶</a></h2><p>Rules are not applied in the order you write them. Every column follows the same nine-stage pipeline: sentinels, regex, whitespace and case, value map, padding, datetime, cast, then comparison. <code>cast_to</code> therefore always sees already-cleaned text.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=5d0b1898">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1652,80 +1629,65 @@ print(f"Strict Physical Equality: {is_physically_equal}")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Define the semantic comparison boundaries</span>
-<span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"transaction_id"</span><span class="p">],</span>
-    <span class="c1"># Global Policies: Applied to all columns (unless overridden)</span>
-    <span class="c1"># Allow a maximum of $0.01 variance to account for Banker's Rounding differences</span>
-    <span class="n">default_absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>
-    <span class="c1"># Global Whitespace Policy: Strip all leading/trailing whitespace</span>
-    <span class="n">default_whitespace_mode</span><span class="o">=</span><span class="s2">"both"</span><span class="p">,</span>
-    <span class="c1"># Granular Overrides: Column-specific normalization</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"user_id"</span><span class="p">],</span>
     <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"legacy_id"</span><span class="p">],</span> <span class="n">rename_to</span><span class="o">=</span><span class="s2">"user_id"</span><span class="p">),</span>
+        <span class="n">DiffRule</span><span class="p">(</span>
+            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"balance"</span><span class="p">],</span>
+            <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span><span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span><span class="p">},</span>
+            <span class="n">cast_to</span><span class="o">=</span><span class="s2">"Float64"</span><span class="p">,</span>
+            <span class="n">absolute_tolerance</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span>
+        <span class="p">),</span>
         <span class="n">DiffRule</span><span class="p">(</span>
             <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"status"</span><span class="p">],</span>
-            <span class="n">case_insensitive</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>  <span class="c1"># Ensure 'Pending' matches ' PENDING '</span>
-        <span class="p">)</span>
+            <span class="n">null_values</span><span class="o">=</span><span class="p">[</span><span class="s2">"N/A"</span><span class="p">],</span>
+            <span class="n">treat_null_as_equal</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="p">),</span>
     <span class="p">],</span>
 <span class="p">)</span>
 
-<span class="c1"># Execute the comparison using the aligned DataFrames</span>
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="p">,</span> <span class="n">tgt_df</span><span class="p">)</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match Status: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Changed Rows: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">changed_count</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-
-<span class="c1"># Output:</span>
-<span class="c1"># Match Status: True</span>
-<span class="c1"># Changed Rows: 0</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">target</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-2"># Define the semantic comparison boundaries
-config = DiffConfig(
-    primary_keys=["transaction_id"],
-    # Global Policies: Applied to all columns (unless overridden)
-    # Allow a maximum of $0.01 variance to account for Banker's Rounding differences
-    default_absolute_tolerance=0.01,
-    # Global Whitespace Policy: Strip all leading/trailing whitespace
-    default_whitespace_mode="both",
-    # Granular Overrides: Column-specific normalization
+<div class="clipboard-copy-txt" id="cell-2">config = DiffConfig(
+    primary_keys=["user_id"],
     rules=[
+        DiffRule(column_names=["legacy_id"], rename_to="user_id"),
+        DiffRule(
+            column_names=["balance"],
+            regex_replace={"\\$": ""},
+            cast_to="Float64",
+            absolute_tolerance=0.05,
+        ),
         DiffRule(
             column_names=["status"],
-            case_insensitive=True,  # Ensure 'Pending' matches ' PENDING '
-        )
+            null_values=["N/A"],
+            treat_null_as_equal=True,
+        ),
     ],
 )
 
-# Execute the comparison using the aligned DataFrames
-engine = DiffEngine(config, src_df, tgt_df)
-summary = engine.run().summary
-
-print(f"Match Status: {summary.is_match}")
-print(f"Changed Rows: {summary.changed_count}")
-
-# Output:
-# Match Status: True
-# Changed Rows: 0</div>
+result = DiffEngine(config, source.lazy(), target.lazy()).run()
+print(result.summary.report_summary)</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=12d0d5ba">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="3-scale-performance-simulating-pipeline-drift">3. Scale &amp; Performance: Simulating Pipeline Drift<a class="anchor-link" href="#3-scale-performance-simulating-pipeline-drift">¶</a></h2><p>Veridelta is built on Polars' Rust backend, enabling semantic normalization to scale linearly across available CPU cores.</p>
-<p>The following benchmark loads a sample of the NYC Yellow Taxi dataset, injects programmatic ETL drift, and executes a multi-threaded semantic comparison.</p>
+<h2 id="3-inspect-the-rows-without-writing-artifacts">3. Inspect the rows without writing artifacts<a class="anchor-link" href="#3-inspect-the-rows-without-writing-artifacts">¶</a></h2><p><code>run()</code> returns a <code>DiffResult</code>. <code>.summary</code> is the same value object as before; <code>.added</code>, <code>.removed</code>, and <code>.changed</code> are the frames the engine already materialized. <code>get_mismatches(column)</code> narrows the changed set to one column with both values side by side.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=0b60a007">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1743,111 +1705,81 @@ print(f"Changed Rows: {summary.changed_count}")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Load and deduplicate to ensure primary key integrity</span>
-<span class="n">src_df</span> <span class="o">=</span> <span class="n">vd</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">load_nyc_taxi</span><span class="p">()</span><span class="o">.</span><span class="n">unique</span><span class="p">(</span>  <span class="c1"># pyright: ignore[reportUnknownMemberType]</span>
-    <span class="n">subset</span><span class="o">=</span><span class="p">[</span><span class="s2">"VendorID"</span><span class="p">,</span> <span class="s2">"tpep_pickup_datetime"</span><span class="p">]</span>
-<span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">compared_columns</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">added</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">removed</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">changed</span><span class="p">)</span>
 
-<span class="c1"># Simulate ETL drift on the cleaned target:</span>
-<span class="c1"># - Rounding noise on the fare (+$0.002)</span>
-<span class="c1"># - A 0.5% calculation fluctuation on the tip amount (e.g., exchange rate drift)</span>
-<span class="c1"># - Inconsistent string formatting</span>
-<span class="n">tgt_df</span> <span class="o">=</span> <span class="n">src_df</span><span class="o">.</span><span class="n">with_columns</span><span class="p">(</span>  <span class="c1"># pyright: ignore[reportUnknownMemberType]</span>
-    <span class="n">fare_amount</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">"fare_amount"</span><span class="p">)</span> <span class="o">+</span> <span class="mf">0.002</span><span class="p">,</span>
-    <span class="n">tip_amount</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">"tip_amount"</span><span class="p">)</span> <span class="o">*</span> <span class="mf">1.005</span><span class="p">,</span>
-    <span class="n">store_and_fwd_flag</span><span class="o">=</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">"store_and_fwd_flag"</span><span class="p">)</span><span class="o">.</span><span class="n">str</span><span class="o">.</span><span class="n">to_uppercase</span><span class="p">(),</span>
-<span class="p">)</span>
-
-<span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"VendorID"</span><span class="p">,</span> <span class="s2">"tpep_pickup_datetime"</span><span class="p">],</span>
-    <span class="c1"># Global Policy: Ignore micro-penny rounding errors across the board</span>
-    <span class="n">default_absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"store_and_fwd_flag"</span><span class="p">],</span> <span class="n">case_insensitive</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"tip_amount"</span><span class="p">],</span>
-            <span class="n">relative_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>  <span class="c1"># Accept up to 1% relative drift on tips</span>
-        <span class="p">),</span>
-    <span class="p">],</span>
-<span class="p">)</span>
-
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="p">,</span> <span class="n">tgt_df</span><span class="p">)</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">' VERIDELTA EXECUTION SUMMARY '</span><span class="si">:</span><span class="s2">=^50</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match Status:     </span><span class="si">{</span><span class="s1">'SUCCESS'</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">'FAILED'</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Total Rows:       </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">total_rows_source</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Semantic Diffs:   </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">changed_count</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="s2">"="</span> <span class="o">*</span> <span class="mi">50</span><span class="p">)</span>
-
-<span class="c1"># Output:</span>
-<span class="c1"># ========== VERIDELTA EXECUTION SUMMARY ===========</span>
-<span class="c1"># Match Status:     SUCCESS</span>
-<span class="c1"># Total Rows:       908</span>
-<span class="c1"># Semantic Diffs:   0</span>
-<span class="c1"># ==================================================</span>
+<span class="c1"># Empty here: both columns agreed after the rules ran.</span>
+<span class="n">result</span><span class="o">.</span><span class="n">get_mismatches</span><span class="p">(</span><span class="s2">"balance"</span><span class="p">)</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-3"># Load and deduplicate to ensure primary key integrity
-src_df = vd.datasets.load_nyc_taxi().unique(  # pyright: ignore[reportUnknownMemberType]
-    subset=["VendorID", "tpep_pickup_datetime"]
-)
+<div class="clipboard-copy-txt" id="cell-3">print(result.compared_columns)
+print(result.added)
+print(result.removed)
+print(result.changed)
 
-# Simulate ETL drift on the cleaned target:
-# - Rounding noise on the fare (+$0.002)
-# - A 0.5% calculation fluctuation on the tip amount (e.g., exchange rate drift)
-# - Inconsistent string formatting
-tgt_df = src_df.with_columns(  # pyright: ignore[reportUnknownMemberType]
-    fare_amount=pl.col("fare_amount") + 0.002,
-    tip_amount=pl.col("tip_amount") * 1.005,
-    store_and_fwd_flag=pl.col("store_and_fwd_flag").str.to_uppercase(),
-)
-
-config = DiffConfig(
-    primary_keys=["VendorID", "tpep_pickup_datetime"],
-    # Global Policy: Ignore micro-penny rounding errors across the board
-    default_absolute_tolerance=0.01,
-    rules=[
-        DiffRule(column_names=["store_and_fwd_flag"], case_insensitive=True),
-        DiffRule(
-            column_names=["tip_amount"],
-            relative_tolerance=0.01,  # Accept up to 1% relative drift on tips
-        ),
-    ],
-)
-
-engine = DiffEngine(config, src_df, tgt_df)
-summary = engine.run().summary
-
-print(f"{' VERIDELTA EXECUTION SUMMARY ':=^50}")
-print(f"Match Status:     {'SUCCESS' if summary.is_match else 'FAILED'}")
-print(f"Total Rows:       {summary.total_rows_source:,}")
-print(f"Semantic Diffs:   {summary.changed_count:,}")
-print("=" * 50)
-
-# Output:
-# ========== VERIDELTA EXECUTION SUMMARY ===========
-# Match Status:     SUCCESS
-# Total Rows:       908
-# Semantic Diffs:   0
-# ==================================================</div>
+# Empty here: both columns agreed after the rules ran.
+result.get_mismatches("balance")</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=c56dbdb9">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="architectural-highlights">Architectural Highlights<a class="anchor-link" href="#architectural-highlights">¶</a></h2><p>Veridelta is engineered for integration into high-throughput data pipelines and CI/CD validation gates.</p>
-<ul>
-<li><strong>Zero-Import Configuration:</strong> Semantic modes utilize literal strings, enabling configuration via YAML/JSON without requiring Python imports.</li>
-<li><strong>Strict Type Validation:</strong> Built on Pydantic V2, ensuring configuration logic is strictly validated before expensive I/O operations begin.</li>
-<li><strong>Hardware-Accelerated Execution:</strong> Direct integration with Polars' Rust engine ensures that normalization and row-level diffing scales natively with available hardware.</li>
-</ul>
+<h2 id="4-isolate-a-real-discrepancy">4. Isolate a real discrepancy<a class="anchor-link" href="#4-isolate-a-real-discrepancy">¶</a></h2><p>Drop the tolerance and the one-cent drift on row 2 surfaces. <code>get_mismatches</code> keeps only that column, so a row that drifted elsewhere does not appear.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=ab0ecb26">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-4">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">strict</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"user_id"</span><span class="p">],</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
+        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"legacy_id"</span><span class="p">],</span> <span class="n">rename_to</span><span class="o">=</span><span class="s2">"user_id"</span><span class="p">),</span>
+        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"balance"</span><span class="p">],</span> <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span><span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span><span class="p">},</span> <span class="n">cast_to</span><span class="o">=</span><span class="s2">"Float64"</span><span class="p">),</span>
+        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"status"</span><span class="p">],</span> <span class="n">null_values</span><span class="o">=</span><span class="p">[</span><span class="s2">"N/A"</span><span class="p">],</span> <span class="n">treat_null_as_equal</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
+    <span class="p">],</span>
+<span class="p">)</span>
+<span class="n">drifted</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">strict</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">target</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">drifted</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<span class="n">drifted</span><span class="o">.</span><span class="n">get_mismatches</span><span class="p">(</span><span class="s2">"balance"</span><span class="p">)</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-4">strict = DiffConfig(
+    primary_keys=["user_id"],
+    rules=[
+        DiffRule(column_names=["legacy_id"], rename_to="user_id"),
+        DiffRule(column_names=["balance"], regex_replace={"\\$": ""}, cast_to="Float64"),
+        DiffRule(column_names=["status"], null_values=["N/A"], treat_null_as_equal=True),
+    ],
+)
+drifted = DiffEngine(strict, source.lazy(), target.lazy()).run()
+print(drifted.summary.report_summary)
+drifted.get_mismatches("balance")</div>
+</div>
+</div>
 </div>
 </div>
 </div>
