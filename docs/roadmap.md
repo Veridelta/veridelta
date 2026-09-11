@@ -19,7 +19,6 @@ Still planned:
 A framework is only as effective as the developer's ability to interface with it safely and efficiently.
 
 * **VS Code Extension:** A dedicated IDE extension providing domain-specific YAML schema validation, strict type IntelliSense, one-click local test execution, and inline visualization of discrepancy artifacts directly within the editor. This shifts configuration error detection left, preventing wasted compute cycles in production.
-* **Interactive Reporting:** A `--html` CLI directive to compile execution summaries and top-n drifts into standalone, interactive dashboards.
 
 ## 4. Pipeline Observability
 * **Native CI/CD Runners:** First-party **GitHub Actions** and **GitLab CI** plugins to execute comparisons and post execution summaries directly to Pull Request comments.

@@ -1,6 +1,6 @@
 # API Reference
 
-The building blocks of Veridelta. Explore the configuration schemas, core diffing engine, and operational utilities.
+The public Python API. Explore the configuration schemas, core diffing engine, and operational utilities.
 
 ## Configuration Models
 Strict Pydantic models defining how Veridelta comparisons are structured. These can be instantiated programmatically or driven by declarative YAML.
