@@ -1,3 +1,57 @@
+## v0.7.0 (2026-09-10)
+
+Two breaking changes, both mechanical.
+
+`DiffEngine.run()` and `DiffEngine.run_from_configs()` now return a `DiffResult` rather
+than a `DiffSummary`. Existing code reaches the old value through `.summary`:
+
+```python
+summary = DiffEngine(config, src, tgt).run().summary
+```
+
+`SourceType` and `output_format` are now closed sets. `SourceType` accepts `csv`,
+`parquet`, `json`, `ndjson`, `arrow`, and `excel`; `output_format` accepts everything
+but `excel`. The removed names (`fixed_width`, `netcdf`, `shapefile`, `geopackage`,
+`sql`, `avro`, `xml`, `delta`) never had an implementation and already raised
+`ConfigError` at run time, so a config using one was already broken; it now fails when
+the config loads instead. Delta Lake is unaffected and still reached through the
+`delta_lake` source type.
+
+### Feat
+
+- return `DiffResult` from the engine, carrying the added, removed, and changed frames
+  alongside the summary. The rows were already materialized, counted, and discarded, so
+  reaching them previously meant configuring `output_path` and reading files back
+- add `DiffResult.get_mismatches(column)` to narrow the changed set to one column with
+  the source and target values side by side, and `DiffResult.to_pandas()` for notebooks
+- record the compared column set on `DiffResult`, so a mistyped column name is rejected
+  on the pushdown path too, where the primary-key frames cannot reveal which columns
+  were compared
+- read JSON, NDJSON, Arrow IPC, and Excel. NDJSON and Arrow scan lazily; JSON and Excel
+  are read whole, because Polars has no lazy reader for either
+- write discrepancy artifacts as JSON, NDJSON, or Arrow IPC in addition to CSV and
+  Parquet
+- add an `excel` extra, reporting a missing install as a hint rather than an
+  `ImportError` raised from inside Polars
+- export the exception hierarchy, the warehouse and lakehouse configs, and the public
+  type aliases from the package root. The docs already instructed users to catch
+  `VerideltaError` and to construct a `SnowflakeConfig`, neither of which was reachable
+  without importing from a submodule
+
+### Fix
+
+- ship the `py.typed` marker. The package advertised the `Typing :: Typed` classifier
+  without it, so PEP 561 had every downstream mypy and pyright treat Veridelta as
+  unannotated no matter how complete its annotations were
+- bind `SourceType` and `ArtifactFormat` to the registries that implement them, with
+  tests. A name could previously be advertised in the config schema with nothing behind
+  it
+
+### BREAKING CHANGE
+
+- `DiffEngine.run()` and `DiffEngine.run_from_configs()` return `DiffResult`
+- `SourceType` and `output_format` are constrained to implemented formats
+
 ## v0.6.0 (2026-09-10)
 
 Warehouse pushdown now implements all nine transform stages. `pad_zeros`,
