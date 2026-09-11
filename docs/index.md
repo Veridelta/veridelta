@@ -52,13 +52,13 @@ rules:
 veridelta run -c veridelta.yaml
 ```
 
-**3. Review the execution summary:** Evaluate the terminal output or inspect the generated `.parquet` artifacts for row-level discrepancies.
+**3. Review the execution summary:** Evaluate the terminal output. Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_format` selects Parquet, CSV, JSON, NDJSON, or Arrow.
 
 ---
 
 ## Documentation Directory
 
-* [**Tutorials**](examples/quickstart_cli.ipynb): Progressive guides covering CLI execution, programmatic Python usage, and advanced semantic rules.
-* [**Configuration Guide**](configuration.md): Complete specification for tolerance rules, schema enforcement, connectors, and I/O settings.
-* [**API Reference**](api.md): Developer documentation for the internal Python classes and methods.
-* [**Roadmap**](roadmap.md): Upcoming capabilities such as BigQuery pushdown, fuzzy matching, and interactive reports.
+* [**Tutorials**](examples/getting_started.ipynb): Progressive guides covering local `DiffResult` access, CLI execution, programmatic Python usage, and advanced semantic rules.
+* [**Configuration Guide**](configuration.md): Complete specification for tolerance rules, schema enforcement, connectors, CLI flags, and I/O settings.
+* [**API Reference**](api.md): Public Python classes and methods.
+* [**Roadmap**](roadmap.md): Unimplemented work such as BigQuery pushdown and fuzzy matching.

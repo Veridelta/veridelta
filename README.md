@@ -22,7 +22,7 @@ data regressions at scale.
 uv add veridelta
 ```
 
-Warehouse and lakehouse drivers are optional extras (`snowflake`, `databricks`, `delta`, `iceberg`, or `all`):
+Warehouse, lakehouse, and Excel drivers are optional extras (`snowflake`, `databricks`, `delta`, `iceberg`, `excel`, or `all`):
 
 ```bash
 uv add 'veridelta[snowflake]'
@@ -106,19 +106,14 @@ if not summary.is_match:
 * **Semantic Normalization:** Coerce string markers to nulls, standardize whitespace, and cast types dynamically before mathematical comparison.
 * **Warehouse Pushdown:** Compile comparison SQL for Snowflake and Databricks so diffs run in-warehouse (changed, added, and removed counts) without extracting full tables.
 * **Lakehouse Native:** Scan Delta Lake and Apache Iceberg tables as unevaluated Polars LazyFrames, including optional version and snapshot time travel.
-* **Discrepancy Artifacts:** Export isolated Parquet files detailing `added`, `removed`, and `changed` records for downstream auditing.
+* **Discrepancy Artifacts:** Export `added`, `removed`, and `changed` records as Parquet, CSV, JSON, NDJSON, or Arrow (`output_format`).
+* **Reports:** `--html` writes a standalone dashboard; `--json` prints `DiffSummary` on stdout for CI.
 
 ---
 
 ## Roadmap
 
-Upcoming work:
-
-* **Advanced Heuristics:** Fuzzy string matching and ML-driven schema mapping.
-* **Reporting:** Interactive HTML diff dashboards and CI/CD status checks.
-* **Additional warehouses:** BigQuery pushdown.
-
-[View Detailed Roadmap](https://veridelta.github.io/veridelta/roadmap/)
+Planned work (BigQuery pushdown, fuzzy matching) lives in the [site roadmap](https://veridelta.github.io/veridelta/roadmap/). HTML reports and JSON CLI output already shipped.
 
 ---
 

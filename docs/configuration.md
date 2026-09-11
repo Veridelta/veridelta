@@ -111,10 +111,11 @@ Warehouse pushdown compares in place and never projects values, so its frames ho
 veridelta --version
 veridelta run -c veridelta.yaml
 veridelta run -c veridelta.yaml --json
+veridelta run -c veridelta.yaml --quiet
 veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
 ```
 
-`--json` prints `DiffSummary` as JSON on stdout. Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
+`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
 
 Exit codes stay at `0` for a match within `threshold` and `1` for drift or any failure.
 
@@ -167,14 +168,20 @@ source:
   type: delta
   table_uri: s3://lake/legacy_events
   version: 12
+  storage_options:
+    AWS_REGION: us-east-1
 
 target:
   type: iceberg
   table_uri: s3://lake/iceberg/modern_events
   snapshot_id: 883142
+  storage_options:
+    AWS_REGION: us-east-1
 
 primary_keys: ["event_id"]
 ```
+
+`storage_options` is a string map passed through to the Delta or Iceberg scanner (credentials, region, and other object-store settings).
 
 ## Engine Directives
 
@@ -314,4 +321,13 @@ Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps)
 rules:
   - pattern: "^etl_loaded_at_.*"
     ignore: true
+```
+
+### 7. Column rename
+`rename_to` maps a source column onto a different target name before comparison. Use it when the same field was renamed between systems.
+
+```yaml
+rules:
+  - column_names: ["legacy_customer_id"]
+    rename_to: "customer_id"
 ```

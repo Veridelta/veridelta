@@ -1,17 +1,22 @@
 ---
 description: Standards for Veridelta documentation
-globs: docs/**/*.{md,mdx,rst,ipynb}
+globs: docs/**/*.{md,ipynb}, README.md
 alwaysApply: false
 ---
 
 # Veridelta Documentation
 
 - Documentation must describe behavior that exists in the repository; do not document aspirational or unimplemented functionality.
-- Prefer concise, task-oriented documentation over exhaustive prose.
 - Keep examples executable or consistent with the current public API.
 - Update documentation when a change affects user-visible behavior, configuration, CLI usage, supported formats, or public APIs.
-- Use the repository's existing terminology and naming consistently.
-- Link to canonical documentation rather than duplicating the same explanation in multiple places.
+- Link to the canonical page rather than duplicating the same explanation:
+  - Install, extras, and a 30-second usage example: `README.md`
+  - Config fields, formats, extras, CLI flags, warehouse and lakehouse routing: `docs/configuration.md`
+  - Public Python surface: `docs/api.md` (generated; do not hand-copy signatures)
+  - What is not built: `docs/roadmap.md` only
+  - Tutorials: existing notebooks under `docs/examples/`
+- Roadmap lists unimplemented work only. When a feature ships, move the how-to to `docs/configuration.md` (or a README one-liner) and delete the roadmap bullet.
+- New `DiffConfig`, `DiffRule`, or `SourceConfig` fields must appear in `docs/configuration.md`; `tests/unit/test_docs_coverage.py` fails otherwise.
 - Do not add documentation solely to restate obvious implementation details.
 - Configuration examples must use valid configuration and supported values.
 - Document optional dependencies where users need them to enable a feature.
