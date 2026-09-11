@@ -1,3 +1,41 @@
+## v0.9.0 (2026-09-11)
+
+Internal. The public API does not change. This is the 1.0 candidate: the
+breaking-change budget for the 0.7–0.9 line was spent in 0.7.0, 0.8.0 was
+additive, and 0.9.0 is compiler and toolchain work.
+
+Warehouse SQL now projects stages 1–7 once per column through a pair of
+normalization CTEs. The join and the mismatch tally read those values, so
+adding a transform no longer copies the expression tree into every later
+predicate. Emitted SQL stays roughly linear in the number of compared
+columns; the DuckDB harness is the same check it was in 0.6.0.
+
+`engine.py`, `models.py`, `sentinels.py`, and `connectors/sql.py` are gated
+at 100% branch coverage. `cast_to` is resolved through a `TypedDict` and an
+exhaustive lookup table. `make lint` runs strict pyright. Global mypy
+`ignore_missing_imports` is gone; missing stubs stay on per-module overrides
+for optional drivers and test-only imports.
+
+### Refactor
+
+- project warehouse transforms through `_src_normalized` / `_tgt_normalized`
+  CTEs so each column is normalized once, verified by the existing DuckDB
+  harness and a SQL-length regression test
+- convert `_get_effective_rule` to an `EffectiveRule` TypedDict so `cast_to`
+  stays a `CastTarget` and `_CAST_TARGETS` is exhaustive
+
+### Test
+
+- fail `make test` and the core CI job unless the four core modules stay at
+  100% branch coverage, and drop the dead `raise NotImplementedError`
+  coverage exclude
+
+### Chore
+
+- add strict pyright to `make lint` and the CI lint job
+- drop the global mypy `ignore_missing_imports` in favor of the existing
+  per-module overrides
+
 ## v0.8.0 (2026-09-11)
 
 Reporting and CLI polish. Purely additive: new flags default off, and the
