@@ -1,3 +1,14 @@
+## v0.9.1 (2026-09-11)
+
+CI now pins JavaScript actions that declare Node 24, so GitHub-hosted runners
+stop forcing the deprecated Node 20 runtime onto checkout, setup-uv, and
+codecov.
+
+### Chore
+
+- bump `actions/checkout` to v5, `astral-sh/setup-uv` to v7, and
+  `codecov/codecov-action` to v6 so every workflow step we pin runs on Node 24
+
 ## v0.9.0 (2026-09-11)
 
 Internal. The public API does not change. This is the 1.0 candidate: the
