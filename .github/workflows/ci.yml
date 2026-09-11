@@ -31,6 +31,9 @@ jobs:
       - name: Run Pre-commit Hooks
         run: uv run pre-commit run --all-files
 
+      - name: Run Pyright
+        run: uv run pyright src/
+
   docs:
     name: Documentation Build
     runs-on: ubuntu-latest

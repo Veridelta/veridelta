@@ -98,7 +98,7 @@ disable_error_code = ["untyped-decorator"]
 warn_return_any = false
 
 [[tool.mypy.overrides]]
-module = ["polars.*", "yaml.*", "pytest.*"]
+module = ["polars.*", "yaml.*", "pytest.*", "pytest_mock", "pytest_mock.*", "duckdb", "duckdb.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
