@@ -210,30 +210,18 @@ class SQLPushdownCompiler:
             ConnectorError: If identifiers are empty or not allowlisted.
         """
         tgt_name = target_column if target_column is not None else source_column
-        src_expr = self._qualify(source_alias, source_column)
-        tgt_expr = self._qualify(target_alias, tgt_name)
-
-        src_expr = self._apply_null_values(src_expr, self._sentinels_for(rule, source_dtype))
-        tgt_expr = self._apply_null_values(tgt_expr, self._sentinels_for(rule, target_dtype))
-        if self._is_text_side(source_dtype):
-            src_expr = self._apply_regex_replace(src_expr, rule)
-            src_expr = self._apply_whitespace(src_expr, rule)
-            src_expr = self._apply_case(src_expr, rule)
-            src_expr = self._apply_value_map(src_expr, rule)
-        if self._is_text_side(target_dtype):
-            tgt_expr = self._apply_regex_replace(tgt_expr, rule)
-            tgt_expr = self._apply_whitespace(tgt_expr, rule)
-            tgt_expr = self._apply_case(tgt_expr, rule)
-        src_expr = self._apply_pad_zeros(src_expr, rule)
-        tgt_expr = self._apply_pad_zeros(tgt_expr, rule)
-        src_expr = self._apply_datetime_format(src_expr, rule, source_dtype)
-        tgt_expr = self._apply_datetime_format(tgt_expr, rule, target_dtype)
-        # Stage 6b, `timezone`, emits nothing on purpose. See
-        # `_reject_unzoned_timezone` in the engine for why, and for the
-        # validation that takes its place.
-        src_expr = self._apply_cast(src_expr, rule, source_dtype)
-        tgt_expr = self._apply_cast(tgt_expr, rule, target_dtype)
-
+        src_expr = self._normalize_expr(
+            self._qualify(source_alias, source_column),
+            rule,
+            source_dtype,
+            is_source=True,
+        )
+        tgt_expr = self._normalize_expr(
+            self._qualify(target_alias, tgt_name),
+            rule,
+            target_dtype,
+            is_source=False,
+        )
         return self._compare(src_expr, tgt_expr, rule)
 
     def compile_query(
@@ -249,6 +237,10 @@ class SQLPushdownCompiler:
         target_types: ColumnTypes | None = None,
     ) -> str:
         """Assemble a changed-row inner-join query from tables, keys, and rules.
+
+        Stages 1 through 7 run once per column in a pair of CTEs. The join and
+        the match predicates then read those projected values, so adding a
+        stage no longer copies the entire expression tree.
 
         Args:
             source_table (str): Source relation (optionally dotted catalog path).
@@ -273,33 +265,36 @@ class SQLPushdownCompiler:
         if not primary_keys:
             raise ConnectorError("At least one primary key is required for pushdown joins.")
 
-        quoted_source = self._quote_relation(source_table)
-        quoted_target = self._quote_relation(target_table)
-        quoted_src_alias = self._quote_ident(source_alias)
-        quoted_tgt_alias = self._quote_ident(target_alias)
-
+        compared = self._compared_columns(rules)
+        with_clause = self._normalized_with_clause(
+            source_table,
+            target_table,
+            primary_keys,
+            compared,
+            source_alias=source_alias,
+            target_alias=target_alias,
+            source_types=source_types,
+            target_types=target_types,
+        )
         select_list = ", ".join(self._qualify(source_alias, pk) for pk in primary_keys)
         on_clause = self._join_on_clause(
             primary_keys, source_alias=source_alias, target_alias=target_alias
         )
-
-        predicates = [
-            predicate
-            for _, predicate in self._collect_predicates(
-                rules,
-                source_alias=source_alias,
-                target_alias=target_alias,
-                source_types=source_types,
-                target_types=target_types,
-            )
-        ]
-
         statement = (
+            f"{with_clause} "
             f"SELECT {select_list} "
-            f"FROM {quoted_source} AS {quoted_src_alias} "
-            f"INNER JOIN {quoted_target} AS {quoted_tgt_alias} "
+            f"FROM {self._quote_ident('_src_normalized')} AS {self._quote_ident(source_alias)} "
+            f"INNER JOIN {self._quote_ident('_tgt_normalized')} AS {self._quote_ident(target_alias)} "
             f"ON {on_clause}"
         )
+        predicates = [
+            self._compare(
+                self._qualify(source_alias, target_column),
+                self._qualify(target_alias, target_column),
+                rule,
+            )
+            for _source_column, target_column, rule in compared
+        ]
         if predicates:
             joined = " AND ".join(f"({pred})" for pred in predicates)
             statement = f"{statement} WHERE NOT ({joined})"
@@ -420,28 +415,40 @@ class SQLPushdownCompiler:
         if not primary_keys:
             raise ConnectorError("At least one primary key is required for pushdown joins.")
 
-        pairs = self._collect_predicates(
-            rules,
+        compared = self._compared_columns(rules)
+        if not compared:
+            return None
+
+        with_clause = self._normalized_with_clause(
+            source_table,
+            target_table,
+            primary_keys,
+            compared,
             source_alias=source_alias,
             target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
         )
-        if not pairs:
-            return None
-
-        select_list = ", ".join(
-            f"SUM(CASE WHEN COALESCE({predicate}, FALSE) THEN 0 ELSE 1 END) "
-            f"AS {self._quote_ident(alias)}"
-            for alias, predicate in pairs
-        )
+        terms: list[str] = []
+        for _source_column, target_column, rule in compared:
+            predicate = self._compare(
+                self._qualify(source_alias, target_column),
+                self._qualify(target_alias, target_column),
+                rule,
+            )
+            alias = self._quote_ident(target_column)
+            terms.append(
+                f"SUM(CASE WHEN COALESCE({predicate}, FALSE) THEN 0 ELSE 1 END) AS {alias}"
+            )
+        select_list = ", ".join(terms)
         on_clause = self._join_on_clause(
             primary_keys, source_alias=source_alias, target_alias=target_alias
         )
         return (
+            f"{with_clause} "
             f"SELECT {select_list} "
-            f"FROM {self._quote_relation(source_table)} AS {self._quote_ident(source_alias)} "
-            f"INNER JOIN {self._quote_relation(target_table)} AS {self._quote_ident(target_alias)} "
+            f"FROM {self._quote_ident('_src_normalized')} AS {self._quote_ident(source_alias)} "
+            f"INNER JOIN {self._quote_ident('_tgt_normalized')} AS {self._quote_ident(target_alias)} "
             f"ON {on_clause}"
         )
 
@@ -551,104 +558,160 @@ class SQLPushdownCompiler:
             for pk in primary_keys
         )
 
-    def _collect_predicates(
+    def _normalize_expr(
         self,
-        rules: list[DiffRule],
+        expr: str,
+        rule: DiffRule,
+        dtype: pl.DataType | None,
         *,
-        source_alias: str,
-        target_alias: str,
-        source_types: ColumnTypes | None = None,
-        target_types: ColumnTypes | None = None,
-    ) -> list[tuple[str, str]]:
-        """Expand every rule into deduplicated result-alias and predicate pairs.
+        is_source: bool,
+    ) -> str:
+        """Apply stages 1 through 7 to one side of a comparison.
 
-        The local engine resolves exactly one effective rule per column, so when
-        several rules name the same column the first one wins here too. That also
-        keeps aggregate select lists free of duplicate output names.
+        Stage 6b, `timezone`, emits nothing on purpose. See
+        `_reject_unzoned_timezone` in the engine for why.
 
         Args:
-            rules (list[DiffRule]): Rules to compile, in declaration order.
-            source_alias (str): Source relation alias.
-            target_alias (str): Target relation alias.
-            source_types (ColumnTypes | None): Probed source dtypes for sentinel
-                filtering. When None, sentinels are emitted unfiltered.
-            target_types (ColumnTypes | None): Probed target dtypes.
+            expr (str): Qualified column or already-wrapped expression.
+            rule (DiffRule): Rule supplying the transform fields.
+            dtype (pl.DataType | None): Probed dtype for this side.
+            is_source (bool): True when this is the source side, which is the
+                only side that receives a `value_map`.
 
         Returns:
-            list[tuple[str, str]]: Result alias paired with its match predicate.
+            str: Expression after every compiled stage.
+        """
+        expr = self._apply_null_values(expr, self._sentinels_for(rule, dtype))
+        if self._is_text_side(dtype):
+            expr = self._apply_regex_replace(expr, rule)
+            expr = self._apply_whitespace(expr, rule)
+            expr = self._apply_case(expr, rule)
+            if is_source:
+                expr = self._apply_value_map(expr, rule)
+        expr = self._apply_pad_zeros(expr, rule)
+        expr = self._apply_datetime_format(expr, rule, dtype)
+        return self._apply_cast(expr, rule, dtype)
+
+    def _compared_columns(self, rules: list[DiffRule]) -> list[tuple[str, str, DiffRule]]:
+        """Resolve the columns that a join query will actually compare.
+
+        First rule to name a target-side alias wins, matching the local engine.
+
+        Args:
+            rules (list[DiffRule]): Rules to expand.
+
+        Returns:
+            list[tuple[str, str, DiffRule]]: Source name, target name, rule.
 
         Raises:
             ConnectorError: If a rule is pattern-only or `rename_to` is invalid.
         """
-        collected: dict[str, str] = {}
+        collected: dict[str, tuple[str, str, DiffRule]] = {}
         for rule in rules:
-            for alias, predicate in self._predicates_for_rule(
-                rule,
-                source_alias=source_alias,
-                target_alias=target_alias,
-                source_types=source_types,
-                target_types=target_types,
-            ):
-                collected.setdefault(alias, predicate)
-        return list(collected.items())
+            if rule.pattern is not None and not rule.column_names:
+                raise ConnectorError(
+                    "Pattern-only DiffRule cannot be compiled without a resolved column name."
+                )
+            if rule.ignore or not rule.column_names:
+                continue
+            if rule.rename_to is not None and len(rule.column_names) != 1:
+                raise ConnectorError(
+                    "rename_to is only valid when column_names has exactly one entry."
+                )
+            for column in rule.column_names:
+                target_column = rule.rename_to if rule.rename_to is not None else column
+                collected.setdefault(target_column, (column, target_column, rule))
+        return list(collected.values())
 
-    def _predicates_for_rule(
+    def _normalized_with_clause(
         self,
-        rule: DiffRule,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        compared: list[tuple[str, str, DiffRule]],
         *,
         source_alias: str,
         target_alias: str,
-        source_types: ColumnTypes | None = None,
-        target_types: ColumnTypes | None = None,
-    ) -> list[tuple[str, str]]:
-        """Expand one rule into per-column result aliases and match predicates.
+        source_types: ColumnTypes | None,
+        target_types: ColumnTypes | None,
+    ) -> str:
+        """Build the CTE pair that applies stages 1-7 once per column.
 
-        The alias is the target-side name, which is what the local engine reports
-        in `column_mismatches` after `rename_to` has been applied.
+        Nesting the same expression into every later predicate used to copy the
+        source column once per stage that repeats its input. Projecting the
+        normalized value once keeps later SQL linear in the number of columns.
 
         Args:
-            rule (DiffRule): Rule to compile.
-            source_alias (str): Source relation alias.
-            target_alias (str): Target relation alias.
-            source_types (ColumnTypes | None): Probed source dtypes for sentinel
-                filtering. When None, sentinels are emitted unfiltered.
+            source_table (str): Source relation.
+            target_table (str): Target relation.
+            primary_keys (list[str]): Keys passed through untransformed.
+            compared (list[tuple[str, str, DiffRule]]): Columns to normalize.
+            source_alias (str): Alias of the source relation inside its CTE.
+            target_alias (str): Alias of the target relation inside its CTE.
+            source_types (ColumnTypes | None): Probed source dtypes.
             target_types (ColumnTypes | None): Probed target dtypes.
 
         Returns:
-            list[tuple[str, str]]: Alias and predicate pairs. Empty when ignored.
-
-        Raises:
-            ConnectorError: If the rule is pattern-only or `rename_to` is invalid.
+            str: `WITH src AS (...), tgt AS (...)` prefix, no trailing keyword.
         """
-        if rule.pattern is not None and not rule.column_names:
-            raise ConnectorError(
-                "Pattern-only DiffRule cannot be compiled without a resolved column name."
-            )
-        if rule.ignore or not rule.column_names:
-            return []
-        if rule.rename_to is not None and len(rule.column_names) != 1:
-            raise ConnectorError("rename_to is only valid when column_names has exactly one entry.")
+        src_select = self._normalized_select(
+            source_table,
+            source_alias,
+            primary_keys,
+            compared,
+            types=source_types,
+            is_source=True,
+        )
+        tgt_select = self._normalized_select(
+            target_table,
+            target_alias,
+            primary_keys,
+            compared,
+            types=target_types,
+            is_source=False,
+        )
+        return (
+            f"WITH {self._quote_ident('_src_normalized')} AS ({src_select}), "
+            f"{self._quote_ident('_tgt_normalized')} AS ({tgt_select})"
+        )
 
-        pairs: list[tuple[str, str]] = []
-        for column in rule.column_names:
-            target_column = rule.rename_to if rule.rename_to is not None else column
-            pairs.append(
-                (
-                    target_column,
-                    self.compile_column_predicate(
-                        rule,
-                        column,
-                        target_column,
-                        source_alias=source_alias,
-                        target_alias=target_alias,
-                        source_dtype=None if source_types is None else source_types.get(column),
-                        target_dtype=(
-                            None if target_types is None else target_types.get(target_column)
-                        ),
-                    ),
-                )
+    def _normalized_select(
+        self,
+        table: str,
+        alias: str,
+        primary_keys: list[str],
+        compared: list[tuple[str, str, DiffRule]],
+        *,
+        types: ColumnTypes | None,
+        is_source: bool,
+    ) -> str:
+        """Project keys plus one normalized expression per compared column.
+
+        Args:
+            table (str): Relation to read.
+            alias (str): Alias assigned to that relation.
+            primary_keys (list[str]): Keys passed through as-is.
+            compared (list[tuple[str, str, DiffRule]]): Columns to normalize.
+            types (ColumnTypes | None): Probed dtypes for this side.
+            is_source (bool): True when projecting the source relation.
+
+        Returns:
+            str: `SELECT ... FROM relation AS alias` body for one CTE.
+        """
+        projections = [
+            f"{self._qualify(alias, pk)} AS {self._quote_ident(pk)}" for pk in primary_keys
+        ]
+        for source_column, target_column, rule in compared:
+            raw_name = source_column if is_source else target_column
+            dtype = None if types is None else types.get(raw_name)
+            normalized = self._normalize_expr(
+                self._qualify(alias, raw_name), rule, dtype, is_source=is_source
             )
-        return pairs
+            projections.append(f"{normalized} AS {self._quote_ident(target_column)}")
+        return (
+            f"SELECT {', '.join(projections)} "
+            f"FROM {self._quote_relation(table)} AS {self._quote_ident(alias)}"
+        )
 
     def _quote_ident(self, name: str) -> str:
         """Quote a single SQL identifier for the active dialect.

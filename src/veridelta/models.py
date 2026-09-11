@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 from veridelta.exceptions import ConfigError
 
 if TYPE_CHECKING:
-    import pandas as pd
+    import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
 
 SQL_IDENTIFIER_SEGMENT_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
 """Unquoted SQL identifier: letter or underscore, then alphanumeric or underscore."""
@@ -448,12 +448,12 @@ class DiffConfig(BaseModel):
         description="Global string whitespace stripping mode: 'none', 'left', 'right', or 'both'.",
     )
     default_null_values: list[SentinelValue] = Field(
-        default_factory=list,
+        default_factory=list[SentinelValue],
         strict=True,
         description="Global list of values to coerce to NULL, applied per matching dtype.",
     )
 
-    rules: list[DiffRule] = Field(default_factory=list, description="Column overrides.")
+    rules: list[DiffRule] = Field(default_factory=list[DiffRule], description="Column overrides.")
 
     threshold: float = Field(
         default=0.0, ge=0.0, le=1.0, description="Allowed mismatch percentage (0.0 to 1.0)."

@@ -487,6 +487,26 @@ class TestEngineConnectorRouting:
         with pytest.raises(ConnectorError, match="Cross-account"):
             DiffEngine.run_from_configs(diff, source, target)
 
+    def test_it_raises_connector_error_for_mismatched_databricks_fingerprints(self) -> None:
+        """Ensure distinct Databricks workspaces cannot share a pushdown session."""
+        source = _databricks_config(table="main.default.src", host="adb-a.azuredatabricks.net")
+        target = _databricks_config(table="main.default.tgt", host="adb-b.azuredatabricks.net")
+        diff = DiffConfig(primary_keys=["id"])
+
+        with pytest.raises(ConnectorError, match="Cross-account"):
+            DiffEngine.run_from_configs(diff, source, target)
+
+    def test_it_rejects_a_claimed_warehouse_pair_that_is_neither_dialect(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure the final guard fires when both sides are marked warehouse but are not."""
+        mocker.patch("veridelta.engine._is_warehouse", return_value=True)
+        source = SourceConfig(path="src.csv", format="csv")
+        target = SourceConfig(path="tgt.csv", format="csv")
+
+        with pytest.raises(ConnectorError, match="Mixed file/lakehouse"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
     def test_it_raises_connector_error_for_mixed_warehouse_and_file_backends(self) -> None:
         """Ensure a warehouse cannot be compared directly to a local file."""
         source = _snowflake_config(table="ANALYTICS.PUBLIC.SRC")

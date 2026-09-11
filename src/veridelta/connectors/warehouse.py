@@ -54,7 +54,7 @@ def _lazy_from_arrow(table: Any) -> pl.LazyFrame:
     """
     if table is None:
         raise ConnectorError(_NON_TABULAR)
-    frame = pl.from_arrow(table)
+    frame = pl.from_arrow(table)  # pyright: ignore[reportUnknownMemberType]
     if not isinstance(frame, pl.DataFrame):
         raise ConnectorError(_NON_TABULAR)
     return frame.lazy()
@@ -74,7 +74,7 @@ def _schema_from_arrow(table: Any, description: Any) -> pl.Schema:
         ConnectorError: If neither Arrow nor cursor description is usable.
     """
     if table is not None:
-        frame = pl.from_arrow(table)
+        frame = pl.from_arrow(table)  # pyright: ignore[reportUnknownMemberType]
         if isinstance(frame, pl.DataFrame):
             return frame.schema
 

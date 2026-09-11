@@ -256,9 +256,10 @@ class TestQueryAssembly:
             ["id", "line_id"],
             rules,
         )
-        assert sql.startswith('SELECT "src"."id", "src"."line_id"')
+        assert sql.startswith('WITH "_src_normalized" AS (')
         assert 'FROM "analytics"."public"."source_orders" AS "src"' in sql
-        assert 'INNER JOIN "analytics"."public"."target_orders" AS "tgt"' in sql
+        assert 'FROM "analytics"."public"."target_orders" AS "tgt"' in sql
+        assert 'INNER JOIN "_tgt_normalized" AS "tgt"' in sql
         assert 'ON "src"."id" = "tgt"."id" AND "src"."line_id" = "tgt"."line_id"' in sql
         assert "WHERE NOT (" in sql
         assert "EQUAL_NULL(" in sql
@@ -420,13 +421,16 @@ class TestColumnMismatchAggregate:
             "src_tbl", "tgt_tbl", ["id"], [DiffRule(column_names=["amount"])]
         )
 
-        assert sql == (
-            'SELECT SUM(CASE WHEN COALESCE("src"."amount" = "tgt"."amount", FALSE) '
-            'THEN 0 ELSE 1 END) AS "amount" '
-            'FROM "src_tbl" AS "src" '
-            'INNER JOIN "tgt_tbl" AS "tgt" '
-            'ON "src"."id" = "tgt"."id"'
-        )
+        assert sql is not None
+        assert sql.startswith('WITH "_src_normalized" AS (')
+        assert (
+            'SUM(CASE WHEN COALESCE("src"."amount" = "tgt"."amount", FALSE) '
+            'THEN 0 ELSE 1 END) AS "amount"'
+        ) in sql
+        assert 'FROM "src_tbl" AS "src"' in sql
+        assert 'FROM "tgt_tbl" AS "tgt"' in sql
+        assert 'INNER JOIN "_tgt_normalized" AS "tgt"' in sql
+        assert 'ON "src"."id" = "tgt"."id"' in sql
 
     def test_it_quotes_the_databricks_aggregate_with_backticks(self) -> None:
         """Ensure the tally honors the Databricks quoting style."""
@@ -437,7 +441,8 @@ class TestColumnMismatchAggregate:
         assert sql is not None
         assert "COALESCE(`src`.`amount` = `tgt`.`amount`, FALSE)" in sql
         assert "AS `amount`" in sql
-        assert "INNER JOIN `main`.`default`.`tgt` AS `tgt`" in sql
+        assert "FROM `main`.`default`.`tgt` AS `tgt`" in sql
+        assert "INNER JOIN `_tgt_normalized` AS `tgt`" in sql
 
     def test_it_coalesces_null_predicates_so_they_count_as_mismatches(self) -> None:
         """Ensure three-valued logic cannot silently score NULL comparisons as matches."""
@@ -463,8 +468,8 @@ class TestColumnMismatchAggregate:
         )
 
         assert sql is not None
-        assert '"src"."legacy_amt" = "tgt"."amount"' in sql
-        assert 'AS "amount"' in sql
+        assert '"src"."legacy_amt" AS "amount"' in sql
+        assert '"src"."amount" = "tgt"."amount"' in sql
         assert 'AS "legacy_amt"' not in sql
 
     def test_it_emits_one_term_per_column_across_composite_keys(self) -> None:
@@ -495,7 +500,7 @@ class TestColumnMismatchAggregate:
         )
 
         assert sql is not None
-        assert sql.count('AS "amount"') == 1
+        assert sql.count("SUM(CASE WHEN") == 1
         assert "ABS(" in sql
         assert "LOWER(" not in sql
 
@@ -815,3 +820,67 @@ class TestDatetimeFormatCompilation:
         )
 
         assert "try_strptime" not in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestCTENormalization:
+    """Validate that join SQL stays linear after stages 1-7 are projected once."""
+
+    def test_it_projects_each_source_column_once_in_the_normalization_cte(self) -> None:
+        """Ensure a fully loaded rule does not re-embed the raw column 24 times.
+
+        Before the CTE rewrite, `_apply_pad_zeros` alone copied its input five
+        times, and the mismatch tally then copied the whole predicate again.
+        """
+        rule = DiffRule(
+            column_names=["amount"],
+            null_values=["N/A", ""],
+            regex_replace={r"\$": "", ",": ""},
+            whitespace_mode="both",
+            case_insensitive=True,
+            value_map={"A": "B"},
+            pad_zeros=10,
+            cast_to="Float64",
+            treat_null_as_equal=True,
+        )
+        sql = _snowflake().compile_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [rule],
+            source_types={"id": pl.Int64(), "amount": pl.String()},
+            target_types={"id": pl.Int64(), "amount": pl.String()},
+        )
+
+        where_clause = sql.split("WHERE NOT", 1)[1]
+        assert "LPAD" not in where_clause
+        assert "REGEXP_REPLACE" not in where_clause
+        assert 'EQUAL_NULL("src"."amount", "tgt"."amount")' in where_clause
+        assert "LPAD" in sql
+
+    def test_it_grows_roughly_linearly_as_rules_are_added(self) -> None:
+        """Ensure adding a column adds a bounded amount of SQL, not a nested copy."""
+        lengths: list[int] = []
+        for count in (1, 2, 4, 8):
+            rules = [
+                DiffRule(
+                    column_names=[f"c{index}"],
+                    null_values=["N/A"],
+                    regex_replace={r"\$": ""},
+                    whitespace_mode="both",
+                    pad_zeros=8,
+                    cast_to="Float64",
+                )
+                for index in range(count)
+            ]
+            sql = _snowflake().compile_query("src_tbl", "tgt_tbl", ["id"], rules)
+            lengths.append(len(sql))
+
+        first = lengths[0]
+        last = lengths[-1]
+        # Eight copies of the same stage list cannot cost eight times a nested
+        # rewrite of the first column. A 3x budget over the single-column
+        # length times the column count is generous for quoting and aliases.
+        assert last < first * 8 * 3
+        assert last / first < 12

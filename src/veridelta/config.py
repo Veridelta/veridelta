@@ -50,7 +50,7 @@ def _parse_source_ref(raw: Any, *, label: str) -> SourceRef:
     """
     if not isinstance(raw, dict):
         raise ConfigError(f"The '{label}' block must be a mapping.")
-    payload = cast("dict[str, Any]", dict(raw))
+    payload = cast("dict[str, Any]", raw)
     if "type" not in payload:
         payload["type"] = "file"
     return _SOURCE_REF_ADAPTER.validate_python(payload)

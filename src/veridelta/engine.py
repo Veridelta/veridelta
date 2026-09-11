@@ -7,11 +7,13 @@ This module houses the I/O loaders, the `DataIngestor` for dataset preparation,
 and the `DiffEngine` which performs the high-performance Polars comparisons.
 """
 
+import importlib
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, ClassVar, Final
+from types import ModuleType
+from typing import ClassVar, Final, TypedDict
 
 import polars as pl
 
@@ -33,18 +35,48 @@ from veridelta.models import (
     SnowflakeConfig,
     SourceConfig,
     SourceRef,
+    WhitespaceMode,
 )
 from veridelta.sentinels import usable_sentinels
 
-fastexcel: Any = None
-try:
-    import fastexcel as _fastexcel
-except ImportError:
-    pass
-else:
-    fastexcel = _fastexcel
+
+def _optional_module(name: str) -> ModuleType | None:
+    """Import an optional extra, or return None when it is not installed.
+
+    Args:
+        name (str): Module name to import.
+
+    Returns:
+        ModuleType | None: The imported module, or None on ImportError.
+    """
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
+
+fastexcel = _optional_module("fastexcel")
 """Presence probe for the `excel` extra. Polars imports this itself, but only
 at call time, so checking here turns a bare ImportError into an install hint."""
+
+
+class EffectiveRule(TypedDict):
+    """Flattened per-column parameters after specific, pattern, and global merge."""
+
+    abs_tol: float
+    rel_tol: float
+    treat_null: bool
+    whitespace: WhitespaceMode
+    null_values: list[SentinelValue]
+    null_values_explicit: bool
+    case_insensitive: bool
+    regex_replace: dict[str, str] | None
+    value_map: dict[str, str] | None
+    pad_zeros: int | None
+    datetime_format: str | None
+    timezone: str | None
+    cast_to: CastTarget | None
+    ignore: bool
 
 
 def _unusable_sentinel_error(
@@ -237,13 +269,15 @@ class ExcelLoader(BaseLoader):
                 "Reading Excel requires the optional 'excel' extra. "
                 "Install it with: uv add 'veridelta[excel]'"
             )
-        frame = pl.read_excel(config.path, **config.options)
-        if not isinstance(frame, pl.DataFrame):
+        loaded = pl.read_excel(  # pyright: ignore[reportUnknownVariableType]
+            config.path, **config.options
+        )
+        if not isinstance(loaded, pl.DataFrame):
             raise ConfigError(
                 f"Excel source '{config.path}' resolved to multiple worksheets. "
                 "Name exactly one with the 'sheet_name' or 'sheet_id' option."
             )
-        return frame.lazy()
+        return loaded.lazy()
 
 
 class LoaderFactory:
@@ -985,16 +1019,16 @@ class DiffEngine:
         engine._align_structure()
         engine._validate_schema()
 
-    def _get_effective_rule(self, col_name: str) -> dict[str, Any]:
+    def _get_effective_rule(self, col_name: str) -> EffectiveRule:
         """Resolves all rules (Specific > Pattern > Global) into a unified dictionary.
 
         Args:
             col_name (str): The name of the column to resolve rules for.
 
         Returns:
-            dict[str, Any]: A flattened dictionary of operational parameters.
+            EffectiveRule: A flattened dictionary of operational parameters.
         """
-        eff: dict[str, Any] = {
+        eff: EffectiveRule = {
             "abs_tol": self.config.default_absolute_tolerance,
             "rel_tol": self.config.default_relative_tolerance,
             "treat_null": self.config.default_treat_null_as_equal,
@@ -1119,7 +1153,7 @@ class DiffEngine:
         return frame
 
     def _normalize_value_expr(
-        self, column: str, rule: dict[str, Any], dtype: pl.DataType, *, is_source: bool
+        self, column: str, rule: EffectiveRule, dtype: pl.DataType, *, is_source: bool
     ) -> pl.Expr | None:
         """Build stages 1 through 6a for one column: sentinels through datetime parsing.
 
@@ -1129,7 +1163,7 @@ class DiffEngine:
 
         Args:
             column (str): Column being normalized.
-            rule (dict[str, Any]): Parameters resolved by `_get_effective_rule`.
+            rule (EffectiveRule): Parameters resolved by `_get_effective_rule`.
             dtype (pl.DataType): Current dtype of the column within its own frame.
             is_source (bool): True when normalizing the source frame.
 
@@ -1187,21 +1221,20 @@ class DiffEngine:
         return expr.alias(column) if applied else None
 
     def _normalize_temporal_expr(
-        self, column: str, rule: dict[str, Any], dtype: pl.DataType
+        self, column: str, rule: EffectiveRule, dtype: pl.DataType
     ) -> pl.Expr | None:
         """Build stages 6b and 7 for one column: timezone conversion, then cast.
 
         Args:
             column (str): Column being normalized.
-            rule (dict[str, Any]): Parameters resolved by `_get_effective_rule`.
+            rule (EffectiveRule): Parameters resolved by `_get_effective_rule`.
             dtype (pl.DataType): Dtype after the value stages have been applied.
 
         Returns:
             pl.Expr | None: Aliased expression, or None when no stage applies.
 
         Raises:
-            ConfigError: If `timezone` cannot be applied to the column, or
-                `cast_to` names a type outside `_CAST_TARGETS`.
+            ConfigError: If `timezone` cannot be applied to the column.
         """
         expr = pl.col(column)
         applied = False
@@ -1211,14 +1244,7 @@ class DiffEngine:
             applied = True
 
         if rule["cast_to"]:
-            target_dtype = _CAST_TARGETS.get(rule["cast_to"])
-            if target_dtype is None:
-                supported = ", ".join(_CAST_TARGETS)
-                raise ConfigError(
-                    f"Column '{column}' sets cast_to='{rule['cast_to']}', which is not a "
-                    f"supported cast target. Supported: {supported}."
-                )
-            expr = expr.cast(target_dtype)
+            expr = expr.cast(_CAST_TARGETS[rule["cast_to"]])
             applied = True
 
         return expr.alias(column) if applied else None
@@ -1261,7 +1287,7 @@ class DiffEngine:
         except pl.exceptions.ComputeError as exc:
             raise ConfigError(f"Column '{column}' sets an unusable timezone. {exc}") from exc
 
-    def _build_match_expr(self, col_name: str, rule: dict[str, Any], dtype: pl.DataType) -> pl.Expr:
+    def _build_match_expr(self, col_name: str, rule: EffectiveRule, dtype: pl.DataType) -> pl.Expr:
         """Builds stages 8 and 9 of the transform order: comparison and null equality.
 
         Both sides have already been normalized by `_normalize_frame`, so this
@@ -1276,7 +1302,7 @@ class DiffEngine:
 
         Args:
             col_name (str): The column being compared.
-            rule (dict[str, Any]): The unified rules to apply.
+            rule (EffectiveRule): The unified rules to apply.
             dtype (pl.DataType): The data type of the source column.
 
         Returns:

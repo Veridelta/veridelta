@@ -13,8 +13,17 @@ import pytest
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
-from veridelta.engine import _ARTIFACT_WRITERS, DataIngestor, DiffEngine, LoaderFactory
-from veridelta.exceptions import ConfigError, DataIntegrityError
+from veridelta.engine import (
+    _ARTIFACT_WRITERS,
+    BaseLoader,
+    DataIngestor,
+    DiffEngine,
+    LoaderFactory,
+    _column_mismatches_from_frame,
+    _optional_module,
+    _resolve_pushdown_rules,
+)
+from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import ArtifactFormat, DiffConfig, DiffRule, SourceConfig, SourceType
 
 
@@ -109,6 +118,50 @@ class TestDataIngestorAndLoaders:
         normalized = ingestor._normalize_headers(df.lazy())  # pyright: ignore[reportPrivateUsage]
 
         assert normalized.collect_schema().names() == ["messy_col", "cleancol"]
+
+    def test_it_renames_and_drops_columns_during_ingest_alignment(self) -> None:
+        """Ensure DataIngestor applies ignore and rename_to before the engine sees the frame."""
+        source = pl.DataFrame({"legacy_id": [1], "secret": ["x"], "val": ["A"]}).lazy()
+        dummy = SourceConfig(path="dummy.csv", format="csv")
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[
+                DiffRule(column_names=["legacy_id"], rename_to="user_id"),
+                DiffRule(column_names=["secret"], ignore=True),
+                DiffRule(pattern="^sec"),
+            ],
+        )
+        ingestor = DataIngestor(config, source_config=dummy, target_config=dummy)
+        aligned = ingestor._align_columns(source, is_source=True)  # pyright: ignore[reportPrivateUsage]
+
+        assert aligned.collect_schema().names() == ["user_id", "val"]
+
+    def test_it_leaves_target_names_alone_when_aligning_the_target_side(self) -> None:
+        """Ensure rename_to is a source-only mapping."""
+        target = pl.DataFrame({"user_id": [1], "val": ["A"]}).lazy()
+        dummy = SourceConfig(path="dummy.csv", format="csv")
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+        ingestor = DataIngestor(config, source_config=dummy, target_config=dummy)
+        aligned = ingestor._align_columns(target, is_source=False)  # pyright: ignore[reportPrivateUsage]
+
+        assert aligned.collect_schema().names() == ["user_id", "val"]
+
+    def test_it_executes_the_abstract_loader_body(self) -> None:
+        """Ensure the ABC placeholder is not an untested pass."""
+
+        class _Probe(BaseLoader):
+            def load(self, config: SourceConfig) -> pl.LazyFrame:
+                return pl.DataFrame({"id": [1]}).lazy()
+
+        probe = _Probe()
+        assert BaseLoader.load(probe, SourceConfig(path="dummy.csv", format="csv")) is None
+
+    def test_it_treats_a_missing_optional_module_as_absent(self) -> None:
+        """Ensure the excel extra probe degrades to None instead of raising."""
+        assert _optional_module("veridelta_no_such_optional_module") is None
 
 
 @pytest.mark.unit
@@ -272,22 +325,17 @@ class TestSemanticNormalization:
         assert summary.is_match is True
         assert summary.changed_count == 0
 
-    def test_it_rejects_a_cast_target_it_cannot_resolve(self) -> None:
-        """Ensure an unresolvable cast target fails instead of being skipped.
+    def test_it_rejects_a_cast_target_outside_the_closed_set(self) -> None:
+        """Ensure an unknown cast name fails at load time, not by skipping the cast."""
+        with pytest.raises(ValidationError, match="cast_to"):
+            DiffRule(column_names=["n"], cast_to="Int128")  # type: ignore[arg-type]
 
-        `cast_to` is a closed `Literal`, so this needs `model_construct` to get
-        past validation. The guard is what makes the old failure mode -- an
-        unrecognized name resolving to nothing and leaving the column uncast --
-        impossible for any config built programmatically.
-        """
-        src = pl.DataFrame({"id": [1], "n": ["1"]})
-        tgt = pl.DataFrame({"id": [1], "n": [1]})
-        # Deliberately off the Literal: the point is the runtime guard behind it.
-        rule = DiffRule.model_construct(column_names=["n"], cast_to="Int128")  # type: ignore[arg-type]
-        config = DiffConfig.model_construct(primary_keys=["id"], rules=[rule])
+    def test_it_maps_every_cast_target_to_a_polars_dtype(self) -> None:
+        """Ensure `_CAST_TARGETS` cannot drift from the closed `CastTarget` set."""
+        from veridelta.engine import _CAST_TARGETS
+        from veridelta.models import CastTarget
 
-        with pytest.raises(ConfigError, match="Int128"):
-            DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        assert set(get_args(CastTarget)) == set(_CAST_TARGETS)
 
     def test_it_evaluates_strings_as_matches_when_casing_and_whitespace_rules_are_applied(
         self,
@@ -736,3 +784,167 @@ class TestCanonicalTransformPipeline:
 
         assert _normalized(config, frame)["tier"][0] == "Male"
         assert target["tier"][0] == "M"
+
+    def test_it_strips_leading_or_trailing_whitespace_when_asked(self) -> None:
+        """Ensure the left and right modes are not collapsed into both."""
+        frame = pl.DataFrame({"id": [1], "name": ["  A  "]})
+        left = _normalized(
+            DiffConfig(
+                primary_keys=["id"],
+                rules=[DiffRule(column_names=["name"], whitespace_mode="left")],
+            ),
+            frame,
+        )
+        right = _normalized(
+            DiffConfig(
+                primary_keys=["id"],
+                rules=[DiffRule(column_names=["name"], whitespace_mode="right")],
+            ),
+            frame,
+        )
+
+        assert left["name"][0] == "A  "
+        assert right["name"][0] == "  A"
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestPushdownRuleHelpers:
+    """Validate the pushdown rule expander and tally reducer at the edges."""
+
+    def test_it_carries_rename_to_into_the_synthesized_pushdown_rule(self) -> None:
+        """Ensure a source-only name is compared against its target alias."""
+        source = pl.Schema({"id": pl.Int64, "legacy_amt": pl.Float64})
+        target = pl.Schema({"id": pl.Int64, "amount": pl.Float64})
+        rules = _resolve_pushdown_rules(
+            DiffConfig(
+                primary_keys=["id"],
+                rules=[DiffRule(column_names=["legacy_amt"], rename_to="amount")],
+            ),
+            source,
+            target,
+        )
+
+        assert len(rules) == 1
+        assert rules[0].column_names == ["legacy_amt"]
+        assert rules[0].rename_to == "amount"
+
+    def test_it_skips_source_columns_that_have_no_target_counterpart(self) -> None:
+        """Ensure a source-only measure does not become a dangling predicate."""
+        source = pl.Schema({"id": pl.Int64, "extra": pl.Int64})
+        target = pl.Schema({"id": pl.Int64})
+        rules = _resolve_pushdown_rules(DiffConfig(primary_keys=["id"]), source, target)
+
+        assert rules == []
+
+    def test_it_skips_timezone_enforcement_when_a_side_has_no_dtype(self) -> None:
+        """Ensure a missing probe type is not treated as a naive timestamp."""
+
+        class _PartialSchema:
+            def names(self) -> list[str]:
+                return ["id", "ts"]
+
+            def get(self, name: str) -> pl.DataType | None:
+                if name == "ts":
+                    return None
+                return pl.Int64()
+
+        schema = _PartialSchema()
+        rules = _resolve_pushdown_rules(
+            DiffConfig(
+                primary_keys=["id"],
+                rules=[DiffRule(column_names=["ts"], timezone="UTC")],
+            ),
+            schema,  # type: ignore[arg-type]
+            schema,  # type: ignore[arg-type]
+        )
+
+        assert len(rules) == 1
+        assert rules[0].timezone == "UTC"
+
+    def test_it_drops_null_mismatch_counts_and_rejects_non_numeric_ones(self) -> None:
+        """Ensure an empty join and a garbled tally are both handled."""
+        assert _column_mismatches_from_frame(pl.DataFrame({"amount": [None]})) == {}
+
+        with pytest.raises(ConnectorError, match="was not numeric"):
+            _column_mismatches_from_frame(pl.DataFrame({"amount": ["five"]}))
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestRemainingEngineBranches:
+    """Close the last branch gaps that a typical happy-path run never takes."""
+
+    def test_it_treats_both_nulls_as_a_match_under_strict_type_mismatch(self) -> None:
+        """Ensure treat_null still applies when strict_types short-circuits the values."""
+        src = pl.DataFrame({"id": [1], "val": [None]}, schema={"id": pl.Int64, "val": pl.Float64})
+        tgt = pl.DataFrame({"id": [1], "val": [None]}, schema={"id": pl.Int64, "val": pl.Int64})
+        config = DiffConfig(
+            primary_keys=["id"],
+            strict_types=True,
+            default_treat_null_as_equal=True,
+        )
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.is_match is True
+
+    def test_it_ignores_a_rename_whose_source_column_is_absent(self) -> None:
+        """Ensure a stale rename does not abort alignment."""
+        src = pl.DataFrame({"id": [1], "val": ["A"]})
+        tgt = pl.DataFrame({"id": [1], "val": ["A"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.is_match is True
+
+    def test_it_skips_ignored_columns_that_survive_alignment(self, mocker: MockerFixture) -> None:
+        """Ensure ignore is still honored if structural drop did not run."""
+        src = pl.DataFrame({"id": [1], "noise": [1], "val": [10], "other": ["a"]})
+        tgt = pl.DataFrame({"id": [1], "noise": [9], "val": [10], "other": ["a"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["noise"], ignore=True),
+                DiffRule(column_names=["val"], cast_to="Int64"),
+            ],
+        )
+        engine = DiffEngine(config, src.lazy(), tgt.lazy())
+        mocker.patch.object(engine, "_align_structure")
+
+        summary = engine.run().summary
+
+        assert summary.is_match is True
+        assert "noise" not in summary.column_mismatches
+
+    def test_it_enters_the_temporal_pass_then_emits_nothing_for_ignored_casts(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure an ignored cast_to does not rewrite the remaining columns."""
+        src = pl.DataFrame({"id": [1], "noise": ["1"], "val": [10]})
+        tgt = pl.DataFrame({"id": [1], "noise": ["1"], "val": [10]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["noise"], ignore=True, cast_to="Int64")],
+        )
+        engine = DiffEngine(config, src.lazy(), tgt.lazy())
+        mocker.patch.object(engine, "_align_structure")
+
+        summary = engine.run().summary
+
+        assert summary.is_match is True
+
+    def test_it_flags_strict_type_mismatches_when_nulls_are_not_equal(self) -> None:
+        """Ensure the strict-types miss path does not require treat_null."""
+        src = pl.DataFrame({"id": [1], "val": [10.0]})
+        tgt = pl.DataFrame({"id": [1], "val": [10]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            strict_types=True,
+            default_treat_null_as_equal=False,
+        )
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.is_match is False

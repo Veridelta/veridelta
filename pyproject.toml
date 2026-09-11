@@ -67,6 +67,7 @@ dev = [
     "mkdocstrings[python]>=1.0.3",
     "mypy>=1.20.0",
     "pre-commit>=4.5.1",
+    "pyright>=1.1.414",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
@@ -89,7 +90,6 @@ strict = true
 plugins = ["pydantic.mypy"]
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
 disable_error_code = ["prop-decorator"]
-ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["tests.*", "conftest"]
@@ -98,7 +98,7 @@ disable_error_code = ["untyped-decorator"]
 warn_return_any = false
 
 [[tool.mypy.overrides]]
-module = ["polars.*", "yaml.*", "pytest.*"]
+module = ["polars.*", "yaml.*", "pytest.*", "pytest_mock", "pytest_mock.*", "duckdb", "duckdb.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -125,6 +125,13 @@ follow_imports = "skip"
 init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+include = ["src"]
+venvPath = "."
+venv = ".venv"
 
 [tool.ruff]
 line-length = 100
@@ -194,7 +201,6 @@ exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
     "@overload",
-    "raise NotImplementedError",
 ]
 
 [tool.commitizen]

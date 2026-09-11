@@ -33,6 +33,10 @@ class TestDiffRuleValidation:
         with pytest.raises(ValidationError, match="Invalid regex pattern"):
             DiffRule(pattern="[unclosed_bracket")
 
+    def test_it_accepts_an_explicitly_empty_pattern(self) -> None:
+        """Ensure the validator's None branch is taken, not only the compile path."""
+        assert DiffRule.model_validate({"pattern": None}).pattern is None
+
     def test_it_rejects_invalid_regex_replace_patterns(self) -> None:
         """Ensure malformed regex keys in 'regex_replace' dictionary are caught."""
         with pytest.raises(ValidationError, match="Invalid regex replace pattern"):
