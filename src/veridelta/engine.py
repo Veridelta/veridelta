@@ -20,10 +20,12 @@ from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
+    ArtifactFormat,
     CastTarget,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
+    DiffResult,
     DiffRule,
     DiffSummary,
     IcebergConfig,
@@ -33,6 +35,16 @@ from veridelta.models import (
     SourceRef,
 )
 from veridelta.sentinels import usable_sentinels
+
+fastexcel: Any = None
+try:
+    import fastexcel as _fastexcel
+except ImportError:
+    pass
+else:
+    fastexcel = _fastexcel
+"""Presence probe for the `excel` extra. Polars imports this itself, but only
+at call time, so checking here turns a bare ImportError into an install hint."""
 
 
 def _unusable_sentinel_error(
@@ -145,12 +157,105 @@ class ParquetLoader(BaseLoader):
         return pl.scan_parquet(config.path, **config.options)
 
 
+class NDJSONLoader(BaseLoader):
+    """Loader for newline-delimited JSON, which Polars can scan lazily."""
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads an NDJSON file into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.scan_ndjson`.
+
+        Returns:
+            pl.LazyFrame: The lazy dataset graph.
+        """
+        return pl.scan_ndjson(config.path, **config.options)
+
+
+class ArrowLoader(BaseLoader):
+    """Loader for Arrow IPC (Feather v2) files."""
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads an Arrow IPC file into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.scan_ipc`.
+
+        Returns:
+            pl.LazyFrame: The lazy dataset graph.
+        """
+        return pl.scan_ipc(config.path, **config.options)
+
+
+class JSONLoader(BaseLoader):
+    """Loader for a single JSON document holding an array of records.
+
+    Polars has no lazy JSON reader, because a JSON array cannot be parsed
+    incrementally the way newline-delimited records can. The file is therefore
+    read whole and wrapped, which is a deliberate exception to the lazy-first
+    rule. Prefer `ndjson` for anything large enough to care about.
+    """
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads a JSON file into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.read_json`.
+
+        Returns:
+            pl.LazyFrame: A lazy wrapper over the fully materialized document.
+        """
+        return pl.read_json(config.path, **config.options).lazy()
+
+
+class ExcelLoader(BaseLoader):
+    """Loader for Excel workbooks, backed by the optional `excel` extra.
+
+    Like JSON, this is eager: a spreadsheet is a random-access container with
+    no streaming reader.
+    """
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads one worksheet into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options are
+                passed directly to `pl.read_excel` (for example `sheet_name`).
+
+        Returns:
+            pl.LazyFrame: A lazy wrapper over the fully materialized sheet.
+
+        Raises:
+            ConfigError: If the `excel` extra is missing, or the options select
+                more than one worksheet.
+        """
+        if fastexcel is None:
+            raise ConfigError(
+                "Reading Excel requires the optional 'excel' extra. "
+                "Install it with: uv add 'veridelta[excel]'"
+            )
+        frame = pl.read_excel(config.path, **config.options)
+        if not isinstance(frame, pl.DataFrame):
+            raise ConfigError(
+                f"Excel source '{config.path}' resolved to multiple worksheets. "
+                "Name exactly one with the 'sheet_name' or 'sheet_id' option."
+            )
+        return frame.lazy()
+
+
 class LoaderFactory:
     """Factory to return the appropriate loader based on the configured SourceType."""
 
     _loaders: ClassVar[dict[str, BaseLoader]] = {
         "csv": CSVLoader(),
         "parquet": ParquetLoader(),
+        "json": JSONLoader(),
+        "ndjson": NDJSONLoader(),
+        "arrow": ArrowLoader(),
+        "excel": ExcelLoader(),
     }
 
     @classmethod
@@ -411,16 +516,23 @@ _CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
 skipped the cast without a word."""
 
 
-_ARTIFACT_WRITERS: Final[dict[str, Callable[[pl.DataFrame, Path], None]]] = {
+_ARTIFACT_WRITERS: Final[dict[ArtifactFormat, Callable[[pl.DataFrame, Path], None]]] = {
     "csv": lambda frame, path: frame.write_csv(path),
     "parquet": lambda frame, path: frame.write_parquet(path),
+    "json": lambda frame, path: frame.write_json(path),
+    "ndjson": lambda frame, path: frame.write_ndjson(path),
+    "arrow": lambda frame, path: frame.write_ipc(path),
 }
 """Artifact format to writer. Single source of truth for the guard and dispatch,
-so a format can never be accepted without something actually writing it."""
+so a format can never be accepted without something actually writing it.
+
+Deliberately not the same set as `LoaderFactory._loaders`: Excel is readable
+through the `excel` extra but not writable, since emitting a workbook needs a
+second dependency that a discrepancy dump does not justify."""
 
 
 def _export_artifacts(
-    frames: dict[str, pl.DataFrame], output_path: str, output_format: str
+    frames: dict[str, pl.DataFrame], output_path: str, output_format: ArtifactFormat
 ) -> bool:
     """Persist non-empty discrepancy frames to the configured directory.
 
@@ -430,7 +542,8 @@ def _export_artifacts(
     Args:
         frames (dict[str, pl.DataFrame]): Artifact base name mapped to its rows.
         output_path (str): Directory to create and write into.
-        output_format (str): Either `csv` or `parquet`.
+        output_format (ArtifactFormat): Format to write, which must have an
+            entry in `_ARTIFACT_WRITERS`.
 
     Returns:
         bool: True when at least one file was written. Empty frames are skipped,
@@ -573,7 +686,7 @@ def _collect_pushdown_summary(
     source_table: str,
     target_table: str,
     diff: DiffConfig,
-) -> DiffSummary:
+) -> DiffResult:
     """Compile and collect the warehouse count, mismatch, and anti-join queries.
 
     Args:
@@ -584,8 +697,10 @@ def _collect_pushdown_summary(
         diff (DiffConfig): Master comparison rules and keys.
 
     Returns:
-        DiffSummary: Heights from the three collected LazyFrames, ratioed against
-            the source relation's total row count.
+        DiffResult: Heights from the three collected LazyFrames, ratioed against
+            the source relation's total row count, alongside the primary-key
+            frames themselves. Flagged `keys_only`, since the comparison SQL
+            never projects values.
 
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
@@ -645,19 +760,29 @@ def _collect_pushdown_summary(
             diff.output_format,
         )
 
-    return _summary_from_pushdown(
-        diff,
-        changed,
-        added,
-        removed,
-        source_total,
-        target_total,
-        column_mismatches,
-        artifacts_written,
+    return DiffResult(
+        summary=_summary_from_pushdown(
+            diff,
+            changed,
+            added,
+            removed,
+            source_total,
+            target_total,
+            column_mismatches,
+            artifacts_written,
+        ),
+        added=added,
+        removed=removed,
+        changed=changed,
+        primary_keys=tuple(diff.primary_keys),
+        # Post-rename names, matching what the local path records, so the same
+        # column reads the same way whichever engine ran it.
+        compared_columns=tuple(rule.rename_to or rule.column_names[0] for rule in rules),
+        keys_only=True,
     )
 
 
-def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffSummary:
+def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
     """Execute same-warehouse SQL pushdown or raise for unsupported pairings.
 
     Args:
@@ -666,7 +791,8 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
         target (SourceRef): Target configuration.
 
     Returns:
-        DiffSummary: Mismatch and anti-join counts from the pushdown statements.
+        DiffResult: Mismatch and anti-join counts from the pushdown statements,
+            with the primary-key frames they were derived from.
 
     Raises:
         ConfigError: If the probed relations violate `schema_mode`.
@@ -814,9 +940,7 @@ class DiffEngine:
         self.target = target_df
 
     @classmethod
-    def run_from_configs(
-        cls, diff: DiffConfig, source: SourceRef, target: SourceRef
-    ) -> DiffSummary:
+    def run_from_configs(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
         """Route a comparison to warehouse pushdown or local Polars evaluation.
 
         Args:
@@ -825,7 +949,7 @@ class DiffEngine:
             target (SourceRef): Target file, lakehouse, or warehouse config.
 
         Returns:
-            DiffSummary: Pushdown mismatch and anti-join counts, or a full Polars
+            DiffResult: Pushdown mismatch and anti-join counts, or a full Polars
                 diff for file and lakehouse pairs.
 
         Raises:
@@ -1269,7 +1393,7 @@ class DiffEngine:
                     f"Target contains unauthorized additional columns: {extra_in_target}"
                 )
 
-    def run(self) -> DiffSummary:
+    def run(self) -> DiffResult:
         """Execute the end-to-end dataset comparison pipeline lazily.
 
         Builds an optimized Polars computation graph (DAG) to guarantee deterministic
@@ -1291,7 +1415,7 @@ class DiffEngine:
                to the configured storage backend, if requested.
 
         Returns:
-            DiffSummary: Execution report detailing match status, discrepancy counts,
+            DiffResult: Execution report detailing match status, discrepancy counts,
                 and column-level drift metrics.
 
         Raises:
@@ -1382,14 +1506,21 @@ class DiffEngine:
                 self.config.output_format,
             )
 
-        return DiffSummary(
-            total_rows_source=src_total,
-            total_rows_target=tgt_total,
-            added_count=added_df.height,
-            removed_count=removed_df.height,
-            changed_count=changed_count,
-            column_mismatches=column_mismatches,
-            is_match=is_match,
-            report_limit=self.config.report_top_columns_limit,
-            artifacts_written=artifacts_written,
+        return DiffResult(
+            summary=DiffSummary(
+                total_rows_source=src_total,
+                total_rows_target=tgt_total,
+                added_count=added_df.height,
+                removed_count=removed_df.height,
+                changed_count=changed_count,
+                column_mismatches=column_mismatches,
+                is_match=is_match,
+                report_limit=self.config.report_top_columns_limit,
+                artifacts_written=artifacts_written,
+            ),
+            added=added_df,
+            removed=removed_df,
+            changed=changed_df,
+            primary_keys=tuple(self.config.primary_keys),
+            compared_columns=tuple(col.removesuffix("_is_match") for col in match_cols),
         )

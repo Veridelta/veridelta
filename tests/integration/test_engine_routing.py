@@ -149,7 +149,7 @@ class TestEngineConnectorRouting:
         target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
         diff = DiffConfig(primary_keys=["id"])
 
-        summary = DiffEngine.run_from_configs(diff, source, target)
+        summary = DiffEngine.run_from_configs(diff, source, target).summary
 
         ingestor_cls.assert_not_called()
         connector.connect.assert_called_once()
@@ -199,7 +199,7 @@ class TestEngineConnectorRouting:
         target = _databricks_config(table="main.default.tgt")
         diff = DiffConfig(primary_keys=["id"])
 
-        summary = DiffEngine.run_from_configs(diff, source, target)
+        summary = DiffEngine.run_from_configs(diff, source, target).summary
 
         ingestor_cls.assert_not_called()
         connector.connect.assert_called_once()
@@ -239,7 +239,7 @@ class TestEngineConnectorRouting:
             DiffConfig(primary_keys=["id"], threshold=0.01),
             _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
             _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
-        )
+        ).summary
 
         assert summary.total_mismatches == 9
         assert summary.mismatch_ratio == pytest.approx(0.009)
@@ -257,7 +257,7 @@ class TestEngineConnectorRouting:
             DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="csv"),
             _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
             _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
-        )
+        ).summary
 
         assert summary.artifacts_written is True
         assert sorted(path.name for path in tmp_path.iterdir()) == [
@@ -279,7 +279,7 @@ class TestEngineConnectorRouting:
             DiffConfig(primary_keys=["id"]),
             _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
             _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
-        )
+        ).summary
 
         assert summary.artifacts_written is False
 
@@ -374,7 +374,7 @@ class TestEngineConnectorRouting:
             DiffConfig(primary_keys=["id"]),
             _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
             _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
-        )
+        ).summary
 
         assert summary.column_mismatches == {}
         assert connector.execute_pushdown.call_count == 7
@@ -505,7 +505,9 @@ class TestEngineConnectorRouting:
 
         source = SourceConfig(path=str(src_file), format="csv")
         target = SourceConfig(path=str(tgt_file), format="csv")
-        summary = DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+        summary = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]), source, target
+        ).summary
 
         assert summary.is_match is False
         assert summary.changed_count == 1

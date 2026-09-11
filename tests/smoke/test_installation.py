@@ -4,6 +4,7 @@
 """Smoke tests to verify the package is installed and executable."""
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -39,6 +40,48 @@ class TestInstallationAndBoot:
 
         assert "veridelta" in result.stdout.lower()
         assert "Semantic diffing" in result.stdout
+
+    def test_it_exports_every_name_it_advertises(self) -> None:
+        """Ensure `__all__` resolves and stays sorted.
+
+        A name listed but not imported passes a plain `import veridelta` and
+        only fails on the user's `from veridelta import ...`.
+        """
+        import veridelta
+
+        missing = [name for name in veridelta.__all__ if not hasattr(veridelta, name)]
+
+        assert missing == []
+        assert veridelta.__all__ == sorted(veridelta.__all__)
+
+    def test_it_exports_the_public_surface_users_are_told_to_import(self) -> None:
+        """Ensure the documented entry points resolve from the package root.
+
+        The docs tell users to catch `VerideltaError` and to build warehouse
+        configs directly, both of which previously required reaching into
+        submodules.
+        """
+        from veridelta import (  # noqa: F401
+            ConfigError,
+            DiffResult,
+            SnowflakeConfig,
+            VerideltaError,
+        )
+
+        assert issubclass(ConfigError, VerideltaError)
+
+    def test_it_ships_the_typing_marker(self) -> None:
+        """Ensure downstream type checkers can see the annotations.
+
+        Without `py.typed`, PEP 561 tells mypy and pyright to treat an
+        installed package as untyped, silently, no matter how complete its
+        annotations are.
+        """
+        import veridelta
+
+        package_root = Path(veridelta.__file__).parent
+
+        assert (package_root / "py.typed").is_file()
 
     def test_it_exposes_a_valid_version_string(self) -> None:
         """Ensure the package version is accessible for debugging and pip distribution."""

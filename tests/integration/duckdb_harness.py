@@ -29,7 +29,7 @@ from veridelta.exceptions import ConnectorError
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from veridelta.models import DiffConfig, DiffSummary
+    from veridelta.models import DiffConfig, DiffResult, DiffSummary
 
 SOURCE_TABLE = "src_data"
 """Relation name the harness registers the source frame under."""
@@ -133,7 +133,7 @@ class DuckDBPushdownSession:
 
 def run_pushdown(
     config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
-) -> tuple[DiffSummary, list[str]]:
+) -> tuple[DiffResult, list[str]]:
     """Compile the comparison and execute every statement against DuckDB.
 
     Args:
@@ -142,15 +142,15 @@ def run_pushdown(
         target (pl.DataFrame): Target rows.
 
     Returns:
-        tuple[DiffSummary, list[str]]: The pushdown summary and the SQL that
+        tuple[DiffResult, list[str]]: The pushdown result and the SQL that
             produced it, in execution order.
     """
     with DuckDBPushdownSession(source, target) as session:
-        summary = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
-        return summary, list(session.statements)
+        result = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
+        return result, list(session.statements)
 
 
-def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffSummary:
+def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:
     """Execute the same comparison through the local Polars engine.
 
     Args:
@@ -159,7 +159,7 @@ def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) ->
         target (pl.DataFrame): Target rows.
 
     Returns:
-        DiffSummary: The local engine's verdict.
+        DiffResult: The local engine's verdict and discrepancy rows.
     """
     return DiffEngine(config, source.lazy(), target.lazy()).run()
 
@@ -169,7 +169,8 @@ def assert_parity(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
 
     Compares the fields both paths can populate. Pushdown projects primary keys
     only, so row contents are out of scope; the counts, the per-column drift
-    tally, and the pass/fail verdict are not.
+    tally, the set of columns actually compared, and the pass/fail verdict are
+    not.
 
     Args:
         config (DiffConfig): Comparison rules and keys.
@@ -183,11 +184,14 @@ def assert_parity(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
     pushdown, statements = run_pushdown(config, source, target)
 
     context = "\n".join(statements)
-    assert pushdown.total_rows_source == local.total_rows_source, context
-    assert pushdown.total_rows_target == local.total_rows_target, context
-    assert pushdown.added_count == local.added_count, context
-    assert pushdown.removed_count == local.removed_count, context
-    assert pushdown.changed_count == local.changed_count, context
-    assert pushdown.column_mismatches == local.column_mismatches, context
-    assert pushdown.is_match == local.is_match, context
-    return local
+    assert pushdown.summary.total_rows_source == local.summary.total_rows_source, context
+    assert pushdown.summary.total_rows_target == local.summary.total_rows_target, context
+    assert pushdown.summary.added_count == local.summary.added_count, context
+    assert pushdown.summary.removed_count == local.summary.removed_count, context
+    assert pushdown.summary.changed_count == local.summary.changed_count, context
+    assert pushdown.summary.column_mismatches == local.summary.column_mismatches, context
+    assert pushdown.summary.is_match == local.summary.is_match, context
+    # A column silently dropped from one pipeline would otherwise still agree on
+    # every count above, as long as that column happened to match everywhere.
+    assert set(pushdown.compared_columns) == set(local.compared_columns), context
+    return local.summary

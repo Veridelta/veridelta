@@ -23,5 +23,8 @@ Apply these rules when modifying files inside `src/veridelta/`.
 ## Loaders
 
 - New file formats go through `LoaderFactory` and `BaseLoader`.
-- Unimplemented `SourceType` values (including `netcdf`) and unimplemented `output_format` values raise `ConfigError`, not `NotImplementedError`. Choosing a format is a config decision, so it belongs in the same error class as the rest of them and must reach the CLI's `VerideltaError` handler.
-- Derive the supported-format list in those messages from the registry that backs it (`LoaderFactory._loaders`, `_ARTIFACT_WRITERS`). Do not hardcode it, and do not accept a format into a registry without a matching implementation.
+- `SourceType` and `ArtifactFormat` are bound to `LoaderFactory._loaders` and `_ARTIFACT_WRITERS` by tests. Adding a name to either literal without a matching implementation fails the suite. Do not list aspirational formats.
+- Unimplemented formats raise `ConfigError`, not `NotImplementedError`. Choosing a format is a config decision, so it belongs in the same error class as the rest of them and must reach the CLI's `VerideltaError` handler. The literals now catch this at load time; the runtime guards remain for configs built with `model_construct`.
+- Derive the supported-format list in those messages from the registry that backs it. Do not hardcode it.
+- Prefer a `scan_*` reader. `json` and `excel` are eager because Polars has no lazy reader for either; both wrap with `.lazy()` and say so in the class docstring. Do not add another eager loader without the same note.
+- Optional readers use the conditional-import probe pattern (`fastexcel` in `engine.py`, the drivers in `warehouse.py`) so a missing extra reads as an install hint rather than an `ImportError` from inside Polars.

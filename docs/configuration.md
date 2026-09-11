@@ -21,6 +21,22 @@ primary_keys: ["user_id"]
 
 File sources may omit `type` (it defaults to `file`) and continue to use `path`, `format`, and optional `options`.
 
+### File formats
+
+`format` accepts `csv`, `parquet`, `json`, `ndjson`, `arrow`, and `excel`. Anything else is rejected when the config loads, rather than partway through a run.
+
+`options` are handed straight to the matching Polars reader, so `{"separator": ";"}` reaches `scan_csv` and `{"sheet_name": "Q3"}` reaches `read_excel`.
+
+Most formats stream. Two do not, because Polars has no lazy reader for them: a `json` document is one array that cannot be parsed incrementally, and a spreadsheet is a random-access container. Both are read whole into memory. Prefer `ndjson` over `json` for anything large.
+
+Excel needs an optional extra:
+
+```bash
+uv add 'veridelta[excel]'
+```
+
+Discrepancy artifacts write to `csv`, `parquet`, `json`, `ndjson`, or `arrow` via `output_format`. Excel is deliberately absent: writing a workbook needs a second dependency that a discrepancy dump does not justify.
+
 ## Warehouse and lakehouse sources
 
 Set `type` on `source` and `target` to select a connector. Warehouse and lakehouse drivers are optional extras:
@@ -65,8 +81,29 @@ From Python, load YAML then route through the same path the CLI uses:
 from veridelta import DiffEngine, load_config
 
 diff, source, target = load_config("veridelta.yaml")
-summary = DiffEngine.run_from_configs(diff, source, target)
+result = DiffEngine.run_from_configs(diff, source, target)
+summary = result.summary
 ```
+
+## Reading the results
+
+`DiffEngine.run()` and `DiffEngine.run_from_configs()` return a `DiffResult`. It carries the metrics on `.summary` and the rows behind them on `.added`, `.removed`, and `.changed`, so a notebook never has to export artifacts to disk just to look at the drift.
+
+```python
+result = DiffEngine(diff, source_df, target_df).run()
+
+print(result.summary.report_summary)
+
+# Just the rows where one column disagreed, with both values side by side.
+result.get_mismatches("total_amount")
+
+# The full changed set as pandas, if you have it installed.
+result.to_pandas()
+```
+
+`summary` stays a plain Pydantic model, so `summary.model_dump_json()` still produces a clean, frame-free payload for CI logs.
+
+Warehouse pushdown compares in place and never projects values, so its frames hold primary keys alone and the result is flagged `keys_only`. `get_mismatches` there returns every changed key rather than one column's values, and still rejects a column that was not part of the comparison.
 
 ```yaml
 source:

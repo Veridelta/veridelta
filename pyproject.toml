@@ -46,11 +46,13 @@ databricks = [
 ]
 delta = ["deltalake>=0.15.0"]
 iceberg = ["pyiceberg>=0.6.0"]
+excel = ["fastexcel>=0.11.0"]
 all = [
     "veridelta[snowflake]",
     "veridelta[databricks]",
     "veridelta[delta]",
     "veridelta[iceberg]",
+    "veridelta[excel]",
 ]
 
 [dependency-groups]
@@ -70,6 +72,7 @@ dev = [
     "pytest-mock>=3.15.1",
     "ruff>=0.15.10",
     "types-pyyaml>=6.0.12.20260408",
+    "xlsxwriter>=3.2.0",
 ]
 
 [project.scripts]

@@ -3,15 +3,19 @@
 
 """Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import get_args
 
 import polars as pl
 import pytest
+from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
-from veridelta.engine import DataIngestor, DiffEngine, LoaderFactory
+from veridelta.engine import _ARTIFACT_WRITERS, DataIngestor, DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, DataIntegrityError
-from veridelta.models import DiffConfig, DiffRule, SourceConfig
+from veridelta.models import ArtifactFormat, DiffConfig, DiffRule, SourceConfig, SourceType
 
 
 @pytest.mark.unit
@@ -21,8 +25,79 @@ class TestDataIngestorAndLoaders:
 
     def test_it_raises_config_error_for_unsupported_source_types(self) -> None:
         """Ensure an unloadable format fails as configuration, naming what works."""
-        with pytest.raises(ConfigError, match="csv, parquet"):
-            LoaderFactory.get_loader("json")
+        with pytest.raises(ConfigError, match="arrow, csv, excel"):
+            LoaderFactory.get_loader("netcdf")
+
+    def test_it_implements_a_loader_for_every_declared_source_type(self) -> None:
+        """Ensure the config surface and the loader registry cannot drift apart.
+
+        `SourceType` used to advertise formats nobody had written, so a config
+        naming one validated cleanly and then failed mid-run.
+        """
+        assert set(get_args(SourceType)) == set(LoaderFactory._loaders)
+
+    def test_it_implements_a_writer_for_every_declared_artifact_format(self) -> None:
+        """Ensure the same binding holds on the export side."""
+        assert set(get_args(ArtifactFormat)) == set(_ARTIFACT_WRITERS)
+
+    @pytest.mark.parametrize(
+        ("fmt", "write"),
+        [
+            ("csv", lambda frame, path: frame.write_csv(path)),
+            ("parquet", lambda frame, path: frame.write_parquet(path)),
+            ("json", lambda frame, path: frame.write_json(path)),
+            ("ndjson", lambda frame, path: frame.write_ndjson(path)),
+            ("arrow", lambda frame, path: frame.write_ipc(path)),
+        ],
+    )
+    def test_it_round_trips_every_file_format(
+        self,
+        tmp_path: Path,
+        fmt: str,
+        write: Callable[[pl.DataFrame, Path], None],
+    ) -> None:
+        """Ensure each loader reads back what its matching writer produced."""
+        frame = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        path = tmp_path / f"data.{fmt}"
+        write(frame, path)
+
+        loaded = LoaderFactory.load(SourceConfig(path=str(path), format=fmt))  # type: ignore[arg-type]
+
+        assert loaded.collect().equals(frame)
+
+    def test_it_reads_an_excel_workbook(self, tmp_path: Path) -> None:
+        """Ensure the Excel loader materializes a sheet through the optional extra."""
+        pytest.importorskip("fastexcel")
+        xlsxwriter = pytest.importorskip("xlsxwriter")
+        _ = xlsxwriter
+
+        frame = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        path = tmp_path / "data.xlsx"
+        frame.write_excel(path)
+
+        loaded = LoaderFactory.load(SourceConfig(path=str(path), format="excel"))
+
+        assert loaded.collect().equals(frame)
+
+    def test_it_explains_a_missing_excel_extra(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """Ensure a missing optional dependency reads as an install hint."""
+        mocker.patch("veridelta.engine.fastexcel", None)
+
+        with pytest.raises(ConfigError, match=r"veridelta\[excel\]"):
+            LoaderFactory.load(SourceConfig(path=str(tmp_path / "x.xlsx"), format="excel"))
+
+    def test_it_rejects_an_excel_source_naming_several_sheets(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a multi-sheet read fails rather than reaching the engine as a dict.
+
+        `pl.read_excel` returns a mapping when the options select more than one
+        worksheet, which is not something the comparison pipeline can consume.
+        """
+        mocker.patch("veridelta.engine.pl.read_excel", return_value={"a": pl.DataFrame()})
+
+        with pytest.raises(ConfigError, match="multiple worksheets"):
+            LoaderFactory.load(SourceConfig(path=str(tmp_path / "x.xlsx"), format="excel"))
 
     def test_it_normalizes_headers_by_stripping_and_lowercasing_when_configured(self) -> None:
         """Ensure messy CSV headers are standardized before structural alignment."""
@@ -52,7 +127,7 @@ class TestStructuralAlignment:
             primary_keys=["user_id"],
             rules=[DiffRule(column_names=["id"], rename_to="user_id")],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_mismatches == 0
@@ -65,7 +140,7 @@ class TestStructuralAlignment:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["secret_hash"], ignore=True)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_mismatches == 0
@@ -114,7 +189,7 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"id": [1], "new_modern_col": ["A"]})
         config = DiffConfig(primary_keys=["id"], schema_mode="allow_additions")
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
         assert summary.is_match is True
 
     def test_schema_mode_allow_additions_fails_when_target_is_missing_source_columns(self) -> None:
@@ -132,7 +207,7 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"id": [1]})
         config = DiffConfig(primary_keys=["id"], schema_mode="allow_removals")
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
         assert summary.is_match is True
 
     def test_schema_mode_allow_removals_fails_when_target_adds_unauthorized_columns(self) -> None:
@@ -150,7 +225,7 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"id": [1], "shared": ["A"], "only_target": [2]})
         config = DiffConfig(primary_keys=["id"], schema_mode="intersection")
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_mismatches == 0
@@ -169,7 +244,7 @@ class TestSemanticNormalization:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(pattern=r"^amt_.*", absolute_tolerance=0.05)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -192,7 +267,7 @@ class TestSemanticNormalization:
                 ),
             ],
         )
-        summary = DiffEngine(config, complex_src.lazy(), complex_tgt.lazy()).run()
+        summary = DiffEngine(config, complex_src.lazy(), complex_tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.changed_count == 0
@@ -225,7 +300,7 @@ class TestSemanticNormalization:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["name"], whitespace_mode="both", case_insensitive=True)],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -238,7 +313,7 @@ class TestSemanticNormalization:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["cost"], regex_replace={r"\$|€": ""})],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -253,7 +328,7 @@ class TestSemanticNormalization:
                 DiffRule(column_names=["status"], null_values=["N/A"], treat_null_as_equal=True)
             ],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -266,7 +341,7 @@ class TestSemanticNormalization:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["metric"], relative_tolerance=0.05)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
         assert summary.changed_count == 1
@@ -280,7 +355,7 @@ class TestSemanticNormalization:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["noise"], ignore=True)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.changed_count == 0
@@ -297,7 +372,7 @@ class TestEvaluationStrictness:
         tgt = pl.DataFrame({"id": [1], "val": [10]})
 
         config = DiffConfig(primary_keys=["id"], strict_types=True)
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
 
@@ -307,7 +382,7 @@ class TestEvaluationStrictness:
         tgt = pl.DataFrame({"id": [1], "val": [10]})
 
         config = DiffConfig(primary_keys=["id"], strict_types=False)
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -317,7 +392,7 @@ class TestEvaluationStrictness:
         tgt = pl.DataFrame({"id": [1], "val": [None]}, schema={"id": pl.Int64, "val": pl.Utf8})
 
         config = DiffConfig(primary_keys=["id"], default_treat_null_as_equal=False)
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
         assert summary.changed_count == 1
@@ -352,7 +427,7 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [2, 3], "val": ["B", "C"]})
         config = DiffConfig(primary_keys=["id"])
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.removed_count == 1
         assert summary.added_count == 1
@@ -364,7 +439,7 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [], "val": []}, schema={"id": pl.Int64, "val": pl.Utf8})
         config = DiffConfig(primary_keys=["id"])
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -376,7 +451,7 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
 
         config = DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet")
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert (tmp_path / "added_rows.parquet").exists()
         assert (tmp_path / "removed_rows.parquet").exists()
@@ -391,42 +466,44 @@ class TestDataIntegrityAndSetDifferences:
         tgt = pl.DataFrame({"id": [1], "val": ["A"]})
 
         config = DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet")
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert not (tmp_path / "added_rows.parquet").exists()
         assert not (tmp_path / "removed_rows.parquet").exists()
         assert not (tmp_path / "changed_rows.parquet").exists()
         assert summary.artifacts_written is False
 
-    def test_it_raises_config_error_when_exporting_to_unsupported_formats(
-        self, tmp_path: Path
-    ) -> None:
-        """Ensure an unwritable artifact format fails as configuration."""
-        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
-        tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
+    def test_it_rejects_an_unwritable_export_format_at_load_time(self, tmp_path: Path) -> None:
+        """Ensure an unwritable artifact format fails before any comparison runs.
 
-        config = DiffConfig(
-            primary_keys=["id"],
-            output_path=str(tmp_path),
-            output_format="excel",
-        )
-
-        with pytest.raises(ConfigError, match="csv, parquet"):
-            DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        Excel is readable through the optional extra but not writable, so it is
+        valid as a source format and invalid as an output one.
+        """
+        with pytest.raises(ValidationError, match="output_format"):
+            DiffConfig(
+                primary_keys=["id"],
+                output_path=str(tmp_path),
+                output_format="excel",  # type: ignore[arg-type]
+            )
 
     def test_it_rejects_an_unsupported_export_format_even_without_drift(
         self, tmp_path: Path
     ) -> None:
-        """Ensure the format check does not depend on there being rows to write."""
-        frame = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        """Ensure the runtime guard holds when validation is bypassed, drift or not.
 
-        config = DiffConfig(
+        The check sits above the write loop rather than inside it, so a clean
+        comparison surfaces a bad format instead of passing silently.
+        """
+        frame = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        config = DiffConfig.model_construct(
             primary_keys=["id"],
+            rules=[],
             output_path=str(tmp_path),
-            output_format="excel",
+            # Deliberately off the Literal: the point is the runtime guard.
+            output_format="netcdf",  # type: ignore[arg-type]
         )
 
-        with pytest.raises(ConfigError, match="csv, parquet"):
+        with pytest.raises(ConfigError, match="arrow, csv, json"):
             DiffEngine(config, frame.lazy(), frame.lazy()).run()
 
 
@@ -462,7 +539,7 @@ class TestCanonicalTransformPipeline:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["id"], whitespace_mode="both", case_insensitive=True)],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.added_count == 0
         assert summary.removed_count == 0
@@ -484,7 +561,7 @@ class TestCanonicalTransformPipeline:
         tgt = pl.DataFrame({"id": [1], "amount": [10.0], "status": [None]})
 
         config = DiffConfig(primary_keys=["id"], default_null_values=["N/A"])
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 
@@ -548,7 +625,7 @@ class TestCanonicalTransformPipeline:
         config = DiffConfig(
             primary_keys=["id"], rules=[DiffRule(column_names=["code"], pad_zeros=5)]
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.changed_count == 0
@@ -562,7 +639,7 @@ class TestCanonicalTransformPipeline:
             primary_keys=["id"],
             rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S")],
         )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
 

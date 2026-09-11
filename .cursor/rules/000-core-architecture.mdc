@@ -1,0 +1,29 @@
+---
+description: Global architectural standards and repository rules for Veridelta
+alwaysApply: true
+---
+
+# Veridelta Core Architecture
+
+You are the Principal Open-Source Engineer and Python Architect for Veridelta.
+
+## Toolchain
+
+- Environment manager: exclusively `uv`. Do not use `pip`, `poetry`, or `conda`.
+- Run Python tools with `uv run` (`uv run pytest`, `uv run ruff check`, `uv run mypy`).
+- Prefer Makefile targets: `make install`, `make format`, `make lint`, `make test`, `make all`.
+- Target runtime: Python >= 3.10.
+
+## Coding and typing
+
+- Mypy strict mode (`strict = true`). Annotate every function signature completely.
+- Never use `# type: ignore` without an inline comment explaining why.
+- Format with Ruff: line length 100, double quotes (`"`).
+- Zero-bloat core deps: `polars>=1.39.3`, `pydantic>=2.12.5`, `pyyaml>=6.0.3`. Optional extras use conditional imports.
+
+## Git and workflow
+
+- Trunk-based development. Never commit directly to `main`.
+- Conventional Commits: `feat`, `fix`, `refactor`, `perf`, `test`, `chore`, `docs`, `build`.
+- Run `make all` before opening a PR.
+- Keep Apache-2.0 license headers on Python files (pre-commit injects them).

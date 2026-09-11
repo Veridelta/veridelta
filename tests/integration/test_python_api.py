@@ -42,7 +42,7 @@ class TestEnginePythonAPI:
             ],
         )
 
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_mismatches == 0
@@ -56,7 +56,7 @@ class TestEnginePythonAPI:
         tgt = pl.DataFrame({"id": [1, 2, 4], "val": ["A", "CHANGED", "D"]})
 
         config = DiffConfig(primary_keys=["id"])
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
         assert summary.removed_count == 1  # ID 3
@@ -73,7 +73,7 @@ class TestEnginePythonAPI:
         tgt = pl.DataFrame({"id": [], "metric": []}, schema=schema)
 
         config = DiffConfig(primary_keys=["id"])
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.total_rows_source == 0
