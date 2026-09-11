@@ -26,3 +26,4 @@ Apply these rules when modifying files inside `src/veridelta/`.
 - Drivers receive compiled SQL or native scan kwargs. Never interpolate passwords, tokens, or URIs into SQL.
 - Pattern-only `DiffRule` values stay rejected at compile time.
 - Every dialect-specific keyword, quote character, or function name belongs in a module-scope table in `sql.py` keyed by `SQLDialect`, so a missing entry raises instead of inheriting another dialect's syntax. Where dialects differ structurally rather than by a token, name every dialect explicitly in the branch.
+- Treat configuration, input files, CLI arguments, and external data as untrusted input. Validate at the boundary and do not bypass validated models with `model_construct` except in tests or explicitly documented internal paths.

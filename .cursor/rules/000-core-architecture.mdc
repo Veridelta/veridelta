@@ -25,5 +25,13 @@ You are the Principal Open-Source Engineer and Python Architect for Veridelta.
 
 - Trunk-based development. Never commit directly to `main`.
 - Conventional Commits: `feat`, `fix`, `refactor`, `perf`, `test`, `chore`, `docs`, `build`.
-- Run `make all` before opening a PR.
+- Run `make all` before opening a PR. If it cannot be run, report why and run the relevant subset.
 - Keep Apache-2.0 license headers on Python files (pre-commit injects them).
+
+## Implementation
+
+- No speculative abstractions. Prefer the smallest change that satisfies the requirement.
+- Preserve existing public APIs unless the task explicitly calls for a breaking change.
+- Do not add dependencies without a concrete need; prefer the standard library or existing dependencies.
+- Do not modify generated files manually if the repo has a generator or other source of truth.
+- Tests are part of the implementation: behavior changes should normally include or update tests.

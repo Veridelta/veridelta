@@ -1,0 +1,17 @@
+---
+description: Standards for Veridelta documentation
+globs: docs/**/*.{md,mdx,rst,ipynb}
+alwaysApply: false
+---
+
+# Veridelta Documentation
+
+- Documentation must describe behavior that exists in the repository; do not document aspirational or unimplemented functionality.
+- Prefer concise, task-oriented documentation over exhaustive prose.
+- Keep examples executable or consistent with the current public API.
+- Update documentation when a change affects user-visible behavior, configuration, CLI usage, supported formats, or public APIs.
+- Use the repository's existing terminology and naming consistently.
+- Link to canonical documentation rather than duplicating the same explanation in multiple places.
+- Do not add documentation solely to restate obvious implementation details.
+- Configuration examples must use valid configuration and supported values.
+- Document optional dependencies where users need them to enable a feature.
