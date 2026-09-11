@@ -823,6 +823,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#7-column-rename" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Column rename
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -985,9 +996,10 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>veridelta<span class="w"> </span>--version
 <a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml
 <a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--json
-<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--html<span class="w"> </span>report.html<span class="w"> </span>--html-max-rows<span class="w"> </span><span class="m">1000</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--quiet
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--html<span class="w"> </span>report.html<span class="w"> </span>--html-max-rows<span class="w"> </span><span class="m">1000</span>
 </code></pre></div>
-<p><code>--json</code> prints <code>DiffSummary</code> as JSON on stdout. Progress chatter always goes to stderr, so <code>veridelta run --json | jq</code> does not have to strip anything first. <code>--html</code> writes a standalone report with no CDN references, capped at <code>--html-max-rows</code> (default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.</p>
+<p><code>--json</code> prints <code>DiffSummary</code> as JSON on stdout. <code>--quiet</code> suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so <code>veridelta run --json | jq</code> does not have to strip anything first. <code>--html</code> writes a standalone report with no CDN references, capped at <code>--html-max-rows</code> (default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.</p>
 <p>Exit codes stay at <code>0</code> for a match within <code>threshold</code> and <code>1</code> for drift or any failure.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">source</span><span class="p">:</span>
 <a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snowflake</span>
@@ -1032,14 +1044,19 @@
 <a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">delta</span>
 <a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">table_uri</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://lake/legacy_events</span>
 <a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">  </span><span class="nt">version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">12</span>
-<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
-<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="nt">target</span><span class="p">:</span>
-<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">iceberg</span>
-<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">  </span><span class="nt">table_uri</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://lake/iceberg/modern_events</span>
-<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">  </span><span class="nt">snapshot_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">883142</span>
-<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
-<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="nt">primary_keys</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;event_id&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">  </span><span class="nt">storage_options</span><span class="p">:</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">    </span><span class="nt">AWS_REGION</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-east-1</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="nt">target</span><span class="p">:</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">iceberg</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="w">  </span><span class="nt">table_uri</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">s3://lake/iceberg/modern_events</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="w">  </span><span class="nt">snapshot_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">883142</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="w">  </span><span class="nt">storage_options</span><span class="p">:</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="w">    </span><span class="nt">AWS_REGION</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">us-east-1</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="nt">primary_keys</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;event_id&quot;</span><span class="p p-Indicator">]</span>
 </code></pre></div>
+<p><code>storage_options</code> is a string map passed through to the Delta or Iceberg scanner (credentials, region, and other object-store settings).</p>
 <h2 id="engine-directives">Engine Directives</h2>
 <p>Global directives control the strictness of the underlying Polars evaluation engine.</p>
 <table>
@@ -1186,6 +1203,12 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nt">rules</span><span class="p">:</span>
 <a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;^etl_loaded_at_.*&quot;</span>
 <a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="w">    </span><span class="nt">ignore</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</code></pre></div>
+<h3 id="7-column-rename">7. Column rename</h3>
+<p><code>rename_to</code> maps a source column onto a different target name before comparison. Use it when the same field was renamed between systems.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;legacy_customer_id&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="w">    </span><span class="nt">rename_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;customer_id&quot;</span>
 </code></pre></div>
 
 

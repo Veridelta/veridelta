@@ -822,14 +822,14 @@
 <p><strong>2. Execute the validation engine:</strong></p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml
 </code></pre></div>
-<p><strong>3. Review the execution summary:</strong> Evaluate the terminal output or inspect the generated <code>.parquet</code> artifacts for row-level discrepancies.</p>
+<p><strong>3. Review the execution summary:</strong> Evaluate the terminal output. Set <code>output_path</code> to write <code>added</code> / <code>removed</code> / <code>changed</code> artifacts; <code>output_format</code> selects Parquet, CSV, JSON, NDJSON, or Arrow.</p>
 <hr />
 <h2 id="documentation-directory">Documentation Directory</h2>
 <ul>
-<li><a href="examples/quickstart_cli/"><strong>Tutorials</strong></a>: Progressive guides covering CLI execution, programmatic Python usage, and advanced semantic rules.</li>
-<li><a href="configuration/"><strong>Configuration Guide</strong></a>: Complete specification for tolerance rules, schema enforcement, connectors, and I/O settings.</li>
-<li><a href="api/"><strong>API Reference</strong></a>: Developer documentation for the internal Python classes and methods.</li>
-<li><a href="roadmap/"><strong>Roadmap</strong></a>: Upcoming capabilities such as BigQuery pushdown, fuzzy matching, and interactive reports.</li>
+<li><a href="examples/getting_started/"><strong>Tutorials</strong></a>: Progressive guides covering local <code>DiffResult</code> access, CLI execution, programmatic Python usage, and advanced semantic rules.</li>
+<li><a href="configuration/"><strong>Configuration Guide</strong></a>: Complete specification for tolerance rules, schema enforcement, connectors, CLI flags, and I/O settings.</li>
+<li><a href="api/"><strong>API Reference</strong></a>: Public Python classes and methods.</li>
+<li><a href="roadmap/"><strong>Roadmap</strong></a>: Unimplemented work such as BigQuery pushdown and fuzzy matching.</li>
 </ul>
 
 
