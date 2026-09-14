@@ -30,6 +30,9 @@ ColumnTypes = Mapping[str, pl.DataType]
 COUNT_ALIAS = "_veridelta_total"
 """Column alias projected by `compile_count_query` so results stay dialect-neutral."""
 
+SCHEMA_ALIAS = "_veridelta_schema"
+"""Derived-table alias used by `compile_result_schema_query` around a prior statement."""
+
 
 class SQLDialect(str, Enum):
     """Warehouse SQL dialects supported by the pushdown compiler.
@@ -487,6 +490,22 @@ class SQLPushdownCompiler:
             ConnectorError: If the relation name is empty or not allowlisted.
         """
         return f"SELECT * FROM {self._quote_relation(table)} WHERE 1 = 0"
+
+    def compile_result_schema_query(self, statement: str) -> str:
+        """Wrap a previously compiled statement so only its column metadata returns.
+
+        Connectors use this for `fetch_schema` after `execute_pushdown`. It is
+        the one place a full statement is nested inside another, so it lives
+        here with the rest of the SQL assembly rather than in a connector.
+
+        Args:
+            statement (str): SQL produced by this compiler. Never user text.
+
+        Returns:
+            str: `SELECT * FROM (statement) AS alias LIMIT 0`, with the alias
+            quoted for the active dialect.
+        """
+        return f"SELECT * FROM ({statement}) AS {self._quote_ident(SCHEMA_ALIAS)} LIMIT 0"
 
     def _compile_anti_join(
         self,
