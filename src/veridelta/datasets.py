@@ -1,7 +1,7 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in datasets for Veridelta testing and quickstart examples.
+"""Built-in datasets for Veridelta testing and documentation examples.
 
 This module provides utilities to securely download, cache, and load sample
 datasets used in Veridelta's documentation and tutorials.
