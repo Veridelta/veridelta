@@ -91,10 +91,10 @@ Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_fo
 
 ## Documentation
 
-- [**1. Core Concepts**](examples/getting_started.ipynb): Python API, `DiffResult`, and rules.
-- [**2. YAML and CLI**](examples/yaml_config.ipynb): pipeline automation, `--json`, artifacts.
-- [**3. Advanced Rules**](examples/advanced_rules.ipynb): drift resolution on real data.
-- [**4. HTML Reports**](examples/html_reports.ipynb): audit and compliance hand-off.
+- [**1. Core Concepts**](examples/01_core_concepts.ipynb): Python API, `DiffResult`, and rules.
+- [**2. YAML and CLI**](examples/02_yaml_and_cli.ipynb): pipeline automation, `--json`, artifacts.
+- [**3. Advanced Rules**](examples/03_advanced_rules.ipynb): drift resolution on real data.
+- [**4. HTML Reports**](examples/04_html_reports.ipynb): audit and compliance hand-off.
 - [**Configuration Guide**](configuration.md): fields, formats, extras, CLI flags, warehouse and lakehouse routing.
 - [**API Reference**](api.md): public Python surface.
 - [**Roadmap**](roadmap.md): work that is not built yet.

@@ -57,12 +57,10 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Tutorials:
-    - Getting Started: examples/getting_started.ipynb
-    - Python Quickstart: examples/quickstart.ipynb
-    - CLI Quickstart: examples/quickstart_cli.ipynb
-    - Advanced Rules: examples/advanced_rules.ipynb
-    - HTML Reports: examples/html_reports.ipynb
-    - CI/CD Workflows: examples/yaml_config.ipynb
+    - 1. Core Concepts: examples/01_core_concepts.ipynb
+    - 2. YAML and CLI: examples/02_yaml_and_cli.ipynb
+    - 3. Advanced Rules: examples/03_advanced_rules.ipynb
+    - 4. HTML Reports: examples/04_html_reports.ipynb
   - Configuration: configuration.md
   - API Reference: api.md
   - Roadmap: roadmap.md
