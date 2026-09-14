@@ -19,7 +19,9 @@ from veridelta.engine import (
     DataIngestor,
     DiffEngine,
     LoaderFactory,
+    _alignment_maps,
     _column_mismatches_from_frame,
+    _fold_rule_defaults,
     _optional_module,
     _resolve_pushdown_rules,
 )
@@ -868,6 +870,71 @@ class TestPushdownRuleHelpers:
 
         with pytest.raises(ConnectorError, match="was not numeric"):
             _column_mismatches_from_frame(pl.DataFrame({"amount": ["five"]}))
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestSharedRuleAndAlignmentHelpers:
+    """Pin the helpers the local and pushdown paths now share."""
+
+    def test_it_folds_global_defaults_identically_for_both_engines(self) -> None:
+        """Ensure an unruled column resolves the same whether folded directly or via the engine."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            default_absolute_tolerance=0.5,
+            default_whitespace_mode="both",
+            default_null_values=["N/A"],
+            rules=[DiffRule(column_names=["amount"], relative_tolerance=0.1, cast_to="Float64")],
+        )
+        engine = DiffEngine(config, pl.LazyFrame(), pl.LazyFrame())
+
+        unruled = _fold_rule_defaults(None, config)
+        ruled = _fold_rule_defaults(config.rules[0], config)
+
+        assert unruled == engine._get_effective_rule("other")  # pyright: ignore[reportPrivateUsage]
+        assert ruled == engine._get_effective_rule("amount")  # pyright: ignore[reportPrivateUsage]
+        assert unruled["abs_tol"] == 0.5
+        assert unruled["null_values_explicit"] is False
+        # The rule overrides only what it sets; every other field inherits the default.
+        assert ruled["abs_tol"] == 0.5
+        assert ruled["rel_tol"] == 0.1
+        assert ruled["cast_to"] == "Float64"
+        assert ruled["whitespace"] == "both"
+
+    def test_it_matches_pushdown_rules_to_the_local_defaults(self) -> None:
+        """Ensure the synthesized warehouse rule carries the same folded values as the local path."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            default_absolute_tolerance=0.25,
+            default_treat_null_as_equal=False,
+            rules=[DiffRule(column_names=["amount"], null_values=[-1])],
+        )
+        schema = pl.Schema({"id": pl.Int64, "amount": pl.Float64})
+
+        (rule,) = _resolve_pushdown_rules(config, schema, schema)
+        local = _fold_rule_defaults(config.rules[0], config)
+
+        assert rule.absolute_tolerance == local["abs_tol"] == 0.25
+        assert rule.treat_null_as_equal is local["treat_null"] is False
+        assert rule.null_values == local["null_values"] == [-1]
+        assert rule.case_insensitive is None
+
+    def test_it_only_renames_on_the_source_side(self) -> None:
+        """Ensure rename_to is a source-only mapping while ignore applies to both sides."""
+        rules = [
+            DiffRule(column_names=["legacy_id"], rename_to="user_id"),
+            DiffRule(pattern="^tmp_", ignore=True),
+            DiffRule(column_names=["a", "b"], rename_to="ab"),
+        ]
+        columns = ["legacy_id", "tmp_1", "tmp_2", "a", "b", "val"]
+
+        source_renames, source_drops = _alignment_maps(rules, columns, rename=True)
+        target_renames, target_drops = _alignment_maps(rules, columns, rename=False)
+
+        assert source_renames == {"legacy_id": "user_id"}
+        assert source_drops == target_drops == {"tmp_1", "tmp_2"}
+        # A multi-column rule cannot rename, and the target never renames.
+        assert target_renames == {}
 
 
 @pytest.mark.unit

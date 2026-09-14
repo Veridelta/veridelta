@@ -412,6 +412,113 @@ def _match_rule(rules: list[DiffRule], column: str) -> DiffRule | None:
     return None
 
 
+def _matches_rule(rule: DiffRule, column: str) -> bool:
+    """Return whether a rule names a column directly or through its pattern.
+
+    Args:
+        rule (DiffRule): Declared rule.
+        column (str): Column name to test.
+
+    Returns:
+        bool: True when the column is listed or matches the rule's pattern.
+    """
+    return column in rule.column_names or bool(rule.pattern and re.match(rule.pattern, column))
+
+
+def _alignment_maps(
+    rules: list[DiffRule], columns: Sequence[str], *, rename: bool
+) -> tuple[dict[str, str], set[str]]:
+    """Derive the `rename_to` map and `ignore` drop set for one frame's columns.
+
+    Shared by `DataIngestor._align_columns` and `DiffEngine._align_structure`,
+    which previously each carried a copy of this loop.
+
+    Args:
+        rules (list[DiffRule]): Declared rules, in configuration order.
+        columns (Sequence[str]): Column names present in the frame.
+        rename (bool): Whether `rename_to` applies. It is a source-only mapping,
+            so the target side passes False and only collects drops.
+
+    Returns:
+        tuple[dict[str, str], set[str]]: Rename map and the columns to drop.
+    """
+    rename_map: dict[str, str] = {}
+    to_drop: set[str] = set()
+    for rule in rules:
+        matched = [col for col in columns if _matches_rule(rule, col)]
+        if rule.ignore:
+            to_drop.update(matched)
+            continue
+        if (
+            rename
+            and rule.rename_to
+            and len(rule.column_names) == 1
+            and rule.column_names[0] in columns
+        ):
+            rename_map[rule.column_names[0]] = rule.rename_to
+    return rename_map, to_drop
+
+
+def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRule:
+    """Layer one matched rule over the configuration's `default_*` settings.
+
+    Both execution paths read from this. The local engine consumes the result
+    directly, and the pushdown resolver re-materializes it as a fully specified
+    `DiffRule` for the compiler. One folder means an unspecified field cannot
+    mean one thing locally and another in a warehouse.
+
+    Args:
+        rule (DiffRule | None): Rule resolved by `_match_rule`, if any.
+        diff (DiffConfig): Master configuration supplying the global defaults.
+
+    Returns:
+        EffectiveRule: Flattened operational parameters for one column.
+    """
+    effective: EffectiveRule = {
+        "abs_tol": diff.default_absolute_tolerance,
+        "rel_tol": diff.default_relative_tolerance,
+        "treat_null": diff.default_treat_null_as_equal,
+        "whitespace": diff.default_whitespace_mode,
+        "null_values": diff.default_null_values,
+        "null_values_explicit": False,
+        "case_insensitive": False,
+        "regex_replace": None,
+        "value_map": None,
+        "pad_zeros": None,
+        "datetime_format": None,
+        "timezone": None,
+        "cast_to": None,
+        "ignore": False,
+    }
+    if rule is None:
+        return effective
+
+    if rule.absolute_tolerance is not None:
+        effective["abs_tol"] = rule.absolute_tolerance
+    if rule.relative_tolerance is not None:
+        effective["rel_tol"] = rule.relative_tolerance
+    if rule.treat_null_as_equal is not None:
+        effective["treat_null"] = rule.treat_null_as_equal
+    if rule.whitespace_mode is not None:
+        effective["whitespace"] = rule.whitespace_mode
+    if rule.null_values is not None:
+        effective["null_values"] = rule.null_values
+        # A global default silently skips columns it cannot apply to,
+        # whereas an explicit rule that can never fire is a config error.
+        effective["null_values_explicit"] = True
+    if rule.case_insensitive is not None:
+        effective["case_insensitive"] = rule.case_insensitive
+
+    effective["regex_replace"] = rule.regex_replace
+    effective["value_map"] = rule.value_map
+    effective["pad_zeros"] = rule.pad_zeros
+    effective["datetime_format"] = rule.datetime_format
+    effective["timezone"] = rule.timezone
+    effective["cast_to"] = rule.cast_to
+    effective["ignore"] = rule.ignore
+    return effective
+
+
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
@@ -455,53 +562,38 @@ def _resolve_pushdown_rules(
         if (rename_to or column) not in target_lookup:
             continue
 
-        base = rule if rule is not None else DiffRule()
+        effective = _fold_rule_defaults(rule, diff)
         sides = ((column, source_schema), (rename_to or column, target_schema))
-        if base.null_values:
+        # Only an explicit rule is checked here. A global default is expected to
+        # span a mixed schema, so the compiler skips the columns it cannot hold.
+        if effective["null_values_explicit"] and effective["null_values"]:
             for name, schema in sides:
                 dtype = schema.get(name)
-                if dtype is not None and not usable_sentinels(base.null_values, dtype):
-                    raise _unusable_sentinel_error(name, dtype, base.null_values)
-        if base.timezone:
+                if dtype is not None and not usable_sentinels(effective["null_values"], dtype):
+                    raise _unusable_sentinel_error(name, dtype, effective["null_values"])
+        if effective["timezone"]:
             for name, schema in sides:
                 dtype = schema.get(name)
                 if dtype is not None:
-                    _reject_unzoned_timezone(name, dtype, base.timezone)
+                    _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
         resolved.append(
             DiffRule(
                 column_names=[column],
                 rename_to=rename_to,
-                absolute_tolerance=(
-                    base.absolute_tolerance
-                    if base.absolute_tolerance is not None
-                    else diff.default_absolute_tolerance
-                ),
-                relative_tolerance=(
-                    base.relative_tolerance
-                    if base.relative_tolerance is not None
-                    else diff.default_relative_tolerance
-                ),
-                treat_null_as_equal=(
-                    base.treat_null_as_equal
-                    if base.treat_null_as_equal is not None
-                    else diff.default_treat_null_as_equal
-                ),
-                whitespace_mode=(
-                    base.whitespace_mode
-                    if base.whitespace_mode is not None
-                    else diff.default_whitespace_mode
-                ),
-                null_values=(
-                    base.null_values if base.null_values is not None else diff.default_null_values
-                ),
-                case_insensitive=base.case_insensitive,
-                regex_replace=base.regex_replace,
-                value_map=base.value_map,
-                pad_zeros=base.pad_zeros,
-                datetime_format=base.datetime_format,
-                timezone=base.timezone,
-                cast_to=base.cast_to,
+                absolute_tolerance=effective["abs_tol"],
+                relative_tolerance=effective["rel_tol"],
+                treat_null_as_equal=effective["treat_null"],
+                whitespace_mode=effective["whitespace"],
+                null_values=effective["null_values"],
+                # No `default_*` counterpart exists, so the compiler sees it as written.
+                case_insensitive=rule.case_insensitive if rule is not None else None,
+                regex_replace=effective["regex_replace"],
+                value_map=effective["value_map"],
+                pad_zeros=effective["pad_zeros"],
+                datetime_format=effective["datetime_format"],
+                timezone=effective["timezone"],
+                cast_to=effective["cast_to"],
             )
         )
     return resolved
@@ -535,6 +627,26 @@ def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
         if count > 0:
             counts[column] = count
     return counts
+
+
+def _local_column_mismatches(changed: pl.DataFrame, compared_columns: list[str]) -> dict[str, int]:
+    """Count, per compared column, how many changed rows failed its match flag.
+
+    Args:
+        changed (pl.DataFrame): Changed rows carrying one `<column>_is_match`
+            flag per compared column.
+        compared_columns (list[str]): Columns that were evaluated.
+
+    Returns:
+        dict[str, int]: Columns with at least one mismatch. Fully matched
+            columns are dropped, mirroring `_column_mismatches_from_frame`.
+    """
+    if not compared_columns or changed.is_empty():
+        return {}
+    tally = changed.select(
+        [(~pl.col(f"{col}_is_match")).sum().alias(col) for col in compared_columns]
+    ).row(0, named=True)
+    return {column: count for column, count in tally.items() if count > 0}
 
 
 _CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
@@ -910,29 +1022,9 @@ class DataIngestor:
         Returns:
             pl.LazyFrame: The structurally aligned lazy dataframe.
         """
-        rename_map: dict[str, str] = {}
-        to_drop: set[str] = set()
-        cols = df.collect_schema().names()
-
-        for rule in self.config.rules:
-            matched_cols = [
-                col
-                for col in cols
-                if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col))
-            ]
-
-            if rule.ignore:
-                to_drop.update(matched_cols)
-                continue
-
-            if (
-                is_source
-                and rule.rename_to
-                and len(rule.column_names) == 1
-                and rule.column_names[0] in cols
-            ):
-                rename_map[rule.column_names[0]] = rule.rename_to
-
+        rename_map, to_drop = _alignment_maps(
+            self.config.rules, df.collect_schema().names(), rename=is_source
+        )
         return df.drop(list(to_drop)).rename(rename_map)
 
     def get_dataframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
@@ -1028,51 +1120,7 @@ class DiffEngine:
         Returns:
             EffectiveRule: A flattened dictionary of operational parameters.
         """
-        eff: EffectiveRule = {
-            "abs_tol": self.config.default_absolute_tolerance,
-            "rel_tol": self.config.default_relative_tolerance,
-            "treat_null": self.config.default_treat_null_as_equal,
-            "whitespace": self.config.default_whitespace_mode,
-            "null_values": self.config.default_null_values,
-            "null_values_explicit": False,
-            "case_insensitive": False,
-            "regex_replace": None,
-            "value_map": None,
-            "pad_zeros": None,
-            "datetime_format": None,
-            "timezone": None,
-            "cast_to": None,
-            "ignore": False,
-        }
-
-        matched_rule = _match_rule(self.config.rules, col_name)
-
-        if matched_rule:
-            if matched_rule.absolute_tolerance is not None:
-                eff["abs_tol"] = matched_rule.absolute_tolerance
-            if matched_rule.relative_tolerance is not None:
-                eff["rel_tol"] = matched_rule.relative_tolerance
-            if matched_rule.treat_null_as_equal is not None:
-                eff["treat_null"] = matched_rule.treat_null_as_equal
-            if matched_rule.whitespace_mode is not None:
-                eff["whitespace"] = matched_rule.whitespace_mode
-            if matched_rule.null_values is not None:
-                eff["null_values"] = matched_rule.null_values
-                # A global default silently skips columns it cannot apply to,
-                # whereas an explicit rule that can never fire is a config error.
-                eff["null_values_explicit"] = True
-            if matched_rule.case_insensitive is not None:
-                eff["case_insensitive"] = matched_rule.case_insensitive
-
-            eff["regex_replace"] = matched_rule.regex_replace
-            eff["value_map"] = matched_rule.value_map
-            eff["pad_zeros"] = matched_rule.pad_zeros
-            eff["datetime_format"] = matched_rule.datetime_format
-            eff["timezone"] = matched_rule.timezone
-            eff["cast_to"] = matched_rule.cast_to
-            eff["ignore"] = matched_rule.ignore
-
-        return eff
+        return _fold_rule_defaults(_match_rule(self.config.rules, col_name), self.config)
 
     def _check_uniqueness(self) -> None:
         """Verifies that primary keys are unique in both datasets.
@@ -1351,36 +1399,19 @@ class DiffEngine:
             Mandatory prerequisite for `_validate_schema`. Validating raw data
             metadata before alignment results in `ConfigError` during migrations.
         """
-        src_rename: dict[str, str] = {}
-        src_drop: set[str] = set()
-        tgt_drop: set[str] = set()
-
         src_cols = self.source.collect_schema().names()
         tgt_cols = self.target.collect_schema().names()
 
+        src_rename, src_drop = _alignment_maps(self.config.rules, src_cols, rename=True)
+
+        # The target already carries the post-rename name, so an ignored rule is
+        # looked up there by `rename_to` rather than by its source spelling.
+        tgt_drop: set[str] = set()
         for rule in self.config.rules:
-            matched_src = [
-                col
-                for col in src_cols
-                if col in rule.column_names or (rule.pattern and re.match(rule.pattern, col))
-            ]
-
-            target_lookup = rule.rename_to if rule.rename_to else rule.column_names
-            matched_tgt = [
-                col
-                for col in tgt_cols
-                if col in (target_lookup if isinstance(target_lookup, list) else [target_lookup])
-            ]
-
-            if rule.ignore:
-                src_drop.update(matched_src)
-                tgt_drop.update(matched_tgt)
+            if not rule.ignore:
                 continue
-
-            if rule.rename_to and len(rule.column_names) == 1:
-                col_name = rule.column_names[0]
-                if col_name in src_cols:
-                    src_rename[col_name] = rule.rename_to
+            target_names = [rule.rename_to] if rule.rename_to else rule.column_names
+            tgt_drop.update(col for col in tgt_cols if col in target_names)
 
         self.source = self.source.drop(list(src_drop)).rename(src_rename)
         self.target = self.target.drop(list(tgt_drop))
@@ -1460,65 +1491,119 @@ class DiffEngine:
         # here rather than silently exploding the joins below.
         self._check_uniqueness()
 
-        added_lazy = self.target.join(self.source, on=self.config.primary_keys, how="anti")
-        removed_lazy = self.source.join(self.target, on=self.config.primary_keys, how="anti")
+        added_df, removed_df = self._collect_key_discrepancies()
+        compared_columns, match_expressions = self._match_expressions()
+        changed_df = self._collect_changed_rows(compared_columns, match_expressions)
+        return self._build_result(added_df, removed_df, changed_df, compared_columns)
 
-        # Re-fetch schema names in case rules altered them
-        src_cols_final = self.source.collect_schema().names()
-        tgt_cols_final = self.target.collect_schema().names()
+    def _collect_key_discrepancies(self) -> tuple[pl.DataFrame, pl.DataFrame]:
+        """Materialize the rows present on only one side of the comparison.
 
-        src_renamed = self.source.rename(
-            {col: f"{col}_source" for col in src_cols_final if col not in self.config.primary_keys}
-        )
-        tgt_renamed = self.target.rename(
-            {col: f"{col}_target" for col in tgt_cols_final if col not in self.config.primary_keys}
-        )
-        common_lazy = src_renamed.join(tgt_renamed, on=self.config.primary_keys, how="inner")
+        Returns:
+            tuple[pl.DataFrame, pl.DataFrame]: Added rows (target-only) and
+                removed rows (source-only), joined on the normalized keys.
+        """
+        keys = self.config.primary_keys
+        added_lazy = self.target.join(self.source, on=keys, how="anti")
+        removed_lazy = self.source.join(self.target, on=keys, how="anti")
+        return added_lazy.collect(), removed_lazy.collect()
 
-        match_expressions: list[pl.Expr] = []
-        match_cols: list[str] = []
+    def _match_expressions(self) -> tuple[list[str], list[pl.Expr]]:
+        """Build one boolean match expression per compared column.
 
-        for col in src_cols_final:
-            if col in self.config.primary_keys or col not in tgt_cols_final:
+        Columns are compared when they survive alignment on both sides, are not
+        primary keys, and are not ignored by their effective rule. Each
+        expression is aliased `<column>_is_match` so the tally can find it.
+
+        Returns:
+            tuple[list[str], list[pl.Expr]]: Compared column names, in source
+                order, and their parallel match expressions.
+        """
+        # Re-read the schema here: normalization may have retyped columns.
+        source_schema = self.source.collect_schema()
+        target_columns = set(self.target.collect_schema().names())
+        keys = set(self.config.primary_keys)
+
+        compared: list[str] = []
+        expressions: list[pl.Expr] = []
+        for column in source_schema.names():
+            if column in keys or column not in target_columns:
                 continue
-
-            rule = self._get_effective_rule(col)
+            rule = self._get_effective_rule(column)
             if rule["ignore"]:
                 continue
+            expr = self._build_match_expr(column, rule, source_schema[column])
+            compared.append(column)
+            expressions.append(expr.alias(f"{column}_is_match"))
+        return compared, expressions
 
-            dtype = self.source.collect_schema()[col]
-            expr = self._build_match_expr(col, rule, dtype).alias(f"{col}_is_match")
-            match_expressions.append(expr)
-            match_cols.append(f"{col}_is_match")
+    def _collect_changed_rows(
+        self, compared_columns: list[str], match_expressions: list[pl.Expr]
+    ) -> pl.DataFrame:
+        """Inner-join both sides and keep the rows where any compared column differs.
 
-        added_df = added_lazy.collect()
-        removed_df = removed_lazy.collect()
+        Non-key columns are suffixed `_source` / `_target` so the two values sit
+        side by side in the collected frame together with their match flags.
 
-        changed_count = 0
-        changed_df = pl.DataFrame()
-        column_mismatches: dict[str, int] = {}
+        Args:
+            compared_columns (list[str]): Columns that carry a match expression.
+            match_expressions (list[pl.Expr]): Expressions from `_match_expressions`.
 
-        if match_expressions:
-            evaluated_lazy = common_lazy.with_columns(match_expressions)
-            all_matched = pl.all_horizontal(match_cols)
-            changed_lazy = evaluated_lazy.filter(~all_matched)
+        Returns:
+            pl.DataFrame: Changed rows, or an empty frame when nothing is compared.
+        """
+        if not match_expressions:
+            return pl.DataFrame()
 
-            changed_df = changed_lazy.collect()
-            changed_count = changed_df.height
+        keys = self.config.primary_keys
+        src_renamed = self.source.rename(
+            {
+                col: f"{col}_source"
+                for col in self.source.collect_schema().names()
+                if col not in keys
+            }
+        )
+        tgt_renamed = self.target.rename(
+            {
+                col: f"{col}_target"
+                for col in self.target.collect_schema().names()
+                if col not in keys
+            }
+        )
+        common_lazy = src_renamed.join(tgt_renamed, on=keys, how="inner")
 
-            if changed_count > 0:
-                mismatch_exprs = [
-                    (~pl.col(c)).sum().alias(c.replace("_is_match", "")) for c in match_cols
-                ]
-                raw_counts = changed_df.select(mismatch_exprs).to_dicts()[0]
-                column_mismatches = {k: v for k, v in raw_counts.items() if v > 0}
+        all_matched = pl.all_horizontal([f"{col}_is_match" for col in compared_columns])
+        return common_lazy.with_columns(match_expressions).filter(~all_matched).collect()
+
+    def _build_result(
+        self,
+        added_df: pl.DataFrame,
+        removed_df: pl.DataFrame,
+        changed_df: pl.DataFrame,
+        compared_columns: list[str],
+    ) -> DiffResult:
+        """Count totals, apply the threshold, export artifacts, and assemble the result.
+
+        Args:
+            added_df (pl.DataFrame): Target-only rows.
+            removed_df (pl.DataFrame): Source-only rows.
+            changed_df (pl.DataFrame): Rows whose compared values differ.
+            compared_columns (list[str]): Columns that were evaluated.
+
+        Returns:
+            DiffResult: Summary plus the materialized discrepancy frames.
+
+        Raises:
+            ConfigError: If the requested artifact export format has no writer.
+        """
+        column_mismatches = _local_column_mismatches(changed_df, compared_columns)
 
         pk_col = self.config.primary_keys[0]
         src_total = self.source.select(pl.col(pk_col).count()).collect().item()
         tgt_total = self.target.select(pl.col(pk_col).count()).collect().item()
 
-        mismatch_ratio = (added_df.height + removed_df.height + changed_count) / max(src_total, 1)
-        is_match = mismatch_ratio <= self.config.threshold
+        total_mismatches = added_df.height + removed_df.height + changed_df.height
+        is_match = total_mismatches / max(src_total, 1) <= self.config.threshold
 
         artifacts_written = False
         if isinstance(self.config.output_path, str):
@@ -1538,7 +1623,7 @@ class DiffEngine:
                 total_rows_target=tgt_total,
                 added_count=added_df.height,
                 removed_count=removed_df.height,
-                changed_count=changed_count,
+                changed_count=changed_df.height,
                 column_mismatches=column_mismatches,
                 is_match=is_match,
                 report_limit=self.config.report_top_columns_limit,
@@ -1548,5 +1633,5 @@ class DiffEngine:
             removed=removed_df,
             changed=changed_df,
             primary_keys=tuple(self.config.primary_keys),
-            compared_columns=tuple(col.removesuffix("_is_match") for col in match_cols),
+            compared_columns=tuple(compared_columns),
         )
