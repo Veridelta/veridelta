@@ -4,10 +4,6 @@ Veridelta is currently in **v{{ config.extra.version }}**. The core execution en
 
 ## 1. Enterprise Ecosystem Integration
 
-File sources (CSV, Parquet), **Snowflake** and **Databricks** SQL pushdown, and **Delta Lake** / **Apache Iceberg** scans are available today. See the [Configuration Guide](configuration.md) for YAML, optional extras, and routing rules.
-
-Still planned:
-
 * **BigQuery Pushdown:** Native SQL translation so comparisons run in BigQuery without extracting tables into local memory.
 * Additional warehouse dialects as demand requires.
 

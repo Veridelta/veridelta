@@ -113,7 +113,7 @@ if not summary.is_match:
 
 ## Roadmap
 
-Planned work (BigQuery pushdown, fuzzy matching) lives in the [site roadmap](https://veridelta.github.io/veridelta/roadmap/). HTML reports and JSON CLI output already shipped.
+Planned work lives in the [roadmap](https://veridelta.github.io/veridelta/roadmap/).
 
 ---
 

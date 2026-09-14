@@ -58,7 +58,7 @@ veridelta run -c veridelta.yaml
 
 ## Documentation Directory
 
-* [**Tutorials**](examples/getting_started.ipynb): Progressive guides covering local `DiffResult` access, CLI execution, programmatic Python usage, and advanced semantic rules.
+* [**Tutorials**](examples/getting_started.ipynb): Progressive guides covering local `DiffResult` access, CLI execution, programmatic Python usage, advanced semantic rules, and HTML discrepancy reports.
 * [**Configuration Guide**](configuration.md): Complete specification for tolerance rules, schema enforcement, connectors, CLI flags, and I/O settings.
 * [**API Reference**](api.md): Public Python classes and methods.
-* [**Roadmap**](roadmap.md): Unimplemented work such as BigQuery pushdown and fuzzy matching.
+* [**Roadmap**](roadmap.md): Work that is not built yet.
