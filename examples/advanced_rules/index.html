@@ -683,6 +683,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#5-zero-padded-identifiers-and-timestamps-as-text" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Zero-Padded Identifiers and Timestamps as Text
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-pattern-rules-and-schema-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Pattern Rules and Schema Contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#conclusion-architecting-for-maintainability" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1566,7 +1588,7 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
 <h1 id="advanced-heuristics-data-normalization">Advanced Heuristics &amp; Data Normalization<a class="anchor-link" href="#advanced-heuristics-data-normalization">¶</a></h1><p>While Veridelta supports declarative YAML configurations for CI/CD pipelines, its native Python API provides programmatic flexibility for complex data environments. This notebook demonstrates how to construct advanced heuristics, deterministic value mapping, and rule chaining directly within Python using Veridelta's configuration models.</p>
-<p>Operating directly on Polars DataFrames via the Python API is ideal for interactive exploratory data analysis, dynamic rule generation, and integration into existing Python-based orchestrators.</p>
+<p>The engine consumes Polars <code>LazyFrame</code> inputs, so in-memory <code>DataFrame</code> objects are handed over with <code>.lazy()</code>. Operating directly on Polars frames via the Python API is ideal for interactive exploratory data analysis, dynamic rule generation, and integration into existing Python-based orchestrators.</p>
 </div>
 </div>
 </div>
@@ -1692,7 +1714,7 @@ print("In-memory data artifacts initialized.")
 </clipboard-copy>
 </div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="n">baseline_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"customer_id"</span><span class="p">])</span>
-<span class="n">engine_baseline</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">baseline_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="p">,</span> <span class="n">tgt_saas</span><span class="p">)</span>
+<span class="n">engine_baseline</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">baseline_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_saas</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
 
 <span class="nb">print</span><span class="p">(</span><span class="n">engine_baseline</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
@@ -1705,7 +1727,7 @@ print("In-memory data artifacts initialized.")
 <span class="c1"># Target Rows:   2</span>
 <span class="c1"># Volume Shift:  +0 rows</span>
 <span class="c1">#</span>
-<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># Row-Level Discrepancies:</span>
 <span class="c1"># ---------------------------</span>
 <span class="c1"># Added:         0</span>
 <span class="c1"># Removed:       0</span>
@@ -1718,7 +1740,7 @@ print("In-memory data artifacts initialized.")
 <span class="c1"># - contact_number: 2 mismatches</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-2">baseline_config = DiffConfig(primary_keys=["customer_id"])
-engine_baseline = DiffEngine(baseline_config, src_crm, tgt_saas)
+engine_baseline = DiffEngine(baseline_config, src_crm.lazy(), tgt_saas.lazy())
 
 print(engine_baseline.run().summary.report_summary)
 
@@ -1731,7 +1753,7 @@ print(engine_baseline.run().summary.report_summary)
 # Target Rows:   2
 # Volume Shift:  +0 rows
 #
-# Discrepancy Breakdown:
+# Row-Level Discrepancies:
 # ---------------------------
 # Added:         0
 # Removed:       0
@@ -1793,7 +1815,7 @@ print(engine_baseline.run().summary.report_summary)
     <span class="p">],</span>
 <span class="p">)</span>
 
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">mapping_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="p">,</span> <span class="n">tgt_saas</span><span class="p">)</span>
+<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">mapping_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_saas</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
 <span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
 
 <span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
@@ -1807,7 +1829,7 @@ print(engine_baseline.run().summary.report_summary)
 <span class="c1"># Target Rows:   2</span>
 <span class="c1"># Volume Shift:  +0 rows</span>
 <span class="c1">#</span>
-<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># Row-Level Discrepancies:</span>
 <span class="c1"># ---------------------------</span>
 <span class="c1"># Added:         0</span>
 <span class="c1"># Removed:       0</span>
@@ -1830,7 +1852,7 @@ mapping_config = DiffConfig(
     ],
 )
 
-engine = DiffEngine(mapping_config, src_crm, tgt_saas)
+engine = DiffEngine(mapping_config, src_crm.lazy(), tgt_saas.lazy())
 summary = engine.run().summary
 
 print(summary.report_summary)
@@ -1844,7 +1866,7 @@ print(summary.report_summary)
 # Target Rows:   2
 # Volume Shift:  +0 rows
 #
-# Discrepancy Breakdown:
+# Row-Level Discrepancies:
 # ---------------------------
 # Added:         0
 # Removed:       0
@@ -1904,7 +1926,9 @@ print(summary.report_summary)
 
 <span class="c1"># Baseline failure: Veridelta gracefully handles the String vs Float mismatch</span>
 <span class="c1"># (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.</span>
-<span class="n">baseline_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">]),</span> <span class="n">src_billing</span><span class="p">,</span> <span class="n">tgt_billing</span><span class="p">)</span>
+<span class="n">baseline_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span>
+    <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">]),</span> <span class="n">src_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">()</span>
+<span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">baseline_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
@@ -1916,7 +1940,7 @@ print(summary.report_summary)
 <span class="c1"># Target Rows:   2</span>
 <span class="c1"># Volume Shift:  +0 rows</span>
 <span class="c1">#</span>
-<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># Row-Level Discrepancies:</span>
 <span class="c1"># ---------------------------</span>
 <span class="c1"># Added:         0</span>
 <span class="c1"># Removed:       0</span>
@@ -1945,7 +1969,9 @@ tgt_billing = pl.DataFrame(
 
 # Baseline failure: Veridelta gracefully handles the String vs Float mismatch
 # (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.
-baseline_billing = DiffEngine(DiffConfig(primary_keys=["invoice_id"]), src_billing, tgt_billing)
+baseline_billing = DiffEngine(
+    DiffConfig(primary_keys=["invoice_id"]), src_billing.lazy(), tgt_billing.lazy()
+)
 print(baseline_billing.run().summary.report_summary)
 
 # Output:
@@ -1957,7 +1983,7 @@ print(baseline_billing.run().summary.report_summary)
 # Target Rows:   2
 # Volume Shift:  +0 rows
 #
-# Discrepancy Breakdown:
+# Row-Level Discrepancies:
 # ---------------------------
 # Added:         0
 # Removed:       0
@@ -2016,7 +2042,7 @@ print(baseline_billing.run().summary.report_summary)
     <span class="p">],</span>
 <span class="p">)</span>
 
-<span class="n">engine_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">chained_config</span><span class="p">,</span> <span class="n">src_billing</span><span class="p">,</span> <span class="n">tgt_billing</span><span class="p">)</span>
+<span class="n">engine_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">chained_config</span><span class="p">,</span> <span class="n">src_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">engine_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
@@ -2028,7 +2054,7 @@ print(baseline_billing.run().summary.report_summary)
 <span class="c1"># Target Rows:   2</span>
 <span class="c1"># Volume Shift:  +0 rows</span>
 <span class="c1">#</span>
-<span class="c1"># Discrepancy Breakdown:</span>
+<span class="c1"># Row-Level Discrepancies:</span>
 <span class="c1"># ---------------------------</span>
 <span class="c1"># Added:         0</span>
 <span class="c1"># Removed:       0</span>
@@ -2048,7 +2074,7 @@ chained_config = DiffConfig(
     ],
 )
 
-engine_billing = DiffEngine(chained_config, src_billing, tgt_billing)
+engine_billing = DiffEngine(chained_config, src_billing.lazy(), tgt_billing.lazy())
 print(engine_billing.run().summary.report_summary)
 
 # Output:
@@ -2060,7 +2086,7 @@ print(engine_billing.run().summary.report_summary)
 # Target Rows:   2
 # Volume Shift:  +0 rows
 #
-# Discrepancy Breakdown:
+# Row-Level Discrepancies:
 # ---------------------------
 # Added:         0
 # Removed:       0
@@ -2127,7 +2153,7 @@ print(engine_billing.run().summary.report_summary)
     <span class="p">],</span>
 <span class="p">)</span>
 
-<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">asymmetry_config</span><span class="p">,</span> <span class="n">src_legacy</span><span class="p">,</span> <span class="n">tgt_modern</span><span class="p">)</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
+<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">asymmetry_config</span><span class="p">,</span> <span class="n">src_legacy</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_modern</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
@@ -2167,7 +2193,7 @@ asymmetry_config = DiffConfig(
     ],
 )
 
-summary = DiffEngine(asymmetry_config, src_legacy, tgt_modern).run().summary
+summary = DiffEngine(asymmetry_config, src_legacy.lazy(), tgt_modern.lazy()).run().summary
 print(summary.report_summary)
 
 # Output:
@@ -2185,6 +2211,225 @@ print(summary.report_summary)
 # Removed:       0
 # Changed:       0
 # Total Issues:  0</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="5-zero-padded-identifiers-and-timestamps-as-text">5. Zero-Padded Identifiers and Timestamps as Text<a class="anchor-link" href="#5-zero-padded-identifiers-and-timestamps-as-text">¶</a></h2><p>Legacy exports often carry identifiers as zero-padded strings and timestamps as formatted text, while the modern system stores integers and native timestamps. <code>pad_zeros</code> stringifies both sides and left-pads to a fixed width so <code>42</code> and <code>"00042"</code> converge, and <code>datetime_format</code> parses text with a <code>strptime</code> pattern into a real timestamp. Both stages run before the join, so they apply to primary keys as well as compared columns.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-7">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
+
+<span class="c1"># Source: Legacy inventory export (padded text SKUs, timestamps as text)</span>
+<span class="n">src_inventory</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span>
+        <span class="s2">"sku"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"00042"</span><span class="p">,</span> <span class="s2">"00917"</span><span class="p">],</span>
+        <span class="s2">"restocked_at"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"2026-03-01 09:30:00"</span><span class="p">,</span> <span class="s2">"2026-03-02 14:05:00"</span><span class="p">],</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+
+<span class="c1"># Target: Modern inventory service (integer SKUs, native timestamps)</span>
+<span class="n">tgt_inventory</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span>
+        <span class="s2">"sku"</span><span class="p">:</span> <span class="p">[</span><span class="mi">42</span><span class="p">,</span> <span class="mi">917</span><span class="p">],</span>
+        <span class="s2">"restocked_at"</span><span class="p">:</span> <span class="p">[</span><span class="n">datetime</span><span class="p">(</span><span class="mi">2026</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">30</span><span class="p">),</span> <span class="n">datetime</span><span class="p">(</span><span class="mi">2026</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">14</span><span class="p">,</span> <span class="mi">5</span><span class="p">)],</span>
+    <span class="p">}</span>
+<span class="p">)</span>
+
+<span class="n">temporal_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"sku"</span><span class="p">],</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
+        <span class="c1"># Stringify and left-pad both sides to five characters before joining on the key</span>
+        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"sku"</span><span class="p">],</span> <span class="n">pad_zeros</span><span class="o">=</span><span class="mi">5</span><span class="p">),</span>
+        <span class="c1"># Parse the text side; a side that is already a timestamp is left alone</span>
+        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"restocked_at"</span><span class="p">],</span> <span class="n">datetime_format</span><span class="o">=</span><span class="s2">"%Y-%m-</span><span class="si">%d</span><span class="s2"> %H:%M:%S"</span><span class="p">),</span>
+    <span class="p">],</span>
+<span class="p">)</span>
+
+<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">temporal_config</span><span class="p">,</span> <span class="n">src_inventory</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_inventory</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        PASSED (Perfect Match)</span>
+<span class="c1"># Match Rate:    100.0%</span>
+<span class="c1"># Source Rows:   2</span>
+<span class="c1"># Target Rows:   2</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Row-Level Discrepancies:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         0</span>
+<span class="c1"># Removed:       0</span>
+<span class="c1"># Changed:       0</span>
+<span class="c1"># Total Issues:  0</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-7">from datetime import datetime
+
+# Source: Legacy inventory export (padded text SKUs, timestamps as text)
+src_inventory = pl.DataFrame(
+    {
+        "sku": ["00042", "00917"],
+        "restocked_at": ["2026-03-01 09:30:00", "2026-03-02 14:05:00"],
+    }
+)
+
+# Target: Modern inventory service (integer SKUs, native timestamps)
+tgt_inventory = pl.DataFrame(
+    {
+        "sku": [42, 917],
+        "restocked_at": [datetime(2026, 3, 1, 9, 30), datetime(2026, 3, 2, 14, 5)],
+    }
+)
+
+temporal_config = DiffConfig(
+    primary_keys=["sku"],
+    rules=[
+        # Stringify and left-pad both sides to five characters before joining on the key
+        DiffRule(column_names=["sku"], pad_zeros=5),
+        # Parse the text side; a side that is already a timestamp is left alone
+        DiffRule(column_names=["restocked_at"], datetime_format="%Y-%m-%d %H:%M:%S"),
+    ],
+)
+
+summary = DiffEngine(temporal_config, src_inventory.lazy(), tgt_inventory.lazy()).run().summary
+print(summary.report_summary)
+
+# Output:
+# Veridelta Execution Summary
+# ===========================
+# Status:        PASSED (Perfect Match)
+# Match Rate:    100.0%
+# Source Rows:   2
+# Target Rows:   2
+# Volume Shift:  +0 rows
+#
+# Row-Level Discrepancies:
+# ---------------------------
+# Added:         0
+# Removed:       0
+# Changed:       0
+# Total Issues:  0</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="6-pattern-rules-and-schema-contracts">6. Pattern Rules and Schema Contracts<a class="anchor-link" href="#6-pattern-rules-and-schema-contracts">¶</a></h2><p>Pipelines tend to append bookkeeping columns (<code>_etl_batch</code>, <code>_etl_loaded_at</code>) that carry no business meaning. A <code>pattern</code> rule with <code>ignore=True</code> excludes every column matching a regular expression, so the rule does not need editing each time a new audit column appears.</p>
+<p>Structural drift is a separate question from value drift. <code>schema_mode="exact"</code> turns a renamed or dropped column into a <code>ConfigError</code>, and <code>DiffEngine.validate_schemas</code> enforces that contract on metadata alone, so it can gate a deployment before any rows are read.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-8">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.exceptions</span><span class="w"> </span><span class="kn">import</span> <span class="n">ConfigError</span>
+
+<span class="n">src_audit</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span><span class="s2">"id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span> <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">],</span> <span class="s2">"_etl_batch"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span> <span class="s2">"_etl_loaded_at"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"a"</span><span class="p">,</span> <span class="s2">"a"</span><span class="p">]}</span>
+<span class="p">)</span>
+<span class="n">tgt_audit</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+    <span class="p">{</span><span class="s2">"id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span> <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">],</span> <span class="s2">"_etl_batch"</span><span class="p">:</span> <span class="p">[</span><span class="mi">7</span><span class="p">,</span> <span class="mi">7</span><span class="p">],</span> <span class="s2">"_etl_loaded_at"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"b"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">]}</span>
+<span class="p">)</span>
+
+<span class="c1"># Every column starting with "_etl_" is excluded, however many there are</span>
+<span class="n">audit_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"id"</span><span class="p">],</span> <span class="n">rules</span><span class="o">=</span><span class="p">[</span><span class="n">DiffRule</span><span class="p">(</span><span class="n">pattern</span><span class="o">=</span><span class="sa">r</span><span class="s2">"^_etl_"</span><span class="p">,</span> <span class="n">ignore</span><span class="o">=</span><span class="kc">True</span><span class="p">)])</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">audit_config</span><span class="p">,</span> <span class="n">src_audit</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_audit</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Compared columns: </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">compared_columns</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match: </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="c1"># A schema contract: the target renamed a column, which "exact" mode refuses</span>
+<span class="n">contract</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"id"</span><span class="p">],</span> <span class="n">schema_mode</span><span class="o">=</span><span class="s2">"exact"</span><span class="p">)</span>
+<span class="n">tgt_drifted</span> <span class="o">=</span> <span class="n">tgt_audit</span><span class="o">.</span><span class="n">rename</span><span class="p">({</span><span class="s2">"amount"</span><span class="p">:</span> <span class="s2">"amount_usd"</span><span class="p">})</span>
+<span class="k">try</span><span class="p">:</span>
+    <span class="n">DiffEngine</span><span class="o">.</span><span class="n">validate_schemas</span><span class="p">(</span><span class="n">contract</span><span class="p">,</span> <span class="n">src_audit</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_drifted</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
+<span class="k">except</span> <span class="n">ConfigError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Schema contract violated: </span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="n">splitlines</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Compared columns: ('amount',)</span>
+<span class="c1"># Match: True</span>
+<span class="c1"># Schema contract violated: EXACT schema match failed.</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-8">from veridelta.exceptions import ConfigError
+
+src_audit = pl.DataFrame(
+    {"id": [1, 2], "amount": [10.0, 20.0], "_etl_batch": [1, 1], "_etl_loaded_at": ["a", "a"]}
+)
+tgt_audit = pl.DataFrame(
+    {"id": [1, 2], "amount": [10.0, 20.0], "_etl_batch": [7, 7], "_etl_loaded_at": ["b", "b"]}
+)
+
+# Every column starting with "_etl_" is excluded, however many there are
+audit_config = DiffConfig(primary_keys=["id"], rules=[DiffRule(pattern=r"^_etl_", ignore=True)])
+result = DiffEngine(audit_config, src_audit.lazy(), tgt_audit.lazy()).run()
+print(f"Compared columns: {result.compared_columns}")
+print(f"Match: {result.summary.is_match}")
+
+# A schema contract: the target renamed a column, which "exact" mode refuses
+contract = DiffConfig(primary_keys=["id"], schema_mode="exact")
+tgt_drifted = tgt_audit.rename({"amount": "amount_usd"})
+try:
+    DiffEngine.validate_schemas(contract, src_audit.lazy(), tgt_drifted.lazy())
+except ConfigError as exc:
+    print(f"Schema contract violated: {str(exc).splitlines()[0]}")
+
+# Output:
+# Compared columns: ('amount',)
+# Match: True
+# Schema contract violated: EXACT schema match failed.</div>
 </div>
 </div>
 </div>

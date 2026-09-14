@@ -1700,9 +1700,9 @@ print("Production config and mock artifacts generated.")
 <span class="n">run_pipeline_validation</span><span class="p">(</span><span class="s2">"veridelta.yaml"</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># =========== CI/CD PIPELINE VALIDATION ===========</span>
+<span class="c1"># =========== CI/CD PIPELINE VALIDATION ============</span>
 <span class="c1"># STATUS: PASSED</span>
-<span class="c1"># =================================================</span>
+<span class="c1"># ==================================================</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-2">def run_pipeline_validation(config_path: str) -&gt; None:
     """Load config and execute the semantic diff pipeline.
@@ -1726,9 +1726,9 @@ print("Production config and mock artifacts generated.")
 run_pipeline_validation("veridelta.yaml")
 
 # Output:
-# =========== CI/CD PIPELINE VALIDATION ===========
+# =========== CI/CD PIPELINE VALIDATION ============
 # STATUS: PASSED
-# =================================================</div>
+# ==================================================</div>
 </div>
 </div>
 </div>
@@ -1741,7 +1741,64 @@ run_pipeline_validation("veridelta.yaml")
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="advanced-environment-overrides">Advanced: Environment Overrides<a class="anchor-link" href="#advanced-environment-overrides">¶</a></h3><p>During environment promotion (e.g., Staging to Production), the <code>SourceConfig.options</code> block accepts dynamic cloud credentials or environment-specific path overrides. This ensures semantic validation rules remain strictly identical across all deployment tiers.</p>
+<h3 id="advanced-environment-overrides">Advanced: Environment Overrides<a class="anchor-link" href="#advanced-environment-overrides">¶</a></h3><p>During environment promotion (e.g., Staging to Production), keep the policy file identical and override only where the data lives. <code>load_config</code> returns the parsed source and target models, so a <code>model_copy</code> with a new <code>path</code> (or cloud <code>storage_options</code> inside <code>options</code>) is the whole override. Rules, tolerances, and keys stay exactly as reviewed in version control.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-3">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+
+<span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">load_config</span><span class="p">(</span><span class="s2">"veridelta.yaml"</span><span class="p">)</span>
+
+<span class="c1"># Point the reviewed policy at another environment's artifacts</span>
+<span class="n">data_root</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"VERIDELTA_DATA_ROOT"</span><span class="p">,</span> <span class="s2">"."</span><span class="p">)</span>
+<span class="n">src_cfg</span> <span class="o">=</span> <span class="n">src_cfg</span><span class="o">.</span><span class="n">model_copy</span><span class="p">(</span><span class="n">update</span><span class="o">=</span><span class="p">{</span><span class="s2">"path"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">data_root</span><span class="si">}</span><span class="s2">/prod_source.parquet"</span><span class="p">})</span>
+<span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">tgt_cfg</span><span class="o">.</span><span class="n">model_copy</span><span class="p">(</span><span class="n">update</span><span class="o">=</span><span class="p">{</span><span class="s2">"path"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">data_root</span><span class="si">}</span><span class="s2">/prod_target.parquet"</span><span class="p">})</span>
+
+<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="o">.</span><span class="n">run_from_configs</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span><span class="o">.</span><span class="n">summary</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Source: </span><span class="si">{</span><span class="n">src_cfg</span><span class="o">.</span><span class="n">path</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Status: </span><span class="si">{</span><span class="s1">'PASSED'</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="s1">'FAILED'</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Source: ./prod_source.parquet</span>
+<span class="c1"># Status: PASSED</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-3">import os
+
+diff_cfg, src_cfg, tgt_cfg = load_config("veridelta.yaml")
+
+# Point the reviewed policy at another environment's artifacts
+data_root = os.environ.get("VERIDELTA_DATA_ROOT", ".")
+src_cfg = src_cfg.model_copy(update={"path": f"{data_root}/prod_source.parquet"})
+tgt_cfg = tgt_cfg.model_copy(update={"path": f"{data_root}/prod_target.parquet"})
+
+summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg).summary
+print(f"Source: {src_cfg.path}")
+print(f"Status: {'PASSED' if summary.is_match else 'FAILED'}")
+
+# Output:
+# Source: ./prod_source.parquet
+# Status: PASSED</div>
+</div>
+</div>
 </div>
 </div>
 </div>
@@ -1766,7 +1823,7 @@ run_pipeline_validation("veridelta.yaml")
 <div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
 <div class="CodeMirror cm-s-jupyter">
 <div class="zeroclipboard-container">
-<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-3">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-4">
 <div>
 <span class="notice" hidden="">Copied!</span>
 <svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
@@ -1780,7 +1837,7 @@ run_pipeline_validation("veridelta.yaml")
 <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">"prod_source.parquet"</span><span class="p">,</span> <span class="s2">"prod_target.parquet"</span><span class="p">,</span> <span class="s2">"veridelta.yaml"</span><span class="p">]:</span>
     <span class="n">pathlib</span><span class="o">.</span><span class="n">Path</span><span class="p">(</span><span class="n">f</span><span class="p">)</span><span class="o">.</span><span class="n">unlink</span><span class="p">(</span><span class="n">missing_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-3"># Remove local artifacts (housekeeping)
+<div class="clipboard-copy-txt" id="cell-4"># Remove local artifacts (housekeeping)
 for f in ["prod_source.parquet", "prod_target.parquet", "veridelta.yaml"]:
     pathlib.Path(f).unlink(missing_ok=True)</div>
 </div>

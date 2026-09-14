@@ -1669,8 +1669,8 @@ print(f"Strict Physical Equality: {is_physically_equal}")
     <span class="p">],</span>
 <span class="p">)</span>
 
-<span class="c1"># Execute the comparison using the aligned DataFrames</span>
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="p">,</span> <span class="n">tgt_df</span><span class="p">)</span>
+<span class="c1"># The engine consumes LazyFrames, so in-memory DataFrames are wrapped with .lazy()</span>
+<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_df</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
 <span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
 
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match Status: </span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
@@ -1697,8 +1697,8 @@ config = DiffConfig(
     ],
 )
 
-# Execute the comparison using the aligned DataFrames
-engine = DiffEngine(config, src_df, tgt_df)
+# The engine consumes LazyFrames, so in-memory DataFrames are wrapped with .lazy()
+engine = DiffEngine(config, src_df.lazy(), tgt_df.lazy())
 summary = engine.run().summary
 
 print(f"Match Status: {summary.is_match}")
@@ -1771,7 +1771,7 @@ print(f"Changed Rows: {summary.changed_count}")
     <span class="p">],</span>
 <span class="p">)</span>
 
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="p">,</span> <span class="n">tgt_df</span><span class="p">)</span>
+<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">src_df</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_df</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
 <span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
 
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">' VERIDELTA EXECUTION SUMMARY '</span><span class="si">:</span><span class="s2">=^50</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
@@ -1815,7 +1815,7 @@ config = DiffConfig(
     ],
 )
 
-engine = DiffEngine(config, src_df, tgt_df)
+engine = DiffEngine(config, src_df.lazy(), tgt_df.lazy())
 summary = engine.run().summary
 
 print(f"{' VERIDELTA EXECUTION SUMMARY ':=^50}")
