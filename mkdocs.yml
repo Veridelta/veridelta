@@ -57,6 +57,7 @@ nav:
     - Python Quickstart: examples/quickstart.ipynb
     - CLI Quickstart: examples/quickstart_cli.ipynb
     - Advanced Rules: examples/advanced_rules.ipynb
+    - HTML Reports: examples/html_reports.ipynb
     - CI/CD Workflows: examples/yaml_config.ipynb
   - Configuration: configuration.md
   - API Reference: api.md
