@@ -205,6 +205,17 @@ Every connector block is selected by `type` and rejects keys it does not list.
 
 `version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse and lakehouse blocks are frozen once loaded.
 
+### Connector logging
+
+Connectors log under `veridelta.connectors.warehouse` and `veridelta.connectors.lakehouse`, with a `NullHandler` attached so nothing prints unless you opt in. `INFO` records a session or scan opening and closing; `DEBUG` records each pushdown statement by its round-trip kind (`schema`, `count`, `mismatch`, `added`, `missing`, `columns`) with its duration. Log lines never contain SQL text, `storage_options`, passwords, or tokens. A warehouse session is closed when the run finishes, whether it succeeded or raised.
+
+```python
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("veridelta.connectors").setLevel(logging.DEBUG)
+```
+
 ## Engine Directives
 
 Global directives control the strictness of the underlying Polars evaluation engine.

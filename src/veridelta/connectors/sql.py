@@ -282,8 +282,13 @@ class SQLPushdownCompiler:
             target_types (ColumnTypes | None): Probed target dtypes.
 
         Returns:
-            str: `SELECT ... FROM src INNER JOIN tgt ON ...` statement. A `WHERE NOT`
-            clause is added when at least one non-ignored column predicate exists.
+            str: `SELECT ... FROM src INNER JOIN tgt ON ... WHERE NOT (...)` statement
+            keeping the joined rows where at least one compared column differs.
+            Each predicate is wrapped in `COALESCE(pred, FALSE)` so a one-sided
+            NULL reads as a mismatch rather than as an unknown that `WHERE`
+            drops, matching the local engine's `fill_null(False)`. When no
+            column is compared the statement selects no rows, since without
+            match expressions the local engine reports nothing as changed.
 
         Raises:
             ConnectorError: If tables or keys are empty, a rule is pattern-only, or
@@ -322,10 +327,14 @@ class SQLPushdownCompiler:
             )
             for _source_column, target_column, rule in compared
         ]
-        if predicates:
-            joined = " AND ".join(f"({pred})" for pred in predicates)
-            statement = f"{statement} WHERE NOT ({joined})"
-        return statement
+        if not predicates:
+            # Nothing to compare means nothing can have changed. Without this
+            # guard the bare join would report every shared key as drift.
+            return f"{statement} WHERE 1 = 0"
+        # COALESCE is load-bearing, as in the tally: `NOT (NULL)` is NULL, and
+        # WHERE drops it, so a one-sided NULL would vanish from the changed set.
+        joined = " AND ".join(f"COALESCE({pred}, FALSE)" for pred in predicates)
+        return f"{statement} WHERE NOT ({joined})"
 
     def compile_missing_query(
         self,

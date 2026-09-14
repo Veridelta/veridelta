@@ -26,7 +26,13 @@ from veridelta.models import (
 )
 
 
-def _snowflake_config(*, table: str, account: str = "xy12345") -> SnowflakeConfig:
+def _snowflake_config(
+    *,
+    table: str,
+    account: str = "xy12345",
+    password: str | None = None,
+    role: str | None = None,
+) -> SnowflakeConfig:
     """Build a Snowflake source with a distinct table name."""
     return SnowflakeConfig(
         account=account,
@@ -34,15 +40,23 @@ def _snowflake_config(*, table: str, account: str = "xy12345") -> SnowflakeConfi
         warehouse="COMPUTE_WH",
         database="ANALYTICS",
         schema_name="PUBLIC",
+        password=password,
+        role=role,
         table=table,
     )
 
 
-def _databricks_config(*, table: str, host: str = "adb.azuredatabricks.net") -> DatabricksConfig:
+def _databricks_config(
+    *,
+    table: str,
+    host: str = "adb.azuredatabricks.net",
+    access_token: str | None = None,
+) -> DatabricksConfig:
     """Build a Databricks source with a distinct table name."""
     return DatabricksConfig(
         server_hostname=host,
         http_path="/sql/1.0/warehouses/abc",
+        access_token=access_token,
         table=table,
     )
 
@@ -226,6 +240,119 @@ class TestEngineConnectorRouting:
         assert summary.removed_count == 4
         assert summary.total_rows_source == SOURCE_TOTAL
         assert summary.total_rows_target == TARGET_TOTAL
+
+    @pytest.mark.parametrize("backend", ["Snowflake", "Databricks"])
+    def test_it_closes_the_warehouse_session_after_a_completed_pushdown(
+        self, mocker: MockerFixture, backend: str
+    ) -> None:
+        """Ensure every pushdown run releases its session once the result is built."""
+        connector_cls = mocker.patch(f"veridelta.engine.{backend}Connector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+        if backend == "Snowflake":
+            source: Any = _snowflake_config(table="ANALYTICS.PUBLIC.SRC")
+            target: Any = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
+        else:
+            source = _databricks_config(table="main.default.src")
+            target = _databricks_config(table="main.default.tgt")
+
+        DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        connector.connect.assert_called_once()
+        connector.close.assert_called_once()
+        # close() runs after the last statement, not between round-trips.
+        method_names = [name for name, _args, _kwargs in connector.mock_calls]
+        assert method_names.index("close") > method_names.index("execute_pushdown")
+
+    def test_it_closes_the_warehouse_session_when_pushdown_fails(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a schema violation raised mid-run still releases the session."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        def _drifted_probe(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "schema" and statement.upper().endswith("TGT"):
+                return pl.DataFrame(schema={"id": pl.Int64, "surcharge": pl.Float64}).lazy()
+            return _pushdown_by_query_type(statement, query_type)
+
+        connector.execute_pushdown.side_effect = _drifted_probe
+
+        with pytest.raises(ConfigError, match="EXACT schema match failed"):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"], schema_mode="exact"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+            )
+
+        connector.close.assert_called_once()
+
+    def test_it_honors_non_zero_threshold_against_databricks_row_totals(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure the threshold ratio is computed identically for Databricks pushdown."""
+        connector_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        summary = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"], threshold=0.01),
+            _databricks_config(table="main.default.src"),
+            _databricks_config(table="main.default.tgt"),
+        ).summary
+
+        assert summary.total_mismatches == 9
+        assert summary.mismatch_ratio == pytest.approx(0.009)
+        assert summary.is_match is True
+        assert summary.column_mismatches == {"amount": 5}
+
+    def test_it_writes_databricks_pushdown_artifacts_under_the_key_only_suffix(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure Databricks artifacts use the same key-only naming as Snowflake."""
+        connector_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        result = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"], output_path=str(tmp_path), output_format="parquet"),
+            _databricks_config(table="main.default.src"),
+            _databricks_config(table="main.default.tgt"),
+        )
+
+        assert result.keys_only is True
+        assert result.summary.artifacts_written is True
+        assert sorted(path.name for path in tmp_path.iterdir()) == [
+            "added_rows_pks_only.parquet",
+            "changed_rows_pks_only.parquet",
+            "removed_rows_pks_only.parquet",
+        ]
+        assert pl.read_parquet(tmp_path / "removed_rows_pks_only.parquet").height == 4
+
+    def test_it_raises_config_error_when_databricks_probes_violate_exact_schema(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure schema_mode gates Databricks relations before any comparison SQL."""
+        connector_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        def _drifted_probe(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "schema" and statement.endswith("tgt"):
+                return pl.DataFrame(schema={"id": pl.Int64, "surcharge": pl.Float64}).lazy()
+            return _pushdown_by_query_type(statement, query_type)
+
+        connector.execute_pushdown.side_effect = _drifted_probe
+
+        with pytest.raises(ConfigError, match="EXACT schema match failed"):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"], schema_mode="exact"),
+                _databricks_config(table="main.default.src"),
+                _databricks_config(table="main.default.tgt"),
+            )
+
+        connector.compiler.compile_query.assert_not_called()
 
     def test_it_honors_non_zero_threshold_against_pushdown_row_totals(
         self, mocker: MockerFixture
@@ -496,6 +623,48 @@ class TestEngineConnectorRouting:
         with pytest.raises(ConnectorError, match="Cross-account"):
             DiffEngine.run_from_configs(diff, source, target)
 
+    @pytest.mark.parametrize(
+        ("source_kwargs", "target_kwargs"),
+        [
+            pytest.param({"password": "left"}, {"password": "right"}, id="password"),
+            pytest.param({"password": "same"}, {}, id="password-vs-none"),
+            pytest.param({"role": "SYSADMIN"}, {"role": "ANALYST"}, id="role"),
+        ],
+    )
+    def test_it_treats_snowflake_credentials_as_part_of_the_fingerprint(
+        self, mocker: MockerFixture, source_kwargs: dict[str, str], target_kwargs: dict[str, str]
+    ) -> None:
+        """Ensure two sides that differ only in password or role never share one session."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        source = _snowflake_config(table="ANALYTICS.PUBLIC.SRC", **source_kwargs)
+        target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT", **target_kwargs)
+
+        with pytest.raises(ConnectorError, match="Cross-account"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        connector_cls.assert_not_called()
+
+    def test_it_treats_the_databricks_token_as_part_of_the_fingerprint(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a token mismatch on an otherwise identical workspace is refused."""
+        connector_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        source = _databricks_config(table="main.default.src", access_token="dapi-a")
+        target = _databricks_config(table="main.default.tgt", access_token="dapi-b")
+
+        with pytest.raises(ConnectorError, match="Cross-account"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        connector_cls.assert_not_called()
+
+    def test_it_raises_connector_error_for_mixed_lakehouse_and_warehouse_backends(self) -> None:
+        """Ensure a Delta scan cannot be paired with a Snowflake relation."""
+        source = DeltaLakeConfig(table_uri="s3://lake/legacy_events")
+        target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
+
+        with pytest.raises(ConnectorError, match="Mixed file/lakehouse"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
     def test_it_rejects_a_claimed_warehouse_pair_that_is_neither_dialect(
         self, mocker: MockerFixture
     ) -> None:
@@ -602,3 +771,62 @@ class TestEngineConnectorRouting:
         assert snow_source.table == "ANALYTICS.PUBLIC.SRC"
         assert snow_target.table == "ANALYTICS.PUBLIC.TGT"
         assert snow_source.type == "snowflake"
+
+    def test_it_round_trips_iceberg_and_databricks_typed_yaml_blocks(self, tmp_path: Path) -> None:
+        """Ensure the remaining two discriminators, with their optional pins, load from YAML."""
+        config_path = tmp_path / "mixed.yaml"
+        config_path.write_text(
+            "source:\n"
+            "  type: iceberg\n"
+            "  table_uri: s3://lake/iceberg/legacy\n"
+            "  snapshot_id: 883142\n"
+            "  storage_options:\n"
+            "    AWS_REGION: us-east-1\n"
+            "target:\n"
+            "  type: databricks\n"
+            "  table: main.default.modern\n"
+            "  server_hostname: adb.azuredatabricks.net\n"
+            "  http_path: /sql/1.0/warehouses/abc\n"
+            "  catalog: main\n"
+            "  schema_name: default\n"
+            "primary_keys:\n"
+            "  - id\n"
+        )
+
+        diff_cfg, source, target = load_config(config_path)
+
+        assert isinstance(source, IcebergConfig)
+        assert source.snapshot_id == 883142
+        assert source.storage_options == {"AWS_REGION": "us-east-1"}
+        assert isinstance(target, DatabricksConfig)
+        assert target.catalog == "main"
+        assert target.access_token is None
+        # The pair parses but cannot run: lakehouse scans and warehouse SQL do not mix.
+        with pytest.raises(ConnectorError, match="Mixed file/lakehouse"):
+            DiffEngine.run_from_configs(diff_cfg, source, target)
+
+    def test_it_runs_a_delta_pair_locally_through_run_from_configs(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure two lakehouse scans take the DataIngestor path and produce a full diff."""
+        source_frame = pl.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]}).lazy()
+        target_frame = pl.DataFrame({"id": [1, 2, 4], "amount": [10.0, 25.0, 40.0]}).lazy()
+        scan = mocker.patch(
+            "veridelta.connectors.lakehouse.pl.scan_delta",
+            side_effect=[source_frame, target_frame],
+        )
+
+        result = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]),
+            DeltaLakeConfig(table_uri="s3://lake/legacy", version=7),
+            DeltaLakeConfig(table_uri="s3://lake/modern"),
+        )
+
+        assert scan.call_count == 2
+        assert scan.call_args_list[0].kwargs["version"] == 7
+        assert result.keys_only is False
+        assert result.summary.added_count == 1
+        assert result.summary.removed_count == 1
+        assert result.summary.changed_count == 1
+        assert result.summary.column_mismatches == {"amount": 1}
+        assert result.changed["amount_target"].to_list() == [25.0]

@@ -280,8 +280,12 @@ class TestQueryAssembly:
         assert '"src"."notes"' not in sql
         assert "WHERE NOT" in sql
 
-    def test_it_omits_where_when_every_rule_is_ignored(self) -> None:
-        """Ensure join-only SQL is emitted when no compare columns remain."""
+    def test_it_selects_no_rows_when_every_rule_is_ignored(self) -> None:
+        """Ensure a comparison with no compared columns reports no changed rows.
+
+        A bare inner join would return every shared key, which the engine
+        would then count as drift even though nothing was compared.
+        """
         sql = _databricks().compile_query(
             "src_tbl",
             "tgt_tbl",
@@ -289,7 +293,29 @@ class TestQueryAssembly:
             [DiffRule(column_names=["notes"], ignore=True)],
         )
         assert "INNER JOIN" in sql
-        assert "WHERE" not in sql
+        assert sql.endswith("WHERE 1 = 0")
+        assert "WHERE NOT" not in sql
+
+    def test_it_coalesces_each_predicate_so_a_one_sided_null_is_a_mismatch(self) -> None:
+        """Ensure `WHERE NOT` never sees a NULL predicate.
+
+        `src = NULL` is NULL, not FALSE, and `NOT NULL` is still NULL, which
+        `WHERE` drops. Without the coalesce a row where only one side is NULL
+        would disappear from the changed set while the tally still counted it.
+        """
+        sql = _snowflake().compile_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [
+                DiffRule(column_names=["status"], treat_null_as_equal=False),
+                DiffRule(column_names=["amount"], absolute_tolerance=0.5),
+            ],
+        )
+        where_clause = sql.split("WHERE NOT (", 1)[1]
+        assert where_clause.startswith('COALESCE("src"."status" = "tgt"."status", FALSE) AND ')
+        assert 'COALESCE(ABS("tgt"."amount" - "src"."amount") <= 0.5' in where_clause
+        assert where_clause.endswith(", FALSE))")
 
     def test_it_expands_multi_column_rules_into_separate_predicates(self) -> None:
         """Ensure one DiffRule with two names produces two match predicates."""
