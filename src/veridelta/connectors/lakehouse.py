@@ -18,7 +18,14 @@ _PUSHDOWN_UNSUPPORTED = "SQL pushdown is warehouse-only; lakehouse connectors us
 
 
 class DeltaLakeConnector(VerideltaConnector):
-    """Delta Lake scanner backed by `pl.scan_delta`."""
+    """Delta Lake scanner backed by `pl.scan_delta`.
+
+    `connect()` opens a lazy scan of `DeltaLakeConfig.table_uri`, pinned to
+    `version` when one is set, and `lazyframe()` hands that scan to the local
+    engine. No SQL is involved: `execute_pushdown` always raises because a
+    Delta table has no compute to push work into. Requires the `delta` extra
+    (`uv add 'veridelta[delta]'`).
+    """
 
     def __init__(self, config: DeltaLakeConfig) -> None:
         """Initialize the connector with validated Delta Lake settings.
@@ -94,7 +101,14 @@ class DeltaLakeConnector(VerideltaConnector):
 
 
 class IcebergConnector(VerideltaConnector):
-    """Apache Iceberg scanner backed by `pl.scan_iceberg`."""
+    """Apache Iceberg scanner backed by `pl.scan_iceberg`.
+
+    `connect()` opens a lazy scan of `IcebergConfig.table_uri`, pinned to
+    `snapshot_id` when one is set, and `lazyframe()` hands that scan to the
+    local engine. As with Delta Lake, `execute_pushdown` always raises; the
+    comparison runs in Polars. Requires the `iceberg` extra
+    (`uv add 'veridelta[iceberg]'`).
+    """
 
     def __init__(self, config: IcebergConfig) -> None:
         """Initialize the connector with validated Iceberg settings.

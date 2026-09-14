@@ -113,7 +113,18 @@ def _run_arrow_query(session: Any, statement: str, fetch_method: str) -> tuple[A
 
 
 class SnowflakeConnector(VerideltaConnector):
-    """Snowflake SQL warehouse connector backed by the optional Snowflake extra."""
+    """Snowflake SQL warehouse connector backed by the optional Snowflake extra.
+
+    `connect()` opens a `snowflake.connector` session from the frozen
+    `SnowflakeConfig`; `execute_pushdown` runs compiler SQL on a fresh cursor
+    and fetches the result as Arrow. Install the driver with
+    `uv add 'veridelta[snowflake]'`; without it, `connect()` raises
+    `ConnectorError` with that hint instead of an `ImportError`.
+
+    Attributes:
+        compiler (SQLPushdownCompiler): Snowflake-dialect compiler the engine
+            uses to build every statement this connector executes.
+    """
 
     def __init__(self, config: SnowflakeConfig) -> None:
         """Initialize the connector with validated Snowflake settings.
@@ -203,7 +214,18 @@ class SnowflakeConnector(VerideltaConnector):
 
 
 class DatabricksConnector(VerideltaConnector):
-    """Databricks SQL warehouse connector backed by the optional Databricks extra."""
+    """Databricks SQL warehouse connector backed by the optional Databricks extra.
+
+    `connect()` opens a `databricks.sql` session against the configured SQL
+    warehouse HTTP path; `execute_pushdown` runs compiler SQL on a fresh cursor
+    and fetches the result as Arrow. Install the driver with
+    `uv add 'veridelta[databricks]'`; without it, `connect()` raises
+    `ConnectorError` with that hint instead of an `ImportError`.
+
+    Attributes:
+        compiler (SQLPushdownCompiler): Databricks-dialect compiler (backtick
+            quoting, Spark type names) the engine uses for every statement.
+    """
 
     def __init__(self, config: DatabricksConfig) -> None:
         """Initialize the connector with validated Databricks settings.

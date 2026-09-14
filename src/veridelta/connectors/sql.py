@@ -163,7 +163,31 @@ local engine yields a null and keeps going.
 
 
 class SQLPushdownCompiler:
-    """Compile `DiffRule` semantics into dialect-specific SQL strings."""
+    """Compile `DiffRule` semantics into dialect-specific SQL strings.
+
+    One instance targets one `SQLDialect`. The engine drives a warehouse run
+    with these statements, in this order:
+
+    1. `compile_schema_probe_query` per side, to learn column names and types.
+    2. `compile_count_query` per side, for the `threshold` denominator.
+    3. `compile_query` for inner-join rows where a compared column differs.
+    4. `compile_added_query` and `compile_missing_query` for the anti-joins.
+    5. `compile_column_mismatch_query` for the per-column tally.
+
+    `compile_result_schema_query` wraps any of the above so a connector can
+    describe a result without re-running it. Rules reach the compiler already
+    folded over the configuration's `default_*` settings, so every compared
+    column arrives as one fully specified `DiffRule`.
+
+    The compiler is also the security boundary for warehouse SQL. Identifiers
+    are allowlisted segment by segment and then dialect-quoted, data literals
+    are escaped through `_literal`, and every dialect keyword comes from a
+    module-level table keyed by `SQLDialect`, so an unsupported combination
+    raises rather than borrowing another dialect's spelling.
+
+    Attributes:
+        dialect (SQLDialect): Target dialect for quoting, casts, and functions.
+    """
 
     def __init__(self, dialect: SQLDialect) -> None:
         """Initialize a compiler for a single warehouse dialect.
