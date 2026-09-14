@@ -141,7 +141,15 @@ def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None
 
 
 class BaseLoader(ABC):
-    """Abstract base class for all data loaders."""
+    """Contract for turning one `SourceConfig` into an unevaluated LazyFrame.
+
+    Every file format Veridelta reads is a subclass registered in
+    `LoaderFactory._loaders`, keyed by the `SourceType` literal. Implementations
+    should prefer a Polars `scan_*` reader so the comparison graph stays lazy
+    end to end; the two eager loaders (`JSONLoader`, `ExcelLoader`) say why in
+    their own docstrings. `SourceConfig.options` are forwarded to the reader
+    unchanged, so any keyword the underlying Polars function accepts is valid.
+    """
 
     @abstractmethod
     def load(self, config: SourceConfig) -> pl.LazyFrame:
@@ -158,7 +166,11 @@ class BaseLoader(ABC):
 
 
 class CSVLoader(BaseLoader):
-    """Loader for CSV files utilizing the fast Polars CSV scanner."""
+    """Streaming CSV loader over `pl.scan_csv`.
+
+    Delimiters, encodings, and header handling are all controlled through
+    `SourceConfig.options`, for example `{"separator": ";"}`.
+    """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
         """Loads a CSV file into a Polars LazyFrame.
@@ -174,7 +186,11 @@ class CSVLoader(BaseLoader):
 
 
 class ParquetLoader(BaseLoader):
-    """Loader for Parquet files utilizing the Polars Parquet engine."""
+    """Streaming Parquet loader over `pl.scan_parquet`.
+
+    Accepts whatever path or glob the Polars scanner accepts. Because the scan
+    stays lazy, columns dropped by `ignore` rules are never read from disk.
+    """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
         """Loads a Parquet file into a Polars LazyFrame.
@@ -190,7 +206,11 @@ class ParquetLoader(BaseLoader):
 
 
 class NDJSONLoader(BaseLoader):
-    """Loader for newline-delimited JSON, which Polars can scan lazily."""
+    """Streaming loader for newline-delimited JSON over `pl.scan_ndjson`.
+
+    One record per line is the JSON shape Polars can read incrementally, so
+    this is the format to prefer over `json` for large exports.
+    """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
         """Loads an NDJSON file into a Polars LazyFrame.
@@ -206,7 +226,11 @@ class NDJSONLoader(BaseLoader):
 
 
 class ArrowLoader(BaseLoader):
-    """Loader for Arrow IPC (Feather v2) files."""
+    """Streaming loader for Arrow IPC (Feather v2) files over `pl.scan_ipc`.
+
+    IPC files carry their schema, so no type inference runs and the dtypes the
+    engine compares are exactly the ones the writer stored.
+    """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
         """Loads an Arrow IPC file into a Polars LazyFrame.
@@ -281,7 +305,23 @@ class ExcelLoader(BaseLoader):
 
 
 class LoaderFactory:
-    """Factory to return the appropriate loader based on the configured SourceType."""
+    """Resolve any file or lakehouse `SourceRef` to an unevaluated LazyFrame.
+
+    File sources are dispatched by their `format` through the `_loaders`
+    registry; Delta Lake and Iceberg sources open a connector and return its
+    lazy scan. Warehouse sources are refused here because their comparison
+    runs as SQL pushdown via `DiffEngine.run_from_configs`, never as a local
+    scan.
+
+    The registry is the single source of truth for which formats exist. Tests
+    bind it to the `SourceType` literal in both directions, so a format cannot
+    be advertised without a loader or shipped without appearing in the literal.
+
+    Attributes:
+        _loaders (ClassVar[dict[str, BaseLoader]]): Format name to loader
+            instance. Error messages derive their supported-format list from
+            this mapping rather than a hardcoded string.
+    """
 
     _loaders: ClassVar[dict[str, BaseLoader]] = {
         "csv": CSVLoader(),
@@ -1049,7 +1089,37 @@ class DataIngestor:
 
 
 class DiffEngine:
-    """The core mathematical engine that evaluates differences between datasets."""
+    """Compare two datasets on their primary keys and report what differs.
+
+    The engine takes two Polars `LazyFrame` inputs and a `DiffConfig`, applies
+    the nine-stage `DiffRule` pipeline to each side, then joins on the primary
+    keys to classify rows as added (target-only), removed (source-only), or
+    changed (present on both sides with at least one compared column
+    differing). Nothing is materialized until `run()` collects the joins, so
+    the source frames can be `scan_*` graphs over files far larger than memory.
+
+    Three entry points cover the usual situations:
+
+    - `DiffEngine(config, source, target).run()` for frames you already hold.
+      In-memory `DataFrame` inputs must be wrapped with `.lazy()` first.
+    - `DiffEngine.run_from_configs(diff, source, target)` for `SourceRef`
+      pairs from YAML. File and lakehouse pairs load through `DataIngestor`
+      and run locally; same-warehouse pairs compile to SQL pushdown instead.
+    - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
+      key presence on metadata alone, before any rows are read.
+
+    Attributes:
+        config (DiffConfig): Primary keys, rules, defaults, and threshold.
+        source (pl.LazyFrame): Source side; mutated in place as alignment and
+            normalization stages run.
+        target (pl.LazyFrame): Target side, treated as the authoritative schema.
+
+    Raises:
+        ConfigError: From `run()` when primary keys are missing, `schema_mode`
+            is violated, or a rule cannot apply to the column it names.
+        DataIntegrityError: From `run()` when primary keys are not unique on
+            either side after normalization.
+    """
 
     def __init__(
         self, config: DiffConfig, source_df: pl.LazyFrame, target_df: pl.LazyFrame
