@@ -51,7 +51,7 @@ uv add 'veridelta[all]'
 
 Do not commit `password` or `access_token` in YAML. Inject secrets from the environment or your orchestrator's secret store at runtime.
 
-Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (account, user, warehouse, database, schema, role, and password for Snowflake; host, HTTP path, token, catalog, and schema for Databricks), and the `table` names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
+Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
 
 `table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Pattern-only `DiffRule` entries are not compiled to SQL; they raise `ConnectorError` on the warehouse path.
 
@@ -102,6 +102,14 @@ result.to_pandas()
 ```
 
 `summary` stays a plain Pydantic model, so `summary.model_dump_json()` still produces a clean, frame-free payload for CI logs.
+
+The same standalone HTML report the CLI writes with `--html` is available from Python. It embeds its own styles and script, so it opens offline, and `max_rows` caps every table the way `--html-max-rows` does:
+
+```python
+from veridelta.report import write_html
+
+write_html(result, "reports/nightly.html", max_rows=1000)
+```
 
 Warehouse pushdown compares in place and never projects values, so its frames hold primary keys alone and the result is flagged `keys_only`. `get_mismatches` there returns every changed key rather than one column's values, and still rejects a column that was not part of the comparison.
 
@@ -183,6 +191,20 @@ primary_keys: ["event_id"]
 
 `storage_options` is a string map passed through to the Delta or Iceberg scanner (credentials, region, and other object-store settings).
 
+### Connection fields
+
+Every connector block is selected by `type` and rejects keys it does not list.
+
+| `type` | Required | Optional |
+| :--- | :--- | :--- |
+| `file` (default) | `path` | `format` (default `csv`), `options` |
+| `snowflake` | `table`, `account`, `user`, `warehouse`, `database`, `schema_name` | `password`, `role` |
+| `databricks` | `table`, `server_hostname`, `http_path` | `access_token`, `catalog`, `schema_name` |
+| `delta` | `table_uri` | `version`, `storage_options` |
+| `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
+
+`version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse and lakehouse blocks are frozen once loaded.
+
 ## Engine Directives
 
 Global directives control the strictness of the underlying Polars evaluation engine.
@@ -213,9 +235,46 @@ output_path: "./artifacts"
 output_format: parquet
 ```
 
+### Schema dry run
+
+`schema_mode` and primary-key presence can be enforced without reading any rows. `DiffEngine.validate_schemas` runs alignment and the schema check on metadata alone, so it accepts zero-row frames or unevaluated scans and is cheap enough to gate a deployment:
+
+```python
+import polars as pl
+
+from veridelta import ConfigError, DiffConfig, DiffEngine
+
+contract = DiffConfig(primary_keys=["user_id"], schema_mode="exact")
+try:
+    DiffEngine.validate_schemas(contract, pl.scan_parquet("source.parquet"), pl.scan_parquet("target.parquet"))
+except ConfigError as exc:
+    print(exc)
+```
+
+It raises `ConfigError` on a violation and returns nothing otherwise.
+
 ## Column-Level Overrides (Rules)
 
-The `rules` array defines granular, per-column or regex-pattern tolerances.
+The `rules` array defines granular, per-column or regex-pattern tolerances. A rule selects columns by exact `column_names` or by a regular expression in `pattern`, and every other field is optional. When a column is named by more than one rule, the first rule listing it by exact name wins, then the first whose `pattern` matches.
+
+| Field | Description |
+| :--- | :--- |
+| `column_names` | Exact source column names this rule governs. |
+| `pattern` | Regular expression matched against the start of each column name. Pattern-only rules are not compiled to warehouse SQL and raise `ConnectorError` there. |
+| `absolute_tolerance` | Maximum absolute numeric difference. Overrides `default_absolute_tolerance`. |
+| `relative_tolerance` | Maximum relative numeric difference (`0.01` is 1%). Overrides `default_relative_tolerance`. |
+| `case_insensitive` | Lowercase text before comparing. |
+| `whitespace_mode` | `none`, `left`, `right`, or `both`. Overrides `default_whitespace_mode`. |
+| `regex_replace` | Mapping of regex pattern to replacement, applied in order to text columns. |
+| `pad_zeros` | Stringify, then left-pad to this width. |
+| `value_map` | Source-side crosswalk from legacy value to target value. |
+| `null_values` | Sentinels coerced to NULL. Overrides `default_null_values`; must fit the column's type. |
+| `treat_null_as_equal` | Whether `NULL == NULL` matches. Overrides `default_treat_null_as_equal`. |
+| `datetime_format` | `strptime` pattern that parses text into timestamps. |
+| `timezone` | Zone that timezone-aware timestamps are converted to. |
+| `cast_to` | `Int64`, `Float64`, `String`, `Boolean`, `Date`, or `Datetime`. |
+| `ignore` | Exclude the matched columns from the comparison entirely. |
+| `rename_to` | Target name for a single source column. |
 
 ### Transform order
 
