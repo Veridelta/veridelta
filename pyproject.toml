@@ -154,9 +154,14 @@ select = [
     "PERF",
     "RUF",
     "ARG",
+    "C90",
 ]
 
 ignore = ["E501", "B008", "D100", "D104", "D105", "D106", "D401"]
+
+[tool.ruff.lint.mccabe]
+# Complexity budget per function. Split a function before suppressing C901.
+max-complexity = 10
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
