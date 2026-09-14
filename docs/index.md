@@ -1,64 +1,100 @@
-# Welcome to Veridelta
+# Veridelta
 
-**Semantic diffing for mission-critical data pipelines.**
+Veridelta compares two datasets on their keys and reports exactly what changed after applying the variance you declared as expected. It is built for system modernizations, model retrains, and pipeline migrations — anywhere "equal" has to be defined, not assumed.
 
-Veridelta is a high-performance data comparison engine designed to validate changes between datasets. Built on the [Polars](https://pola.rs/) DataFrame library, it enables explicit rule definitions for expected variance—such as floating-point jitter, schema drift, or categorical crosswalks—preventing false positives and isolating true data regressions.
+Powered by [Polars](https://pola.rs/).
 
----
+## Why
 
-## Core Capabilities
+- **Deterministic verdicts.** Nine fixed transform stages. The same rule produces the same result locally and in a warehouse, verified by a differential harness.
+- **Scale.** Lazy Polars scans. Warehouse pushdown compiles comparison SQL and never extracts full tables.
+- **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
+- **CI/CD.** Exit code 0 or 1. `--json` on stdout. `--html` writes a standalone report. Artifacts for added, removed, and changed rows.
+- **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
+- **Connectors.** Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
 
-* **High-Performance Execution:** Powered by a Rust-backed Polars engine for out-of-core dataset processing.
-* **Declarative Configuration:** Define numeric tolerances, string normalization, and type coercion in standardized YAML.
-* **Omni-Channel Deployment:** Execute via CLI in CI/CD pipelines (GitHub Actions, GitLab CI) or as a Python library in data orchestrators (Airflow, Dagster).
-* **Schema Evolution Support:** Manage structural drift with strict, intersection, or additive schema enforcement modes.
-* **Warehouse and Lakehouse Connectors:** Push Snowflake or Databricks comparisons into SQL, or scan Delta Lake and Iceberg tables. See the [Configuration Guide](configuration.md) for YAML, extras, and routing rules.
-
-## Installation
-
-Install via `uv` (Recommended):
+## Install
 
 ```bash
 uv add veridelta
+# or: pip install veridelta
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, excel, all
 ```
 
-Or via standard `pip`:
+## Architecture
 
-```bash
-pip install veridelta
+```mermaid
+flowchart LR
+  subgraph sources [Sources]
+    files[Files]
+    lakehouse[Delta Iceberg]
+    warehouse[Snowflake Databricks]
+  end
+  files --> ingestor[DataIngestor]
+  lakehouse --> ingestor
+  warehouse --> compiler[SQLPushdownCompiler]
+  ingestor --> engine["DiffEngine"]
+  engine --> result[DiffResult]
+  compiler --> warehouseSql[Warehouse SQL]
+  warehouseSql --> result
+  result --> artifacts[Artifacts]
+  result --> reports["HTML JSON"]
+  result --> exitCode[Exit code]
 ```
 
-## Quick Start
+File and lakehouse sources load through `DataIngestor` into a local `DiffEngine` run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a `DiffResult`.
 
-**1. Define the execution specification (`veridelta.yaml`):**
+## Quick start
+
+Python — `DiffEngine` consumes `LazyFrame`s:
+
+```python
+import polars as pl
+from veridelta import DiffConfig, DiffEngine, DiffRule
+
+result = DiffEngine(
+    DiffConfig(
+        primary_keys=["user_id"],
+        rules=[DiffRule(pattern="^AMT_.*", absolute_tolerance=0.05)],
+    ),
+    pl.scan_parquet("legacy.parquet"),
+    pl.scan_parquet("modern.parquet"),
+).run()
+
+if not result.summary.is_match:
+    raise SystemExit(f"{result.summary.changed_count} rows differ")
+```
+
+YAML — the same comparison for CI:
 
 ```yaml
+# veridelta.yaml
+primary_keys: ["transaction_id"]
 source:
-  path: "legacy_system.csv"
-  format: "csv"
-target:
-  path: "modern_system.parquet"
+  path: "legacy.parquet"
   format: "parquet"
-
-primary_keys: ["id"]
+target:
+  path: "modern.parquet"
+  format: "parquet"
 rules:
-  - column_names: ["revenue"]
-    absolute_tolerance: 0.01
+  - column_names: ["grand_total"]
+    relative_tolerance: 0.01
+  - column_names: ["contact_number"]
+    regex_replace: {"[^0-9]": ""}
 ```
-
-**2. Execute the validation engine:**
 
 ```bash
 veridelta run -c veridelta.yaml
 ```
 
-**3. Review the execution summary:** Evaluate the terminal output. Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_format` selects Parquet, CSV, JSON, NDJSON, or Arrow.
+Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_format` selects Parquet, CSV, JSON, NDJSON, or Arrow.
 
----
+## Documentation
 
-## Documentation Directory
-
-* [**Tutorials**](examples/getting_started.ipynb): Progressive guides covering local `DiffResult` access, CLI execution, programmatic Python usage, advanced semantic rules, and HTML discrepancy reports.
-* [**Configuration Guide**](configuration.md): Complete specification for tolerance rules, schema enforcement, connectors, CLI flags, and I/O settings.
-* [**API Reference**](api.md): Public Python classes and methods.
-* [**Roadmap**](roadmap.md): Work that is not built yet.
+- [**1. Core Concepts**](examples/getting_started.ipynb): Python API, `DiffResult`, and rules.
+- [**2. YAML and CLI**](examples/yaml_config.ipynb): pipeline automation, `--json`, artifacts.
+- [**3. Advanced Rules**](examples/advanced_rules.ipynb): drift resolution on real data.
+- [**4. HTML Reports**](examples/html_reports.ipynb): audit and compliance hand-off.
+- [**Configuration Guide**](configuration.md): fields, formats, extras, CLI flags, warehouse and lakehouse routing.
+- [**API Reference**](api.md): public Python surface.
+- [**Roadmap**](roadmap.md): work that is not built yet.
