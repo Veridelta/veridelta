@@ -604,6 +604,237 @@ class TestTimezoneParity:
 
 @pytest.mark.integration
 @pytest.mark.slow
+class TestEdgeCaseParity:
+    """Validate join shapes, literal escaping, and rule precedence at the edges.
+
+    Every stage above is proven in isolation. These cases cover the seams
+    between stages and the join: composite keys, renamed columns, empty inner
+    joins, quote characters inside data literals, and what happens when two
+    rules claim the same column.
+    """
+
+    def test_it_agrees_on_relative_tolerance_alone(self) -> None:
+        """Ensure `rel_tol * ABS(src)` scales the allowance with the source value."""
+        src = pl.DataFrame({"id": [1, 2, 3], "cost": [100.0, 100.0, 1000.0]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "cost": [100.5, 102.0, 1005.0]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["cost"], relative_tolerance=0.01)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        # 0.5 and 5.0 sit inside 1% of their source; 2.0 does not.
+        assert summary.changed_count == 1
+
+    def test_it_agrees_that_absolute_and_relative_tolerances_add(self) -> None:
+        """Ensure the allowance is `abs_tol + rel_tol * ABS(src)`, not the larger of the two.
+
+        A 1.0 drift on 100.0 fails 0.6 absolute alone and fails 0.5% relative
+        alone, yet passes their sum. Whichever engine picked `max` instead of
+        `+` would flag the row.
+        """
+        src = pl.DataFrame({"id": [1, 2], "cost": [100.0, 100.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "cost": [101.0, 101.2]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["cost"], absolute_tolerance=0.6, relative_tolerance=0.005)
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
+    def test_it_agrees_when_a_tolerance_meets_null_safe_equality(self) -> None:
+        """Ensure the tolerance branch still folds NULLs the way stage 9 asks."""
+        src = pl.DataFrame({"id": [1, 2, 3, 4], "cost": [10.0, None, 30.0, None]})
+        tgt = pl.DataFrame({"id": [1, 2, 3, 4], "cost": [10.04, None, 30.5, 5.0]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["cost"], absolute_tolerance=0.05, treat_null_as_equal=True)
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        # Row 2 is a null pair, row 3 exceeds the tolerance, row 4 is one-sided.
+        assert summary.changed_count == 2
+
+    def test_it_agrees_on_composite_primary_keys(self) -> None:
+        """Ensure every key column participates in both the anti-joins and the inner join."""
+        src = pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 2, 1], "val": ["A", "B", "C"]})
+        tgt = pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 2, 2], "val": ["A", "X", "D"]})
+
+        summary = assert_parity(DiffConfig(primary_keys=["tenant", "id"]), src, tgt)
+
+        assert summary.added_count == 1
+        assert summary.removed_count == 1
+        assert summary.changed_count == 1
+        assert summary.column_mismatches == {"val": 1}
+
+    def test_it_agrees_on_a_renamed_column_end_to_end(self) -> None:
+        """Ensure `rename_to` pairs the two spellings and reports drift under the target name."""
+        src = pl.DataFrame({"id": [1, 2, 3], "legacy_amt": [10.0, 20.0, 30.0]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "amount": [10.0, 25.0, 30.0]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["legacy_amt"], rename_to="amount")],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+        assert summary.column_mismatches == {"amount": 1}
+
+    @pytest.mark.parametrize(
+        ("mode", "expected_changed"),
+        [
+            pytest.param("left", 1, id="left-keeps-trailing"),
+            pytest.param("right", 1, id="right-keeps-leading"),
+            pytest.param("both", 0, id="both-strips-all"),
+        ],
+    )
+    def test_it_agrees_on_one_sided_whitespace_stripping(
+        self, mode: str, expected_changed: int
+    ) -> None:
+        """Ensure `LTRIM` and `RTRIM` are wired to the matching Polars strip."""
+        src = pl.DataFrame({"id": [1, 2], "name": ["  ada", "grace  "]})
+        tgt = pl.DataFrame({"id": [1, 2], "name": ["ada", "grace"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], whitespace_mode=mode)],  # type: ignore[arg-type]
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+    def test_it_agrees_on_apostrophes_inside_data_literals(self) -> None:
+        """Ensure `'` inside sentinels, crosswalks, and regexes survives SQL quoting.
+
+        Each literal reaches the statement through `_literal`, which doubles
+        the quote. A raw interpolation would either break the statement or,
+        worse, end the string early and compare against the wrong value.
+        """
+        src = pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "owner": ["O'Brien", "Smith", "D'Angelo"],
+                "phrase": ["it's", "that's", "ok"],
+            }
+        )
+        tgt = pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "owner": [None, "Smith", "DAngelo"],
+                "phrase": ["its", "thats", "ok"],
+            }
+        )
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["owner"],
+                    null_values=["O'Brien"],
+                    regex_replace={"'": ""},
+                    treat_null_as_equal=True,
+                ),
+                DiffRule(column_names=["phrase"], value_map={"it's": "its", "that's": "thats"}),
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_when_no_primary_key_overlaps(self) -> None:
+        """Ensure an empty inner join yields no changed rows and an empty tally.
+
+        `SUM` over zero rows is NULL in SQL; the reducer must read that as
+        nothing to report, exactly like the local engine's empty frame.
+        """
+        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"id": [3, 4], "val": ["C", "D"]})
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        assert summary.added_count == 2
+        assert summary.removed_count == 2
+        assert summary.changed_count == 0
+        assert summary.column_mismatches == {}
+
+    def test_it_agrees_when_every_non_key_column_is_ignored(self) -> None:
+        """Ensure a keys-only comparison still counts added and removed rows."""
+        src = pl.DataFrame({"id": [1, 2], "audit": ["x", "y"]})
+        tgt = pl.DataFrame({"id": [1, 3], "audit": ["p", "q"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["audit"], ignore=True)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.added_count == 1
+        assert summary.removed_count == 1
+        assert summary.changed_count == 0
+        assert summary.column_mismatches == {}
+
+    def test_it_agrees_on_a_boolean_cast(self) -> None:
+        """Ensure 0/1 flags and native booleans converge through `cast_to='Boolean'`.
+
+        Integers are the portable input here: Polars refuses to cast text such
+        as `'true'` to Boolean, so a rule doing that fails locally before any
+        parity question arises.
+        """
+        src = pl.DataFrame({"id": [1, 2, 3], "flag": [1, 0, 1]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "flag": [True, False, False]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["flag"], cast_to="Boolean")],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
+    def test_it_agrees_that_the_first_matching_rule_wins(self) -> None:
+        """Ensure both engines resolve a doubly-ruled column to the same rule.
+
+        Exact names beat patterns, and among exact names the first declared
+        wins. A looser second rule must not widen the tolerance on either path.
+        """
+        src = pl.DataFrame({"id": [1, 2], "cost": [10.0, 20.0], "count": [1, 2]})
+        tgt = pl.DataFrame({"id": [1, 2], "cost": [10.04, 21.0], "count": [1, 5]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(pattern="^co", absolute_tolerance=100.0),
+                DiffRule(column_names=["cost"], absolute_tolerance=0.05),
+                DiffRule(column_names=["cost"], absolute_tolerance=10.0),
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        # `cost` takes the strict exact-name rule; `count` falls through to the pattern.
+        assert summary.changed_count == 1
+        assert summary.column_mismatches == {"cost": 1}
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 class TestHarnessSensitivity:
     """Prove the harness can actually observe divergence before it is trusted."""
 

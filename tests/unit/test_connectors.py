@@ -3,6 +3,8 @@
 
 """Unit tests for warehouse and lakehouse connector scaffolding."""
 
+import logging
+
 import polars as pl
 import pytest
 from pydantic import ValidationError
@@ -18,6 +20,7 @@ from veridelta.connectors import (
     DatabricksConnector,
     DeltaLakeConnector,
     IcebergConnector,
+    PushdownQueryType,
     SnowflakeConnector,
     VerideltaConnector,
 )
@@ -248,10 +251,10 @@ class TestLakehouseConnectors:
         )
         assert connector.lazyframe() is lazy
 
-    def test_it_wraps_invalid_iceberg_snapshot_as_connector_error(
-        self, mocker: MockerFixture
+    def test_it_reports_an_invalid_iceberg_snapshot_as_a_scan_failure(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Ensure an invalid snapshot Polars error is wrapped as ConnectorError."""
+        """Ensure a bad snapshot names the table and the cause, not a missing extra."""
         mocker.patch(
             "veridelta.connectors.lakehouse.pl.scan_iceberg",
             side_effect=pl.exceptions.ComputeError("snapshot_id 99 not found"),
@@ -260,11 +263,37 @@ class TestLakehouseConnectors:
             IcebergConfig(table_uri="s3://lake/iceberg/events", snapshot_id=99)
         )
 
-        with pytest.raises(ConnectorError, match="uv sync --extra iceberg"):
+        with (
+            caplog.at_level(logging.WARNING, logger="veridelta.connectors.lakehouse"),
+            pytest.raises(
+                ConnectorError, match="Iceberg scan of 's3://lake/iceberg/events'"
+            ) as info,
+        ):
             connector.connect()
 
+        assert "snapshot_id 99 not found" in str(info.value)
+        assert "uv sync" not in str(info.value)
+        assert isinstance(info.value.__cause__, pl.exceptions.ComputeError)
+        assert "Iceberg scan of s3://lake/iceberg/events failed" in caplog.text
+
+    def test_it_reports_a_delta_scan_failure_with_the_table_and_cause(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure any non-import scanner failure is wrapped with the table URI and message."""
+        mocker.patch(
+            "veridelta.connectors.lakehouse.pl.scan_delta",
+            side_effect=OSError("bucket lake does not exist"),
+        )
+        connector = DeltaLakeConnector(_delta_config())
+
+        with pytest.raises(ConnectorError, match="Delta Lake scan of 's3://lake/events'") as info:
+            connector.connect()
+
+        assert "bucket lake does not exist" in str(info.value)
+        assert "uv sync" not in str(info.value)
+
     def test_it_wraps_missing_delta_extra_as_connector_error(self, mocker: MockerFixture) -> None:
-        """Ensure ImportError from pl.scan_delta becomes ConnectorError."""
+        """Ensure ImportError from pl.scan_delta becomes an install hint."""
         mocker.patch(
             "veridelta.connectors.lakehouse.pl.scan_delta",
             side_effect=ImportError("deltalake is required"),
@@ -275,12 +304,102 @@ class TestLakehouseConnectors:
             connector.connect()
 
     def test_it_wraps_missing_iceberg_extra_as_connector_error(self, mocker: MockerFixture) -> None:
-        """Ensure PolarsError from pl.scan_iceberg becomes ConnectorError."""
+        """Ensure ImportError from pl.scan_iceberg becomes an install hint."""
         mocker.patch(
             "veridelta.connectors.lakehouse.pl.scan_iceberg",
-            side_effect=pl.exceptions.ComputeError("pyiceberg is required"),
+            side_effect=ImportError("pyiceberg is required"),
         )
         connector = IcebergConnector(_iceberg_config())
 
         with pytest.raises(ConnectorError, match="uv sync --extra iceberg"):
             connector.connect()
+
+    def test_it_logs_the_scan_it_opened_without_storage_options(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure connect() logs the table and pin but never the credential map."""
+        mocker.patch(
+            "veridelta.connectors.lakehouse.pl.scan_delta", return_value=_sample_lazy_frame()
+        )
+        connector = DeltaLakeConnector(
+            DeltaLakeConfig(
+                table_uri="s3://lake/events",
+                version=3,
+                storage_options={"AWS_SECRET_ACCESS_KEY": "hunter2"},
+            )
+        )
+
+        with caplog.at_level(logging.INFO, logger="veridelta.connectors.lakehouse"):
+            connector.connect()
+
+        assert "Opened Delta Lake scan of s3://lake/events (version=3)" in caplog.text
+        assert "hunter2" not in caplog.text
+
+    def test_it_drops_the_scan_handle_on_close_and_reopens_on_connect(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure close() returns a lakehouse connector to its unconnected state."""
+        lazy = _sample_lazy_frame()
+        scan = mocker.patch("veridelta.connectors.lakehouse.pl.scan_iceberg", return_value=lazy)
+        connector = IcebergConnector(_iceberg_config())
+        connector.close()  # before connect: a no-op
+
+        connector.connect()
+        assert connector.lazyframe() is lazy
+
+        connector.close()
+        connector.close()  # idempotent
+        with pytest.raises(ConnectorError, match="not connected"):
+            connector.lazyframe()
+        with pytest.raises(ConnectorError, match="not connected"):
+            connector.fetch_schema()
+
+        connector.connect()
+        assert connector.lazyframe() is lazy
+        assert scan.call_count == 2
+
+    def test_it_closes_on_context_exit(self, mocker: MockerFixture) -> None:
+        """Ensure the context manager releases the scan even when the block raises."""
+        mocker.patch(
+            "veridelta.connectors.lakehouse.pl.scan_delta", return_value=_sample_lazy_frame()
+        )
+        connector = DeltaLakeConnector(_delta_config())
+
+        def _scan_then_fail() -> None:
+            with connector as managed:
+                assert managed is connector
+                managed.connect()
+                raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            _scan_then_fail()
+
+        with pytest.raises(ConnectorError, match="not connected"):
+            connector.lazyframe()
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestConnectorLifecycleDefaults:
+    """Validate the lifecycle members every connector inherits from the ABC."""
+
+    def test_it_provides_a_no_op_close_and_a_self_returning_context(self) -> None:
+        """Ensure a three-method subclass still gets close() and the context protocol."""
+
+        class _Minimal(VerideltaConnector):
+            def connect(self) -> None:
+                return None
+
+            def execute_pushdown(
+                self, statement: str, query_type: PushdownQueryType = "mismatch"
+            ) -> pl.LazyFrame:
+                return _sample_lazy_frame()
+
+            def fetch_schema(self) -> pl.Schema:
+                return _sample_lazy_frame().collect_schema()
+
+        connector = _Minimal()
+        connector.close()
+        with connector as managed:
+            assert managed is connector
+        assert connector.execute_pushdown("SELECT 1").collect().height == 2
