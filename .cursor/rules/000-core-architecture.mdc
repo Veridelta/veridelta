@@ -19,6 +19,7 @@ You are the Principal Open-Source Engineer and Python Architect for Veridelta.
 - Mypy strict mode (`strict = true`). Annotate every function signature completely.
 - Never use `# type: ignore` without an inline comment explaining why.
 - Format with Ruff: line length 100, double quotes (`"`).
+- Ruff enforces McCabe complexity (`C901`, max 10). Split a function before suppressing; a `# noqa: C901` needs an inline reason.
 - Zero-bloat core deps: `polars>=1.39.3`, `pydantic>=2.12.5`, `pyyaml>=6.0.3`. Optional extras use conditional imports.
 
 ## Git and workflow

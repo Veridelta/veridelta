@@ -559,6 +559,39 @@ def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRul
     return effective
 
 
+def _enforce_pushdown_preconditions(
+    effective: EffectiveRule, sides: tuple[tuple[str, pl.Schema], ...]
+) -> None:
+    """Fail a pushdown rule that the probed column types can never satisfy.
+
+    Only an explicit `null_values` rule is checked. A global default is expected
+    to span a mixed schema, so the compiler simply skips the columns it cannot
+    hold, exactly as the local engine does. The `timezone` precondition applies
+    either way: the compiler emits nothing for that stage, so the check is the
+    only thing keeping a warehouse run from comparing columns the local engine
+    would refuse.
+
+    Args:
+        effective (EffectiveRule): Rule with global defaults already folded in.
+        sides (tuple[tuple[str, pl.Schema], ...]): Column name and probed
+            schema for each side of the comparison.
+
+    Raises:
+        ConfigError: If none of the explicit sentinels fit a probed type, or a
+            `timezone` rule targets a column that is not a zoned timestamp.
+    """
+    if effective["null_values_explicit"] and effective["null_values"]:
+        for name, schema in sides:
+            dtype = schema.get(name)
+            if dtype is not None and not usable_sentinels(effective["null_values"], dtype):
+                raise _unusable_sentinel_error(name, dtype, effective["null_values"])
+    if effective["timezone"]:
+        for name, schema in sides:
+            dtype = schema.get(name)
+            if dtype is not None:
+                _reject_unzoned_timezone(name, dtype, effective["timezone"])
+
+
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
@@ -603,19 +636,9 @@ def _resolve_pushdown_rules(
             continue
 
         effective = _fold_rule_defaults(rule, diff)
-        sides = ((column, source_schema), (rename_to or column, target_schema))
-        # Only an explicit rule is checked here. A global default is expected to
-        # span a mixed schema, so the compiler skips the columns it cannot hold.
-        if effective["null_values_explicit"] and effective["null_values"]:
-            for name, schema in sides:
-                dtype = schema.get(name)
-                if dtype is not None and not usable_sentinels(effective["null_values"], dtype):
-                    raise _unusable_sentinel_error(name, dtype, effective["null_values"])
-        if effective["timezone"]:
-            for name, schema in sides:
-                dtype = schema.get(name)
-                if dtype is not None:
-                    _reject_unzoned_timezone(name, dtype, effective["timezone"])
+        _enforce_pushdown_preconditions(
+            effective, ((column, source_schema), (rename_to or column, target_schema))
+        )
 
         resolved.append(
             DiffRule(
@@ -1308,29 +1331,8 @@ class DiffEngine:
             raise _unusable_sentinel_error(column, dtype, rule["null_values"])
 
         if is_text:
-            if rule["regex_replace"]:
-                for pattern, replacement in rule["regex_replace"].items():
-                    expr = expr.str.replace_all(pattern, replacement)
-                applied = True
-
-            mode = rule["whitespace"]
-            if mode == "left":
-                expr = expr.str.strip_chars_start()
-                applied = True
-            elif mode == "right":
-                expr = expr.str.strip_chars_end()
-                applied = True
-            elif mode == "both":
-                expr = expr.str.strip_chars()
-                applied = True
-
-            if rule["case_insensitive"]:
-                expr = expr.str.to_lowercase()
-                applied = True
-
-            if is_source and rule["value_map"]:
-                expr = expr.replace(rule["value_map"])
-                applied = True
+            expr, text_applied = self._normalize_text_expr(expr, rule, is_source=is_source)
+            applied = applied or text_applied
 
         if rule["pad_zeros"] is not None:
             # Stringify first so a numeric 123 and a text '00123' converge.
@@ -1343,6 +1345,54 @@ class DiffEngine:
             applied = True
 
         return expr.alias(column) if applied else None
+
+    @staticmethod
+    def _normalize_text_expr(
+        expr: pl.Expr, rule: EffectiveRule, *, is_source: bool
+    ) -> tuple[pl.Expr, bool]:
+        """Build stages 2 through 4 for a text column: regex, whitespace, case, value map.
+
+        Mirrors the compiler's `_apply_regex_replace`, `_apply_whitespace`,
+        `_apply_case`, and `_apply_value_map` so the two engines keep the same
+        stage boundaries. Callers gate on the column holding text; the `.str`
+        namespace used here rejects Categorical and Enum.
+
+        Args:
+            expr (pl.Expr): Expression produced by the sentinel stage.
+            rule (EffectiveRule): Parameters resolved by `_get_effective_rule`.
+            is_source (bool): True when normalizing the source frame, the only
+                side `value_map` rewrites.
+
+        Returns:
+            tuple[pl.Expr, bool]: The transformed expression and whether any
+                stage applied.
+        """
+        applied = False
+        if rule["regex_replace"]:
+            for pattern, replacement in rule["regex_replace"].items():
+                expr = expr.str.replace_all(pattern, replacement)
+            applied = True
+
+        mode = rule["whitespace"]
+        if mode == "left":
+            expr = expr.str.strip_chars_start()
+            applied = True
+        elif mode == "right":
+            expr = expr.str.strip_chars_end()
+            applied = True
+        elif mode == "both":
+            expr = expr.str.strip_chars()
+            applied = True
+
+        if rule["case_insensitive"]:
+            expr = expr.str.to_lowercase()
+            applied = True
+
+        if is_source and rule["value_map"]:
+            expr = expr.replace(rule["value_map"])
+            applied = True
+
+        return expr, applied
 
     def _normalize_temporal_expr(
         self, column: str, rule: EffectiveRule, dtype: pl.DataType
