@@ -1002,7 +1002,10 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
             )
         snowflake = SnowflakeConnector(source)
         snowflake.connect()
-        return _collect_pushdown_summary(snowflake, source.table, target.table, diff)
+        try:
+            return _collect_pushdown_summary(snowflake, source.table, target.table, diff)
+        finally:
+            snowflake.close()
     if isinstance(source, DatabricksConfig) and isinstance(target, DatabricksConfig):
         if _databricks_fingerprint(source) != _databricks_fingerprint(target):
             raise ConnectorError(
@@ -1011,7 +1014,10 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
             )
         databricks = DatabricksConnector(source)
         databricks.connect()
-        return _collect_pushdown_summary(databricks, source.table, target.table, diff)
+        try:
+            return _collect_pushdown_summary(databricks, source.table, target.table, diff)
+        finally:
+            databricks.close()
     raise ConnectorError("Mixed file/lakehouse and warehouse backends are unsupported.")
 
 

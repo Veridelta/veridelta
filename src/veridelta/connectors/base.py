@@ -4,7 +4,8 @@
 """Abstract connector interface for warehouse and lakehouse backends."""
 
 from abc import ABC, abstractmethod
-from typing import Literal, Protocol, runtime_checkable
+from types import TracebackType
+from typing import Literal, Protocol, TypeVar, runtime_checkable
 
 import polars as pl
 
@@ -12,6 +13,8 @@ from veridelta.connectors.sql import SQLPushdownCompiler
 
 PushdownQueryType = Literal["mismatch", "added", "missing", "count", "columns", "schema"]
 """Warehouse pushdown round-trip: comparison rows, tallies, totals, or probes."""
+
+_ConnectorT = TypeVar("_ConnectorT", bound="VerideltaConnector")
 
 
 @runtime_checkable
@@ -54,12 +57,17 @@ class VerideltaConnector(ABC):
       Polars `scan_*` handle and expose it through `lazyframe()`. The diff then
       runs in the local engine; their `execute_pushdown` always raises.
 
-    Call `connect()` before anything else. `fetch_schema()` reads column
-    metadata without collecting rows, but what it describes depends on the
-    family: the scanned table for lakehouse connectors, and the result of the
-    most recent `execute_pushdown` statement for warehouse connectors. The
-    engine itself probes warehouse columns through
-    `SQLPushdownCompiler.compile_schema_probe_query` rather than this method.
+    Call `connect()` before anything else and `close()` when finished; the
+    connector is also a context manager whose exit calls `close()`. After
+    `close()` the connector is back in its unconnected state, so any further
+    call raises `ConnectorError` until `connect()` runs again.
+
+    `fetch_schema()` reads column metadata without collecting rows, but what
+    it describes depends on the family: the scanned table for lakehouse
+    connectors, and the result of the most recent `execute_pushdown` statement
+    for warehouse connectors. The engine itself probes warehouse columns
+    through `SQLPushdownCompiler.compile_schema_probe_query` rather than this
+    method.
     """
 
     @abstractmethod
@@ -99,3 +107,35 @@ class VerideltaConnector(ABC):
             ConnectorError: If called before `connect()` or if the backend is
                 unimplemented.
         """
+
+    def close(self) -> None:  # noqa: B027 - deliberate no-op default, see below
+        """Release the session or scan handle established by `connect()`.
+
+        Safe to call before `connect()` and safe to call twice. The default
+        holds no resources; connectors that open a driver session or a scan
+        override it. It is not abstract so that subclasses written against the
+        three-method contract keep working.
+        """
+
+    def __enter__(self: _ConnectorT) -> _ConnectorT:
+        """Return the connector unchanged; `connect()` stays an explicit call.
+
+        Returns:
+            The connector itself, so `with SnowflakeConnector(cfg) as c:` binds it.
+        """
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the connector when leaving the context, error or not.
+
+        Args:
+            exc_type (type[BaseException] | None): Pending exception type.
+            exc (BaseException | None): Pending exception.
+            traceback (TracebackType | None): Pending traceback.
+        """
+        self.close()

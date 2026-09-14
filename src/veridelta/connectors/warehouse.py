@@ -6,8 +6,14 @@
 Drivers are optional extras. Missing packages raise `ConnectorError` with an
 install hint. Query results are fetched as Arrow tables and wrapped in a
 Polars LazyFrame.
+
+Connection and statement lifecycle is logged under the `veridelta.connectors.
+warehouse` logger. Log lines carry the backend, the pushdown round-trip kind,
+and timings, never SQL text or credentials.
 """
 
+import logging
+import time
 from typing import Any
 
 import polars as pl
@@ -17,20 +23,26 @@ from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DatabricksConfig, SnowflakeConfig
 
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
+# Which branch of each probe runs depends on the extras installed in the
+# environment, so neither is a coverage target; the tests patch the module
+# attribute instead.
 snowflake_connector: Any = None
 try:
     import snowflake.connector as _snowflake_connector
-except ImportError:
+except ImportError:  # pragma: no cover
     pass
-else:
+else:  # pragma: no cover
     snowflake_connector = _snowflake_connector
 
 databricks_sql: Any = None
 try:
     import databricks.sql as _databricks_sql
-except ImportError:
+except ImportError:  # pragma: no cover
     pass
-else:
+else:  # pragma: no cover
     databricks_sql = _databricks_sql
 
 _SNOWFLAKE_EXTRA = "Snowflake extra is not installed. Install it with: uv sync --extra snowflake"
@@ -83,13 +95,17 @@ def _schema_from_arrow(table: Any, description: Any) -> pl.Schema:
     return pl.Schema({str(col[0]): pl.String() for col in description})
 
 
-def _run_arrow_query(session: Any, statement: str, fetch_method: str) -> tuple[Any, Any]:
+def _run_arrow_query(
+    session: Any, statement: str, fetch_method: str, *, backend: str, query_type: str
+) -> tuple[Any, Any]:
     """Execute SQL on a native session and fetch an Arrow payload.
 
     Args:
         session (Any): Open warehouse connection.
         statement (str): SQL to execute.
         fetch_method (str): Cursor method name that returns Arrow.
+        backend (str): Warehouse name for log lines.
+        query_type (str): Pushdown round-trip this statement represents.
 
     Returns:
         tuple[Any, Any]: Arrow payload and cursor description metadata.
@@ -97,19 +113,57 @@ def _run_arrow_query(session: Any, statement: str, fetch_method: str) -> tuple[A
     Raises:
         ConnectorError: If the driver raises during execute or fetch.
     """
+    started = time.perf_counter()
     cursor = session.cursor()
     try:
         cursor.execute(statement)
         table = getattr(cursor, fetch_method)()
-        return table, getattr(cursor, "description", None)
     except ConnectorError:
         raise
     except Exception as exc:
+        # The statement itself stays out of the log: it can embed value_map
+        # and null_values literals. The raised error carries the driver text.
+        logger.warning(
+            "%s %s statement failed after %.3fs",
+            backend,
+            query_type,
+            time.perf_counter() - started,
+        )
         raise ConnectorError(f"Warehouse statement failed: {exc}") from exc
+    else:
+        logger.debug(
+            "%s %s statement completed in %.3fs",
+            backend,
+            query_type,
+            time.perf_counter() - started,
+        )
+        return table, getattr(cursor, "description", None)
     finally:
         closer = getattr(cursor, "close", None)
         if callable(closer):
             closer()
+
+
+def _close_session(session: Any, backend: str) -> None:
+    """Close a driver session, logging rather than raising if the driver objects.
+
+    Closing runs from `finally` blocks after the comparison has already
+    produced its result, so a driver error here must not mask that result or
+    the exception that is already propagating.
+
+    Args:
+        session (Any): Open warehouse connection.
+        backend (str): Warehouse name for log lines.
+    """
+    closer = getattr(session, "close", None)
+    if not callable(closer):
+        return
+    try:
+        closer()
+    except Exception:
+        logger.warning("%s session did not close cleanly", backend, exc_info=True)
+    else:
+        logger.info("Closed %s session", backend)
 
 
 class SnowflakeConnector(VerideltaConnector):
@@ -160,7 +214,13 @@ class SnowflakeConnector(VerideltaConnector):
         except ConnectorError:
             raise
         except Exception as exc:
+            logger.warning("Snowflake connection to account %s failed", self._config.account)
             raise ConnectorError(f"Failed to connect to Snowflake: {exc}") from exc
+        logger.info(
+            "Connected to Snowflake account %s, warehouse %s",
+            self._config.account,
+            self._config.warehouse,
+        )
 
     def execute_pushdown(
         self, statement: str, query_type: PushdownQueryType = "mismatch"
@@ -170,7 +230,7 @@ class SnowflakeConnector(VerideltaConnector):
         Args:
             statement (str): SQL produced by `SQLPushdownCompiler`.
             query_type (PushdownQueryType): Which comparison round-trip this
-                statement represents.
+                statement represents; recorded in the log line for the call.
 
         Returns:
             pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
@@ -179,9 +239,14 @@ class SnowflakeConnector(VerideltaConnector):
             ConnectorError: If the extra is missing, the session is closed, or
                 the cursor does not return a table.
         """
-        _ = query_type
         self._require_session()
-        table, _description = _run_arrow_query(self._session, statement, "fetch_arrow_all")
+        table, _description = _run_arrow_query(
+            self._session,
+            statement,
+            "fetch_arrow_all",
+            backend="Snowflake",
+            query_type=query_type,
+        )
         self._last_statement = statement
         return _lazy_from_arrow(table)
 
@@ -198,8 +263,25 @@ class SnowflakeConnector(VerideltaConnector):
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)
         schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
-        table, description = _run_arrow_query(self._session, schema_sql, "fetch_arrow_all")
+        table, description = _run_arrow_query(
+            self._session,
+            schema_sql,
+            "fetch_arrow_all",
+            backend="Snowflake",
+            query_type="schema",
+        )
         return _schema_from_arrow(table, description)
+
+    def close(self) -> None:
+        """Close the Snowflake session, if one is open.
+
+        Idempotent. Afterwards `execute_pushdown` and `fetch_schema` raise
+        `ConnectorError` until `connect()` is called again.
+        """
+        if self._session is None:
+            return
+        session, self._session, self._last_statement = self._session, None, None
+        _close_session(session, "Snowflake")
 
     def _require_session(self) -> None:
         """Ensure the Snowflake extra is present and a session is open.
@@ -258,7 +340,13 @@ class DatabricksConnector(VerideltaConnector):
         except ConnectorError:
             raise
         except Exception as exc:
+            logger.warning("Databricks connection to %s failed", self._config.server_hostname)
             raise ConnectorError(f"Failed to connect to Databricks: {exc}") from exc
+        logger.info(
+            "Connected to Databricks host %s, path %s",
+            self._config.server_hostname,
+            self._config.http_path,
+        )
 
     def execute_pushdown(
         self, statement: str, query_type: PushdownQueryType = "mismatch"
@@ -268,7 +356,7 @@ class DatabricksConnector(VerideltaConnector):
         Args:
             statement (str): SQL produced by `SQLPushdownCompiler`.
             query_type (PushdownQueryType): Which comparison round-trip this
-                statement represents.
+                statement represents; recorded in the log line for the call.
 
         Returns:
             pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
@@ -277,9 +365,14 @@ class DatabricksConnector(VerideltaConnector):
             ConnectorError: If the extra is missing, the session is closed, or
                 the cursor does not return a table.
         """
-        _ = query_type
         self._require_session()
-        table, _description = _run_arrow_query(self._session, statement, "fetchall_arrow")
+        table, _description = _run_arrow_query(
+            self._session,
+            statement,
+            "fetchall_arrow",
+            backend="Databricks",
+            query_type=query_type,
+        )
         self._last_statement = statement
         return _lazy_from_arrow(table)
 
@@ -296,8 +389,25 @@ class DatabricksConnector(VerideltaConnector):
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)
         schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
-        table, description = _run_arrow_query(self._session, schema_sql, "fetchall_arrow")
+        table, description = _run_arrow_query(
+            self._session,
+            schema_sql,
+            "fetchall_arrow",
+            backend="Databricks",
+            query_type="schema",
+        )
         return _schema_from_arrow(table, description)
+
+    def close(self) -> None:
+        """Close the Databricks session, if one is open.
+
+        Idempotent. Afterwards `execute_pushdown` and `fetch_schema` raise
+        `ConnectorError` until `connect()` is called again.
+        """
+        if self._session is None:
+            return
+        session, self._session, self._last_statement = self._session, None, None
+        _close_session(session, "Databricks")
 
     def _require_session(self) -> None:
         """Ensure the Databricks extra is present and a session is open.
