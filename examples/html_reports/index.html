@@ -12,13 +12,13 @@
         <meta name="author" content="Veridelta Maintainers">
       
       
-        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/getting_started/">
+        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/html_reports/">
       
       
-        <link rel="prev" href="../..">
+        <link rel="prev" href="../advanced_rules/">
       
       
-        <link rel="next" href="../quickstart/">
+        <link rel="next" href="../yaml_config/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Getting Started: Local Diffing - Veridelta</title>
+        <title>HTML Discrepancy Reports - Veridelta</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#getting-started-local-diffing" class="md-skip">
+        <a href="#html-discrepancy-reports" class="md-skip">
           Skip to content
         </a>
       
@@ -120,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Getting Started: Local Diffing
+              HTML Discrepancy Reports
             
           </span>
         </div>
@@ -254,7 +254,7 @@
     
     
       <li class="md-tabs__item md-tabs__item--active">
-        <a href="./" class="md-tabs__link">
+        <a href="../getting_started/" class="md-tabs__link">
           
   
   
@@ -458,37 +458,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Getting Started: Local Diffing
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../getting_started/" class="md-nav__link">
         
   
   
@@ -504,70 +477,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#1-two-frames-that-look-different-and-are-not" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Two frames that look different and are not
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-declare-the-comparison" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Declare the comparison
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-inspect-the-rows-without-writing-artifacts" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. Inspect the rows without writing artifacts
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-isolate-a-real-discrepancy" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Isolate a real discrepancy
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -661,10 +570,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../html_reports/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTML Discrepancy Reports
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -680,6 +616,70 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-a-comparison-with-something-to-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. A comparison with something to report
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-write-the-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Write the report
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-reading-the-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Reading the report
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-capping-large-tables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Capping large tables
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1542,30 +1542,30 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </style>
 <!-- End of mermaid configuration --><div class="jupyter-wrapper">
 <div class="jp-Notebook" data-jp-theme-light="true" data-jp-theme-name="JupyterLab Light">
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=f9905743">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=4a980249">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="getting-started-local-diffing">Getting Started: Local Diffing<a class="anchor-link" href="#getting-started-local-diffing">¶</a></h1><p>This notebook is the shortest path from two DataFrames to a verdict you can inspect without writing files. It covers constructing a comparison, reading <code>DiffResult</code>, and isolating the rows behind a single column.</p>
-<p>For YAML-driven CI, see the <a href="quickstart_cli.ipynb">CLI Quickstart</a>. For warehouse pushdown, see the <a href="../configuration.md">Configuration Guide</a>.</p>
+<h1 id="html-discrepancy-reports">HTML Discrepancy Reports<a class="anchor-link" href="#html-discrepancy-reports">¶</a></h1><p>A <code>DiffResult</code> is easy to read in a notebook and awkward to hand to anyone else. <code>veridelta.report</code> renders it as a single HTML file with no external references: the verdict, the row counts, the column-level drift, and the discrepancy rows themselves, paginated. It opens offline from a CI artifact, an email attachment, or a shared drive.</p>
+<p>This notebook builds a comparison with something worth reporting, writes the report, and walks through how to read it. The CLI's <code>--html</code> flag produces the same document from YAML; see the <a href="../configuration.md#command-line">Configuration Guide</a>.</p>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=62040269">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=42d5d6ef">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="1-two-frames-that-look-different-and-are-not">1. Two frames that look different and are not<a class="anchor-link" href="#1-two-frames-that-look-different-and-are-not">¶</a></h2><p>A legacy export and a warehouse table of the same accounts. Currency symbols, a sentinel for missing status, and a one-cent rounding difference are the only things standing between them.</p>
+<h2 id="1-a-comparison-with-something-to-report">1. A comparison with something to report<a class="anchor-link" href="#1-a-comparison-with-something-to-report">¶</a></h2><p>Two billing exports that disagree in every way a report distinguishes: one invoice exists only in the target, one only in the source, and two shared invoices drifted in different columns. A tolerance rule forgives a one-cent rounding difference so the report shows a rule at work, not just raw inequality.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=af645cdb">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=cfa65994">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1586,60 +1586,128 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffConfig</span><span class="p">,</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">DiffRule</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.report</span><span class="w"> </span><span class="kn">import</span> <span class="n">render_html</span><span class="p">,</span> <span class="n">write_html</span>
 
+<span class="c1"># Source: last night's billing export</span>
 <span class="n">source</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">"legacy_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
-        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="s2">"N/A"</span><span class="p">,</span> <span class="s2">"Closed"</span><span class="p">],</span>
-        <span class="s2">"balance"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"$10.00"</span><span class="p">,</span> <span class="s2">"$20.50"</span><span class="p">,</span> <span class="s2">"$5.00"</span><span class="p">],</span>
+        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">,</span> <span class="s2">"INV-003"</span><span class="p">,</span> <span class="s2">"INV-004"</span><span class="p">,</span> <span class="s2">"INV-005"</span><span class="p">],</span>
+        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">100.00</span><span class="p">,</span> <span class="mf">250.50</span><span class="p">,</span> <span class="mf">75.25</span><span class="p">,</span> <span class="mf">310.00</span><span class="p">,</span> <span class="mf">42.00</span><span class="p">],</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">,</span> <span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"void"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">)</span>
+
+<span class="c1"># Target: the replacement pipeline. INV-005 is gone, INV-006 is new, INV-002 moved</span>
+<span class="c1"># by a cent, INV-003 by a dollar, and INV-004 changed its status casing.</span>
 <span class="n">target</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">"user_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>
-        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">"Closed"</span><span class="p">],</span>
-        <span class="s2">"balance"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.00</span><span class="p">,</span> <span class="mf">20.48</span><span class="p">,</span> <span class="mf">5.00</span><span class="p">],</span>
+        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">,</span> <span class="s2">"INV-003"</span><span class="p">,</span> <span class="s2">"INV-004"</span><span class="p">,</span> <span class="s2">"INV-006"</span><span class="p">],</span>
+        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">100.00</span><span class="p">,</span> <span class="mf">250.51</span><span class="p">,</span> <span class="mf">76.25</span><span class="p">,</span> <span class="mf">310.00</span><span class="p">,</span> <span class="mf">18.00</span><span class="p">],</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">,</span> <span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"VOID"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">)</span>
-<span class="n">source</span><span class="p">,</span> <span class="n">target</span>
+
+<span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">],</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span><span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"amount"</span><span class="p">],</span> <span class="n">absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)],</span>
+<span class="p">)</span>
+
+<span class="c1"># The engine consumes LazyFrames, so in-memory DataFrames are wrapped with .lazy()</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">target</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        FAILED</span>
+<span class="c1"># Match Rate:    20.0%</span>
+<span class="c1"># Source Rows:   5</span>
+<span class="c1"># Target Rows:   5</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Row-Level Discrepancies:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         1</span>
+<span class="c1"># Removed:       1</span>
+<span class="c1"># Changed:       2</span>
+<span class="c1"># Total Issues:  4</span>
+<span class="c1">#</span>
+<span class="c1"># Top Column-Level Drifts:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># - amount: 1 mismatches</span>
+<span class="c1"># - status: 1 mismatches</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-1">import polars as pl
 
 from veridelta import DiffConfig, DiffEngine, DiffRule
+from veridelta.report import render_html, write_html
 
+# Source: last night's billing export
 source = pl.DataFrame(
     {
-        "legacy_id": [1, 2, 3],
-        "status": ["Active", "N/A", "Closed"],
-        "balance": ["$10.00", "$20.50", "$5.00"],
+        "invoice_id": ["INV-001", "INV-002", "INV-003", "INV-004", "INV-005"],
+        "amount": [100.00, 250.50, 75.25, 310.00, 42.00],
+        "status": ["paid", "open", "paid", "void", "open"],
     }
 )
+
+# Target: the replacement pipeline. INV-005 is gone, INV-006 is new, INV-002 moved
+# by a cent, INV-003 by a dollar, and INV-004 changed its status casing.
 target = pl.DataFrame(
     {
-        "user_id": [1, 2, 3],
-        "status": ["Active", None, "Closed"],
-        "balance": [10.00, 20.48, 5.00],
+        "invoice_id": ["INV-001", "INV-002", "INV-003", "INV-004", "INV-006"],
+        "amount": [100.00, 250.51, 76.25, 310.00, 18.00],
+        "status": ["paid", "open", "paid", "VOID", "open"],
     }
 )
-source, target</div>
+
+config = DiffConfig(
+    primary_keys=["invoice_id"],
+    rules=[DiffRule(column_names=["amount"], absolute_tolerance=0.01)],
+)
+
+# The engine consumes LazyFrames, so in-memory DataFrames are wrapped with .lazy()
+result = DiffEngine(config, source.lazy(), target.lazy()).run()
+print(result.summary.report_summary)
+
+# Output:
+# Veridelta Execution Summary
+# ===========================
+# Status:        FAILED
+# Match Rate:    20.0%
+# Source Rows:   5
+# Target Rows:   5
+# Volume Shift:  +0 rows
+#
+# Row-Level Discrepancies:
+# ---------------------------
+# Added:         1
+# Removed:       1
+# Changed:       2
+# Total Issues:  4
+#
+# Top Column-Level Drifts:
+# ---------------------------
+# - amount: 1 mismatches
+# - status: 1 mismatches</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=c7eb82ed">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=0d6eb836">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="2-declare-the-comparison">2. Declare the comparison<a class="anchor-link" href="#2-declare-the-comparison">¶</a></h2><p>Rules are not applied in the order you write them. Every column follows the same nine-stage pipeline: sentinels, regex, whitespace and case, value map, padding, datetime, cast, then comparison. <code>cast_to</code> therefore always sees already-cleaned text.</p>
+<h2 id="2-write-the-report">2. Write the report<a class="anchor-link" href="#2-write-the-report">¶</a></h2><p><code>write_html</code> takes the result and a destination, creates any missing parent directories, and returns the path it wrote. Styles and the small paging script are embedded, so the file is complete on its own.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=dd2302a2">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=4fbd2d92">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1657,65 +1725,48 @@ source, target</div>
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"user_id"</span><span class="p">],</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"legacy_id"</span><span class="p">],</span> <span class="n">rename_to</span><span class="o">=</span><span class="s2">"user_id"</span><span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"balance"</span><span class="p">],</span>
-            <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span><span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span><span class="p">},</span>
-            <span class="n">cast_to</span><span class="o">=</span><span class="s2">"Float64"</span><span class="p">,</span>
-            <span class="n">absolute_tolerance</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span>
-        <span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"status"</span><span class="p">],</span>
-            <span class="n">null_values</span><span class="o">=</span><span class="p">[</span><span class="s2">"N/A"</span><span class="p">],</span>
-            <span class="n">treat_null_as_equal</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-        <span class="p">),</span>
-    <span class="p">],</span>
-<span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">report_path</span> <span class="o">=</span> <span class="n">write_html</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="s2">"reports/nightly.html"</span><span class="p">)</span>
 
-<span class="n">result</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">target</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">report_path</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">report_path</span><span class="o">.</span><span class="n">stat</span><span class="p">()</span><span class="o">.</span><span class="n">st_size</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">1024</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2"> KiB, no external references"</span><span class="p">)</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># reports/nightly.html</span>
+<span class="c1"># 6 KiB, no external references</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-2">config = DiffConfig(
-    primary_keys=["user_id"],
-    rules=[
-        DiffRule(column_names=["legacy_id"], rename_to="user_id"),
-        DiffRule(
-            column_names=["balance"],
-            regex_replace={"\\$": ""},
-            cast_to="Float64",
-            absolute_tolerance=0.05,
-        ),
-        DiffRule(
-            column_names=["status"],
-            null_values=["N/A"],
-            treat_null_as_equal=True,
-        ),
-    ],
-)
+<div class="clipboard-copy-txt" id="cell-2">report_path = write_html(result, "reports/nightly.html")
 
-result = DiffEngine(config, source.lazy(), target.lazy()).run()
-print(result.summary.report_summary)</div>
+print(report_path)
+print(f"{report_path.stat().st_size / 1024:.0f} KiB, no external references")
+
+# Output:
+# reports/nightly.html
+# 6 KiB, no external references</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=46b7265b">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=b54f5d7b">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="3-inspect-the-rows-without-writing-artifacts">3. Inspect the rows without writing artifacts<a class="anchor-link" href="#3-inspect-the-rows-without-writing-artifacts">¶</a></h2><p><code>run()</code> returns a <code>DiffResult</code>. <code>.summary</code> is the same value object as before; <code>.added</code>, <code>.removed</code>, and <code>.changed</code> are the frames the engine already materialized. <code>get_mismatches(column)</code> narrows the changed set to one column with both values side by side.</p>
+<h2 id="3-reading-the-report">3. Reading the report<a class="anchor-link" href="#3-reading-the-report">¶</a></h2><p>Open <code>reports/nightly.html</code> in a browser. From top to bottom:</p>
+<ul>
+<li><strong>Verdict badge</strong>: <code>PASSED</code> or <code>FAILED</code>, the same <code>is_match</code> decision the CLI turns into an exit code, judged against <code>threshold</code>. The generation time sits beside it.</li>
+<li><strong>Six cards</strong>: match rate, source and target row counts, and the added, removed, and changed counts. These are the <code>DiffSummary</code> fields, so they agree with <code>report_summary</code> above.</li>
+<li><strong>Column-level drift</strong>: one row per compared column that mismatched at least once, ranked by mismatch count. Columns that matched everywhere are left out.</li>
+<li><strong>Changed rows</strong>, <strong>Added rows</strong>, <strong>Removed rows</strong>: the discrepancy frames, paginated. Added and removed rows are complete records. Changed rows carry both values side by side as <code>&lt;column&gt;_source</code> and <code>&lt;column&gt;_target</code>, plus one <code>&lt;column&gt;_is_match</code> flag per compared column, so a <code>false</code> flag names the column that failed for that row.</li>
+</ul>
+<p>The changed table is the <code>result.changed</code> frame; the flags below are the same ones the report displays.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=f8cd074e">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=140b6da6">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1733,39 +1784,62 @@ print(result.summary.report_summary)</div>
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">compared_columns</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">added</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">removed</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">changed</span><span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">flags</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">changed</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">"invoice_id"</span><span class="p">,</span> <span class="s2">"amount_is_match"</span><span class="p">,</span> <span class="s2">"status_is_match"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">flags</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">"invoice_id"</span><span class="p">))</span>
 
-<span class="c1"># Empty here: both columns agreed after the rules ran.</span>
-<span class="n">result</span><span class="o">.</span><span class="n">get_mismatches</span><span class="p">(</span><span class="s2">"balance"</span><span class="p">)</span>
+<span class="c1"># Output:</span>
+<span class="c1"># shape: (2, 3)</span>
+<span class="c1"># ┌────────────┬─────────────────┬─────────────────┐</span>
+<span class="c1"># │ invoice_id ┆ amount_is_match ┆ status_is_match │</span>
+<span class="c1"># │ ---        ┆ ---             ┆ ---             │</span>
+<span class="c1"># │ str        ┆ bool            ┆ bool            │</span>
+<span class="c1"># ╞════════════╪═════════════════╪═════════════════╡</span>
+<span class="c1"># │ INV-003    ┆ false           ┆ true            │</span>
+<span class="c1"># │ INV-004    ┆ true            ┆ false           │</span>
+<span class="c1"># └────────────┴─────────────────┴─────────────────┘</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-3">print(result.compared_columns)
-print(result.added)
-print(result.removed)
-print(result.changed)
+<div class="clipboard-copy-txt" id="cell-3">flags = result.changed.select("invoice_id", "amount_is_match", "status_is_match")
+print(flags.sort("invoice_id"))
 
-# Empty here: both columns agreed after the rules ran.
-result.get_mismatches("balance")</div>
+# Output:
+# shape: (2, 3)
+# ┌────────────┬─────────────────┬─────────────────┐
+# │ invoice_id ┆ amount_is_match ┆ status_is_match │
+# │ ---        ┆ ---             ┆ ---             │
+# │ str        ┆ bool            ┆ bool            │
+# ╞════════════╪═════════════════╪═════════════════╡
+# │ INV-003    ┆ false           ┆ true            │
+# │ INV-004    ┆ true            ┆ false           │
+# └────────────┴─────────────────┴─────────────────┘</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=f5ec3c53">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=e529581a">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="4-isolate-a-real-discrepancy">4. Isolate a real discrepancy<a class="anchor-link" href="#4-isolate-a-real-discrepancy">¶</a></h2><p>Drop the tolerance and the one-cent drift on row 2 surfaces. <code>get_mismatches</code> keeps only that column, so a row that drifted elsewhere does not appear.</p>
+<p>INV-002 is absent: its one-cent drift fell inside the <code>absolute_tolerance</code>, so the report counts it as a match. INV-003 failed on <code>amount</code> and INV-004 on <code>status</code>, which is exactly what the drift table's two single-mismatch rows say.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=ad92e3dd">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="4-capping-large-tables">4. Capping large tables<a class="anchor-link" href="#4-capping-large-tables">¶</a></h2><p>A comparison of ten million rows must not produce a ten-million-row HTML file. Every table is capped at <code>max_rows</code> (default 1000) and says so when it has truncated, so a reader never mistakes the visible rows for the whole story. <code>render_html</code> returns the document as a string, which is convenient for checking that note here and for attaching a report in CI without touching disk.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=d5fca250">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=d68f6fa1">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1783,29 +1857,78 @@ result.get_mismatches("balance")</div>
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">strict</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"user_id"</span><span class="p">],</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"legacy_id"</span><span class="p">],</span> <span class="n">rename_to</span><span class="o">=</span><span class="s2">"user_id"</span><span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"balance"</span><span class="p">],</span> <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span><span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span><span class="p">},</span> <span class="n">cast_to</span><span class="o">=</span><span class="s2">"Float64"</span><span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"status"</span><span class="p">],</span> <span class="n">null_values</span><span class="o">=</span><span class="p">[</span><span class="s2">"N/A"</span><span class="p">],</span> <span class="n">treat_null_as_equal</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
-    <span class="p">],</span>
-<span class="p">)</span>
-<span class="n">drifted</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">strict</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">target</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">drifted</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
-<span class="n">drifted</span><span class="o">.</span><span class="n">get_mismatches</span><span class="p">(</span><span class="s2">"balance"</span><span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">capped</span> <span class="o">=</span> <span class="n">render_html</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">max_rows</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+
+<span class="n">note_start</span> <span class="o">=</span> <span class="n">capped</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">"Showing the first"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">capped</span><span class="p">[</span><span class="n">note_start</span> <span class="p">:</span> <span class="n">capped</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">"&lt;/p&gt;"</span><span class="p">,</span> <span class="n">note_start</span><span class="p">)])</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># Showing the first 1 of 2 rows. Export artifacts with &lt;code&gt;output_path&lt;/code&gt; for the complete set.</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-4">strict = DiffConfig(
-    primary_keys=["user_id"],
-    rules=[
-        DiffRule(column_names=["legacy_id"], rename_to="user_id"),
-        DiffRule(column_names=["balance"], regex_replace={"\\$": ""}, cast_to="Float64"),
-        DiffRule(column_names=["status"], null_values=["N/A"], treat_null_as_equal=True),
-    ],
-)
-drifted = DiffEngine(strict, source.lazy(), target.lazy()).run()
-print(drifted.summary.report_summary)
-drifted.get_mismatches("balance")</div>
+<div class="clipboard-copy-txt" id="cell-4">capped = render_html(result, max_rows=1)
+
+note_start = capped.index("Showing the first")
+print(capped[note_start : capped.index("&lt;/p&gt;", note_start)])
+
+# Output:
+# Showing the first 1 of 2 rows. Export artifacts with &lt;code&gt;output_path&lt;/code&gt; for the complete set.</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=9880a533">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<p>Only the changed table was truncated: the added and removed tables held one row each, under the cap. When a report is truncated, set <code>output_path</code> on the configuration to export the complete <code>added</code>, <code>removed</code>, and <code>changed</code> frames as files alongside it.</p>
+<p>Two notes for pipelines. A report from warehouse pushdown is labeled as primary-keys-only, because the comparison SQL never extracts values; its tables list keys rather than rows. And from the CLI, <code>veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000</code> writes this same document without any Python.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=beab8ad3">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<hr/>
+<p><em>(Run the cell below to clean up the report written by this notebook)</em></p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=606b014c">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-5">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
+
+<span class="c1"># Remove the report directory (housekeeping)</span>
+<span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="s2">"reports"</span><span class="p">,</span> <span class="n">ignore_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-5">import shutil
+
+# Remove the report directory (housekeeping)
+shutil.rmtree("reports", ignore_errors=True)</div>
 </div>
 </div>
 </div>
