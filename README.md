@@ -96,10 +96,10 @@ veridelta run -c veridelta.yaml
 
 ## Where next
 
-- [1. Core Concepts](https://veridelta.github.io/veridelta/examples/getting_started/) — Python API, `DiffResult`, rules.
-- [2. YAML and CLI](https://veridelta.github.io/veridelta/examples/yaml_config/) — pipeline automation, `--json`, artifacts.
-- [3. Advanced Rules](https://veridelta.github.io/veridelta/examples/advanced_rules/) — drift resolution on real data.
-- [4. HTML Reports](https://veridelta.github.io/veridelta/examples/html_reports/) — audit and compliance hand-off.
+- [1. Core Concepts](https://veridelta.github.io/veridelta/examples/01_core_concepts/) — Python API, `DiffResult`, rules.
+- [2. YAML and CLI](https://veridelta.github.io/veridelta/examples/02_yaml_and_cli/) — pipeline automation, `--json`, artifacts.
+- [3. Advanced Rules](https://veridelta.github.io/veridelta/examples/03_advanced_rules/) — drift resolution on real data.
+- [4. HTML Reports](https://veridelta.github.io/veridelta/examples/04_html_reports/) — audit and compliance hand-off.
 - [Configuration](https://veridelta.github.io/veridelta/configuration/) — fields, formats, extras, warehouse and lakehouse routing.
 - [API Reference](https://veridelta.github.io/veridelta/api/) — public Python surface.
 - [Roadmap](https://veridelta.github.io/veridelta/roadmap/) — work that is not built yet.
