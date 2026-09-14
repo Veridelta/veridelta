@@ -1480,14 +1480,15 @@ class DiffEngine:
 
         src_rename, src_drop = _alignment_maps(self.config.rules, src_cols, rename=True)
 
-        # The target already carries the post-rename name, so an ignored rule is
-        # looked up there by `rename_to` rather than by its source spelling.
+        # The target matches by name or pattern like the source, and additionally
+        # by `rename_to`, since it already carries the post-rename spelling.
         tgt_drop: set[str] = set()
         for rule in self.config.rules:
             if not rule.ignore:
                 continue
-            target_names = [rule.rename_to] if rule.rename_to else rule.column_names
-            tgt_drop.update(col for col in tgt_cols if col in target_names)
+            tgt_drop.update(
+                col for col in tgt_cols if col == rule.rename_to or _matches_rule(rule, col)
+            )
 
         self.source = self.source.drop(list(src_drop)).rename(src_rename)
         self.target = self.target.drop(list(tgt_drop))

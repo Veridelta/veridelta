@@ -200,6 +200,42 @@ class TestStructuralAlignment:
         assert summary.is_match is True
         assert summary.total_mismatches == 0
 
+    def test_it_drops_pattern_ignored_columns_from_both_sides_under_exact_schema(self) -> None:
+        """Ensure a pattern ignore rule strips the target side too, so exact mode holds.
+
+        The target lookup used to consult only `column_names` and `rename_to`,
+        so a pattern rule removed the matched columns from the source alone and
+        `schema_mode="exact"` then reported drift that was never there.
+        """
+        src = pl.DataFrame(
+            {
+                "id": [1, 2],
+                "amount": [10.0, 20.0],
+                "_etl_batch": [1, 1],
+                "_etl_loaded_at": ["a", "a"],
+            }
+        )
+        tgt = pl.DataFrame(
+            {
+                "id": [1, 2],
+                "amount": [10.0, 20.0],
+                "_etl_batch": [7, 7],
+                "_etl_loaded_at": ["b", "b"],
+            }
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            schema_mode="exact",
+            rules=[DiffRule(pattern=r"^_etl_", ignore=True)],
+        )
+
+        DiffEngine.validate_schemas(config, src.lazy(), tgt.lazy())
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ("amount",)
+        assert result.summary.is_match is True
+        assert "_etl_batch" not in result.changed.columns
+
     def test_it_aborts_with_config_error_when_primary_keys_are_completely_missing(self) -> None:
         """Ensure validation catches unmapped schemas lacking the required primary key in the source."""
         src = pl.DataFrame({"legacy_id": [1]})
