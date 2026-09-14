@@ -7,7 +7,7 @@ import polars as pl
 import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
-from veridelta.connectors.sql import COUNT_ALIAS
+from veridelta.connectors.sql import COUNT_ALIAS, SCHEMA_ALIAS
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
 
@@ -397,6 +397,18 @@ class TestCountAndProbeAssembly:
 
         assert snowflake_sql == 'SELECT * FROM "analytics"."public"."src" WHERE 1 = 0'
         assert databricks_sql == "SELECT * FROM `main`.`default`.`src` WHERE 1 = 0"
+
+    def test_it_wraps_a_prior_statement_to_read_its_result_schema(self) -> None:
+        """Ensure the LIMIT 0 wrapper is assembled by the compiler, not a connector."""
+        inner = 'SELECT "src"."id" FROM "src_tbl" AS "src"'
+        snowflake_sql = _snowflake().compile_result_schema_query(inner)
+        databricks_sql = _databricks().compile_result_schema_query("SELECT `id` FROM `t`")
+
+        assert snowflake_sql == f'SELECT * FROM ({inner}) AS "_veridelta_schema" LIMIT 0'
+        assert (
+            databricks_sql == "SELECT * FROM (SELECT `id` FROM `t`) AS `_veridelta_schema` LIMIT 0"
+        )
+        assert SCHEMA_ALIAS == "_veridelta_schema"
 
     def test_it_rejects_unsafe_relations_on_counts_and_probes(self) -> None:
         """Ensure the identifier allowlist covers the count and probe statements."""

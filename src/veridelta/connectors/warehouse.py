@@ -186,7 +186,7 @@ class SnowflakeConnector(VerideltaConnector):
         self._require_session()
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)
-        schema_sql = f"SELECT * FROM ({self._last_statement}) AS _veridelta_schema LIMIT 0"
+        schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
         table, description = _run_arrow_query(self._session, schema_sql, "fetch_arrow_all")
         return _schema_from_arrow(table, description)
 
@@ -273,7 +273,7 @@ class DatabricksConnector(VerideltaConnector):
         self._require_session()
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)
-        schema_sql = f"SELECT * FROM ({self._last_statement}) AS _veridelta_schema LIMIT 0"
+        schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
         table, description = _run_arrow_query(self._session, schema_sql, "fetchall_arrow")
         return _schema_from_arrow(table, description)
 

@@ -10,6 +10,7 @@ from veridelta.exceptions import (
     ConfigError,
     ConnectorError,
     DataIntegrityError,
+    DatasetError,
     VerideltaError,
 )
 from veridelta.models import (
@@ -41,6 +42,7 @@ __all__ = [
     "DataIngestor",
     "DataIntegrityError",
     "DatabricksConfig",
+    "DatasetError",
     "DeltaLakeConfig",
     "DiffConfig",
     "DiffEngine",

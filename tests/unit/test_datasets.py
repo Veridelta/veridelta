@@ -14,6 +14,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from veridelta.datasets import _get_cache_dir, load_nyc_taxi  # pyright: ignore[reportPrivateUsage]
+from veridelta.exceptions import DatasetError, VerideltaError
 
 
 @pytest.mark.unit
@@ -83,7 +84,7 @@ class TestDatasetCacheManagement:
         assert result_df.columns == ["downloaded_col"]
         assert result_df.height == 2
 
-    def test_it_cleans_up_partial_files_and_raises_runtime_error_on_download_failure(
+    def test_it_cleans_up_partial_files_and_raises_dataset_error_on_download_failure(
         self, mocker: MockerFixture, tmp_path: Path
     ) -> None:
         """Ensure corrupted or interrupted downloads do not leave broken artifact files on disk."""
@@ -98,9 +99,13 @@ class TestDatasetCacheManagement:
         mock_urlopen = mocker.patch("veridelta.datasets.urllib.request.urlopen")
         mock_urlopen.side_effect = simulate_network_failure
 
-        with pytest.raises(RuntimeError, match="Failed to download Veridelta sample dataset"):
+        with pytest.raises(
+            DatasetError, match="Failed to download Veridelta sample dataset"
+        ) as info:
             load_nyc_taxi()
 
+        # The domain error joins the framework hierarchy so one `except` covers it.
+        assert isinstance(info.value, VerideltaError)
         assert not cache_file.exists()
 
     def test_it_handles_http_errors_like_404_not_found_gracefully(
@@ -126,7 +131,7 @@ class TestDatasetCacheManagement:
         mock_urlopen = mocker.patch("veridelta.datasets.urllib.request.urlopen")
         mock_urlopen.side_effect = simulate_404
 
-        with pytest.raises(RuntimeError, match="Check your internet connection or the URL"):
+        with pytest.raises(DatasetError, match="Check your internet connection or the URL"):
             load_nyc_taxi()
 
         # Assert the 0-byte file was deleted so the next run can try again

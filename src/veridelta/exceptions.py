@@ -45,3 +45,12 @@ class ConnectorError(VerideltaError):
     required for native table scans, and calls made before a session or
     lazy scan handle has been established.
     """
+
+
+class DatasetError(VerideltaError):
+    """Raised when a bundled sample dataset cannot be downloaded.
+
+    `veridelta.datasets` fetches tutorial data over the network. A failed or
+    interrupted download raises this so callers can catch `VerideltaError`
+    for every framework failure instead of a bare `RuntimeError`.
+    """

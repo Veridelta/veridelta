@@ -16,6 +16,8 @@ import urllib.request
 
 import polars as pl
 
+from veridelta.exceptions import DatasetError
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
@@ -52,7 +54,7 @@ def load_nyc_taxi() -> pl.DataFrame:
         pl.DataFrame: A Polars DataFrame containing the NYC Taxi sample data.
 
     Raises:
-        RuntimeError: If the download fails due to network or routing issues.
+        DatasetError: If the download fails due to network or routing issues.
     """
     cache_path = _get_cache_dir() / "sample_taxi_data.parquet"
 
@@ -69,7 +71,7 @@ def load_nyc_taxi() -> pl.DataFrame:
         except urllib.error.URLError as e:
             if cache_path.exists():
                 cache_path.unlink()
-            raise RuntimeError(
+            raise DatasetError(
                 f"Failed to download Veridelta sample dataset. "
                 f"Check your internet connection or the URL. Error: {e}"
             ) from e
