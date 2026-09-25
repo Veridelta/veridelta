@@ -57,17 +57,15 @@ Same-warehouse SQL pushdown runs only when both sides are Snowflake or both side
 
 `table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Rules that select columns by `pattern` are matched against the probed column names before any SQL is compiled, so they apply in the warehouse exactly as they do locally.
 
-Pushdown issues eight statements per run: a zero-row column probe and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally. Those fill every `DiffSummary` field including `column_mismatches`, so `threshold`, `match_rate_percentage`, and the drift report mean the same thing they do for local comparisons.
+Pushdown issues up to ten statements per run: a zero-row column probe, a duplicate-key check, and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally, which is skipped when no column is compared. Those fill every `DiffSummary` field including `column_mismatches`, so `threshold`, `match_rate_percentage`, and the drift report mean the same thing they do for local comparisons. The duplicate-key check costs one grouped scan per relation, over its normalized keys, and raises `DataIntegrityError` before any count or join runs, exactly as a local run refuses keys that repeat.
 
 Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global `default_*` settings, so a `default_absolute_tolerance` applies in the warehouse too. As in a local run, a tolerance only loosens a column that is numeric once normalized, such as a text column with `cast_to: Float64`; text, boolean, and temporal columns are compared exactly. Columns marked `ignore` are excluded, and `rename_to` pairs a source column with its renamed target counterpart.
 
 The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase). `normalize_column_names` cannot change that: pushdown raises `ConfigError` if it would rename a stored column.
 
-All nine transform stages compile for compared columns, so a rule means the same thing in a warehouse as it does locally. These behaviors still differ from the file and lakehouse path:
+All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. These behaviors still differ from the file and lakehouse path:
 
 - Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
-- Primary keys are joined as stored. Stages 1 through 7 normalize compared columns but not key columns, so keys that differ only by a transform (a `case_insensitive` or `pad_zeros` rule, or a global `default_whitespace_mode`) are reported as added and removed rather than matched.
-- Primary-key uniqueness is not verified. Duplicate keys inflate the mismatch count, or pass unnoticed when the duplicated rows are identical, instead of raising `DataIntegrityError`.
 - `strict_types` applies to local runs only. When the two relations store a column as different types, the warehouse compares them under its own coercion rules.
 
 Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead.
@@ -213,7 +211,7 @@ Every connector block is selected by `type` and rejects keys it does not list.
 
 ### Connector logging
 
-Connectors log under `veridelta.connectors.warehouse` and `veridelta.connectors.lakehouse`, with a `NullHandler` attached so nothing prints unless you opt in. `INFO` records a session or scan opening and closing; `DEBUG` records each pushdown statement by its round-trip kind (`schema`, `count`, `mismatch`, `added`, `missing`, `columns`) with its duration. Log lines never contain SQL text, `storage_options`, passwords, or tokens. A warehouse session is closed when the run finishes, whether it succeeded or raised.
+Connectors log under `veridelta.connectors.warehouse` and `veridelta.connectors.lakehouse`, with a `NullHandler` attached so nothing prints unless you opt in. `INFO` records a session or scan opening and closing; `DEBUG` records each pushdown statement by its round-trip kind (`schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`) with its duration. Log lines never contain SQL text, `storage_options`, passwords, or tokens. A warehouse session is closed when the run finishes, whether it succeeded or raised.
 
 ```python
 import logging
@@ -307,7 +305,7 @@ Rules are not applied in the order you write them. Every column follows one fixe
 8. Comparison (equality, or numeric tolerance)
 9. Null-safe equality (`treat_null_as_equal`)
 
-Stages 1 through 7 normalize each dataset on its own, before any join. In local runs that means they apply to primary keys as well: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion. Warehouse pushdown joins keys as stored; see [Warehouse and lakehouse sources](#warehouse-and-lakehouse-sources).
+Stages 1 through 7 normalize each dataset on its own, before any join, so they apply to primary keys as well, in local runs and warehouse pushdown alike: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion.
 
 Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global `default_whitespace_mode` is safe to set on a mixed schema. Stage 1 is filtered per column instead, as described below.
 
@@ -417,4 +415,4 @@ rules:
     absolute_tolerance: 0.01
 ```
 
-`primary_keys` are written with the target spelling, so a renamed key works in local runs. Warehouse pushdown joins on stored column names and raises `ConfigError` for a key that exists on the source only under its old name.
+`primary_keys` are written with the target spelling, so a renamed key works in local runs and warehouse pushdown alike; pushdown reads it from the source under its stored name.
