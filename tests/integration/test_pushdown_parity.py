@@ -4,6 +4,7 @@
 """Differential parity tests between the local engine and compiled pushdown SQL."""
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -1309,6 +1310,50 @@ class TestToleranceScopeParity:
         config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=1.0, rules=rules)
 
         summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestNumericComparisonParity:
+    """Validate that both paths compare numbers by value, whatever their storage."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", [10, 10]), pl.Series("val", [10.7, 10.0]), 1, id="int-vs-float"
+            ),
+            pytest.param(
+                pl.Series("val", [10.7, 10.0]), pl.Series("val", [10, 10]), 1, id="float-vs-int"
+            ),
+            pytest.param(
+                pl.Series("val", [10, 10]),
+                pl.Series("val", [Decimal("10.50"), Decimal("10.00")]),
+                1,
+                id="int-vs-decimal",
+            ),
+            pytest.param(
+                pl.Series("val", [Decimal("10.70"), Decimal("10.70")]),
+                pl.Series("val", [10.704, 10.7]),
+                1,
+                id="decimal-vs-float",
+            ),
+        ],
+    )
+    def test_it_agrees_on_mixed_numeric_types(
+        self, source: pl.Series, target: pl.Series, expected_changed: int
+    ) -> None:
+        """Ensure a local run no longer truncates the target to the source's type.
+
+        A warehouse promotes both sides before comparing, so it always saw
+        `10` and `10.7` as different while the local engine cast `10.7` to `10`.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
 
         assert summary.changed_count == expected_changed
 

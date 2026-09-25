@@ -388,9 +388,10 @@ class DiffConfig(BaseModel):
             both datasets.
         schema_mode (SchemaMode): How strictly to enforce column existence and
             matching between sources.
-        strict_types (bool): If False (default), the engine implicitly soft-casts
-            target columns to source types purely for the comparison expression,
-            preventing execution crashes on type mismatches. If True, type mismatches
+        strict_types (bool): If False (default), a column stored as different
+            types on the two sides is still compared: two numeric types compare by
+            value, so an integer `10` and a float `10.7` differ, and any other pair
+            soft-casts the target to the source type. If True, type mismatches
             will automatically evaluate as row failures.
         normalize_column_names (bool): If True, strips whitespace and lowercases
             all column headers prior to schema alignment.
@@ -425,7 +426,9 @@ class DiffConfig(BaseModel):
     )
     strict_types: bool = Field(
         default=False,
-        description="If False, engine attempts to safely cast Target columns to Source types.",
+        description=(
+            "If False, numeric types compare by value and other types cast Target to Source."
+        ),
     )
 
     normalize_column_names: bool = Field(

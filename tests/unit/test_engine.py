@@ -519,6 +519,66 @@ class TestEvaluationStrictness:
 
         assert summary.is_match is True
 
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(pl.Series([10]), pl.Series([10.7]), id="int-vs-float"),
+            pytest.param(pl.Series([10.7]), pl.Series([10]), id="float-vs-int"),
+            pytest.param(pl.Series([10]), pl.Series([Decimal("10.50")]), id="int-vs-decimal"),
+            pytest.param(pl.Series([Decimal("10.70")]), pl.Series([10.704]), id="decimal-vs-float"),
+            pytest.param(
+                pl.Series([0.5], dtype=pl.Float32),
+                pl.Series([0.5000000001]),
+                id="float32-vs-float64",
+            ),
+        ],
+    )
+    def test_it_compares_mixed_numeric_types_by_value(
+        self, source: pl.Series, target: pl.Series
+    ) -> None:
+        """Ensure a difference survives when the two sides store numbers differently.
+
+        Casting the target to the source's type used to truncate a Float64
+        `10.7` to an Int64 `10`, so the pair matched locally while a warehouse,
+        which promotes both sides, reported the difference.
+        """
+        src = pl.DataFrame({"id": [1], "val": source})
+        tgt = pl.DataFrame({"id": [1], "val": target})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 1
+
+    @pytest.mark.parametrize(
+        ("source_dtype", "target_dtype"),
+        [
+            pytest.param(pl.Int32, pl.Int64, id="int-widths"),
+            pytest.param(pl.UInt8, pl.Int8, id="unsigned-vs-signed"),
+            pytest.param(pl.Decimal(10, 2), pl.Int64, id="decimal-vs-int"),
+            pytest.param(pl.Float32, pl.Float64, id="float-widths"),
+            pytest.param(pl.Int64, pl.Float64, id="int-vs-float"),
+        ],
+    )
+    def test_it_matches_equal_values_stored_as_different_numeric_types(
+        self, source_dtype: pl.DataType, target_dtype: pl.DataType
+    ) -> None:
+        """Ensure comparing by value still matches the same number across types."""
+        src = pl.DataFrame({"id": [1], "val": pl.Series([5], dtype=source_dtype)})
+        tgt = pl.DataFrame({"id": [1], "val": pl.Series([5], dtype=target_dtype)})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.is_perfect_match is True
+
+    def test_it_still_soft_casts_text_to_a_numeric_source(self) -> None:
+        """Ensure a text target keeps being cast to the source type rather than compared as text."""
+        src = pl.DataFrame({"id": [1, 2], "val": [10, 10]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["10", "10.7"]})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 1
+
     def test_it_evaluates_nulls_as_mismatches_when_treat_null_as_equal_is_disabled(self) -> None:
         """Ensure identical null records flag as failures when strict null matching is explicitly turned off."""
         src = pl.DataFrame({"id": [1], "val": [None]}, schema={"id": pl.Int64, "val": pl.Utf8})

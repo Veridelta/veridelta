@@ -1804,11 +1804,13 @@ class DiffEngine:
         evaluates the aligned pair without applying any further transformations.
 
         Implicit Type Alignment:
-            Polars is strictly typed. Comparing a Float64 to an Int64 or String raises
-            a ComputeError. If a schema drift is detected between Source and Target:
+            When the source and target store a column as different types:
             - If `strict_types=True`: The mismatch is immediately evaluated as `False`.
-            - If `strict_types=False` (Default): The target column is dynamically soft-cast
-              to the source's data type purely for the mathematical evaluation.
+            - If `strict_types=False` (Default): Two numeric types compare by value in
+              their common supertype, as a warehouse compares them. Casting the target
+              to the source's type instead would truncate a Float64 `10.7` to an Int64
+              `10` and hide the difference. Any other pair soft-casts the target to the
+              source's type purely for the evaluation, so text `"10"` meets an Int64.
 
         Args:
             col_name (str): The column being compared.
@@ -1830,7 +1832,7 @@ class DiffEngine:
                     null_match = src.is_null() & tgt.is_null()
                     return (val_match | null_match).fill_null(False)
                 return val_match
-            else:
+            elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
 
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
