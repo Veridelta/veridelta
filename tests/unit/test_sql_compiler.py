@@ -7,9 +7,48 @@ import polars as pl
 import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
-from veridelta.connectors.sql import COUNT_ALIAS, SCHEMA_ALIAS
+from veridelta.connectors.sql import _LITERAL_ESCAPES, COUNT_ALIAS, SCHEMA_ALIAS
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
+
+_BACKSLASH_ESCAPE_DIALECTS = frozenset({SQLDialect.SNOWFLAKE, SQLDialect.DATABRICKS})
+"""Dialects whose single-quoted strings read backslash escape sequences."""
+
+
+def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
+    """Lex one single-quoted literal off the front of `sql` the way `dialect` does.
+
+    A reference model of the vendor rules the compiler has to satisfy, kept
+    independent of the code under test. Snowflake and Databricks treat a
+    backslash inside quotes as an escape character. Snowflake and DuckDB read a
+    doubled quote as one quote; Databricks reads it as the end of one literal
+    and the start of the next, which it then concatenates, so the quote is lost.
+
+    Args:
+        sql (str): SQL text starting with an opening quote.
+        dialect (SQLDialect): Dialect whose lexing rules apply.
+
+    Returns:
+        tuple[str, str]: The decoded value and the SQL after its closing quote.
+    """
+    assert sql.startswith("'")
+    decoded: list[str] = []
+    index = 1
+    while index < len(sql):
+        char = sql[index]
+        if char == "\\" and dialect in _BACKSLASH_ESCAPE_DIALECTS:
+            decoded.append(sql[index + 1])
+            index += 2
+        elif char == "'":
+            if dialect is not SQLDialect.DATABRICKS and sql[index + 1 : index + 2] == "'":
+                decoded.append("'")
+                index += 2
+            else:
+                return "".join(decoded), sql[index + 1 :]
+        else:
+            decoded.append(char)
+            index += 1
+    raise AssertionError(f"Literal never closed: {sql}")
 
 
 def _snowflake() -> SQLPushdownCompiler:
@@ -62,18 +101,98 @@ class TestIdentifierQuoting:
         assert "`tgt`.`amount`" in sql
 
     def test_it_escapes_apostrophes_in_maps_sentinels_and_regex(self) -> None:
-        """Ensure SQL string literals double embedded apostrophes."""
+        """Ensure every literal escapes an apostrophe the way its dialect reads it.
+
+        Snowflake and DuckDB double it. Databricks cannot: it concatenates
+        adjacent literals, so `'O''Brien'` would reach it as `OBrien`.
+        """
         rule = DiffRule(
             column_names=["status"],
             value_map={"O'Brien": "OB"},
             null_values=["N/A'"],
             regex_replace={"x'": "y'"},
         )
-        sql = _snowflake().compile_column_predicate(rule, "status")
-        assert "O''Brien" in sql
-        assert "N/A''" in sql
-        assert "x''" in sql
-        assert "y''" in sql
+        snowflake = _snowflake().compile_column_predicate(rule, "status")
+        databricks = _databricks().compile_column_predicate(rule, "status")
+        duckdb = _duckdb().compile_column_predicate(rule, "status")
+
+        for sql in (snowflake, duckdb):
+            assert "O''Brien" in sql
+            assert "N/A''" in sql
+            assert "x''" in sql
+            assert "y''" in sql
+        assert r"O\'Brien" in databricks
+        assert r"N/A\'" in databricks
+        assert r"x\'" in databricks
+        assert r"y\'" in databricks
+        assert "O''Brien" not in databricks
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestStringLiteralEscaping:
+    """Validate that configured text survives the trip into a SQL literal.
+
+    The differential harness executes DuckDB, whose strings follow the SQL
+    standard, so it cannot observe how Snowflake or Databricks read a literal.
+    These tests check the emitted text against `_read_literal`, a reference
+    model of each vendor's rules.
+    """
+
+    def test_it_defines_escapes_for_every_dialect(self) -> None:
+        """Ensure a new dialect cannot inherit another dialect's escaping."""
+        assert set(_LITERAL_ESCAPES) == set(SQLDialect)
+
+    @pytest.mark.parametrize("dialect", list(SQLDialect), ids=lambda d: d.value)
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("O'Brien", id="apostrophe"),
+            pytest.param("C:\\", id="trailing-backslash"),
+            pytest.param("x\\' OR 1=1 --", id="escaped-quote-injection"),
+            pytest.param("\\N", id="mysql-null-marker"),
+            pytest.param("\\d+\\.\\d{2}", id="regex-classes"),
+            pytest.param("''", id="doubled-quotes"),
+            pytest.param("\\\\server\\share", id="unc-path"),
+        ],
+    )
+    def test_it_round_trips_text_through_a_literal(self, dialect: SQLDialect, value: str) -> None:
+        """Ensure the dialect decodes the literal back to the configured text.
+
+        The literal must also end exactly at its closing quote. A value that
+        escapes the closing quote would carry the rest of the statement into
+        the string, or configuration text out of it.
+        """
+        literal = SQLPushdownCompiler(dialect)._literal(value)  # pyright: ignore[reportPrivateUsage]
+
+        decoded, remainder = _read_literal(literal, dialect)
+
+        assert decoded == value
+        assert remainder == ""
+
+    def test_it_doubles_backslashes_for_warehouses_that_unescape_them(self) -> None:
+        r"""Ensure a regex class, a sentinel, and a map key reach the warehouse intact.
+
+        Unescaped, `\d` arrives in Snowflake or Databricks as `d`, and `\N`
+        as `N`, so the rule silently matches something else.
+        """
+        rule = DiffRule(
+            column_names=["code"],
+            regex_replace={"\\d+": ""},
+            null_values=["\\N"],
+            value_map={"C:\\": "root"},
+        )
+
+        for compiler in (_snowflake(), _databricks()):
+            sql = compiler.compile_column_predicate(rule, "code")
+            assert r"'\\d+'" in sql
+            assert r"'\\N'" in sql
+            assert r"'C:\\'" in sql
+
+        duckdb = _duckdb().compile_column_predicate(rule, "code")
+        assert r"'\d+'" in duckdb
+        assert r"'\N'" in duckdb
+        assert r"'C:\'" in duckdb
 
 
 @pytest.mark.unit
@@ -90,7 +209,8 @@ class TestPredicateCompilation:
         sql = _snowflake().compile_column_predicate(rule, "amount")
         assert sql.count("REGEXP_REPLACE(") == 4
         assert "'[^0-9.]'" in sql
-        assert "'^\\$'" in sql or r"'^\$'" in sql
+        # Snowflake unescapes backslashes inside quotes, so the regex needs two.
+        assert r"'^\\$'" in sql
 
     def test_it_emits_snowflake_iff_for_value_map(self) -> None:
         """Ensure Snowflake value maps nest IFF expressions on the source side."""
@@ -801,7 +921,9 @@ class TestDatetimeFormatCompilation:
 
         sql = _databricks().compile_column_predicate(rule, "ts")
 
-        assert "try_to_timestamp(`src`.`ts`, 'yyyy''-''MM''-''dd')" in sql
+        # Databricks concatenates adjacent literals, so `''` would drop the
+        # quotes the pattern needs; a backslash keeps them inside one literal.
+        assert r"try_to_timestamp(`src`.`ts`, 'yyyy\'-\'MM\'-\'dd')" in sql
 
     def test_it_translates_a_duckdb_format(self) -> None:
         """Ensure DuckDB keeps the Python directives it already understands."""
@@ -816,7 +938,7 @@ class TestDatetimeFormatCompilation:
         rule = DiffRule(column_names=["ts"], datetime_format="%Y%%")
 
         assert "'YYYY\"%\"'" in _snowflake().compile_column_predicate(rule, "ts")
-        assert "'yyyy''%'''" in _databricks().compile_column_predicate(rule, "ts")
+        assert r"'yyyy\'%\''" in _databricks().compile_column_predicate(rule, "ts")
         assert "'%Y%%'" in _duckdb().compile_column_predicate(rule, "ts")
 
     def test_it_rejects_an_untranslatable_directive(self) -> None:
