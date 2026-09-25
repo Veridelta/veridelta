@@ -26,6 +26,7 @@ from veridelta.engine import (
     _fold_rule_defaults,
     _match_rule,
     _optional_module,
+    _resolve_pushdown_keys,
     _resolve_pushdown_rules,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
@@ -1059,6 +1060,99 @@ class TestPushdownRuleHelpers:
         compared = _normalized(config, frame).schema["val"]
 
         assert _compares_numerically(effective, frame.schema["val"]) is compared.is_numeric()
+
+    def test_it_folds_global_defaults_into_key_rules(self) -> None:
+        """Ensure a key is normalized by the same folded rule a local run applies.
+
+        Keys only pass through stages 1-7, so the comparison fields, tolerances
+        and null-safe equality, are left off the rule the compiler receives.
+        """
+        config = DiffConfig(
+            primary_keys=["id"],
+            default_whitespace_mode="both",
+            default_null_values=["N/A"],
+            default_absolute_tolerance=0.5,
+            rules=[DiffRule(column_names=["id"], case_insensitive=True, absolute_tolerance=1.0)],
+        )
+        schema = pl.Schema({"id": pl.String, "val": pl.Int64})
+
+        (key_rule,) = _resolve_pushdown_keys(config, schema, schema)
+
+        assert key_rule.column_names == ["id"]
+        assert key_rule.rename_to is None
+        assert key_rule.whitespace_mode == "both"
+        assert key_rule.null_values == ["N/A"]
+        assert key_rule.case_insensitive is True
+        assert key_rule.absolute_tolerance is None
+        assert key_rule.treat_null_as_equal is None
+
+    def test_it_reads_a_renamed_key_under_its_stored_name(self) -> None:
+        """Ensure the key rule names the source's stored column and the key's new name."""
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id", pad_zeros=3)],
+        )
+
+        (key_rule,) = _resolve_pushdown_keys(
+            config,
+            pl.Schema({"legacy_id": pl.Int64, "val": pl.Int64}),
+            pl.Schema({"user_id": pl.String, "val": pl.Int64}),
+        )
+
+        assert key_rule.column_names == ["legacy_id"]
+        assert key_rule.rename_to == "user_id"
+        assert key_rule.pad_zeros == 3
+
+    def test_it_reads_a_swapped_key_from_the_column_renamed_onto_it(self) -> None:
+        """Ensure a swap reads the key from the other stored column, under that column's rule.
+
+        After `a -> b` and `b -> a`, the key `a` is the column stored as `b`,
+        and the rule listing `b` is the one that governs it locally.
+        """
+        config = DiffConfig(
+            primary_keys=["a"],
+            rules=[
+                DiffRule(column_names=["a"], rename_to="b", case_insensitive=True),
+                DiffRule(column_names=["b"], rename_to="a", whitespace_mode="both"),
+            ],
+        )
+        schema = pl.Schema({"a": pl.String, "b": pl.String})
+
+        (key_rule,) = _resolve_pushdown_keys(config, schema, schema)
+
+        assert key_rule.column_names == ["b"]
+        assert key_rule.rename_to == "a"
+        assert key_rule.whitespace_mode == "both"
+        assert key_rule.case_insensitive is None
+
+    def test_it_reads_a_key_as_stored_when_its_rename_source_is_absent(self) -> None:
+        """Ensure a stale rename does not send the join to a column the source lacks."""
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+        schema = pl.Schema({"user_id": pl.Int64, "val": pl.Int64})
+
+        (key_rule,) = _resolve_pushdown_keys(config, schema, schema)
+
+        assert key_rule.column_names == ["user_id"]
+        assert key_rule.rename_to is None
+
+    def test_it_enforces_rule_preconditions_on_key_columns(self) -> None:
+        """Ensure a key rule its probed types cannot satisfy fails as it would locally."""
+        sentinels = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["id"], null_values=[-1])]
+        )
+        text = pl.Schema({"id": pl.String})
+        zoned = DiffConfig(
+            primary_keys=["ts"], rules=[DiffRule(column_names=["ts"], timezone="UTC")]
+        )
+        naive = pl.Schema({"ts": pl.Datetime()})
+
+        with pytest.raises(ConfigError, match="cannot hold"):
+            _resolve_pushdown_keys(sentinels, text, text)
+        with pytest.raises(ConfigError, match="timezone-naive"):
+            _resolve_pushdown_keys(zoned, naive, naive)
 
     def test_it_drops_null_mismatch_counts_and_rejects_non_numeric_ones(self) -> None:
         """Ensure an empty join and a garbled tally are both handled."""

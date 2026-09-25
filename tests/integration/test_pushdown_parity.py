@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 
 from tests.integration.duckdb_harness import assert_parity, run_local, run_pushdown
-from veridelta.exceptions import ConfigError
+from veridelta.exceptions import ConfigError, DataIntegrityError
 from veridelta.models import DiffConfig, DiffRule
 
 
@@ -890,23 +890,25 @@ class TestEdgeCaseParity:
         assert summary.changed_count == 1
         assert summary.column_mismatches == {"_etl_batch_id": 1}
 
-    def test_it_rejects_a_renamed_primary_key_on_the_pushdown_path(self) -> None:
-        """Ensure a key that only exists after `rename_to` fails as a config error.
+    def test_it_agrees_on_a_renamed_primary_key(self) -> None:
+        """Ensure a key renamed between systems joins on both paths.
 
-        Pushdown joins on stored column names, so a renamed key used to reach
-        the warehouse as a join on a column the source does not have.
+        The source relation stores the key under its old name, so pushdown
+        reads it there and projects it under the name the join uses.
         """
-        src = pl.DataFrame({"legacy_id": [1], "val": ["A"]})
-        tgt = pl.DataFrame({"user_id": [1], "val": ["A"]})
+        src = pl.DataFrame({"legacy_id": [1, 2, 3], "val": ["A", "B", "C"]})
+        tgt = pl.DataFrame({"user_id": [1, 2, 4], "val": ["A", "X", "D"]})
 
         config = DiffConfig(
             primary_keys=["user_id"],
             rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
         )
 
-        assert run_local(config, src, tgt).summary.is_perfect_match is True
-        with pytest.raises(ConfigError, match="rename_to"):
-            run_pushdown(config, src, tgt)
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+        assert summary.added_count == 1
+        assert summary.removed_count == 1
 
     def test_it_refuses_header_normalization_that_would_rename_a_warehouse_column(self) -> None:
         """Ensure pushdown fails loudly where normalizing would change a stored name.
@@ -972,6 +974,268 @@ class TestEdgeCaseParity:
         # `cost` takes the strict exact-name rule; `count` falls through to the pattern.
         assert summary.changed_count == 1
         assert summary.column_mismatches == {"cost": 1}
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestKeyNormalizationParity:
+    """Validate that primary keys pass through stages 1-7 on both paths.
+
+    The local engine normalizes keys before it joins. Pushdown used to join
+    keys as stored, so these cases reported added and removed rows in the
+    warehouse for keys a local run matched.
+    """
+
+    def test_it_agrees_on_keys_under_a_global_whitespace_mode(self) -> None:
+        """Ensure a global default reaches key columns, not only compared ones."""
+        src = pl.DataFrame({"id": ["  A", "B "], "val": [1, 2]})
+        tgt = pl.DataFrame({"id": ["A", "B"], "val": [1, 3]})
+
+        summary = assert_parity(
+            DiffConfig(primary_keys=["id"], default_whitespace_mode="both"), src, tgt
+        )
+
+        assert summary.added_count == 0
+        assert summary.removed_count == 0
+        assert summary.changed_count == 1
+
+    def test_it_agrees_on_a_case_insensitive_key(self) -> None:
+        """Ensure rows whose keys differ only by case are matched and compared."""
+        src = pl.DataFrame({"email": ["Ada@Example.com", "grace@example.com"], "val": [1, 2]})
+        tgt = pl.DataFrame({"email": ["ada@example.com", "GRACE@EXAMPLE.COM"], "val": [1, 2]})
+
+        config = DiffConfig(
+            primary_keys=["email"],
+            rules=[DiffRule(column_names=["email"], case_insensitive=True)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_on_a_zero_padded_text_key(self) -> None:
+        """Ensure account numbers stored with and without leading zeros join once padded."""
+        src = pl.DataFrame({"acct": ["7", "42"], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"acct": ["00007", "00042"], "val": ["A", "B"]})
+
+        config = DiffConfig(
+            primary_keys=["acct"],
+            rules=[DiffRule(column_names=["acct"], pad_zeros=5)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_on_a_padded_key_stored_as_different_types(self) -> None:
+        """Ensure a numeric key and its zero-padded text form join once padded.
+
+        DuckDB would coerce the raw join here anyway, so this guards the padded
+        cross-type path rather than proving the key is normalized.
+        """
+        src = pl.DataFrame({"acct": [7, 42], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"acct": ["00007", "00042"], "val": ["A", "B"]})
+
+        config = DiffConfig(
+            primary_keys=["acct"],
+            rules=[DiffRule(column_names=["acct"], pad_zeros=5)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_on_a_cast_key_stored_as_different_types(self) -> None:
+        """Ensure a text key cast to an integer joins an integer key.
+
+        Like the padded cross-type case, DuckDB would coerce the raw join too,
+        so this guards the cast path rather than proving normalization.
+        """
+        src = pl.DataFrame({"id": ["1", "2"], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "C"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["id"], cast_to="Int64")],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+        assert summary.added_count == 0
+
+    def test_it_agrees_on_a_crosswalked_key(self) -> None:
+        """Ensure a source-side `value_map` rewrites legacy key codes before the join."""
+        src = pl.DataFrame({"code": ["M", "F"], "val": [1, 2]})
+        tgt = pl.DataFrame({"code": ["Male", "Female"], "val": [1, 2]})
+
+        config = DiffConfig(
+            primary_keys=["code"],
+            rules=[DiffRule(column_names=["code"], value_map={"M": "Male", "F": "Female"})],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_on_a_renamed_key_its_rename_rule_normalizes(self) -> None:
+        """Ensure the rule that renames a key also normalizes it on both paths."""
+        src = pl.DataFrame({"legacy_id": ["ab-1", "CD-2"], "val": [1, 2]})
+        tgt = pl.DataFrame({"user_id": ["AB-1", "cd-2"], "val": [1, 2]})
+
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[
+                DiffRule(column_names=["legacy_id"], rename_to="user_id", case_insensitive=True)
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_that_a_sentinel_key_never_joins(self) -> None:
+        """Ensure a key nulled by a sentinel is reported as removed and added.
+
+        NULL never equals anything in a join, locally or in a warehouse, so
+        the placeholder rows stay unmatched on both paths while still counting
+        toward the totals.
+        """
+        src = pl.DataFrame({"id": ["N/A", "B"], "val": [1, 2]})
+        tgt = pl.DataFrame({"id": ["N/A", "B"], "val": [1, 2]})
+
+        summary = assert_parity(
+            DiffConfig(primary_keys=["id"], default_null_values=["N/A"]), src, tgt
+        )
+
+        assert summary.removed_count == 1
+        assert summary.added_count == 1
+        assert summary.total_rows_source == 2
+
+    def test_it_agrees_on_a_composite_key_with_one_normalized_part(self) -> None:
+        """Ensure a rule on one key column leaves the other key column as stored."""
+        src = pl.DataFrame({"tenant": [1, 1, 2], "code": ["a", "B", "c"], "val": [1, 2, 3]})
+        tgt = pl.DataFrame({"tenant": [1, 1, 3], "code": ["A", "b", "c"], "val": [1, 9, 3]})
+
+        config = DiffConfig(
+            primary_keys=["tenant", "code"],
+            rules=[DiffRule(column_names=["code"], case_insensitive=True)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+        assert summary.added_count == 1
+        assert summary.removed_count == 1
+
+
+def _rejection_on_both_paths(config: DiffConfig, src: pl.DataFrame, tgt: pl.DataFrame) -> str:
+    """Assert both engines refuse duplicate keys with the same message, and return it."""
+    with pytest.raises(DataIntegrityError) as local:
+        run_local(config, src, tgt)
+    with pytest.raises(DataIntegrityError) as pushdown:
+        run_pushdown(config, src, tgt)
+
+    assert str(pushdown.value) == str(local.value)
+    return str(local.value)
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestDuplicateKeyParity:
+    """Validate that duplicate primary keys fail both paths identically.
+
+    A local run refuses to join keys that repeat within a dataset, since the
+    join would fan out. Pushdown used to skip the check, so a table that
+    repeated a key reported whatever the fanned-out joins happened to produce,
+    including a perfect match.
+    """
+
+    def test_it_rejects_duplicate_source_keys_on_both_paths(self) -> None:
+        """Ensure identical duplicated rows fail instead of matching each other."""
+        src = pl.DataFrame({"id": [1, 1, 2], "val": ["A", "A", "B"]})
+        tgt = pl.DataFrame({"id": [1, 1, 2], "val": ["A", "A", "B"]})
+
+        message = _rejection_on_both_paths(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        assert "not unique in SOURCE dataset. Found 2 duplicate rows" in message
+
+    def test_it_rejects_duplicate_target_keys_on_both_paths(self) -> None:
+        """Ensure the count covers every copy of every repeated key."""
+        src = pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]})
+        tgt = pl.DataFrame({"id": [1, 2, 2, 3, 3, 3], "val": ["A", "B", "B", "C", "C", "C"]})
+
+        message = _rejection_on_both_paths(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        assert "not unique in TARGET dataset. Found 5 duplicate rows" in message
+
+    def test_it_reports_the_source_first_when_both_sides_repeat_keys(self) -> None:
+        """Ensure both paths check the datasets in the same order."""
+        src = pl.DataFrame({"id": [1, 1], "val": ["A", "A"]})
+        tgt = pl.DataFrame({"id": [2, 2, 2], "val": ["B", "B", "B"]})
+
+        message = _rejection_on_both_paths(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        assert "SOURCE" in message
+
+    def test_it_rejects_keys_that_collide_once_normalized(self) -> None:
+        """Ensure uniqueness is checked on normalized keys, not stored ones.
+
+        `'A'` and `'a'` are distinct as stored but the same key once a
+        case-insensitive rule folds them, so the join would pair both rows.
+        """
+        src = pl.DataFrame({"code": ["A", "a", "b"], "val": [1, 2, 3]})
+        tgt = pl.DataFrame({"code": ["a", "b"], "val": [1, 3]})
+
+        config = DiffConfig(
+            primary_keys=["code"],
+            rules=[DiffRule(column_names=["code"], case_insensitive=True)],
+        )
+
+        message = _rejection_on_both_paths(config, src, tgt)
+
+        assert "not unique in SOURCE dataset. Found 2 duplicate rows" in message
+
+    def test_it_rejects_repeated_null_keys_including_sentinels(self) -> None:
+        """Ensure NULL keys count as repeats of each other, as they do locally.
+
+        Polars and SQL `GROUP BY` both place NULL keys in one group, so a
+        stored NULL and a sentinel nulled by `null_values` collide.
+        """
+        src = pl.DataFrame({"id": ["N/A", None, "B"], "val": [1, 2, 3]})
+        tgt = pl.DataFrame({"id": ["B"], "val": [3]})
+
+        config = DiffConfig(primary_keys=["id"], default_null_values=["N/A"])
+
+        message = _rejection_on_both_paths(config, src, tgt)
+
+        assert "not unique in SOURCE dataset. Found 2 duplicate rows" in message
+
+    def test_it_checks_composite_keys_as_a_whole(self) -> None:
+        """Ensure only a repeated combination fails, not a repeated part."""
+        unique = pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 2, 1], "val": [1, 2, 3]})
+        repeated = pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 1, 1], "val": [1, 2, 3]})
+        config = DiffConfig(primary_keys=["tenant", "id"])
+
+        summary = assert_parity(config, unique, unique)
+        message = _rejection_on_both_paths(config, unique, repeated)
+
+        assert summary.is_perfect_match is True
+        assert "not unique in TARGET dataset. Found 2 duplicate rows" in message
+
+    def test_it_checks_a_renamed_key_under_its_stored_name(self) -> None:
+        """Ensure the check reads a renamed key where the source stores it."""
+        src = pl.DataFrame({"legacy_id": [1, 1], "val": ["A", "A"]})
+        tgt = pl.DataFrame({"user_id": [1], "val": ["A"]})
+
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+
+        message = _rejection_on_both_paths(config, src, tgt)
+
+        assert "Primary keys ['user_id'] are not unique in SOURCE dataset" in message
 
 
 @pytest.mark.integration

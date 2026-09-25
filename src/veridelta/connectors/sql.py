@@ -33,6 +33,18 @@ COUNT_ALIAS = "_veridelta_total"
 SCHEMA_ALIAS = "_veridelta_schema"
 """Derived-table alias used by `compile_result_schema_query` around a prior statement."""
 
+DUPLICATE_ROWS_ALIAS = "_veridelta_rows"
+"""Per-key row count that `compile_duplicate_key_query` sums over duplicated keys."""
+
+KEYS_ALIAS = "_veridelta_keys"
+"""Derived-table alias for the normalized keys `compile_duplicate_key_query` groups."""
+
+DUPLICATES_ALIAS = "_veridelta_duplicates"
+"""Derived-table alias for the key groups that occur more than once."""
+
+_Projection = tuple[str, str, DiffRule | None]
+"""Stored source name, projected name, and the rule normalizing it, if any."""
+
 
 class SQLDialect(str, Enum):
     """Warehouse SQL dialects supported by the pushdown compiler.
@@ -187,10 +199,15 @@ class SQLPushdownCompiler:
     with these statements, in this order:
 
     1. `compile_schema_probe_query` per side, to learn column names and types.
-    2. `compile_count_query` per side, for the `threshold` denominator.
-    3. `compile_query` for inner-join rows where a compared column differs.
-    4. `compile_added_query` and `compile_missing_query` for the anti-joins.
-    5. `compile_column_mismatch_query` for the per-column tally.
+    2. `compile_duplicate_key_query` per side, to assert normalized keys are
+       unique before anything joins on them.
+    3. `compile_count_query` per side, for the `threshold` denominator.
+    4. `compile_query` for inner-join rows where a compared column differs.
+    5. `compile_added_query` and `compile_missing_query` for the anti-joins.
+    6. `compile_column_mismatch_query` for the per-column tally.
+
+    Every join reads keys through the same stages 1-7 as compared columns,
+    driven by `key_rules`, so rows match on the keys the local engine sees.
 
     `compile_result_schema_query` wraps any of the above so a connector can
     describe a result without re-running it. Rules reach the compiler already
@@ -280,17 +297,18 @@ class SQLPushdownCompiler:
         target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
+        key_rules: Sequence[DiffRule] | None = None,
     ) -> str:
         """Assemble a changed-row inner-join query from tables, keys, and rules.
 
-        Stages 1 through 7 run once per column in a pair of CTEs. The join and
-        the match predicates then read those projected values, so adding a
-        stage no longer copies the entire expression tree.
+        Stages 1 through 7 run once per column in a pair of CTEs, keys
+        included. The join and the match predicates then read those projected
+        values, so adding a stage no longer copies the entire expression tree.
 
         Args:
             source_table (str): Source relation (optionally dotted catalog path).
             target_table (str): Target relation (optionally dotted catalog path).
-            primary_keys (list[str]): Join keys present on both relations.
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
             rules (list[DiffRule]): Per-column semantic overrides.
             source_alias (str): Alias assigned to the source relation.
             target_alias (str): Alias assigned to the target relation.
@@ -298,6 +316,9 @@ class SQLPushdownCompiler:
                 null sentinels the column cannot hold. When None, sentinels are
                 emitted unfiltered.
             target_types (ColumnTypes | None): Probed target dtypes.
+            key_rules (Sequence[DiffRule] | None): One rule per key that needs
+                normalizing, naming the stored source column and, for a renamed
+                key, its `rename_to`. Keys without one are joined as stored.
 
         Returns:
             str: `SELECT ... FROM src INNER JOIN tgt ON ... WHERE NOT (...)` statement
@@ -309,34 +330,26 @@ class SQLPushdownCompiler:
             match expressions the local engine reports nothing as changed.
 
         Raises:
-            ConnectorError: If tables or keys are empty, a rule is pattern-only, or
-                `rename_to` is used with multiple `column_names`.
+            ConnectorError: If tables or keys are empty, a rule is pattern-only,
+                `rename_to` is used with multiple `column_names`, or a key rule
+                does not name exactly one primary key.
         """
-        if not primary_keys:
-            raise ConnectorError("At least one primary key is required for pushdown joins.")
-
+        keys = self._key_columns(primary_keys, key_rules)
         compared = self._compared_columns(rules)
         with_clause = self._normalized_with_clause(
             source_table,
             target_table,
-            primary_keys,
-            compared,
+            [*keys, *compared],
             source_alias=source_alias,
             target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
         )
         select_list = ", ".join(self._qualify(source_alias, pk) for pk in primary_keys)
-        on_clause = self._join_on_clause(
-            primary_keys, source_alias=source_alias, target_alias=target_alias
+        join = self._normalized_join(
+            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
         )
-        statement = (
-            f"{with_clause} "
-            f"SELECT {select_list} "
-            f"FROM {self._quote_ident('_src_normalized')} AS {self._quote_ident(source_alias)} "
-            f"INNER JOIN {self._quote_ident('_tgt_normalized')} AS {self._quote_ident(target_alias)} "
-            f"ON {on_clause}"
-        )
+        statement = f"{with_clause} SELECT {select_list} {join}"
         predicates = [
             self._compare(
                 self._qualify(source_alias, target_column),
@@ -362,21 +375,29 @@ class SQLPushdownCompiler:
         *,
         source_alias: str = "src",
         target_alias: str = "tgt",
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
+        key_rules: Sequence[DiffRule] | None = None,
     ) -> str:
         """Assemble a LEFT JOIN anti-join for rows present only in the source.
 
         Args:
             source_table (str): Source relation (optionally dotted catalog path).
             target_table (str): Target relation (optionally dotted catalog path).
-            primary_keys (list[str]): Join keys present on both relations.
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
             source_alias (str): Alias assigned to the source relation.
             target_alias (str): Alias assigned to the target relation.
+            source_types (ColumnTypes | None): Probed source dtypes.
+            target_types (ColumnTypes | None): Probed target dtypes.
+            key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
 
         Returns:
-            str: `SELECT src keys FROM src LEFT JOIN tgt ON ... WHERE tgt keys IS NULL`.
+            str: Source keys whose normalized value has no target counterpart.
 
         Raises:
-            ConnectorError: If tables or keys are empty.
+            ConnectorError: If tables or keys are empty, or a key rule does not
+                name exactly one primary key.
         """
         return self._compile_anti_join(
             source_table,
@@ -387,6 +408,9 @@ class SQLPushdownCompiler:
             null_alias=target_alias,
             source_alias=source_alias,
             target_alias=target_alias,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
         )
 
     def compile_added_query(
@@ -397,21 +421,29 @@ class SQLPushdownCompiler:
         *,
         source_alias: str = "src",
         target_alias: str = "tgt",
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
+        key_rules: Sequence[DiffRule] | None = None,
     ) -> str:
         """Assemble a RIGHT JOIN anti-join for rows present only in the target.
 
         Args:
             source_table (str): Source relation (optionally dotted catalog path).
             target_table (str): Target relation (optionally dotted catalog path).
-            primary_keys (list[str]): Join keys present on both relations.
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
             source_alias (str): Alias assigned to the source relation.
             target_alias (str): Alias assigned to the target relation.
+            source_types (ColumnTypes | None): Probed source dtypes.
+            target_types (ColumnTypes | None): Probed target dtypes.
+            key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
 
         Returns:
-            str: `SELECT tgt keys FROM src RIGHT JOIN tgt ON ... WHERE src keys IS NULL`.
+            str: Target keys whose normalized value has no source counterpart.
 
         Raises:
-            ConnectorError: If tables or keys are empty.
+            ConnectorError: If tables or keys are empty, or a key rule does not
+                name exactly one primary key.
         """
         return self._compile_anti_join(
             source_table,
@@ -422,6 +454,9 @@ class SQLPushdownCompiler:
             null_alias=source_alias,
             source_alias=source_alias,
             target_alias=target_alias,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
         )
 
     def compile_column_mismatch_query(
@@ -435,6 +470,7 @@ class SQLPushdownCompiler:
         target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
+        key_rules: Sequence[DiffRule] | None = None,
     ) -> str | None:
         """Assemble a per-column mismatch tally over the joined rows.
 
@@ -456,6 +492,8 @@ class SQLPushdownCompiler:
                 null sentinels the column cannot hold. When None, sentinels are
                 emitted unfiltered.
             target_types (ColumnTypes | None): Probed target dtypes.
+            key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
 
         Returns:
             str | None: Single-row aggregate statement, or None when no rule
@@ -463,12 +501,11 @@ class SQLPushdownCompiler:
             skip the tally when there are no match expressions.
 
         Raises:
-            ConnectorError: If tables or keys are empty, a rule is pattern-only, or
-                `rename_to` is used with multiple `column_names`.
+            ConnectorError: If tables or keys are empty, a rule is pattern-only,
+                `rename_to` is used with multiple `column_names`, or a key rule
+                does not name exactly one primary key.
         """
-        if not primary_keys:
-            raise ConnectorError("At least one primary key is required for pushdown joins.")
-
+        keys = self._key_columns(primary_keys, key_rules)
         compared = self._compared_columns(rules)
         if not compared:
             return None
@@ -476,8 +513,7 @@ class SQLPushdownCompiler:
         with_clause = self._normalized_with_clause(
             source_table,
             target_table,
-            primary_keys,
-            compared,
+            [*keys, *compared],
             source_alias=source_alias,
             target_alias=target_alias,
             source_types=source_types,
@@ -494,17 +530,10 @@ class SQLPushdownCompiler:
             terms.append(
                 f"SUM(CASE WHEN COALESCE({predicate}, FALSE) THEN 0 ELSE 1 END) AS {alias}"
             )
-        select_list = ", ".join(terms)
-        on_clause = self._join_on_clause(
-            primary_keys, source_alias=source_alias, target_alias=target_alias
+        join = self._normalized_join(
+            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
         )
-        return (
-            f"{with_clause} "
-            f"SELECT {select_list} "
-            f"FROM {self._quote_ident('_src_normalized')} AS {self._quote_ident(source_alias)} "
-            f"INNER JOIN {self._quote_ident('_tgt_normalized')} AS {self._quote_ident(target_alias)} "
-            f"ON {on_clause}"
-        )
+        return f"{with_clause} SELECT {', '.join(terms)} {join}"
 
     def compile_count_query(self, table: str) -> str:
         """Assemble a total row count query for one relation.
@@ -525,6 +554,51 @@ class SQLPushdownCompiler:
         return (
             f"SELECT COUNT(*) AS {self._quote_ident(COUNT_ALIAS)} "
             f"FROM {self._quote_relation(table)}"
+        )
+
+    def compile_duplicate_key_query(
+        self,
+        table: str,
+        primary_keys: list[str],
+        *,
+        is_source: bool,
+        key_rules: Sequence[DiffRule] | None = None,
+        types: ColumnTypes | None = None,
+    ) -> str:
+        """Assemble a count of the rows whose normalized key is not unique.
+
+        The local engine asserts uniqueness after normalization and reports
+        every row that shares its key with another. Summing the size of each
+        key group larger than one is that same number, and `GROUP BY` puts NULL
+        keys in one group just as Polars counts them as duplicates of each other.
+
+        Args:
+            table (str): Relation to check (optionally dotted catalog path).
+            primary_keys (list[str]): Keys, spelled as the target stores them.
+            is_source (bool): True for the source relation, which reads a
+                renamed key under its stored name and applies `value_map`.
+            key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
+            types (ColumnTypes | None): Probed dtypes for this relation.
+
+        Returns:
+            str: A single-row statement whose `COUNT_ALIAS` column is zero when
+            every normalized key is unique.
+
+        Raises:
+            ConnectorError: If the table or keys are empty, or a key rule does
+                not name exactly one primary key.
+        """
+        keys = self._key_columns(primary_keys, key_rules)
+        alias = "src" if is_source else "tgt"
+        normalized = self._normalized_select(table, alias, keys, types=types, is_source=is_source)
+        key_list = ", ".join(self._quote_ident(pk) for pk in primary_keys)
+        rows = self._quote_ident(DUPLICATE_ROWS_ALIAS)
+        return (
+            f"SELECT COALESCE(SUM({rows}), 0) AS {self._quote_ident(COUNT_ALIAS)} "
+            f"FROM (SELECT COUNT(*) AS {rows} "
+            f"FROM ({normalized}) AS {self._quote_ident(KEYS_ALIAS)} "
+            f"GROUP BY {key_list} HAVING COUNT(*) > 1) AS {self._quote_ident(DUPLICATES_ALIAS)}"
         )
 
     def compile_schema_probe_query(self, table: str) -> str:
@@ -569,45 +643,76 @@ class SQLPushdownCompiler:
         null_alias: str,
         source_alias: str,
         target_alias: str,
+        source_types: ColumnTypes | None,
+        target_types: ColumnTypes | None,
+        key_rules: Sequence[DiffRule] | None,
     ) -> str:
         """Assemble a LEFT or RIGHT JOIN anti-join selecting keys from one side.
+
+        Both sides are read through the same key-only CTEs the changed-row
+        query uses, so a row counts as added or removed only when its
+        normalized key has no match, exactly as in the local engine.
 
         Args:
             source_table (str): Source relation.
             target_table (str): Target relation.
-            primary_keys (list[str]): Join keys present on both relations.
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
             join_kind (str): `LEFT` or `RIGHT`.
             select_alias (str): Alias whose primary keys are projected.
             null_alias (str): Alias whose keys must be NULL (the missing side).
             source_alias (str): Alias assigned to the source relation.
             target_alias (str): Alias assigned to the target relation.
+            source_types (ColumnTypes | None): Probed source dtypes.
+            target_types (ColumnTypes | None): Probed target dtypes.
+            key_rules (Sequence[DiffRule] | None): Key normalization rules.
 
         Returns:
             str: Anti-join SELECT statement.
 
         Raises:
-            ConnectorError: If tables or keys are empty.
+            ConnectorError: If tables or keys are empty, or a key rule does not
+                name exactly one primary key.
         """
-        if not primary_keys:
-            raise ConnectorError("At least one primary key is required for pushdown joins.")
-
-        quoted_source = self._quote_relation(source_table)
-        quoted_target = self._quote_relation(target_table)
-        quoted_src_alias = self._quote_ident(source_alias)
-        quoted_tgt_alias = self._quote_ident(target_alias)
+        keys = self._key_columns(primary_keys, key_rules)
+        with_clause = self._normalized_with_clause(
+            source_table,
+            target_table,
+            keys,
+            source_alias=source_alias,
+            target_alias=target_alias,
+            source_types=source_types,
+            target_types=target_types,
+        )
         select_list = ", ".join(self._qualify(select_alias, pk) for pk in primary_keys)
-        on_clause = self._join_on_clause(
-            primary_keys, source_alias=source_alias, target_alias=target_alias
+        join = self._normalized_join(
+            join_kind, primary_keys, source_alias=source_alias, target_alias=target_alias
         )
         where_clause = " AND ".join(
             f"{self._qualify(null_alias, pk)} IS NULL" for pk in primary_keys
         )
+        return f"{with_clause} SELECT {select_list} {join} WHERE {where_clause}"
+
+    def _normalized_join(
+        self, join_kind: str, primary_keys: list[str], *, source_alias: str, target_alias: str
+    ) -> str:
+        """Join the two normalized CTEs on their keys.
+
+        Args:
+            join_kind (str): `INNER`, `LEFT`, or `RIGHT`.
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
+            source_alias (str): Alias for the source CTE.
+            target_alias (str): Alias for the target CTE.
+
+        Returns:
+            str: `FROM ... JOIN ... ON ...` clause.
+        """
+        on_clause = self._join_on_clause(
+            primary_keys, source_alias=source_alias, target_alias=target_alias
+        )
         return (
-            f"SELECT {select_list} "
-            f"FROM {quoted_source} AS {quoted_src_alias} "
-            f"{join_kind} JOIN {quoted_target} AS {quoted_tgt_alias} "
-            f"ON {on_clause} "
-            f"WHERE {where_clause}"
+            f"FROM {self._quote_ident('_src_normalized')} AS {self._quote_ident(source_alias)} "
+            f"{join_kind} JOIN {self._quote_ident('_tgt_normalized')} "
+            f"AS {self._quote_ident(target_alias)} ON {on_clause}"
         )
 
     def _join_on_clause(
@@ -662,6 +767,39 @@ class SQLPushdownCompiler:
         expr = self._apply_datetime_format(expr, rule, dtype)
         return self._apply_cast(expr, rule, dtype)
 
+    def _key_columns(
+        self, primary_keys: list[str], key_rules: Sequence[DiffRule] | None
+    ) -> list[_Projection]:
+        """Pair each primary key with its stored source name and normalizing rule.
+
+        Args:
+            primary_keys (list[str]): Keys, spelled as the target stores them.
+            key_rules (Sequence[DiffRule] | None): Rules naming each key's stored
+                source column, with `rename_to` set when the spellings differ.
+
+        Returns:
+            list[_Projection]: Stored source name, key name, and rule per key.
+            A key without a rule is projected unchanged.
+
+        Raises:
+            ConnectorError: If no keys are given, or a key rule does not name
+                exactly one column or does not resolve to a primary key.
+        """
+        if not primary_keys:
+            raise ConnectorError("At least one primary key is required for pushdown joins.")
+        by_key: dict[str, DiffRule] = {}
+        for rule in key_rules or ():
+            if len(rule.column_names) != 1:
+                raise ConnectorError("A key rule must name exactly one stored column.")
+            key = rule.rename_to or rule.column_names[0]
+            if key not in primary_keys:
+                raise ConnectorError(f"Key rule target '{key}' is not a primary key.")
+            by_key[key] = rule
+        return [
+            (by_key[key].column_names[0] if key in by_key else key, key, by_key.get(key))
+            for key in primary_keys
+        ]
+
     def _compared_columns(self, rules: list[DiffRule]) -> list[tuple[str, str, DiffRule]]:
         """Resolve the columns that a join query will actually compare.
 
@@ -697,8 +835,7 @@ class SQLPushdownCompiler:
         self,
         source_table: str,
         target_table: str,
-        primary_keys: list[str],
-        compared: list[tuple[str, str, DiffRule]],
+        columns: Sequence[_Projection],
         *,
         source_alias: str,
         target_alias: str,
@@ -714,8 +851,7 @@ class SQLPushdownCompiler:
         Args:
             source_table (str): Source relation.
             target_table (str): Target relation.
-            primary_keys (list[str]): Keys passed through untransformed.
-            compared (list[tuple[str, str, DiffRule]]): Columns to normalize.
+            columns (Sequence[_Projection]): Keys first, then compared columns.
             source_alias (str): Alias of the source relation inside its CTE.
             target_alias (str): Alias of the target relation inside its CTE.
             source_types (ColumnTypes | None): Probed source dtypes.
@@ -725,20 +861,10 @@ class SQLPushdownCompiler:
             str: `WITH src AS (...), tgt AS (...)` prefix, no trailing keyword.
         """
         src_select = self._normalized_select(
-            source_table,
-            source_alias,
-            primary_keys,
-            compared,
-            types=source_types,
-            is_source=True,
+            source_table, source_alias, columns, types=source_types, is_source=True
         )
         tgt_select = self._normalized_select(
-            target_table,
-            target_alias,
-            primary_keys,
-            compared,
-            types=target_types,
-            is_source=False,
+            target_table, target_alias, columns, types=target_types, is_source=False
         )
         return (
             f"WITH {self._quote_ident('_src_normalized')} AS ({src_select}), "
@@ -749,35 +875,32 @@ class SQLPushdownCompiler:
         self,
         table: str,
         alias: str,
-        primary_keys: list[str],
-        compared: list[tuple[str, str, DiffRule]],
+        columns: Sequence[_Projection],
         *,
         types: ColumnTypes | None,
         is_source: bool,
     ) -> str:
-        """Project keys plus one normalized expression per compared column.
+        """Project one normalized expression per key and compared column.
 
         Args:
             table (str): Relation to read.
             alias (str): Alias assigned to that relation.
-            primary_keys (list[str]): Keys passed through as-is.
-            compared (list[tuple[str, str, DiffRule]]): Columns to normalize.
+            columns (Sequence[_Projection]): Columns to project. The source reads
+                each under its stored name, the target under its projected name.
             types (ColumnTypes | None): Probed dtypes for this side.
             is_source (bool): True when projecting the source relation.
 
         Returns:
             str: `SELECT ... FROM relation AS alias` body for one CTE.
         """
-        projections = [
-            f"{self._qualify(alias, pk)} AS {self._quote_ident(pk)}" for pk in primary_keys
-        ]
-        for source_column, target_column, rule in compared:
+        projections: list[str] = []
+        for source_column, target_column, rule in columns:
             raw_name = source_column if is_source else target_column
-            dtype = None if types is None else types.get(raw_name)
-            normalized = self._normalize_expr(
-                self._qualify(alias, raw_name), rule, dtype, is_source=is_source
-            )
-            projections.append(f"{normalized} AS {self._quote_ident(target_column)}")
+            expr = self._qualify(alias, raw_name)
+            if rule is not None:
+                dtype = None if types is None else types.get(raw_name)
+                expr = self._normalize_expr(expr, rule, dtype, is_source=is_source)
+            projections.append(f"{expr} AS {self._quote_ident(target_column)}")
         return (
             f"SELECT {', '.join(projections)} "
             f"FROM {self._quote_relation(table)} AS {self._quote_ident(alias)}"

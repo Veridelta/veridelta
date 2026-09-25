@@ -14,14 +14,14 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import ClassVar, Final, TypedDict
+from typing import ClassVar, Final, Literal, TypedDict
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownSession
+from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
-from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
@@ -100,6 +100,28 @@ def _unusable_sentinel_error(
         f"Column '{column}' has type {dtype}, which cannot hold any of the "
         f"null_values {list(sentinels)!r} configured for it. Quote text sentinels "
         "and leave numbers unquoted so each one matches its column type."
+    )
+
+
+def _duplicate_keys_error(
+    keys: list[str], side: Literal["SOURCE", "TARGET"], count: int
+) -> DataIntegrityError:
+    """Build the error for primary keys that repeat within one dataset.
+
+    Both engines raise through here, so a repeated key reads the same whether
+    a local run or a warehouse found it.
+
+    Args:
+        keys (list[str]): Configured primary keys.
+        side (Literal["SOURCE", "TARGET"]): Dataset the keys repeat in.
+        count (int): Rows sharing a key with another row, every copy counted.
+
+    Returns:
+        DataIntegrityError: Error naming the keys, the dataset, and the count.
+    """
+    return DataIntegrityError(
+        f"Primary keys {keys} are not unique in {side} dataset. "
+        f"Found {count} duplicate rows. Clean your data before diffing."
     )
 
 
@@ -682,6 +704,97 @@ def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -
     return dtype is None or dtype.is_numeric()
 
 
+def _pushdown_rule(
+    stored: str,
+    aligned: str,
+    rule: DiffRule | None,
+    effective: EffectiveRule,
+    *,
+    absolute_tolerance: float | None = None,
+    relative_tolerance: float | None = None,
+    treat_null_as_equal: bool | None = None,
+) -> DiffRule:
+    """Re-materialize a folded rule as the fully specified `DiffRule` the compiler reads.
+
+    Keys and compared columns both pass through here, so a normalization stage
+    cannot reach one and silently miss the other. The comparison fields stay
+    unset unless given: keys only ever join on equality, so stages 8 and 9
+    never reach them.
+
+    Args:
+        stored (str): Column name as stored in the source relation.
+        aligned (str): Post-rename name, which is also the target's name.
+        rule (DiffRule | None): Rule `_match_rule` resolved, if any.
+        effective (EffectiveRule): That rule with global defaults folded in.
+        absolute_tolerance (float | None): Stage 8 absolute tolerance.
+        relative_tolerance (float | None): Stage 8 relative tolerance.
+        treat_null_as_equal (bool | None): Stage 9 null-safe equality.
+
+    Returns:
+        DiffRule: Rule naming the stored column, with a `rename_to` when the
+            target spells it differently.
+    """
+    return DiffRule(
+        column_names=[stored],
+        rename_to=None if aligned == stored else aligned,
+        absolute_tolerance=absolute_tolerance,
+        relative_tolerance=relative_tolerance,
+        treat_null_as_equal=treat_null_as_equal,
+        whitespace_mode=effective["whitespace"],
+        null_values=effective["null_values"],
+        # No `default_*` counterpart exists, so the compiler sees it as written.
+        case_insensitive=rule.case_insensitive if rule is not None else None,
+        regex_replace=effective["regex_replace"],
+        value_map=effective["value_map"],
+        pad_zeros=effective["pad_zeros"],
+        datetime_format=effective["datetime_format"],
+        timezone=effective["timezone"],
+        cast_to=effective["cast_to"],
+    )
+
+
+def _resolve_pushdown_keys(
+    diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
+) -> list[DiffRule]:
+    """Expand configuration into the normalization each primary key receives.
+
+    A local run normalizes keys along with every other column before it joins,
+    so a key the rules strip, fold, map, pad, or cast must reach the warehouse
+    joins transformed the same way. Keys are resolved under their post-rename
+    name, as the local engine resolves its aligned frames, and read on the
+    source under whichever stored column `rename_to` maps onto them.
+
+    Args:
+        diff (DiffConfig): Master comparison rules, keys, and global defaults.
+        source_schema (pl.Schema): Schema probed from the source relation.
+        target_schema (pl.Schema): Schema probed from the target relation.
+
+    Returns:
+        list[DiffRule]: One rule per primary key, in key order, carrying stages
+            1 through 7 with global defaults already folded in.
+
+    Raises:
+        ConfigError: If a key carries an explicit `null_values` rule whose
+            sentinels none of its probed types can hold, or a `timezone` rule
+            the probed types cannot satisfy.
+    """
+    source_names = set(source_schema.names())
+    pairs = _rename_pairs(diff.rules)
+
+    resolved: list[DiffRule] = []
+    for key in diff.primary_keys:
+        # Schema validation has already proven the key survives alignment, so
+        # either a present column is renamed onto it or it is stored as is.
+        stored = next(
+            (src for src, tgt in pairs.items() if tgt == key and src in source_names), key
+        )
+        rule = _match_rule(diff.rules, key)
+        effective = _fold_rule_defaults(rule, diff)
+        _enforce_pushdown_preconditions(effective, ((stored, source_schema), (key, target_schema)))
+        resolved.append(_pushdown_rule(stored, key, rule, effective))
+    return resolved
+
+
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
@@ -731,22 +844,14 @@ def _resolve_pushdown_rules(
         numeric = _compares_numerically(effective, source_schema.get(column))
 
         resolved.append(
-            DiffRule(
-                column_names=[column],
-                rename_to=None if aligned == column else aligned,
+            _pushdown_rule(
+                column,
+                aligned,
+                rule,
+                effective,
                 absolute_tolerance=effective["abs_tol"] if numeric else 0.0,
                 relative_tolerance=effective["rel_tol"] if numeric else 0.0,
                 treat_null_as_equal=effective["treat_null"],
-                whitespace_mode=effective["whitespace"],
-                null_values=effective["null_values"],
-                # No `default_*` counterpart exists, so the compiler sees it as written.
-                case_insensitive=rule.case_insensitive if rule is not None else None,
-                regex_replace=effective["regex_replace"],
-                value_map=effective["value_map"],
-                pad_zeros=effective["pad_zeros"],
-                datetime_format=effective["datetime_format"],
-                timezone=effective["timezone"],
-                cast_to=effective["cast_to"],
             )
         )
     return resolved
@@ -915,6 +1020,36 @@ def _summary_from_pushdown(
     )
 
 
+def _pushdown_scalar(
+    connector: PushdownSession,
+    statement: str,
+    query_type: PushdownQueryType,
+    label: str,
+) -> int:
+    """Collect the single integer an aggregate pushdown statement returns.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        statement (str): Compiled aggregate returning one row and one column.
+        query_type (PushdownQueryType): Round-trip tag passed to the connector.
+        label (str): Names the statement in error messages.
+
+    Returns:
+        int: The aggregate's value.
+
+    Raises:
+        ConnectorError: If the warehouse does not return a single numeric value.
+    """
+    frame = connector.execute_pushdown(statement, query_type=query_type).collect()
+    if frame.height != 1 or frame.width != 1:
+        raise ConnectorError(f"{label} did not return a single value.")
+    try:
+        # Drivers may surface COUNT(*) or SUM as an integer, float, or decimal scalar.
+        return int(frame.item())
+    except (TypeError, ValueError) as exc:
+        raise ConnectorError(f"{label} returned a non-numeric value.") from exc
+
+
 def _pushdown_row_count(
     connector: PushdownSession,
     table: str,
@@ -931,17 +1066,51 @@ def _pushdown_row_count(
     Raises:
         ConnectorError: If the warehouse does not return a single numeric value.
     """
-    statement = connector.compiler.compile_count_query(table)
-    frame = connector.execute_pushdown(statement, query_type="count").collect()
-    if frame.height != 1 or frame.width != 1:
-        raise ConnectorError(f"Row count query for '{table}' did not return a single value.")
-    try:
-        # Drivers may surface COUNT(*) as an integer, float, or decimal scalar.
-        return int(frame.item())
-    except (TypeError, ValueError) as exc:
-        raise ConnectorError(
-            f"Row count query for '{table}' returned a non-numeric value."
-        ) from exc
+    return _pushdown_scalar(
+        connector,
+        connector.compiler.compile_count_query(table),
+        "count",
+        f"Row count query for '{table}'",
+    )
+
+
+def _reject_duplicate_pushdown_keys(
+    connector: PushdownSession,
+    table: str,
+    diff: DiffConfig,
+    key_rules: Sequence[DiffRule],
+    *,
+    types: pl.Schema,
+    is_source: bool,
+) -> None:
+    """Fail a relation whose normalized primary keys repeat, as a local run does.
+
+    A repeated key would fan out every join below it, so the local engine
+    refuses to compare such a dataset. The check groups the keys after stages
+    1 through 7, since normalizing can collapse distinct stored keys into one.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        table (str): Relation to check.
+        diff (DiffConfig): Master comparison rules and keys.
+        key_rules (Sequence[DiffRule]): Normalization resolved for each key.
+        types (pl.Schema): Schema probed from the relation.
+        is_source (bool): True for the source relation, which reads renamed
+            keys under their stored names and applies `value_map`.
+
+    Raises:
+        DataIntegrityError: If any normalized key appears on more than one row.
+        ConnectorError: If the warehouse does not return a single numeric value.
+    """
+    statement = connector.compiler.compile_duplicate_key_query(
+        table, diff.primary_keys, is_source=is_source, key_rules=key_rules, types=types
+    )
+    duplicates = _pushdown_scalar(
+        connector, statement, "duplicates", f"Duplicate key query for '{table}'"
+    )
+    if duplicates:
+        side: Literal["SOURCE", "TARGET"] = "SOURCE" if is_source else "TARGET"
+        raise _duplicate_keys_error(diff.primary_keys, side, duplicates)
 
 
 def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema) -> None:
@@ -996,9 +1165,8 @@ def _validate_pushdown_schema(
             names, and the compiler needs both to filter null sentinels.
 
     Raises:
-        ConfigError: If primary keys are missing, a key exists on the source
-            only under a `rename_to` spelling, `normalize_column_names` would
-            rename a stored column, or schema constraints are violated.
+        ConfigError: If primary keys are missing, `normalize_column_names`
+            would rename a stored column, or schema constraints are violated.
     """
     source_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(source_table), query_type="schema"
@@ -1010,15 +1178,6 @@ def _validate_pushdown_schema(
     target_schema = target_probe.collect_schema()
     _reject_warehouse_header_normalization(diff, source_schema, target_schema)
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
-    # Validation aligns names first, so a renamed key passes it. The compiled
-    # joins read stored names, though, and would reference a missing column.
-    renamed_keys = [key for key in diff.primary_keys if key not in source_schema.names()]
-    if renamed_keys:
-        raise ConfigError(
-            f"Primary keys {renamed_keys} exist in the source only through rename_to. "
-            "Warehouse pushdown joins on stored column names, so renaming a key "
-            "is supported for local runs only."
-        )
     return source_schema, target_schema
 
 
@@ -1028,7 +1187,7 @@ def _collect_pushdown_summary(
     target_table: str,
     diff: DiffConfig,
 ) -> DiffResult:
-    """Compile and collect the warehouse count, mismatch, and anti-join queries.
+    """Compile and collect the warehouse key checks, counts, mismatches, and anti-joins.
 
     Args:
         connector (PushdownSession): Connected warehouse session whose compiler
@@ -1046,16 +1205,28 @@ def _collect_pushdown_summary(
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
             primary key.
+        DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If a rule uses a field the compiler cannot express or the
             warehouse returns a malformed aggregate.
     """
     source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff
     )
+    key_rules = _resolve_pushdown_keys(diff, source_schema, target_schema)
     rules = _resolve_pushdown_rules(diff, source_schema, target_schema)
+    # As in a local run, a ConfigError from rule resolution wins over repeated
+    # keys, and repeated keys stop the run before any count or join executes.
+    _reject_duplicate_pushdown_keys(
+        connector, source_table, diff, key_rules, types=source_schema, is_source=True
+    )
+    _reject_duplicate_pushdown_keys(
+        connector, target_table, diff, key_rules, types=target_schema, is_source=False
+    )
 
     source_total = _pushdown_row_count(connector, source_table)
     target_total = _pushdown_row_count(connector, target_table)
+    # Every join reads normalized keys, so a key the rules transform matches
+    # across the two relations exactly where a local run would match it.
     mismatch_sql = connector.compiler.compile_query(
         source_table,
         target_table,
@@ -1063,12 +1234,23 @@ def _collect_pushdown_summary(
         rules,
         source_types=source_schema,
         target_types=target_schema,
+        key_rules=key_rules,
     )
     added_sql = connector.compiler.compile_added_query(
-        source_table, target_table, diff.primary_keys
+        source_table,
+        target_table,
+        diff.primary_keys,
+        source_types=source_schema,
+        target_types=target_schema,
+        key_rules=key_rules,
     )
     missing_sql = connector.compiler.compile_missing_query(
-        source_table, target_table, diff.primary_keys
+        source_table,
+        target_table,
+        diff.primary_keys,
+        source_types=source_schema,
+        target_types=target_schema,
+        key_rules=key_rules,
     )
     changed = connector.execute_pushdown(mismatch_sql, query_type="mismatch").collect()
     added = connector.execute_pushdown(added_sql, query_type="added").collect()
@@ -1082,6 +1264,7 @@ def _collect_pushdown_summary(
         rules,
         source_types=source_schema,
         target_types=target_schema,
+        key_rules=key_rules,
     )
     if columns_sql is not None:
         tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
@@ -1160,6 +1343,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
     Raises:
         ConfigError: If both sides name the same table, or the probed
             relations violate `schema_mode`.
+        DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If backends are mixed, dialects differ, or connections
             do not share a fingerprint.
     """
@@ -1337,6 +1521,7 @@ class DiffEngine:
 
         Raises:
             ConfigError: If primary keys are missing or `schema_mode` is violated.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
         """
         source_is_warehouse = _is_warehouse(source)
@@ -1387,25 +1572,17 @@ class DiffEngine:
             DataIntegrityError: If duplicates are found in the primary keys of either
                 dataset, preventing join explosions.
         """
-        from veridelta.exceptions import DataIntegrityError
-
         pks = self.config.primary_keys
 
         src_pks = self.source.select(pks).collect()
         if src_pks.is_duplicated().any():
             dupes = src_pks.filter(src_pks.is_duplicated()).height
-            raise DataIntegrityError(
-                f"Primary keys {pks} are not unique in SOURCE dataset. "
-                f"Found {dupes} duplicate rows. Clean your data before diffing."
-            )
+            raise _duplicate_keys_error(pks, "SOURCE", dupes)
 
         tgt_pks = self.target.select(pks).collect()
         if tgt_pks.is_duplicated().any():
             dupes = tgt_pks.filter(tgt_pks.is_duplicated()).height
-            raise DataIntegrityError(
-                f"Primary keys {pks} are not unique in TARGET dataset. "
-                f"Found {dupes} duplicate rows. Clean your data before diffing."
-            )
+            raise _duplicate_keys_error(pks, "TARGET", dupes)
 
     def _normalize_frame(self, frame: pl.LazyFrame, *, is_source: bool) -> pl.LazyFrame:
         """Apply stages 1 through 7 of the canonical transform order to one dataset.
