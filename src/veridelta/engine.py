@@ -682,6 +682,97 @@ def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -
     return dtype is None or dtype.is_numeric()
 
 
+def _pushdown_rule(
+    stored: str,
+    aligned: str,
+    rule: DiffRule | None,
+    effective: EffectiveRule,
+    *,
+    absolute_tolerance: float | None = None,
+    relative_tolerance: float | None = None,
+    treat_null_as_equal: bool | None = None,
+) -> DiffRule:
+    """Re-materialize a folded rule as the fully specified `DiffRule` the compiler reads.
+
+    Keys and compared columns both pass through here, so a normalization stage
+    cannot reach one and silently miss the other. The comparison fields stay
+    unset unless given: keys only ever join on equality, so stages 8 and 9
+    never reach them.
+
+    Args:
+        stored (str): Column name as stored in the source relation.
+        aligned (str): Post-rename name, which is also the target's name.
+        rule (DiffRule | None): Rule `_match_rule` resolved, if any.
+        effective (EffectiveRule): That rule with global defaults folded in.
+        absolute_tolerance (float | None): Stage 8 absolute tolerance.
+        relative_tolerance (float | None): Stage 8 relative tolerance.
+        treat_null_as_equal (bool | None): Stage 9 null-safe equality.
+
+    Returns:
+        DiffRule: Rule naming the stored column, with a `rename_to` when the
+            target spells it differently.
+    """
+    return DiffRule(
+        column_names=[stored],
+        rename_to=None if aligned == stored else aligned,
+        absolute_tolerance=absolute_tolerance,
+        relative_tolerance=relative_tolerance,
+        treat_null_as_equal=treat_null_as_equal,
+        whitespace_mode=effective["whitespace"],
+        null_values=effective["null_values"],
+        # No `default_*` counterpart exists, so the compiler sees it as written.
+        case_insensitive=rule.case_insensitive if rule is not None else None,
+        regex_replace=effective["regex_replace"],
+        value_map=effective["value_map"],
+        pad_zeros=effective["pad_zeros"],
+        datetime_format=effective["datetime_format"],
+        timezone=effective["timezone"],
+        cast_to=effective["cast_to"],
+    )
+
+
+def _resolve_pushdown_keys(
+    diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
+) -> list[DiffRule]:
+    """Expand configuration into the normalization each primary key receives.
+
+    A local run normalizes keys along with every other column before it joins,
+    so a key the rules strip, fold, map, pad, or cast must reach the warehouse
+    joins transformed the same way. Keys are resolved under their post-rename
+    name, as the local engine resolves its aligned frames, and read on the
+    source under whichever stored column `rename_to` maps onto them.
+
+    Args:
+        diff (DiffConfig): Master comparison rules, keys, and global defaults.
+        source_schema (pl.Schema): Schema probed from the source relation.
+        target_schema (pl.Schema): Schema probed from the target relation.
+
+    Returns:
+        list[DiffRule]: One rule per primary key, in key order, carrying stages
+            1 through 7 with global defaults already folded in.
+
+    Raises:
+        ConfigError: If a key carries an explicit `null_values` rule whose
+            sentinels none of its probed types can hold, or a `timezone` rule
+            the probed types cannot satisfy.
+    """
+    source_names = set(source_schema.names())
+    pairs = _rename_pairs(diff.rules)
+
+    resolved: list[DiffRule] = []
+    for key in diff.primary_keys:
+        # Schema validation has already proven the key survives alignment, so
+        # either a present column is renamed onto it or it is stored as is.
+        stored = next(
+            (src for src, tgt in pairs.items() if tgt == key and src in source_names), key
+        )
+        rule = _match_rule(diff.rules, key)
+        effective = _fold_rule_defaults(rule, diff)
+        _enforce_pushdown_preconditions(effective, ((stored, source_schema), (key, target_schema)))
+        resolved.append(_pushdown_rule(stored, key, rule, effective))
+    return resolved
+
+
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
@@ -731,22 +822,14 @@ def _resolve_pushdown_rules(
         numeric = _compares_numerically(effective, source_schema.get(column))
 
         resolved.append(
-            DiffRule(
-                column_names=[column],
-                rename_to=None if aligned == column else aligned,
+            _pushdown_rule(
+                column,
+                aligned,
+                rule,
+                effective,
                 absolute_tolerance=effective["abs_tol"] if numeric else 0.0,
                 relative_tolerance=effective["rel_tol"] if numeric else 0.0,
                 treat_null_as_equal=effective["treat_null"],
-                whitespace_mode=effective["whitespace"],
-                null_values=effective["null_values"],
-                # No `default_*` counterpart exists, so the compiler sees it as written.
-                case_insensitive=rule.case_insensitive if rule is not None else None,
-                regex_replace=effective["regex_replace"],
-                value_map=effective["value_map"],
-                pad_zeros=effective["pad_zeros"],
-                datetime_format=effective["datetime_format"],
-                timezone=effective["timezone"],
-                cast_to=effective["cast_to"],
             )
         )
     return resolved
@@ -996,9 +1079,8 @@ def _validate_pushdown_schema(
             names, and the compiler needs both to filter null sentinels.
 
     Raises:
-        ConfigError: If primary keys are missing, a key exists on the source
-            only under a `rename_to` spelling, `normalize_column_names` would
-            rename a stored column, or schema constraints are violated.
+        ConfigError: If primary keys are missing, `normalize_column_names`
+            would rename a stored column, or schema constraints are violated.
     """
     source_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(source_table), query_type="schema"
@@ -1010,15 +1092,6 @@ def _validate_pushdown_schema(
     target_schema = target_probe.collect_schema()
     _reject_warehouse_header_normalization(diff, source_schema, target_schema)
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
-    # Validation aligns names first, so a renamed key passes it. The compiled
-    # joins read stored names, though, and would reference a missing column.
-    renamed_keys = [key for key in diff.primary_keys if key not in source_schema.names()]
-    if renamed_keys:
-        raise ConfigError(
-            f"Primary keys {renamed_keys} exist in the source only through rename_to. "
-            "Warehouse pushdown joins on stored column names, so renaming a key "
-            "is supported for local runs only."
-        )
     return source_schema, target_schema
 
 
@@ -1052,10 +1125,13 @@ def _collect_pushdown_summary(
     source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff
     )
+    key_rules = _resolve_pushdown_keys(diff, source_schema, target_schema)
     rules = _resolve_pushdown_rules(diff, source_schema, target_schema)
 
     source_total = _pushdown_row_count(connector, source_table)
     target_total = _pushdown_row_count(connector, target_table)
+    # Every join reads normalized keys, so a key the rules transform matches
+    # across the two relations exactly where a local run would match it.
     mismatch_sql = connector.compiler.compile_query(
         source_table,
         target_table,
@@ -1063,12 +1139,23 @@ def _collect_pushdown_summary(
         rules,
         source_types=source_schema,
         target_types=target_schema,
+        key_rules=key_rules,
     )
     added_sql = connector.compiler.compile_added_query(
-        source_table, target_table, diff.primary_keys
+        source_table,
+        target_table,
+        diff.primary_keys,
+        source_types=source_schema,
+        target_types=target_schema,
+        key_rules=key_rules,
     )
     missing_sql = connector.compiler.compile_missing_query(
-        source_table, target_table, diff.primary_keys
+        source_table,
+        target_table,
+        diff.primary_keys,
+        source_types=source_schema,
+        target_types=target_schema,
+        key_rules=key_rules,
     )
     changed = connector.execute_pushdown(mismatch_sql, query_type="mismatch").collect()
     added = connector.execute_pushdown(added_sql, query_type="added").collect()
@@ -1082,6 +1169,7 @@ def _collect_pushdown_summary(
         rules,
         source_types=source_schema,
         target_types=target_schema,
+        key_rules=key_rules,
     )
     if columns_sql is not None:
         tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
