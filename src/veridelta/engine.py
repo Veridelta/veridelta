@@ -1836,7 +1836,9 @@ class DiffEngine:
                 tgt = tgt.cast(dtype, strict=False)
 
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
-            abs_diff = (tgt - src).abs()
+            # Subtract the smaller value from the larger: `tgt - src` on unsigned
+            # columns wraps below zero instead of going negative.
+            abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
             threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
             within = abs_diff <= threshold
             if dtype.is_float():

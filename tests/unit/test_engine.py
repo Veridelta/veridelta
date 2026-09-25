@@ -600,6 +600,58 @@ class TestEvaluationStrictness:
 
         assert summary.changed_count == expected_changed
 
+    @pytest.mark.parametrize(
+        ("source", "target", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series([7], dtype=pl.UInt64),
+                pl.Series([5], dtype=pl.UInt64),
+                0,
+                id="target-below-source",
+            ),
+            pytest.param(
+                pl.Series([5], dtype=pl.UInt64),
+                pl.Series([7], dtype=pl.UInt64),
+                0,
+                id="target-above-source",
+            ),
+            pytest.param(
+                pl.Series([10], dtype=pl.UInt64),
+                pl.Series([5], dtype=pl.UInt64),
+                1,
+                id="outside-the-tolerance",
+            ),
+            pytest.param(
+                pl.Series([255], dtype=pl.UInt8),
+                pl.Series([0], dtype=pl.UInt8),
+                1,
+                id="full-range",
+            ),
+            pytest.param(
+                pl.Series([7], dtype=pl.UInt64),
+                pl.Series([5], dtype=pl.Int64),
+                0,
+                id="unsigned-vs-signed",
+            ),
+        ],
+    )
+    def test_it_measures_unsigned_differences_without_wrapping(
+        self, source: pl.Series, target: pl.Series, expected_changed: int
+    ) -> None:
+        """Ensure a tolerance judges unsigned columns by their true distance.
+
+        `tgt - src` on two unsigned values wraps around below zero, so `5 - 7`
+        measured 18446744073709551614 and the verdict depended on which side
+        held the larger number.
+        """
+        src = pl.DataFrame({"id": [1], "val": source})
+        tgt = pl.DataFrame({"id": [1], "val": target})
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=3.0)
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == expected_changed
+
     def test_it_still_soft_casts_text_to_a_numeric_source(self) -> None:
         """Ensure a text target keeps being cast to the source type rather than compared as text."""
         src = pl.DataFrame({"id": [1, 2], "val": [10, 10]})
