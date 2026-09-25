@@ -268,7 +268,7 @@ It raises `ConfigError` on a violation and returns nothing otherwise.
 
 ## Column-Level Overrides (Rules)
 
-The `rules` array defines granular, per-column or regex-pattern tolerances. A rule selects columns by exact `column_names` or by a regular expression in `pattern`, and every other field is optional. When a column is named by more than one rule, the first rule listing it by exact name wins, then the first whose `pattern` matches.
+The `rules` array defines granular, per-column or regex-pattern tolerances. A rule selects columns by exact `column_names` or by a regular expression in `pattern`, and every other field is optional. When a column is named by more than one rule, the first rule listing it by exact name wins, then the first whose `pattern` matches. One rule governs each column, `ignore` included, so an exact-name rule keeps a column that a broader ignore `pattern` would otherwise drop. A renamed column answers to both spellings: a rule listing its target name wins, then the rule listing its source name. Local runs and warehouse pushdown resolve rules the same way.
 
 | Field | Description |
 | :--- | :--- |
@@ -286,7 +286,7 @@ The `rules` array defines granular, per-column or regex-pattern tolerances. A ru
 | `datetime_format` | `strptime` pattern that parses text into timestamps. |
 | `timezone` | Zone that timezone-aware timestamps are converted to. |
 | `cast_to` | `Int64`, `Float64`, `String`, `Boolean`, `Date`, or `Datetime`. |
-| `ignore` | Exclude the matched columns from the comparison entirely. |
+| `ignore` | Exclude the columns this rule governs from the comparison entirely. |
 | `rename_to` | Target name for a single source column. |
 
 ### Transform order
@@ -403,3 +403,14 @@ rules:
   - column_names: ["legacy_customer_id"]
     rename_to: "customer_id"
 ```
+
+The rule's other settings apply to the renamed pair on both sides, so a rename can carry a tolerance or a transform:
+
+```yaml
+rules:
+  - column_names: ["legacy_amt"]
+    rename_to: "amount"
+    absolute_tolerance: 0.01
+```
+
+`primary_keys` are written with the target spelling, so a renamed key works in local runs. Warehouse pushdown joins on stored column names and raises `ConfigError` for a key that exists on the source only under its old name.

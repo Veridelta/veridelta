@@ -808,6 +808,106 @@ class TestEdgeCaseParity:
 
         assert summary.changed_count == 1
 
+    def test_it_agrees_on_a_renamed_column_that_carries_a_tolerance(self) -> None:
+        """Ensure a `rename_to` rule's other settings survive the rename.
+
+        The local engine used to look rules up by the renamed spelling, which
+        the rule does not list, so the tolerance silently fell away there
+        while pushdown, resolving by the source spelling, still applied it.
+        """
+        src = pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["legacy_amt"], rename_to="amount", absolute_tolerance=0.05)
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_on_a_renamed_column_normalized_on_both_sides(self) -> None:
+        """Ensure a rename rule's transforms reach the target spelling too."""
+        src = pl.DataFrame({"id": [1, 2], "legacy_name": ["ada", "grace"]})
+        tgt = pl.DataFrame({"id": [1, 2], "name": [" ada ", "Grace"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["legacy_name"],
+                    rename_to="name",
+                    whitespace_mode="both",
+                    case_insensitive=True,
+                )
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_when_a_rule_names_the_target_spelling(self) -> None:
+        """Ensure a rule written against the renamed spelling governs the pair on both paths."""
+        src = pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["legacy_amt"], rename_to="amount"),
+                DiffRule(column_names=["amount"], absolute_tolerance=0.05),
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_that_an_exact_rule_outranks_a_pattern_ignore(self) -> None:
+        """Ensure an ignore pattern cannot hide a column an exact-name rule claims.
+
+        Precedence is exact names before patterns, for `ignore` as for every
+        other field. The local engine used to drop any column an ignore rule
+        matched, skipping a column the configuration asked it to compare.
+        """
+        src = pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 2], "_etl_loaded_at": ["a", "b"]})
+        tgt = pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 3], "_etl_loaded_at": ["x", "y"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(pattern="^_etl_", ignore=True),
+                DiffRule(column_names=["_etl_batch_id"]),
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+        assert summary.column_mismatches == {"_etl_batch_id": 1}
+
+    def test_it_rejects_a_renamed_primary_key_on_the_pushdown_path(self) -> None:
+        """Ensure a key that only exists after `rename_to` fails as a config error.
+
+        Pushdown joins on stored column names, so a renamed key used to reach
+        the warehouse as a join on a column the source does not have.
+        """
+        src = pl.DataFrame({"legacy_id": [1], "val": ["A"]})
+        tgt = pl.DataFrame({"user_id": [1], "val": ["A"]})
+
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+
+        assert run_local(config, src, tgt).summary.is_perfect_match is True
+        with pytest.raises(ConfigError, match="rename_to"):
+            run_pushdown(config, src, tgt)
+
     def test_it_agrees_that_the_first_matching_rule_wins(self) -> None:
         """Ensure both engines resolve a doubly-ruled column to the same rule.
 

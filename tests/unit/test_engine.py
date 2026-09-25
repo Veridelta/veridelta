@@ -1080,6 +1080,103 @@ class TestSharedRuleAndAlignmentHelpers:
         # A multi-column rule cannot rename, and the target never renames.
         assert target_renames == {}
 
+    def test_it_drops_only_columns_whose_governing_rule_ignores_them(self) -> None:
+        """Ensure `ignore` follows the same precedence as every other field."""
+        rules = [
+            DiffRule(pattern="^tmp_", ignore=True),
+            DiffRule(column_names=["tmp_keep"]),
+            DiffRule(column_names=["val"]),
+            DiffRule(column_names=["val"], ignore=True),
+        ]
+        columns = ["tmp_drop", "tmp_keep", "val"]
+
+        source_renames, source_drops = _alignment_maps(rules, columns, rename=True)
+        _target_renames, target_drops = _alignment_maps(rules, columns, rename=False)
+
+        assert source_renames == {}
+        assert source_drops == target_drops == {"tmp_drop"}
+
+    def test_it_renames_with_the_first_rule_that_declares_a_rename(self) -> None:
+        """Ensure both engines pair a column the same way when rules split its settings."""
+        rules = [
+            DiffRule(column_names=["s"], absolute_tolerance=0.05),
+            DiffRule(column_names=["s"], rename_to="c"),
+            DiffRule(column_names=["s"], rename_to="d"),
+        ]
+
+        renames, drops = _alignment_maps(rules, ["id", "s"], rename=True)
+        (rule,) = _resolve_pushdown_rules(
+            DiffConfig(primary_keys=["id"], rules=rules),
+            pl.Schema({"id": pl.Int64, "s": pl.Float64}),
+            pl.Schema({"id": pl.Int64, "c": pl.Float64}),
+        )
+
+        assert renames == {"s": "c"}
+        assert drops == set()
+        assert rule.column_names == ["s"]
+        assert rule.rename_to == "c"
+        assert rule.absolute_tolerance == 0.05
+
+    def test_it_does_not_rename_a_column_its_governing_rule_ignores(self) -> None:
+        """Ensure an ignored column is dropped, not dropped and then renamed.
+
+        The two maps used to be built independently, so `drop` removed the
+        column and `rename` then failed on it with a raw Polars error.
+        """
+        src = pl.DataFrame({"id": [1], "s": [1]})
+        tgt = pl.DataFrame({"id": [1], "c": [2]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["s"], ignore=True),
+                DiffRule(column_names=["s"], rename_to="c"),
+            ],
+        )
+
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ()
+        assert result.summary.is_perfect_match is True
+
+    def test_it_drops_both_spellings_when_an_ignored_rule_renames(self) -> None:
+        """Ensure an ignored rename removes the target spelling as well as the source one."""
+        src = pl.DataFrame({"id": [1], "s": [1]})
+        tgt = pl.DataFrame({"id": [1], "c": [2]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            schema_mode="exact",
+            rules=[DiffRule(column_names=["s"], rename_to="c", ignore=True)],
+        )
+
+        DiffEngine.validate_schemas(config, src.lazy(), tgt.lazy())
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ()
+
+    def test_it_resolves_swapped_columns_by_their_source_rule(self) -> None:
+        """Ensure a swap does not hand each column the other's settings.
+
+        After `a -> b` and `b -> a`, the column now called `b` came from `a`.
+        A rule listing `b` governs the column that started as `b`, so the
+        target spelling must not win here the way it does for a plain rename.
+        """
+        rules = [
+            DiffRule(column_names=["a"], rename_to="b", absolute_tolerance=1.0),
+            DiffRule(column_names=["b"], rename_to="a", absolute_tolerance=0.1),
+        ]
+        config = DiffConfig(primary_keys=["id"], rules=rules)
+        engine = DiffEngine(config, pl.LazyFrame(), pl.LazyFrame())
+        schema = pl.Schema({"id": pl.Int64, "a": pl.Float64, "b": pl.Float64})
+
+        pushdown = {
+            rule.column_names[0]: (rule.rename_to, rule.absolute_tolerance)
+            for rule in _resolve_pushdown_rules(config, schema, schema)
+        }
+
+        assert engine._get_effective_rule("b")["abs_tol"] == 1.0  # pyright: ignore[reportPrivateUsage]
+        assert engine._get_effective_rule("a")["abs_tol"] == 0.1  # pyright: ignore[reportPrivateUsage]
+        assert pushdown == {"a": ("b", 1.0), "b": ("a", 0.1)}
+
 
 @pytest.mark.unit
 @pytest.mark.fast

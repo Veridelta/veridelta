@@ -10,7 +10,7 @@ and the `DiffEngine` which performs the high-performance Polars comparisons.
 import importlib
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import ClassVar, Final, TypedDict
@@ -433,36 +433,74 @@ def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
     )
 
 
-def _match_rule(rules: list[DiffRule], column: str) -> DiffRule | None:
-    """Resolve the single rule governing a column, exact names before patterns.
+def _rename_pairs(rules: Sequence[DiffRule]) -> dict[str, str]:
+    """Map each renamed source column to its target spelling.
+
+    The first single-column rule that declares a `rename_to` for a column
+    wins. Rules that also `ignore` the column count too: the pair still tells
+    the target side which spelling belongs to the ignored column.
 
     Args:
-        rules (list[DiffRule]): Declared rules, in configuration order.
-        column (str): Column name to resolve.
+        rules (Sequence[DiffRule]): Declared rules, in configuration order.
 
     Returns:
-        DiffRule | None: First exact-name match, else first pattern match, else None.
+        dict[str, str]: Source name to target name.
     """
+    pairs: dict[str, str] = {}
     for rule in rules:
-        if column in rule.column_names:
-            return rule
+        if rule.rename_to and len(rule.column_names) == 1:
+            pairs.setdefault(rule.column_names[0], rule.rename_to)
+    return pairs
+
+
+def _rule_spellings(pairs: Mapping[str, str], column: str) -> tuple[str, ...]:
+    """List the names a rule may use for a column, in order of precedence.
+
+    `column` is the post-rename name that every aligned frame carries. A
+    renamed column answers to its target spelling first and its source
+    spelling second, so a rule written against either one governs the pair.
+    When the target spelling also names a source column that is itself
+    renamed away -- a swap or a chain -- a rule listing it governs that other
+    column, and only the source spelling counts.
+
+    Args:
+        pairs (Mapping[str, str]): Source-to-target renames from `_rename_pairs`.
+        column (str): Post-rename column name.
+
+    Returns:
+        tuple[str, ...]: Names to try for an exact-name match, in order.
+    """
+    source = next((src for src, tgt in pairs.items() if tgt == column), column)
+    if source == column:
+        return (column,)
+    if pairs.get(column, column) != column:
+        return (source,)
+    return (column, source)
+
+
+def _match_rule(rules: Sequence[DiffRule], column: str) -> DiffRule | None:
+    """Resolve the single rule governing a column, exact names before patterns.
+
+    Both engines resolve through here, keyed by the post-rename name, so a
+    rule means the same thing wherever it runs: to `ignore` as much as to a
+    tolerance, and to a renamed column as much as to one that kept its name.
+
+    Args:
+        rules (Sequence[DiffRule]): Declared rules, in configuration order.
+        column (str): Post-rename column name to resolve.
+
+    Returns:
+        DiffRule | None: The first rule naming one of the column's spellings,
+            else the first whose pattern matches it, else None.
+    """
+    for name in _rule_spellings(_rename_pairs(rules), column):
+        for rule in rules:
+            if name in rule.column_names:
+                return rule
     for rule in rules:
         if rule.pattern and re.match(rule.pattern, column):
             return rule
     return None
-
-
-def _matches_rule(rule: DiffRule, column: str) -> bool:
-    """Return whether a rule names a column directly or through its pattern.
-
-    Args:
-        rule (DiffRule): Declared rule.
-        column (str): Column name to test.
-
-    Returns:
-        bool: True when the column is listed or matches the rule's pattern.
-    """
-    return column in rule.column_names or bool(rule.pattern and re.match(rule.pattern, column))
 
 
 def _alignment_maps(
@@ -470,32 +508,31 @@ def _alignment_maps(
 ) -> tuple[dict[str, str], set[str]]:
     """Derive the `rename_to` map and `ignore` drop set for one frame's columns.
 
-    Shared by `DataIngestor._align_columns` and `DiffEngine._align_structure`,
-    which previously each carried a copy of this loop.
+    Shared by `DataIngestor._align_columns` and `DiffEngine._align_structure`
+    for both sides. Each column is dropped only when the rule governing it
+    ignores it, so an exact-name rule keeps a column a broader ignore pattern
+    would otherwise remove, and a column is never both dropped and renamed.
 
     Args:
         rules (list[DiffRule]): Declared rules, in configuration order.
         columns (Sequence[str]): Column names present in the frame.
         rename (bool): Whether `rename_to` applies. It is a source-only mapping,
-            so the target side passes False and only collects drops.
+            so the target side, which already carries the post-rename
+            spellings, passes False and only collects drops.
 
     Returns:
         tuple[dict[str, str], set[str]]: Rename map and the columns to drop.
     """
+    pairs = _rename_pairs(rules)
     rename_map: dict[str, str] = {}
     to_drop: set[str] = set()
-    for rule in rules:
-        matched = [col for col in columns if _matches_rule(rule, col)]
-        if rule.ignore:
-            to_drop.update(matched)
-            continue
-        if (
-            rename
-            and rule.rename_to
-            and len(rule.column_names) == 1
-            and rule.column_names[0] in columns
-        ):
-            rename_map[rule.column_names[0]] = rule.rename_to
+    for column in columns:
+        aligned = pairs.get(column, column) if rename else column
+        rule = _match_rule(rules, aligned)
+        if rule is not None and rule.ignore:
+            to_drop.add(column)
+        elif aligned != column:
+            rename_map[column] = aligned
     return rename_map, to_drop
 
 
@@ -627,8 +664,9 @@ def _resolve_pushdown_rules(
     The compiler reads semantics from `DiffRule` alone, while the local engine
     layers each rule over the `default_*` settings. Without this expansion a
     warehouse run would ignore global tolerances and would skip every column
-    lacking an explicit rule, reporting all joined rows as changed. Columns are
-    resolved from the raw probe names so `rename_to` still pairs the two sides.
+    lacking an explicit rule, reporting all joined rows as changed. Each probed
+    source column is paired with its post-rename spelling and resolved under
+    that name, exactly as the local engine resolves its aligned frames.
 
     Args:
         diff (DiffConfig): Master comparison rules, keys, and global defaults.
@@ -646,25 +684,21 @@ def _resolve_pushdown_rules(
     """
     target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
+    pairs = _rename_pairs(diff.rules)
 
     resolved: list[DiffRule] = []
     for column in source_schema.names():
-        if column in keys:
+        aligned = pairs.get(column, column)
+        if aligned in keys or aligned not in target_lookup:
             continue
 
-        rule = _match_rule(diff.rules, column)
+        rule = _match_rule(diff.rules, aligned)
         if rule is not None and rule.ignore:
-            continue
-
-        rename_to = None
-        if rule is not None and rule.rename_to is not None and len(rule.column_names) == 1:
-            rename_to = rule.rename_to
-        if (rename_to or column) not in target_lookup:
             continue
 
         effective = _fold_rule_defaults(rule, diff)
         _enforce_pushdown_preconditions(
-            effective, ((column, source_schema), (rename_to or column, target_schema))
+            effective, ((column, source_schema), (aligned, target_schema))
         )
         # A global tolerance reaches every column, but only a numeric one may
         # compare within it; the rest compare exactly, as they do locally.
@@ -673,7 +707,7 @@ def _resolve_pushdown_rules(
         resolved.append(
             DiffRule(
                 column_names=[column],
-                rename_to=rename_to,
+                rename_to=None if aligned == column else aligned,
                 absolute_tolerance=effective["abs_tol"] if numeric else 0.0,
                 relative_tolerance=effective["rel_tol"] if numeric else 0.0,
                 treat_null_as_equal=effective["treat_null"],
@@ -908,7 +942,8 @@ def _validate_pushdown_schema(
             names, and the compiler needs both to filter null sentinels.
 
     Raises:
-        ConfigError: If primary keys are missing or schema constraints are violated.
+        ConfigError: If primary keys are missing, a key exists on the source
+            only under a `rename_to` spelling, or schema constraints are violated.
     """
     source_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(source_table), query_type="schema"
@@ -917,7 +952,17 @@ def _validate_pushdown_schema(
         connector.compiler.compile_schema_probe_query(target_table), query_type="schema"
     )
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
-    return source_probe.collect_schema(), target_probe.collect_schema()
+    source_schema = source_probe.collect_schema()
+    # Validation aligns names first, so a renamed key passes it. The compiled
+    # joins read stored names, though, and would reference a missing column.
+    renamed_keys = [key for key in diff.primary_keys if key not in source_schema.names()]
+    if renamed_keys:
+        raise ConfigError(
+            f"Primary keys {renamed_keys} exist in the source only through rename_to. "
+            "Warehouse pushdown joins on stored column names, so renaming a key "
+            "is supported for local runs only."
+        )
+    return source_schema, target_probe.collect_schema()
 
 
 def _collect_pushdown_summary(
@@ -1559,16 +1604,9 @@ class DiffEngine:
         tgt_cols = self.target.collect_schema().names()
 
         src_rename, src_drop = _alignment_maps(self.config.rules, src_cols, rename=True)
-
-        # The target matches by name or pattern like the source, and additionally
-        # by `rename_to`, since it already carries the post-rename spelling.
-        tgt_drop: set[str] = set()
-        for rule in self.config.rules:
-            if not rule.ignore:
-                continue
-            tgt_drop.update(
-                col for col in tgt_cols if col == rule.rename_to or _matches_rule(rule, col)
-            )
+        # The target already carries the post-rename spellings, which the
+        # resolver matches under either name.
+        _, tgt_drop = _alignment_maps(self.config.rules, tgt_cols, rename=False)
 
         self.source = self.source.drop(list(src_drop)).rename(src_rename)
         self.target = self.target.drop(list(tgt_drop))
