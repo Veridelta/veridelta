@@ -166,6 +166,31 @@ class TestDiffConfigNormalization:
         )
         assert config.rules[0].column_names == ["account_bal"]
 
+    def test_it_standardizes_rename_targets_when_normalization_is_enabled(self) -> None:
+        """Ensure a rename lands on the normalized target header rather than beside it.
+
+        Headers are lowercased on both sides, so a `rename_to` left in its
+        original case would pair with nothing, and under `intersection` the
+        column would silently drop out of the comparison.
+        """
+        config = DiffConfig(
+            primary_keys=["id"],
+            normalize_column_names=True,
+            rules=[DiffRule(column_names=[" Legacy_Amt "], rename_to=" Amount ")],
+        )
+        assert config.rules[0].column_names == ["legacy_amt"]
+        assert config.rules[0].rename_to == "amount"
+
+    def test_it_leaves_the_callers_rules_untouched(self) -> None:
+        """Ensure normalization copies rules instead of rewriting objects the caller holds."""
+        rule = DiffRule(column_names=["Amount"], rename_to="Total")
+
+        config = DiffConfig(primary_keys=["id"], normalize_column_names=True, rules=[rule])
+
+        assert rule.column_names == ["Amount"]
+        assert rule.rename_to == "Total"
+        assert config.rules[0].column_names == ["amount"]
+
     def test_it_preserves_original_casing_when_normalization_is_disabled(self) -> None:
         """Ensure configuration values remain untouched if normalization is False."""
         config = DiffConfig(primary_keys=["User_ID"], normalize_column_names=False)

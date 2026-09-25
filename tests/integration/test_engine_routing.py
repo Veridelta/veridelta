@@ -701,6 +701,32 @@ class TestEngineConnectorRouting:
         assert summary.is_match is False
         assert summary.changed_count == 1
 
+    def test_it_applies_renames_once_through_run_from_configs(self, tmp_path: Path) -> None:
+        """Ensure the YAML path renames once, so swapped names stay swapped.
+
+        Loading used to rename through the ingestor, and `run()` then renamed
+        the already-aligned frames again, undoing a swap and collapsing a chain.
+        """
+        src_file = tmp_path / "source.csv"
+        tgt_file = tmp_path / "target.csv"
+        pl.DataFrame({"id": [1], "lat": [10.0], "lon": [20.0]}).write_csv(src_file)
+        pl.DataFrame({"id": [1], "lat": [20.0], "lon": [10.0]}).write_csv(tgt_file)
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["lat"], rename_to="lon"),
+                DiffRule(column_names=["lon"], rename_to="lat"),
+            ],
+        )
+
+        result = DiffEngine.run_from_configs(
+            config,
+            SourceConfig(path=str(src_file), format="csv"),
+            SourceConfig(path=str(tgt_file), format="csv"),
+        )
+
+        assert result.summary.is_perfect_match is True
+
     def test_it_round_trips_file_yaml_when_type_is_omitted(self, tmp_path: Path) -> None:
         """Ensure existing file YAML remains valid without an explicit type."""
         config_path = tmp_path / "file.yaml"

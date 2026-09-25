@@ -10,6 +10,7 @@ and the `DiffEngine` which performs the high-performance Polars comparisons.
 import importlib
 import re
 from abc import ABC, abstractmethod
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
@@ -536,6 +537,31 @@ def _alignment_maps(
     return rename_map, to_drop
 
 
+def _normalize_header_names(frame: pl.LazyFrame) -> pl.LazyFrame:
+    """Strip and lowercase every column name, as `normalize_column_names` asks.
+
+    Args:
+        frame (pl.LazyFrame): Frame whose headers to normalize.
+
+    Returns:
+        pl.LazyFrame: The frame with normalized headers. Normalizing an already
+            normalized frame changes nothing, so every entry point may call it.
+
+    Raises:
+        ConfigError: If two headers normalize to the same name, which would
+            otherwise surface as a raw Polars duplicate-column error.
+    """
+    names = frame.collect_schema().names()
+    normalized = [name.strip().lower() for name in names]
+    collisions = sorted(name for name, count in Counter(normalized).items() if count > 1)
+    if collisions:
+        raise ConfigError(
+            f"normalize_column_names maps more than one header onto {collisions}. "
+            "Rename the duplicates at the source, or disable normalize_column_names."
+        )
+    return frame.rename(dict(zip(names, normalized, strict=True)))
+
+
 def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRule:
     """Layer one matched rule over the configuration's `default_*` settings.
 
@@ -918,6 +944,34 @@ def _pushdown_row_count(
         ) from exc
 
 
+def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema) -> None:
+    """Refuse `normalize_column_names` where it would rename a warehouse column.
+
+    A local run renames headers inside its frames. Pushdown cannot: the
+    compiler quotes identifiers exactly as they are stored, so a column whose
+    stored name normalization would change could no longer be referenced.
+
+    Args:
+        diff (DiffConfig): Comparison settings carrying the flag.
+        *schemas (pl.Schema): Probed schemas of the compared relations.
+
+    Raises:
+        ConfigError: If the flag is on and a probed name is not already
+            stripped and lowercase.
+    """
+    if not diff.normalize_column_names:
+        return
+    changed = [
+        name for schema in schemas for name in schema.names() if name != name.strip().lower()
+    ]
+    if changed:
+        raise ConfigError(
+            f"normalize_column_names would rename the warehouse columns {changed}. "
+            "Pushdown quotes identifiers exactly as they are stored, so disable "
+            "normalize_column_names and write column names in their stored case."
+        )
+
+
 def _validate_pushdown_schema(
     connector: PushdownSession,
     source_table: str,
@@ -943,7 +997,8 @@ def _validate_pushdown_schema(
 
     Raises:
         ConfigError: If primary keys are missing, a key exists on the source
-            only under a `rename_to` spelling, or schema constraints are violated.
+            only under a `rename_to` spelling, `normalize_column_names` would
+            rename a stored column, or schema constraints are violated.
     """
     source_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(source_table), query_type="schema"
@@ -951,8 +1006,10 @@ def _validate_pushdown_schema(
     target_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(target_table), query_type="schema"
     )
-    DiffEngine.validate_schemas(diff, source_probe, target_probe)
     source_schema = source_probe.collect_schema()
+    target_schema = target_probe.collect_schema()
+    _reject_warehouse_header_normalization(diff, source_schema, target_schema)
+    DiffEngine.validate_schemas(diff, source_probe, target_probe)
     # Validation aligns names first, so a renamed key passes it. The compiled
     # joins read stored names, though, and would reference a missing column.
     renamed_keys = [key for key in diff.primary_keys if key not in source_schema.names()]
@@ -962,7 +1019,7 @@ def _validate_pushdown_schema(
             "Warehouse pushdown joins on stored column names, so renaming a key "
             "is supported for local runs only."
         )
-    return source_schema, target_probe.collect_schema()
+    return source_schema, target_schema
 
 
 def _collect_pushdown_summary(
@@ -1122,8 +1179,12 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
 class DataIngestor:
     """Coordinates the loading, renaming, and structural alignment of datasets.
 
-    This class prepares raw external data for comparison by normalizing headers
-    and dropping ignored columns before handing them off to the DiffEngine.
+    This class prepares raw external data for inspection by normalizing
+    headers, dropping ignored columns, and applying renames. `DiffEngine`
+    performs the same alignment itself, so `run_from_configs` loads sources
+    directly rather than through this class. Frames from `get_dataframes` are
+    already aligned: passing them to `DiffEngine` aligns them a second time,
+    which is harmless except for renames that swap or chain names.
     """
 
     def __init__(
@@ -1151,10 +1212,7 @@ class DataIngestor:
         """
         if not self.config.normalize_column_names:
             return df
-
-        cols = df.collect_schema().names()
-        rename_map = {col: col.strip().lower() for col in cols}
-        return df.rename(rename_map)
+        return _normalize_header_names(df)
 
     def _align_columns(self, df: pl.LazyFrame, is_source: bool = True) -> pl.LazyFrame:
         """Applies configured renames and drops ignored columns.
@@ -1207,7 +1265,7 @@ class DiffEngine:
     - `DiffEngine(config, source, target).run()` for frames you already hold.
       In-memory `DataFrame` inputs must be wrapped with `.lazy()` first.
     - `DiffEngine.run_from_configs(diff, source, target)` for `SourceRef`
-      pairs from YAML. File and lakehouse pairs load through `DataIngestor`
+      pairs from YAML. File and lakehouse pairs load through `LoaderFactory`
       and run locally; same-warehouse pairs compile to SQL pushdown instead.
     - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
       key presence on metadata alone, before any rows are read.
@@ -1261,9 +1319,10 @@ class DiffEngine:
         if source_is_warehouse or target_is_warehouse:
             return _run_warehouse_pushdown(diff, source, target)
 
-        ingestor = DataIngestor(diff, source, target)
-        source_df, target_df = ingestor.get_dataframes()
-        return cls(diff, source_df, target_df).run()
+        # `run()` normalizes headers and applies renames exactly once. Loading
+        # through `DataIngestor` would align first and have `run()` rename the
+        # aligned frames again, which undoes a swap and collapses a chain.
+        return cls(diff, LoaderFactory.load(source), LoaderFactory.load(target)).run()
 
     @classmethod
     def validate_schemas(
@@ -1600,6 +1659,10 @@ class DiffEngine:
             Mandatory prerequisite for `_validate_schema`. Validating raw data
             metadata before alignment results in `ConfigError` during migrations.
         """
+        if self.config.normalize_column_names:
+            self.source = _normalize_header_names(self.source)
+            self.target = _normalize_header_names(self.target)
+
         src_cols = self.source.collect_schema().names()
         tgt_cols = self.target.collect_schema().names()
 

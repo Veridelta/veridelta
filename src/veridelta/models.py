@@ -492,17 +492,28 @@ class DiffConfig(BaseModel):
 
     @model_validator(mode="after")
     def apply_schema_normalization(self) -> "DiffConfig":
-        """Automatically lowercases and strips config keys if normalization is enabled.
+        r"""Lowercase and strip configured column names when normalization is enabled.
+
+        Keys, rule `column_names`, and `rename_to` are normalized the same way
+        the engine normalizes headers, so every name still refers to a column.
+        A `pattern` is left alone: lowercasing a regex changes what it means
+        (`\D` is not `\d`), so patterns are written against the lowercase names.
+        Rules are copied rather than edited, since the caller may still hold them.
 
         Returns:
-            DiffConfig: The mutated configuration instance.
+            DiffConfig: The configuration with normalized names.
         """
         if self.normalize_column_names:
             self.primary_keys = [pk.strip().lower() for pk in self.primary_keys]
-
-            rules: list[DiffRule] = self.rules
-            for rule in rules:
-                rule.column_names = [col.strip().lower() for col in rule.column_names]
+            self.rules = [
+                rule.model_copy(
+                    update={
+                        "column_names": [col.strip().lower() for col in rule.column_names],
+                        "rename_to": rule.rename_to and rule.rename_to.strip().lower(),
+                    }
+                )
+                for rule in self.rules
+            ]
 
         return self
 

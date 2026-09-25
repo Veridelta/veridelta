@@ -908,6 +908,29 @@ class TestEdgeCaseParity:
         with pytest.raises(ConfigError, match="rename_to"):
             run_pushdown(config, src, tgt)
 
+    def test_it_refuses_header_normalization_that_would_rename_a_warehouse_column(self) -> None:
+        """Ensure pushdown fails loudly where normalizing would change a stored name.
+
+        The compiler quotes identifiers exactly as they are stored, so it
+        cannot refer to a column by the lowercase name a local run gives it.
+        """
+        frame = pl.DataFrame({"ID": [1], "val": ["A"]})
+        config = DiffConfig(primary_keys=["ID"], normalize_column_names=True)
+
+        assert run_local(config, frame, frame).summary.is_perfect_match is True
+        with pytest.raises(ConfigError, match="normalize_column_names"):
+            run_pushdown(config, frame, frame)
+
+    def test_it_agrees_when_header_normalization_changes_nothing(self) -> None:
+        """Ensure names already in normalized form still compare with the flag on."""
+        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "C"]})
+        config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
     def test_it_agrees_that_the_first_matching_rule_wins(self) -> None:
         """Ensure both engines resolve a doubly-ruled column to the same rule.
 

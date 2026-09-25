@@ -327,6 +327,49 @@ class TestStructuralAlignment:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestHeaderNormalization:
+    """Validate that `normalize_column_names` holds on every entry point."""
+
+    def test_it_normalizes_headers_on_a_direct_run(self) -> None:
+        """Ensure `DiffEngine(...).run()` honors the flag, not only the YAML path.
+
+        The config's keys and rule names were lowercased while the frames kept
+        their headers, so a direct run failed to find its own primary key.
+        """
+        src = pl.DataFrame({" ID ": [1, 2], "Legacy_Amt": [10.0, 20.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "AMOUNT": [10.0, 20.04]})
+        config = DiffConfig(
+            primary_keys=["ID"],
+            normalize_column_names=True,
+            rules=[
+                DiffRule(column_names=["Legacy_Amt"], rename_to="Amount", absolute_tolerance=0.05)
+            ],
+        )
+
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ("amount",)
+        assert result.summary.is_perfect_match is True
+
+    def test_it_normalizes_headers_before_validating_schemas(self) -> None:
+        """Ensure a schema dry run sees the same headers a real run would."""
+        src = pl.DataFrame(schema={"ID": pl.Int64, "Amount": pl.Float64})
+        tgt = pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Float64})
+        config = DiffConfig(primary_keys=["id"], schema_mode="exact", normalize_column_names=True)
+
+        DiffEngine.validate_schemas(config, src.lazy(), tgt.lazy())
+
+    def test_it_rejects_headers_that_collide_once_normalized(self) -> None:
+        """Ensure two headers that normalize to one name fail as a configuration error."""
+        frame = pl.DataFrame({"id": [1], "Amount": [1.0], "amount ": [2.0]})
+        config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
+
+        with pytest.raises(ConfigError, match="normalize_column_names"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+
+@pytest.mark.unit
+@pytest.mark.fast
 class TestSemanticNormalization:
     """Validate complex data transformations, strings, and numeric tolerances."""
 
