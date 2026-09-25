@@ -204,9 +204,9 @@ class DiffRule(BaseModel):
         column_names (list[str]): Exact names of the columns in the source dataset.
         pattern (str | None): Regex pattern to match multiple columns (e.g., '^AMT_.*').
         absolute_tolerance (float | None): The maximum allowed absolute difference
-            for numeric mathematical comparisons.
+            for numeric mathematical comparisons. Must be finite.
         relative_tolerance (float | None): The maximum allowed relative difference
-            (e.g., 0.01 for 1%).
+            (e.g., 0.01 for 1%). Must be finite.
         case_insensitive (bool | None): If True, ignores case differences in strings.
         whitespace_mode (WhitespaceMode | None): Granular control over stripping
             leading/trailing whitespace prior to string comparison.
@@ -258,12 +258,14 @@ class DiffRule(BaseModel):
         default=None,
         ge=0.0,
         strict=True,
+        allow_inf_nan=False,
         description="Absolute tolerance for numeric differences.",
     )
     relative_tolerance: float | None = Field(
         default=None,
         ge=0.0,
         strict=True,
+        allow_inf_nan=False,
         description="Relative tolerance (e.g., 0.01 for 1%).",
     )
 
@@ -382,7 +384,8 @@ class DiffConfig(BaseModel):
 
     Attributes:
         primary_keys (list[str]): Columns used to join and align the datasets.
-            Must be unique in both datasets.
+            At least one is required, and together they must be unique in
+            both datasets.
         schema_mode (SchemaMode): How strictly to enforce column existence and
             matching between sources.
         strict_types (bool): If False (default), the engine implicitly soft-casts
@@ -412,7 +415,9 @@ class DiffConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    primary_keys: list[str] = Field(..., description="Columns used to join datasets.")
+    primary_keys: list[str] = Field(
+        ..., min_length=1, description="Columns used to join datasets (at least one)."
+    )
 
     schema_mode: SchemaMode = Field(
         default="intersection",
@@ -432,12 +437,14 @@ class DiffConfig(BaseModel):
         default=0.0,
         ge=0.0,
         strict=True,
+        allow_inf_nan=False,
         description="Global absolute tolerance for numeric columns.",
     )
     default_relative_tolerance: float = Field(
         default=0.0,
         ge=0.0,
         strict=True,
+        allow_inf_nan=False,
         description="Global relative tolerance for numeric columns.",
     )
     default_treat_null_as_equal: bool = Field(

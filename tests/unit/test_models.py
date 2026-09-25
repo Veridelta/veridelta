@@ -106,6 +106,27 @@ class TestStrictNumericFields:
                 {"primary_keys": ["id"], "default_relative_tolerance": "0.05"}
             )
 
+    def test_it_rejects_infinite_tolerances(self) -> None:
+        """Ensure an infinite tolerance fails when the config loads.
+
+        Locally it quietly passes every row, and in a warehouse the bare `inf`
+        it renders as is not a valid literal, so the two engines could only
+        disagree. `ignore` is the way to stop comparing a column.
+        """
+        with pytest.raises(ValidationError):
+            DiffRule(column_names=["amount"], absolute_tolerance=float("inf"))
+        with pytest.raises(ValidationError):
+            DiffRule(column_names=["amount"], relative_tolerance=float("inf"))
+        with pytest.raises(ValidationError):
+            DiffConfig(primary_keys=["id"], default_absolute_tolerance=float("inf"))
+        with pytest.raises(ValidationError):
+            DiffConfig(primary_keys=["id"], default_relative_tolerance=float("inf"))
+
+    def test_it_rejects_an_empty_primary_key_list(self) -> None:
+        """Ensure a comparison cannot be configured without a join key."""
+        with pytest.raises(ValidationError, match="at least 1"):
+            DiffConfig(primary_keys=[])
+
     def test_it_rejects_coerced_pad_zeros_widths(self) -> None:
         """Ensure a padding width cannot arrive as text or a float."""
         with pytest.raises(ValidationError):

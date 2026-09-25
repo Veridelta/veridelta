@@ -19,6 +19,8 @@ target:
 primary_keys: ["user_id"]
 ```
 
+`primary_keys` must name at least one column, and together the keys must be unique on each side.
+
 File sources may omit `type` (it defaults to `file`) and continue to use `path`, `format`, and optional `options`.
 
 ### File formats
@@ -51,7 +53,7 @@ uv add 'veridelta[all]'
 
 Do not commit `password` or `access_token` in YAML. Inject secrets from the environment or your orchestrator's secret store at runtime.
 
-Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
+Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
 
 `table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Pattern-only `DiffRule` entries are not compiled to SQL; they raise `ConnectorError` on the warehouse path.
 
@@ -274,8 +276,8 @@ The `rules` array defines granular, per-column or regex-pattern tolerances. A ru
 | :--- | :--- |
 | `column_names` | Exact source column names this rule governs. |
 | `pattern` | Regular expression matched against the start of each column name. Pattern-only rules are not compiled to warehouse SQL and raise `ConnectorError` there. |
-| `absolute_tolerance` | Maximum absolute numeric difference. Overrides `default_absolute_tolerance`. |
-| `relative_tolerance` | Maximum relative numeric difference (`0.01` is 1%). Overrides `default_relative_tolerance`. |
+| `absolute_tolerance` | Maximum absolute numeric difference. Overrides `default_absolute_tolerance`. Must be finite; use `ignore` to stop comparing a column. |
+| `relative_tolerance` | Maximum relative numeric difference (`0.01` is 1%). Overrides `default_relative_tolerance`. Must be finite. |
 | `case_insensitive` | Lowercase text before comparing. |
 | `whitespace_mode` | `none`, `left`, `right`, or `both`. Overrides `default_whitespace_mode`. |
 | `regex_replace` | Mapping of regex pattern to replacement, applied in order to text columns. |

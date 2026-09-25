@@ -1123,6 +1123,28 @@ def _collect_pushdown_summary(
     )
 
 
+def _reject_self_comparison(source_table: str, target_table: str) -> None:
+    """Refuse a pushdown run whose two sides name the same relation.
+
+    Both sides share one connection by this point, so equal names are one
+    table. Comparing a table with itself always matches, which would turn a
+    copy-pasted configuration into a passing run whatever the data held.
+
+    Args:
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+
+    Raises:
+        ConfigError: If the two names are identical.
+    """
+    if source_table == target_table:
+        raise ConfigError(
+            f"Source and target both name the same table '{source_table}' on one "
+            "connection, so the comparison could only ever match. Point one side "
+            "at the table it should be compared with."
+        )
+
+
 def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
     """Execute same-warehouse SQL pushdown or raise for unsupported pairings.
 
@@ -1136,7 +1158,8 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
             with the primary-key frames they were derived from.
 
     Raises:
-        ConfigError: If the probed relations violate `schema_mode`.
+        ConfigError: If both sides name the same table, or the probed
+            relations violate `schema_mode`.
         ConnectorError: If backends are mixed, dialects differ, or connections
             do not share a fingerprint.
     """
@@ -1155,6 +1178,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
                 "Cross-account warehouse pushdown is unsupported. "
                 "Source and target Snowflake connections must match."
             )
+        _reject_self_comparison(source.table, target.table)
         snowflake = SnowflakeConnector(source)
         snowflake.connect()
         try:
@@ -1167,6 +1191,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
                 "Cross-account warehouse pushdown is unsupported. "
                 "Source and target Databricks connections must match."
             )
+        _reject_self_comparison(source.table, target.table)
         databricks = DatabricksConnector(source)
         databricks.connect()
         try:

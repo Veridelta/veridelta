@@ -644,6 +644,34 @@ class TestEngineConnectorRouting:
 
         connector_cls.assert_not_called()
 
+    def test_it_refuses_to_compare_a_warehouse_table_with_itself(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a copy-pasted table name fails instead of reporting a perfect match.
+
+        A relation compared with itself always matches, so the run would pass
+        whatever the data held. It is refused before any session opens.
+        """
+        snowflake_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        databricks_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        diff = DiffConfig(primary_keys=["id"])
+
+        with pytest.raises(ConfigError, match="same table"):
+            DiffEngine.run_from_configs(
+                diff,
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+            )
+        with pytest.raises(ConfigError, match="same table"):
+            DiffEngine.run_from_configs(
+                diff,
+                _databricks_config(table="main.default.src"),
+                _databricks_config(table="main.default.src"),
+            )
+
+        snowflake_cls.assert_not_called()
+        databricks_cls.assert_not_called()
+
     def test_it_treats_the_databricks_token_as_part_of_the_fingerprint(
         self, mocker: MockerFixture
     ) -> None:
