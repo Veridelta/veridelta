@@ -46,7 +46,7 @@ listed aspirational formats too, which meant a config could name `netcdf`,
 validate cleanly, and then fail at run time on a format nobody had written.
 
 Delta Lake is not here on purpose: it is a table format reached through the
-`delta_lake` source type, not a file passed to a reader.
+`delta` source type, not a file passed to a reader.
 """
 
 SchemaMode = Literal[

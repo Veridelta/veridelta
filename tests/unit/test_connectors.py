@@ -132,11 +132,11 @@ class TestConnectorInterface:
         mocker.patch("veridelta.connectors.warehouse.snowflake_connector", None)
         connector = SnowflakeConnector(_snowflake_config())
 
-        with pytest.raises(ConnectorError, match="uv sync --extra snowflake"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[snowflake\]'"):
             connector.connect()
-        with pytest.raises(ConnectorError, match="uv sync --extra snowflake"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[snowflake\]'"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="uv sync --extra snowflake"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[snowflake\]'"):
             connector.fetch_schema()
 
     def test_it_raises_connector_error_when_databricks_extra_is_missing(
@@ -146,11 +146,11 @@ class TestConnectorInterface:
         mocker.patch("veridelta.connectors.warehouse.databricks_sql", None)
         connector = DatabricksConnector(_databricks_config())
 
-        with pytest.raises(ConnectorError, match="uv sync --extra databricks"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[databricks\]'"):
             connector.connect()
-        with pytest.raises(ConnectorError, match="uv sync --extra databricks"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[databricks\]'"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="uv sync --extra databricks"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[databricks\]'"):
             connector.fetch_schema()
 
 
@@ -300,7 +300,7 @@ class TestLakehouseConnectors:
         )
         connector = DeltaLakeConnector(_delta_config())
 
-        with pytest.raises(ConnectorError, match="uv sync --extra delta"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[delta\]'"):
             connector.connect()
 
     def test_it_wraps_missing_iceberg_extra_as_connector_error(self, mocker: MockerFixture) -> None:
@@ -311,7 +311,7 @@ class TestLakehouseConnectors:
         )
         connector = IcebergConnector(_iceberg_config())
 
-        with pytest.raises(ConnectorError, match="uv sync --extra iceberg"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[iceberg\]'"):
             connector.connect()
 
     def test_it_logs_the_scan_it_opened_without_storage_options(

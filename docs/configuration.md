@@ -51,11 +51,11 @@ uv add 'veridelta[iceberg]'
 uv add 'veridelta[all]'
 ```
 
-Do not commit `password` or `access_token` in YAML. Inject secrets from the environment or your orchestrator's secret store at runtime.
+Do not commit `password` or `access_token` in YAML. The loader does not expand environment variables, so either render the file from your secret store at runtime, or build the connection in Python (for example `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`) and pass it to `DiffEngine.run_from_configs`.
 
 Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
 
-`table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Pattern-only `DiffRule` entries are not compiled to SQL; they raise `ConnectorError` on the warehouse path.
+`table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Rules that select columns by `pattern` are matched against the probed column names before any SQL is compiled, so they apply in the warehouse exactly as they do locally.
 
 Pushdown issues eight statements per run: a zero-row column probe and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally. Those fill every `DiffSummary` field including `column_mismatches`, so `threshold`, `match_rate_percentage`, and the drift report mean the same thing they do for local comparisons.
 
@@ -63,14 +63,16 @@ Every column present on both sides is compared, exactly as it is locally. Column
 
 The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase). `normalize_column_names` cannot change that: pushdown raises `ConfigError` if it would rename a stored column.
 
-All nine transform stages compile, so a rule means the same thing in a warehouse as it does locally. Two behaviors still differ from the file and lakehouse path:
+All nine transform stages compile for compared columns, so a rule means the same thing in a warehouse as it does locally. These behaviors still differ from the file and lakehouse path:
 
 - Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
-- Primary-key uniqueness is not verified, so duplicate keys inflate the inner-join mismatch count instead of raising `DataIntegrityError`.
+- Primary keys are joined as stored. Stages 1 through 7 normalize compared columns but not key columns, so keys that differ only by a transform (a `case_insensitive` or `pad_zeros` rule, or a global `default_whitespace_mode`) are reported as added and removed rather than matched.
+- Primary-key uniqueness is not verified. Duplicate keys inflate the mismatch count, or pass unnoticed when the duplicated rows are identical, instead of raising `DataIntegrityError`.
+- `strict_types` applies to local runs only. When the two relations store a column as different types, the warehouse compares them under its own coercion rules.
 
 Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead.
 
-Write `regex_replace` patterns, `value_map` entries, and text `null_values` exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in `\d` or `\N` and an apostrophe in `O'Brien` arrive intact; do not double them yourself.
+Write `regex_replace` patterns, `value_map` entries, and text `null_values` exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in `\d` or `\N` and an apostrophe in `O'Brien` arrive intact; do not double them yourself. Escaping preserves the text, but each warehouse still runs its own regex engine: keep replacements free of capture-group references, which Polars and Databricks write as `$1` and Snowflake as `\1`. Likewise `whitespace_mode` trims only spaces in a warehouse, where Polars also strips tabs and line breaks.
 
 Two stages need explaining:
 
@@ -129,7 +131,7 @@ veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
 
 `--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
 
-Exit codes stay at `0` for a match within `threshold` and `1` for drift or any failure.
+Exit codes are `0` for a match within `threshold`, `1` for drift or any failure while running, and `2` for invalid command-line arguments.
 
 ```yaml
 source:
@@ -275,7 +277,7 @@ The `rules` array defines granular, per-column or regex-pattern tolerances. A ru
 | Field | Description |
 | :--- | :--- |
 | `column_names` | Exact source column names this rule governs. |
-| `pattern` | Regular expression matched against the start of each column name. Pattern-only rules are not compiled to warehouse SQL and raise `ConnectorError` there. |
+| `pattern` | Regular expression matched against the start of each column name. |
 | `absolute_tolerance` | Maximum absolute numeric difference. Overrides `default_absolute_tolerance`. Must be finite; use `ignore` to stop comparing a column. |
 | `relative_tolerance` | Maximum relative numeric difference (`0.01` is 1%). Overrides `default_relative_tolerance`. Must be finite. |
 | `case_insensitive` | Lowercase text before comparing. |
@@ -305,7 +307,7 @@ Rules are not applied in the order you write them. Every column follows one fixe
 8. Comparison (equality, or numeric tolerance)
 9. Null-safe equality (`treat_null_as_equal`)
 
-Stages 1 through 7 normalize each dataset on its own, before any join. That means they apply to primary keys as well: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion.
+Stages 1 through 7 normalize each dataset on its own, before any join. In local runs that means they apply to primary keys as well: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion. Warehouse pushdown joins keys as stored; see [Warehouse and lakehouse sources](#warehouse-and-lakehouse-sources).
 
 Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global `default_whitespace_mode` is safe to set on a mixed schema. Stage 1 is filtered per column instead, as described below.
 

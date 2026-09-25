@@ -46,8 +46,12 @@ except ImportError:  # pragma: no cover
 else:  # pragma: no cover
     databricks_sql = _databricks_sql
 
-_SNOWFLAKE_EXTRA = "Snowflake extra is not installed. Install it with: uv sync --extra snowflake"
-_DATABRICKS_EXTRA = "Databricks extra is not installed. Install it with: uv sync --extra databricks"
+_SNOWFLAKE_EXTRA = (
+    "Snowflake extra is not installed. Install it with: uv add 'veridelta[snowflake]'"
+)
+_DATABRICKS_EXTRA = (
+    "Databricks extra is not installed. Install it with: uv add 'veridelta[databricks]'"
+)
 _UNCONNECTED = "Warehouse connector is not connected. Call connect() first."
 _NO_STATEMENT = "Call execute_pushdown before fetch_schema."
 _NON_TABULAR = "Warehouse cursor did not return a tabular Arrow result."

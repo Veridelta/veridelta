@@ -26,8 +26,8 @@ logger.addHandler(logging.NullHandler())
 
 _UNCONNECTED = "Lakehouse connector is not connected. Call connect() first."
 _PUSHDOWN_UNSUPPORTED = "SQL pushdown is warehouse-only; lakehouse connectors use lazy scans."
-_DELTA_EXTRA = "Delta Lake extra is not installed. Install it with: uv sync --extra delta"
-_ICEBERG_EXTRA = "Iceberg extra is not installed. Install it with: uv sync --extra iceberg"
+_DELTA_EXTRA = "Delta Lake extra is not installed. Install it with: uv add 'veridelta[delta]'"
+_ICEBERG_EXTRA = "Iceberg extra is not installed. Install it with: uv add 'veridelta[iceberg]'"
 
 
 class DeltaLakeConnector(VerideltaConnector):

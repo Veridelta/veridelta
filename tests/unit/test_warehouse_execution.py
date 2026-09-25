@@ -565,5 +565,5 @@ class TestDatabricksExecution:
         mocker.patch("veridelta.connectors.warehouse.databricks_sql", None)
         connector = DatabricksConnector(_databricks_config())
 
-        with pytest.raises(ConnectorError, match="uv sync --extra databricks"):
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[databricks\]'"):
             connector.connect()
