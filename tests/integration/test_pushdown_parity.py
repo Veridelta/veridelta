@@ -835,6 +835,81 @@ class TestEdgeCaseParity:
 
 @pytest.mark.integration
 @pytest.mark.slow
+class TestToleranceScopeParity:
+    """Validate that a tolerance only ever loosens a numeric comparison.
+
+    The local engine applies tolerances to columns that are numeric once
+    normalized and compares everything else exactly. A global
+    `default_absolute_tolerance` reaches every column, so the warehouse has to
+    draw the same line instead of subtracting text, booleans, or dates.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "target", "rules", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", ["a", "b"]),
+                pl.Series("val", ["a", "B"]),
+                [],
+                1,
+                id="text",
+            ),
+            pytest.param(
+                pl.Series("val", [True, False]),
+                pl.Series("val", [True, True]),
+                [],
+                1,
+                id="boolean",
+            ),
+            pytest.param(
+                pl.Series("val", [date(2024, 1, 2), date(2024, 1, 2)]),
+                pl.Series("val", [date(2024, 1, 2), date(2024, 1, 3)]),
+                [],
+                1,
+                id="date-a-day-apart",
+            ),
+            pytest.param(
+                pl.Series("val", [7, 42]),
+                pl.Series("val", ["00007", "00042"]),
+                [DiffRule(column_names=["val"], pad_zeros=5)],
+                0,
+                id="padded-to-text",
+            ),
+            pytest.param(
+                pl.Series("val", ["2024-01-01 00:00:00", "2024-01-01 00:00:00"]),
+                pl.Series("val", [datetime(2024, 1, 1), datetime(2024, 1, 1, 0, 0, 1)]),
+                [DiffRule(column_names=["val"], datetime_format="%Y-%m-%d %H:%M:%S")],
+                1,
+                id="parsed-timestamp",
+            ),
+            pytest.param(
+                pl.Series("val", ["10.00", "20.00"]),
+                pl.Series("val", [10.4, 20.5]),
+                [DiffRule(column_names=["val"], cast_to="Float64")],
+                0,
+                id="cast-to-float-keeps-the-tolerance",
+            ),
+        ],
+    )
+    def test_it_agrees_that_tolerances_only_reach_numeric_columns(
+        self,
+        source: pl.Series,
+        target: pl.Series,
+        rules: list[DiffRule],
+        expected_changed: int,
+    ) -> None:
+        """Ensure a global tolerance leaves non-numeric columns compared exactly."""
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=1.0, rules=rules)
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 class TestHarnessSensitivity:
     """Prove the harness can actually observe divergence before it is trusted."""
 

@@ -592,6 +592,33 @@ def _enforce_pushdown_preconditions(
                 _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
 
+def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
+    """Predict whether the local engine compares a source column as a number.
+
+    `_build_match_expr` applies tolerances only when the normalized source
+    column is numeric and compares everything else exactly. Pushdown never
+    materializes the normalized column, so the answer is predicted from the
+    probed dtype by following the same stage gates as `_normalize_value_expr`
+    and `_normalize_temporal_expr`.
+
+    Args:
+        effective (EffectiveRule): Rule with global defaults folded in.
+        dtype (pl.DataType | None): Probed source dtype, or None when the
+            probe did not report one, in which case the tolerance is kept.
+
+    Returns:
+        bool: True when a tolerance should reach the warehouse predicate.
+    """
+    if effective["cast_to"] is not None:
+        return _CAST_TARGETS[effective["cast_to"]].is_numeric()
+    if effective["pad_zeros"] is not None:
+        # Stage 5 stringifies, and a datetime_format then parses the text.
+        return False
+    if effective["datetime_format"] and isinstance(dtype, (pl.String, pl.Utf8)):
+        return False
+    return dtype is None or dtype.is_numeric()
+
+
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
@@ -639,13 +666,16 @@ def _resolve_pushdown_rules(
         _enforce_pushdown_preconditions(
             effective, ((column, source_schema), (rename_to or column, target_schema))
         )
+        # A global tolerance reaches every column, but only a numeric one may
+        # compare within it; the rest compare exactly, as they do locally.
+        numeric = _compares_numerically(effective, source_schema.get(column))
 
         resolved.append(
             DiffRule(
                 column_names=[column],
                 rename_to=rename_to,
-                absolute_tolerance=effective["abs_tol"],
-                relative_tolerance=effective["rel_tol"],
+                absolute_tolerance=effective["abs_tol"] if numeric else 0.0,
+                relative_tolerance=effective["rel_tol"] if numeric else 0.0,
                 treat_null_as_equal=effective["treat_null"],
                 whitespace_mode=effective["whitespace"],
                 null_values=effective["null_values"],

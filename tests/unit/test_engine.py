@@ -5,6 +5,7 @@
 
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import get_args
 
@@ -21,7 +22,9 @@ from veridelta.engine import (
     LoaderFactory,
     _alignment_maps,
     _column_mismatches_from_frame,
+    _compares_numerically,
     _fold_rule_defaults,
+    _match_rule,
     _optional_module,
     _resolve_pushdown_rules,
 )
@@ -899,6 +902,111 @@ class TestPushdownRuleHelpers:
 
         assert len(rules) == 1
         assert rules[0].timezone == "UTC"
+
+    def test_it_zeroes_tolerances_the_local_engine_would_skip(self) -> None:
+        """Ensure only columns that compare numerically carry a tolerance to the warehouse.
+
+        Folding `default_absolute_tolerance` into every column used to emit
+        `ABS(tgt - src)` over text, booleans, and dates, which a warehouse
+        either rejects or quietly coerces.
+        """
+        schema = pl.Schema(
+            {
+                "id": pl.Int64,
+                "amount": pl.Float64,
+                "name": pl.String,
+                "flag": pl.Boolean,
+                "day": pl.Date,
+                "code": pl.Int64,
+                "raw": pl.String,
+                "stamp": pl.String,
+            }
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            default_absolute_tolerance=0.5,
+            default_relative_tolerance=0.1,
+            rules=[
+                DiffRule(column_names=["name"], absolute_tolerance=2.0),
+                DiffRule(column_names=["code"], pad_zeros=5),
+                DiffRule(column_names=["raw"], cast_to="Float64"),
+                DiffRule(column_names=["stamp"], datetime_format="%Y-%m-%d"),
+            ],
+        )
+
+        tolerances = {
+            rule.column_names[0]: (rule.absolute_tolerance, rule.relative_tolerance)
+            for rule in _resolve_pushdown_rules(config, schema, schema)
+        }
+
+        assert tolerances == {
+            "amount": (0.5, 0.1),
+            "name": (0.0, 0.0),
+            "flag": (0.0, 0.0),
+            "day": (0.0, 0.0),
+            "code": (0.0, 0.0),
+            "raw": (0.5, 0.1),
+            "stamp": (0.0, 0.0),
+        }
+
+    @pytest.mark.parametrize(
+        ("values", "dtype", "rule"),
+        [
+            pytest.param([1.5], pl.Float64, DiffRule(column_names=["val"]), id="float"),
+            pytest.param(
+                [Decimal("1.50")], pl.Decimal(10, 2), DiffRule(column_names=["val"]), id="decimal"
+            ),
+            pytest.param(["x"], pl.String, DiffRule(column_names=["val"]), id="text"),
+            pytest.param([True], pl.Boolean, DiffRule(column_names=["val"]), id="boolean"),
+            pytest.param(
+                ["1.5"], pl.String, DiffRule(column_names=["val"], cast_to="Float64"), id="cast-up"
+            ),
+            pytest.param(
+                [1.5], pl.Float64, DiffRule(column_names=["val"], cast_to="String"), id="cast-down"
+            ),
+            pytest.param([7], pl.Int64, DiffRule(column_names=["val"], pad_zeros=3), id="padded"),
+            pytest.param(
+                [7],
+                pl.Int64,
+                DiffRule(column_names=["val"], pad_zeros=8, datetime_format="%Y%m%d"),
+                id="padded-then-parsed",
+            ),
+            pytest.param(
+                ["2024-01-02"],
+                pl.String,
+                DiffRule(column_names=["val"], datetime_format="%Y-%m-%d"),
+                id="parsed-text",
+            ),
+            pytest.param(
+                [20240102],
+                pl.Int64,
+                DiffRule(column_names=["val"], datetime_format="%Y%m%d"),
+                id="format-skips-an-integer",
+            ),
+            pytest.param(
+                ["2024"],
+                pl.Categorical,
+                DiffRule(column_names=["val"], datetime_format="%Y"),
+                id="format-skips-a-categorical",
+            ),
+        ],
+    )
+    def test_it_predicts_what_the_local_normalizer_compares(
+        self, values: list[object], dtype: pl.DataType, rule: DiffRule
+    ) -> None:
+        """Ensure the pushdown prediction agrees with the dtype Polars actually compares.
+
+        Pushdown never materializes the normalized column, so it predicts the
+        dtype from the probe and the rule. This pins that prediction to the
+        real normalizer so the two cannot drift apart.
+        """
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+        frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
+        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+
+        compared = _normalized(config, frame).schema["val"]
+
+        assert _compares_numerically(effective, frame.schema["val"]) is compared.is_numeric()
 
     def test_it_drops_null_mismatch_counts_and_rejects_non_numeric_ones(self) -> None:
         """Ensure an empty join and a garbled tally are both handled."""

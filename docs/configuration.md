@@ -57,7 +57,7 @@ Same-warehouse SQL pushdown runs only when both sides are Snowflake or both side
 
 Pushdown issues eight statements per run: a zero-row column probe and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally. Those fill every `DiffSummary` field including `column_mismatches`, so `threshold`, `match_rate_percentage`, and the drift report mean the same thing they do for local comparisons.
 
-Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global `default_*` settings, so a `default_absolute_tolerance` applies in the warehouse too. Columns marked `ignore` are excluded, and `rename_to` pairs a source column with its renamed target counterpart.
+Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global `default_*` settings, so a `default_absolute_tolerance` applies in the warehouse too. As in a local run, a tolerance only loosens a column that is numeric once normalized, such as a text column with `cast_to: Float64`; text, boolean, and temporal columns are compared exactly. Columns marked `ignore` are excluded, and `rename_to` pairs a source column with its renamed target counterpart.
 
 The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase).
 
@@ -228,8 +228,8 @@ Global directives control the strictness of the underlying Polars evaluation eng
 | `strict_types` | If `false` (default), the engine dynamically soft-casts target columns to source types to prevent execution halts on mismatched types. If `true`, type mismatches automatically fail the row. |
 | `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment. |
 | `threshold` | The allowable mismatch ratio (0.0 to 1.0) before the pipeline exits with a failure code. |
-| `default_absolute_tolerance` | Global absolute numeric tolerance. A column without its own `absolute_tolerance` inherits this. |
-| `default_relative_tolerance` | Global relative numeric tolerance. A column without its own `relative_tolerance` inherits this. |
+| `default_absolute_tolerance` | Global absolute numeric tolerance. A column without its own `absolute_tolerance` inherits this. Columns that are not numeric after normalization are compared exactly. |
+| `default_relative_tolerance` | Global relative numeric tolerance. A column without its own `relative_tolerance` inherits this. Columns that are not numeric after normalization are compared exactly. |
 | `default_treat_null_as_equal` | Global `NULL == NULL` policy. Defaults to `true`. A column rule can override it. |
 | `default_whitespace_mode` | Global whitespace stripping: `none` (default), `left`, `right`, or `both`. |
 | `default_null_values` | Global sentinel list. Applied only to columns whose type can hold each value. |
