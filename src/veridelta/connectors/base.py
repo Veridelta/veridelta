@@ -11,8 +11,10 @@ import polars as pl
 
 from veridelta.connectors.sql import SQLPushdownCompiler
 
-PushdownQueryType = Literal["mismatch", "added", "missing", "count", "columns", "schema"]
-"""Warehouse pushdown round-trip: comparison rows, tallies, totals, or probes."""
+PushdownQueryType = Literal[
+    "mismatch", "added", "missing", "count", "duplicates", "columns", "schema"
+]
+"""Warehouse pushdown round-trip: comparison rows, tallies, totals, key checks, or probes."""
 
 _ConnectorT = TypeVar("_ConnectorT", bound="VerideltaConnector")
 

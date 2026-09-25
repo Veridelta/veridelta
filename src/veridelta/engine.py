@@ -14,14 +14,14 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
-from typing import ClassVar, Final, TypedDict
+from typing import ClassVar, Final, Literal, TypedDict
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownSession
+from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
-from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
@@ -100,6 +100,28 @@ def _unusable_sentinel_error(
         f"Column '{column}' has type {dtype}, which cannot hold any of the "
         f"null_values {list(sentinels)!r} configured for it. Quote text sentinels "
         "and leave numbers unquoted so each one matches its column type."
+    )
+
+
+def _duplicate_keys_error(
+    keys: list[str], side: Literal["SOURCE", "TARGET"], count: int
+) -> DataIntegrityError:
+    """Build the error for primary keys that repeat within one dataset.
+
+    Both engines raise through here, so a repeated key reads the same whether
+    a local run or a warehouse found it.
+
+    Args:
+        keys (list[str]): Configured primary keys.
+        side (Literal["SOURCE", "TARGET"]): Dataset the keys repeat in.
+        count (int): Rows sharing a key with another row, every copy counted.
+
+    Returns:
+        DataIntegrityError: Error naming the keys, the dataset, and the count.
+    """
+    return DataIntegrityError(
+        f"Primary keys {keys} are not unique in {side} dataset. "
+        f"Found {count} duplicate rows. Clean your data before diffing."
     )
 
 
@@ -998,6 +1020,36 @@ def _summary_from_pushdown(
     )
 
 
+def _pushdown_scalar(
+    connector: PushdownSession,
+    statement: str,
+    query_type: PushdownQueryType,
+    label: str,
+) -> int:
+    """Collect the single integer an aggregate pushdown statement returns.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        statement (str): Compiled aggregate returning one row and one column.
+        query_type (PushdownQueryType): Round-trip tag passed to the connector.
+        label (str): Names the statement in error messages.
+
+    Returns:
+        int: The aggregate's value.
+
+    Raises:
+        ConnectorError: If the warehouse does not return a single numeric value.
+    """
+    frame = connector.execute_pushdown(statement, query_type=query_type).collect()
+    if frame.height != 1 or frame.width != 1:
+        raise ConnectorError(f"{label} did not return a single value.")
+    try:
+        # Drivers may surface COUNT(*) or SUM as an integer, float, or decimal scalar.
+        return int(frame.item())
+    except (TypeError, ValueError) as exc:
+        raise ConnectorError(f"{label} returned a non-numeric value.") from exc
+
+
 def _pushdown_row_count(
     connector: PushdownSession,
     table: str,
@@ -1014,17 +1066,51 @@ def _pushdown_row_count(
     Raises:
         ConnectorError: If the warehouse does not return a single numeric value.
     """
-    statement = connector.compiler.compile_count_query(table)
-    frame = connector.execute_pushdown(statement, query_type="count").collect()
-    if frame.height != 1 or frame.width != 1:
-        raise ConnectorError(f"Row count query for '{table}' did not return a single value.")
-    try:
-        # Drivers may surface COUNT(*) as an integer, float, or decimal scalar.
-        return int(frame.item())
-    except (TypeError, ValueError) as exc:
-        raise ConnectorError(
-            f"Row count query for '{table}' returned a non-numeric value."
-        ) from exc
+    return _pushdown_scalar(
+        connector,
+        connector.compiler.compile_count_query(table),
+        "count",
+        f"Row count query for '{table}'",
+    )
+
+
+def _reject_duplicate_pushdown_keys(
+    connector: PushdownSession,
+    table: str,
+    diff: DiffConfig,
+    key_rules: Sequence[DiffRule],
+    *,
+    types: pl.Schema,
+    is_source: bool,
+) -> None:
+    """Fail a relation whose normalized primary keys repeat, as a local run does.
+
+    A repeated key would fan out every join below it, so the local engine
+    refuses to compare such a dataset. The check groups the keys after stages
+    1 through 7, since normalizing can collapse distinct stored keys into one.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        table (str): Relation to check.
+        diff (DiffConfig): Master comparison rules and keys.
+        key_rules (Sequence[DiffRule]): Normalization resolved for each key.
+        types (pl.Schema): Schema probed from the relation.
+        is_source (bool): True for the source relation, which reads renamed
+            keys under their stored names and applies `value_map`.
+
+    Raises:
+        DataIntegrityError: If any normalized key appears on more than one row.
+        ConnectorError: If the warehouse does not return a single numeric value.
+    """
+    statement = connector.compiler.compile_duplicate_key_query(
+        table, diff.primary_keys, is_source=is_source, key_rules=key_rules, types=types
+    )
+    duplicates = _pushdown_scalar(
+        connector, statement, "duplicates", f"Duplicate key query for '{table}'"
+    )
+    if duplicates:
+        side: Literal["SOURCE", "TARGET"] = "SOURCE" if is_source else "TARGET"
+        raise _duplicate_keys_error(diff.primary_keys, side, duplicates)
 
 
 def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema) -> None:
@@ -1101,7 +1187,7 @@ def _collect_pushdown_summary(
     target_table: str,
     diff: DiffConfig,
 ) -> DiffResult:
-    """Compile and collect the warehouse count, mismatch, and anti-join queries.
+    """Compile and collect the warehouse key checks, counts, mismatches, and anti-joins.
 
     Args:
         connector (PushdownSession): Connected warehouse session whose compiler
@@ -1119,6 +1205,7 @@ def _collect_pushdown_summary(
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
             primary key.
+        DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If a rule uses a field the compiler cannot express or the
             warehouse returns a malformed aggregate.
     """
@@ -1127,6 +1214,14 @@ def _collect_pushdown_summary(
     )
     key_rules = _resolve_pushdown_keys(diff, source_schema, target_schema)
     rules = _resolve_pushdown_rules(diff, source_schema, target_schema)
+    # As in a local run, a ConfigError from rule resolution wins over repeated
+    # keys, and repeated keys stop the run before any count or join executes.
+    _reject_duplicate_pushdown_keys(
+        connector, source_table, diff, key_rules, types=source_schema, is_source=True
+    )
+    _reject_duplicate_pushdown_keys(
+        connector, target_table, diff, key_rules, types=target_schema, is_source=False
+    )
 
     source_total = _pushdown_row_count(connector, source_table)
     target_total = _pushdown_row_count(connector, target_table)
@@ -1248,6 +1343,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
     Raises:
         ConfigError: If both sides name the same table, or the probed
             relations violate `schema_mode`.
+        DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If backends are mixed, dialects differ, or connections
             do not share a fingerprint.
     """
@@ -1425,6 +1521,7 @@ class DiffEngine:
 
         Raises:
             ConfigError: If primary keys are missing or `schema_mode` is violated.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
         """
         source_is_warehouse = _is_warehouse(source)
@@ -1475,25 +1572,17 @@ class DiffEngine:
             DataIntegrityError: If duplicates are found in the primary keys of either
                 dataset, preventing join explosions.
         """
-        from veridelta.exceptions import DataIntegrityError
-
         pks = self.config.primary_keys
 
         src_pks = self.source.select(pks).collect()
         if src_pks.is_duplicated().any():
             dupes = src_pks.filter(src_pks.is_duplicated()).height
-            raise DataIntegrityError(
-                f"Primary keys {pks} are not unique in SOURCE dataset. "
-                f"Found {dupes} duplicate rows. Clean your data before diffing."
-            )
+            raise _duplicate_keys_error(pks, "SOURCE", dupes)
 
         tgt_pks = self.target.select(pks).collect()
         if tgt_pks.is_duplicated().any():
             dupes = tgt_pks.filter(tgt_pks.is_duplicated()).height
-            raise DataIntegrityError(
-                f"Primary keys {pks} are not unique in TARGET dataset. "
-                f"Found {dupes} duplicate rows. Clean your data before diffing."
-            )
+            raise _duplicate_keys_error(pks, "TARGET", dupes)
 
     def _normalize_frame(self, frame: pl.LazyFrame, *, is_source: bool) -> pl.LazyFrame:
         """Apply stages 1 through 7 of the canonical transform order to one dataset.

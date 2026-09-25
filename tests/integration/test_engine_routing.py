@@ -14,7 +14,7 @@ from veridelta.config import load_config
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import COUNT_ALIAS
 from veridelta.engine import DiffEngine, LoaderFactory
-from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     DatabricksConfig,
     DeltaLakeConfig,
@@ -90,6 +90,8 @@ def _pushdown_by_query_type(statement: str, query_type: str = "mismatch") -> pl.
     if query_type == "columns":
         # A fully matching column is included so the zero-count filter is exercised.
         return pl.DataFrame({"amount": [5], "quantity": [0]}).lazy()
+    if query_type == "duplicates":
+        return pl.DataFrame({COUNT_ALIAS: [0]}).lazy()
     heights = {"mismatch": 2, "added": 3, "missing": 4}
     return _frame_with_ids(heights[query_type])
 
@@ -118,6 +120,9 @@ def _configure_warehouse_compiler(connector: Any) -> None:
     connector.compiler.compile_missing_query.return_value = "SELECT missing"
     connector.compiler.compile_column_mismatch_query.return_value = "SELECT columns"
     connector.compiler.compile_count_query.side_effect = lambda table: f"SELECT count FROM {table}"
+    connector.compiler.compile_duplicate_key_query.side_effect = lambda table, *_, **__: (
+        f"SELECT duplicates FROM {table}"
+    )
     connector.compiler.compile_schema_probe_query.side_effect = lambda table: (
         f"SELECT probe FROM {table}"
     )
@@ -197,7 +202,7 @@ class TestEngineConnectorRouting:
             target_types=PROBE_SCHEMA,
             key_rules=[_synthesized_id_key_rule()],
         )
-        assert connector.execute_pushdown.call_count == 8
+        assert connector.execute_pushdown.call_count == 10
         connector.execute_pushdown.assert_any_call("SELECT mismatch", query_type="mismatch")
         connector.execute_pushdown.assert_any_call("SELECT added", query_type="added")
         connector.execute_pushdown.assert_any_call("SELECT missing", query_type="missing")
@@ -207,6 +212,23 @@ class TestEngineConnectorRouting:
         )
         connector.execute_pushdown.assert_any_call(
             "SELECT probe FROM ANALYTICS.PUBLIC.TGT", query_type="schema"
+        )
+        connector.compiler.compile_duplicate_key_query.assert_any_call(
+            "ANALYTICS.PUBLIC.SRC",
+            ["id"],
+            is_source=True,
+            key_rules=[_synthesized_id_key_rule()],
+            types=PROBE_SCHEMA,
+        )
+        connector.compiler.compile_duplicate_key_query.assert_any_call(
+            "ANALYTICS.PUBLIC.TGT",
+            ["id"],
+            is_source=False,
+            key_rules=[_synthesized_id_key_rule()],
+            types=PROBE_SCHEMA,
+        )
+        connector.execute_pushdown.assert_any_call(
+            "SELECT duplicates FROM ANALYTICS.PUBLIC.TGT", query_type="duplicates"
         )
         assert summary.changed_count == 2
         assert summary.added_count == 3
@@ -258,7 +280,7 @@ class TestEngineConnectorRouting:
             target_types=PROBE_SCHEMA,
             key_rules=[_synthesized_id_key_rule()],
         )
-        assert connector.execute_pushdown.call_count == 8
+        assert connector.execute_pushdown.call_count == 10
         connector.execute_pushdown.assert_any_call("SELECT mismatch", query_type="mismatch")
         connector.execute_pushdown.assert_any_call("SELECT added", query_type="added")
         connector.execute_pushdown.assert_any_call("SELECT missing", query_type="missing")
@@ -313,6 +335,36 @@ class TestEngineConnectorRouting:
                 _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
             )
 
+        connector.close.assert_called_once()
+
+    def test_it_rejects_duplicate_warehouse_keys_before_any_join(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a repeated key fails before a join can fan out, and still releases the session."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+
+        def _duplicated_target(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "duplicates" and statement.upper().endswith("TGT"):
+                return pl.DataFrame({COUNT_ALIAS: [3]}).lazy()
+            return _pushdown_by_query_type(statement, query_type)
+
+        connector.execute_pushdown.side_effect = _duplicated_target
+
+        with pytest.raises(
+            DataIntegrityError, match=r"not unique in TARGET dataset\. Found 3 duplicate rows"
+        ):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"]),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+            )
+
+        connector.compiler.compile_query.assert_not_called()
+        connector.compiler.compile_added_query.assert_not_called()
+        connector.compiler.compile_missing_query.assert_not_called()
+        connector.compiler.compile_count_query.assert_not_called()
         connector.close.assert_called_once()
 
     def test_it_honors_non_zero_threshold_against_databricks_row_totals(
@@ -532,7 +584,7 @@ class TestEngineConnectorRouting:
         ).summary
 
         assert summary.column_mismatches == {}
-        assert connector.execute_pushdown.call_count == 7
+        assert connector.execute_pushdown.call_count == 9
 
     def test_it_raises_connector_error_when_the_tally_returns_multiple_rows(
         self, mocker: MockerFixture
