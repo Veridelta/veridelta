@@ -509,8 +509,8 @@ class TestEvaluationStrictness:
 
         assert summary.is_match is False
 
-    def test_it_soft_casts_mixed_types_when_strict_types_is_disabled(self) -> None:
-        """Ensure the engine safely soft-casts targets to source types by default."""
+    def test_it_matches_mixed_types_by_value_when_strict_types_is_disabled(self) -> None:
+        """Ensure a float and an integer holding the same number match by default."""
         src = pl.DataFrame({"id": [1], "val": [10.0]})
         tgt = pl.DataFrame({"id": [1], "val": [10]})
 
@@ -530,6 +530,11 @@ class TestEvaluationStrictness:
                 pl.Series([0.5], dtype=pl.Float32),
                 pl.Series([0.5000000001]),
                 id="float32-vs-float64",
+            ),
+            pytest.param(
+                pl.Series([Decimal("10.50")], dtype=pl.Decimal(10, 2)),
+                pl.Series([Decimal("10.5049")], dtype=pl.Decimal(12, 4)),
+                id="decimal-scales",
             ),
         ],
     )

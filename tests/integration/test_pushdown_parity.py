@@ -1340,6 +1340,12 @@ class TestNumericComparisonParity:
                 1,
                 id="decimal-vs-float",
             ),
+            pytest.param(
+                pl.Series("val", [Decimal("10.50"), Decimal("10.50")], dtype=pl.Decimal(10, 2)),
+                pl.Series("val", [Decimal("10.5049"), Decimal("10.5000")], dtype=pl.Decimal(12, 4)),
+                1,
+                id="decimal-scales",
+            ),
         ],
     )
     def test_it_agrees_on_mixed_numeric_types(
@@ -1356,6 +1362,25 @@ class TestNumericComparisonParity:
         summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
 
         assert summary.changed_count == expected_changed
+
+    def test_it_agrees_on_a_decimal_source_under_a_tolerance(self) -> None:
+        """Ensure the finiteness guard accepts a decimal source on both paths.
+
+        Decimals are always finite. Polars refuses `is_finite` on them, so the
+        local engine skips the guard, while the SQL compares the decimal with a
+        floating-point infinity.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(
+            pl.Series("val", [Decimal("10.00"), Decimal("10.00")], dtype=pl.Decimal(10, 2))
+        )
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(
+            pl.Series("val", [Decimal("10.40"), Decimal("11.00")], dtype=pl.Decimal(10, 2))
+        )
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=0.5)
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
 
     @pytest.mark.parametrize(
         ("source", "target", "tolerance", "matches"),
