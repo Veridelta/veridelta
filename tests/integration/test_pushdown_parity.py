@@ -931,6 +931,24 @@ class TestEdgeCaseParity:
 
         assert summary.changed_count == 1
 
+    def test_it_agrees_on_row_totals_when_a_key_is_null(self) -> None:
+        """Ensure a row with a null key still counts toward the totals.
+
+        The totals are the threshold's denominator. The local engine used to
+        count non-null values of the first key, so it disagreed with the
+        warehouse's `COUNT(*)` and could flip the verdict near the threshold.
+        """
+        src = pl.DataFrame({"id": [1, 2, None], "val": ["A", "B", "C"]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]})
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"], threshold=0.7), src, tgt)
+
+        # A null key never joins, so that row is removed and key 3 is added.
+        assert summary.total_rows_source == 3
+        assert summary.removed_count == 1
+        assert summary.added_count == 1
+        assert summary.is_match is True
+
     def test_it_agrees_that_the_first_matching_rule_wins(self) -> None:
         """Ensure both engines resolve a doubly-ruled column to the same rule.
 

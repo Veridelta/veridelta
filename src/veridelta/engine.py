@@ -1856,9 +1856,11 @@ class DiffEngine:
         """
         column_mismatches = _local_column_mismatches(changed_df, compared_columns)
 
-        pk_col = self.config.primary_keys[0]
-        src_total = self.source.select(pl.col(pk_col).count()).collect().item()
-        tgt_total = self.target.select(pl.col(pk_col).count()).collect().item()
+        # Count rows, as the warehouse's COUNT(*) does. Counting a key column
+        # would skip rows whose key is null, which still count as removed or
+        # added and so belong in the threshold's denominator.
+        src_total = self.source.select(pl.len()).collect().item()
+        tgt_total = self.target.select(pl.len()).collect().item()
 
         total_mismatches = added_df.height + removed_df.height + changed_df.height
         is_match = total_mismatches / max(src_total, 1) <= self.config.threshold

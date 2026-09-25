@@ -553,6 +553,15 @@ class TestDataIntegrityAndSetDifferences:
         with pytest.raises(DataIntegrityError, match="not unique in TARGET dataset"):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
+    def test_it_counts_rows_whose_first_key_is_null(self) -> None:
+        """Ensure the totals count rows, not non-null key values."""
+        frame = pl.DataFrame({"id": [1, None], "val": ["A", "B"]})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), frame.lazy(), frame.lazy()).run()
+
+        assert summary.summary.total_rows_source == 2
+        assert summary.summary.total_rows_target == 2
+
     def test_it_correctly_isolates_added_and_removed_records(self) -> None:
         """Ensure anti-joins accurately route missing records to the correct summary tallies."""
         src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
