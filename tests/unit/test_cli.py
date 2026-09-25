@@ -259,6 +259,30 @@ class TestCommandLineInterface:
         assert exc.value.code == 0
         assert __version__ in capsys.readouterr().out
 
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            pytest.param("-5", "zero or more", id="negative"),
+            pytest.param("many", "whole number", id="not-a-number"),
+        ],
+    )
+    def test_it_rejects_an_unusable_html_row_cap(
+        self, capsys: pytest.CaptureFixture[str], value: str, message: str
+    ) -> None:
+        """Ensure a bad `--html-max-rows` is a usage error, not a silently wrong report."""
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["run", "--html", "r.html", "--html-max-rows", value])
+
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+
+    def test_it_accepts_a_zero_or_positive_html_row_cap(self) -> None:
+        """Ensure a valid cap, zero included, parses to an integer."""
+        parser = build_parser()
+
+        assert parser.parse_args(["run", "--html-max-rows", "0"]).html_max_rows == 0
+        assert parser.parse_args(["run", "--html-max-rows", "25"]).html_max_rows == 25
+
     def test_main_parses_arguments_and_delegates_to_run(self, mocker: MockerFixture) -> None:
         """Ensure the main entrypoint correctly routes the run command and exits."""
         mock_run = mocker.patch("veridelta.cli.run", return_value=0)

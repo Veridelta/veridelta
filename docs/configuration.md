@@ -127,7 +127,7 @@ veridelta run -c veridelta.yaml --quiet
 veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
 ```
 
-`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
+`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
 
 Exit codes stay at `0` for a match within `threshold` and `1` for drift or any failure.
 
