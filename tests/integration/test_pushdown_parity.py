@@ -1357,6 +1357,51 @@ class TestNumericComparisonParity:
 
         assert summary.changed_count == expected_changed
 
+    @pytest.mark.parametrize(
+        ("source", "target", "tolerance", "matches"),
+        [
+            pytest.param(float("nan"), 1e6, (0.5, 0.0), False, id="nan-source"),
+            pytest.param(float("nan"), 1e6, (0.0, 0.1), False, id="nan-source-relative"),
+            pytest.param(float("inf"), 1e308, (0.5, 0.0), False, id="inf-source"),
+            pytest.param(float("inf"), 1e308, (0.0, 0.1), False, id="inf-source-relative"),
+            pytest.param(float("inf"), float("-inf"), (0.5, 0.0), False, id="inf-vs-neg"),
+            pytest.param(
+                float("inf"),
+                float("-inf"),
+                (0.0, 0.1),
+                False,
+                id="inf-vs-neg-relative",
+            ),
+            pytest.param(1.0, float("nan"), (0.5, 0.0), False, id="nan-target"),
+            pytest.param(1.0, float("inf"), (0.5, 0.0), False, id="inf-target"),
+            pytest.param(float("nan"), float("nan"), (0.5, 0.0), True, id="nan-pair"),
+            pytest.param(float("inf"), float("inf"), (0.5, 0.0), True, id="inf-pair"),
+            pytest.param(float("-inf"), float("-inf"), (0.0, 0.1), True, id="neg-inf-pair"),
+            pytest.param(1.0, 1.4, (0.5, 0.0), True, id="finite-within"),
+            pytest.param(100.0, 109.0, (0.0, 0.1), True, id="finite-relative"),
+        ],
+    )
+    def test_it_agrees_that_a_tolerance_never_forgives_a_non_finite_value(
+        self, source: float, target: float, tolerance: tuple[float, float], matches: bool
+    ) -> None:
+        """Ensure NaN matches only NaN and an infinity only itself, on both paths.
+
+        The allowance `abs + rel * ABS(src)` is NaN for an infinite source when
+        `rel` is 0, and infinite when it is not. Polars, DuckDB, Snowflake, and
+        Spark all sort NaN above every number, so both paths used to accept
+        any target once the source was not finite.
+        """
+        src = pl.DataFrame({"id": [1], "val": [source]})
+        tgt = pl.DataFrame({"id": [1], "val": [target]})
+        absolute, relative = tolerance
+        rule = DiffRule(
+            column_names=["val"], absolute_tolerance=absolute, relative_tolerance=relative
+        )
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"], rules=[rule]), src, tgt)
+
+        assert summary.changed_count == (0 if matches else 1)
+
 
 @pytest.mark.integration
 @pytest.mark.slow

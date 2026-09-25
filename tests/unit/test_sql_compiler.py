@@ -298,15 +298,52 @@ class TestPredicateCompilation:
         assert "EQUAL_NULL(" not in sql
 
     def test_it_emits_engine_tolerance_formula(self) -> None:
-        """Ensure numeric compare matches ABS(tgt-src) <= abs + rel * ABS(src)."""
+        """Ensure numeric compare matches ABS(tgt-src) <= abs + rel * ABS(src).
+
+        The allowance only applies to a finite source, and equal values match
+        outright, so a NaN or an infinity can match nothing but itself.
+        """
         rule = DiffRule(
             column_names=["amount"],
             absolute_tolerance=0.01,
             relative_tolerance=0.05,
         )
         sql = _snowflake().compile_column_predicate(rule, "amount")
-        assert 'ABS("tgt"."amount" - "src"."amount")' in sql
-        assert "<= 0.01 + (0.05 * ABS(" in sql
+        assert sql == (
+            '("src"."amount" = "tgt"."amount" OR '
+            """(ABS("src"."amount") < 'inf'::FLOAT AND """
+            'ABS("tgt"."amount" - "src"."amount") <= 0.01 + (0.05 * ABS("src"."amount"))))'
+        )
+
+    @pytest.mark.parametrize(
+        ("dialect", "guard"),
+        [
+            pytest.param(
+                SQLDialect.SNOWFLAKE, """ABS("src"."amount") < 'inf'::FLOAT AND """, id="snowflake"
+            ),
+            pytest.param(
+                SQLDialect.DATABRICKS,
+                "ABS(`src`.`amount`) < CAST('Infinity' AS DOUBLE) AND ",
+                id="databricks",
+            ),
+            pytest.param(
+                SQLDialect.DUCKDB, """ABS("src"."amount") < 'inf'::DOUBLE AND """, id="duckdb"
+            ),
+        ],
+    )
+    def test_it_confines_the_tolerance_to_a_finite_source(
+        self, dialect: SQLDialect, guard: str
+    ) -> None:
+        """Ensure each dialect spells infinity so a non-finite source never uses the allowance.
+
+        `0 * ABS(inf)` is NaN, and every supported engine sorts NaN above all
+        numbers, so without the guard `ABS(diff) <= NaN` accepted any target.
+        """
+        rule = DiffRule(column_names=["amount"], absolute_tolerance=0.5)
+
+        sql = SQLPushdownCompiler(dialect).compile_column_predicate(rule, "amount")
+
+        assert guard in sql
 
     def test_it_emits_exact_equality_when_tolerances_are_zero(self) -> None:
         """Ensure zero tolerances compile to `=` rather than ABS predicates."""
@@ -434,7 +471,7 @@ class TestQueryAssembly:
         )
         where_clause = sql.split("WHERE NOT (", 1)[1]
         assert where_clause.startswith('COALESCE("src"."status" = "tgt"."status", FALSE) AND ')
-        assert 'COALESCE(ABS("tgt"."amount" - "src"."amount") <= 0.5' in where_clause
+        assert 'COALESCE(("src"."amount" = "tgt"."amount" OR (ABS(' in where_clause
         assert where_clause.endswith(", FALSE))")
 
     def test_it_expands_multi_column_rules_into_separate_predicates(self) -> None:
@@ -773,7 +810,7 @@ class TestColumnMismatchAggregate:
 
         assert sql is not None
         assert sql.count("COALESCE(") == 1
-        assert "COALESCE(ABS(" in sql
+        assert 'COALESCE(("src"."amount" = "tgt"."amount" OR (ABS(' in sql
         assert ", FALSE) THEN 0 ELSE 1 END)" in sql
 
     def test_it_aliases_renamed_columns_by_their_target_name(self) -> None:

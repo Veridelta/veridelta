@@ -570,6 +570,36 @@ class TestEvaluationStrictness:
 
         assert summary.is_perfect_match is True
 
+    @pytest.mark.parametrize(
+        ("source", "target", "expected_changed"),
+        [
+            pytest.param(pl.Series([float("nan")]), pl.Series([1_000_000.0]), 1, id="nan-source"),
+            pytest.param(pl.Series([float("inf")]), pl.Series([1e308]), 1, id="infinite-source"),
+            pytest.param(pl.Series([float("nan")]), pl.Series([float("nan")]), 0, id="nan-pair"),
+            pytest.param(
+                pl.Series([Decimal("10.00")]),
+                pl.Series([Decimal("10.40")]),
+                0,
+                id="decimal-within",
+            ),
+        ],
+    )
+    def test_it_never_forgives_a_non_finite_source_under_a_tolerance(
+        self, source: pl.Series, target: pl.Series, expected_changed: int
+    ) -> None:
+        """Ensure NaN matches only NaN, and an infinity only itself, whatever the tolerance.
+
+        The allowance is `abs + rel * |src|`, and `0 * inf` is NaN. Polars sorts
+        NaN above every number, so `|diff| <= NaN` used to accept any target.
+        """
+        src = pl.DataFrame({"id": [1], "val": source})
+        tgt = pl.DataFrame({"id": [1], "val": target})
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=0.5)
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == expected_changed
+
     def test_it_still_soft_casts_text_to_a_numeric_source(self) -> None:
         """Ensure a text target keeps being cast to the source type rather than compared as text."""
         src = pl.DataFrame({"id": [1, 2], "val": [10, 10]})

@@ -1838,7 +1838,13 @@ class DiffEngine:
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
             abs_diff = (tgt - src).abs()
             threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
-            val_match = abs_diff <= threshold
+            within = abs_diff <= threshold
+            if dtype.is_float():
+                # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
+                # non-finite source must never reach the allowance.
+                within = within & src.is_finite()
+            # Equal values match outright: NaN meets NaN, and an infinity itself.
+            val_match = (src == tgt) | within
         else:
             val_match = src == tgt
 

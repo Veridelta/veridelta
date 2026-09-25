@@ -206,7 +206,8 @@ class DiffRule(BaseModel):
         absolute_tolerance (float | None): The maximum allowed absolute difference
             for numeric mathematical comparisons. Must be finite.
         relative_tolerance (float | None): The maximum allowed relative difference
-            (e.g., 0.01 for 1%). Must be finite.
+            (e.g., 0.01 for 1%). Must be finite. Neither tolerance ever forgives a
+            non-finite value: NaN matches only NaN, and an infinity only itself.
         case_insensitive (bool | None): If True, ignores case differences in strings.
         whitespace_mode (WhitespaceMode | None): Granular control over stripping
             leading/trailing whitespace prior to string comparison.

@@ -319,6 +319,8 @@ rules:
     relative_tolerance: 0.005
 ```
 
+A tolerance only loosens the comparison of finite values. `NaN` matches only `NaN`, and an infinity matches only the same infinity, however wide the tolerance.
+
 ### 2. Null Sentinels
 Declare the placeholder values a system writes instead of NULL. Sentinels are not limited to text: a list can mix strings, numbers, and booleans.
 
