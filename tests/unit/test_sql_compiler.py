@@ -457,9 +457,11 @@ class TestAntiJoinAssembly:
     def test_it_builds_snowflake_left_join_for_missing_source_rows(self) -> None:
         """Ensure removed rows use LEFT JOIN with target keys IS NULL."""
         sql = _snowflake().compile_missing_query("src_tbl", "tgt_tbl", ["id"])
-        assert sql.startswith('SELECT "src"."id"')
+        assert sql.startswith('WITH "_src_normalized" AS (SELECT "src"."id" AS "id" FROM')
         assert 'FROM "src_tbl" AS "src"' in sql
-        assert 'LEFT JOIN "tgt_tbl" AS "tgt"' in sql
+        assert 'FROM "tgt_tbl" AS "tgt"' in sql
+        assert 'SELECT "src"."id" FROM "_src_normalized" AS "src"' in sql
+        assert 'LEFT JOIN "_tgt_normalized" AS "tgt"' in sql
         assert 'ON "src"."id" = "tgt"."id"' in sql
         assert 'WHERE "tgt"."id" IS NULL' in sql
         assert "INNER JOIN" not in sql
@@ -468,9 +470,8 @@ class TestAntiJoinAssembly:
     def test_it_builds_snowflake_right_join_for_added_target_rows(self) -> None:
         """Ensure added rows use RIGHT JOIN with source keys IS NULL."""
         sql = _snowflake().compile_added_query("src_tbl", "tgt_tbl", ["id"])
-        assert sql.startswith('SELECT "tgt"."id"')
-        assert 'FROM "src_tbl" AS "src"' in sql
-        assert 'RIGHT JOIN "tgt_tbl" AS "tgt"' in sql
+        assert 'SELECT "tgt"."id" FROM "_src_normalized" AS "src"' in sql
+        assert 'RIGHT JOIN "_tgt_normalized" AS "tgt"' in sql
         assert 'ON "src"."id" = "tgt"."id"' in sql
         assert 'WHERE "src"."id" IS NULL' in sql
         assert "LEFT JOIN" not in sql
@@ -483,9 +484,10 @@ class TestAntiJoinAssembly:
         added = _databricks().compile_added_query(
             "catalog.schema.src", "catalog.schema.tgt", ["id"]
         )
-        assert "LEFT JOIN `catalog`.`schema`.`tgt` AS `tgt`" in missing
+        assert "FROM `catalog`.`schema`.`tgt` AS `tgt`" in missing
+        assert "LEFT JOIN `_tgt_normalized` AS `tgt`" in missing
         assert "WHERE `tgt`.`id` IS NULL" in missing
-        assert "RIGHT JOIN `catalog`.`schema`.`tgt` AS `tgt`" in added
+        assert "RIGHT JOIN `_tgt_normalized` AS `tgt`" in added
         assert "WHERE `src`.`id` IS NULL" in added
         assert "`src`.`id`" in missing
         assert "`tgt`.`id`" in added
@@ -507,8 +509,8 @@ class TestAntiJoinAssembly:
         assert on_clause in added
         assert 'WHERE "tgt"."id" IS NULL AND "tgt"."line_id" IS NULL' in missing
         assert 'WHERE "src"."id" IS NULL AND "src"."line_id" IS NULL' in added
-        assert missing.startswith('SELECT "src"."id", "src"."line_id"')
-        assert added.startswith('SELECT "tgt"."id", "tgt"."line_id"')
+        assert 'SELECT "src"."id", "src"."line_id" FROM "_src_normalized"' in missing
+        assert 'SELECT "tgt"."id", "tgt"."line_id" FROM "_src_normalized"' in added
 
     def test_it_rejects_empty_primary_keys_on_anti_joins(self) -> None:
         """Ensure anti-joins cannot be compiled without keys."""
@@ -516,6 +518,164 @@ class TestAntiJoinAssembly:
             _snowflake().compile_missing_query("src_tbl", "tgt_tbl", [])
         with pytest.raises(ConnectorError, match="primary key"):
             _snowflake().compile_added_query("src_tbl", "tgt_tbl", [])
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestKeyNormalization:
+    """Validate that primary keys pass through stages 1-7 before any join.
+
+    Keys used to be projected and joined as stored, so a key that differed
+    only by whitespace, case, or padding split into one added and one removed
+    row on the warehouse path while the local engine matched it.
+    """
+
+    _TEXT_TYPES: dict[str, pl.DataType] = {"id": pl.String(), "val": pl.String()}  # noqa: RUF012
+
+    def test_it_normalizes_keys_in_both_ctes(self) -> None:
+        """Ensure a key rule rewrites the key on both sides of the join."""
+        sql = _duckdb().compile_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["id"],
+            [DiffRule(column_names=["val"])],
+            key_rules=[
+                DiffRule(column_names=["id"], whitespace_mode="both", case_insensitive=True)
+            ],
+            source_types=self._TEXT_TYPES,
+            target_types=self._TEXT_TYPES,
+        )
+
+        assert 'LOWER(TRIM("src"."id")) AS "id"' in sql
+        assert 'LOWER(TRIM("tgt"."id")) AS "id"' in sql
+        assert 'ON "src"."id" = "tgt"."id"' in sql
+
+    def test_it_reads_a_renamed_key_under_its_stored_name(self) -> None:
+        """Ensure a renamed key reads the old spelling on the source and joins on the new one."""
+        sql = _snowflake().compile_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["user_id"],
+            [],
+            key_rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+
+        assert '"src"."legacy_id" AS "user_id"' in sql
+        assert '"tgt"."user_id" AS "user_id"' in sql
+        assert 'ON "src"."user_id" = "tgt"."user_id"' in sql
+
+    def test_it_maps_key_values_on_the_source_side_only(self) -> None:
+        """Ensure a key crosswalk rewrites legacy codes without touching the target."""
+        sql = _duckdb().compile_missing_query(
+            "src_tbl",
+            "tgt_tbl",
+            ["code"],
+            key_rules=[DiffRule(column_names=["code"], value_map={"A": "Alpha"})],
+        )
+        source_cte, target_cte = sql.split('"_tgt_normalized" AS (', 1)
+
+        assert "THEN 'Alpha'" in source_cte
+        assert "THEN 'Alpha'" not in target_cte.split(")", 1)[0]
+
+    def test_it_joins_normalized_keys_in_every_join_query(self) -> None:
+        """Ensure added, removed, changed, and tallied rows all match on the same keys."""
+        compiler = _snowflake()
+        key_rules = [DiffRule(column_names=["id"], case_insensitive=True)]
+        rules = [DiffRule(column_names=["val"])]
+
+        statements = [
+            compiler.compile_query("src_tbl", "tgt_tbl", ["id"], rules, key_rules=key_rules),
+            compiler.compile_missing_query("src_tbl", "tgt_tbl", ["id"], key_rules=key_rules),
+            compiler.compile_added_query("src_tbl", "tgt_tbl", ["id"], key_rules=key_rules),
+            compiler.compile_column_mismatch_query(
+                "src_tbl", "tgt_tbl", ["id"], rules, key_rules=key_rules
+            ),
+        ]
+
+        for sql in statements:
+            assert sql is not None
+            assert 'LOWER("src"."id") AS "id"' in sql
+            assert 'LOWER("tgt"."id") AS "id"' in sql
+
+    def test_it_passes_a_key_through_when_no_rule_normalizes_it(self) -> None:
+        """Ensure a key without a rule is projected bare, exactly as stored."""
+        sql = _snowflake().compile_added_query("src_tbl", "tgt_tbl", ["id", "line_id"])
+
+        assert '"src"."id" AS "id", "src"."line_id" AS "line_id"' in sql
+
+    @pytest.mark.parametrize(
+        ("key_rule", "message"),
+        [
+            pytest.param(DiffRule(column_names=["a", "b"]), "exactly one", id="two-columns"),
+            pytest.param(DiffRule(column_names=["other"]), "not a primary key", id="not-a-key"),
+        ],
+    )
+    def test_it_rejects_a_key_rule_it_cannot_place(self, key_rule: DiffRule, message: str) -> None:
+        """Ensure a malformed key rule fails instead of silently leaving a key raw."""
+        with pytest.raises(ConnectorError, match=message):
+            _snowflake().compile_added_query("src_tbl", "tgt_tbl", ["id"], key_rules=[key_rule])
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestDuplicateKeyQuery:
+    """Validate the per-side check that keys are unique after normalization."""
+
+    def test_it_counts_the_rows_in_every_duplicated_key_group(self) -> None:
+        """Ensure the statement sums group sizes, matching the local duplicate count.
+
+        The local engine reports `filter(is_duplicated()).height`: every row
+        that shares its key with another. Summing each group's size over the
+        groups larger than one is the same number.
+        """
+        sql = _snowflake().compile_duplicate_key_query("src_tbl", ["id"], is_source=True)
+
+        assert sql == (
+            'SELECT COALESCE(SUM("_veridelta_rows"), 0) AS "_veridelta_total" '
+            'FROM (SELECT COUNT(*) AS "_veridelta_rows" '
+            'FROM (SELECT "src"."id" AS "id" FROM "src_tbl" AS "src") AS "_veridelta_keys" '
+            'GROUP BY "id" HAVING COUNT(*) > 1) AS "_veridelta_duplicates"'
+        )
+
+    def test_it_groups_composite_keys_with_dialect_quoting(self) -> None:
+        """Ensure every key column participates and Databricks quotes with backticks."""
+        sql = _databricks().compile_duplicate_key_query(
+            "main.default.src", ["tenant", "id"], is_source=True
+        )
+
+        assert "GROUP BY `tenant`, `id` HAVING COUNT(*) > 1" in sql
+        assert "FROM `main`.`default`.`src` AS `src`" in sql
+
+    def test_it_groups_the_normalized_keys(self) -> None:
+        """Ensure duplicates are judged after normalization, as the local engine does."""
+        sql = _duckdb().compile_duplicate_key_query(
+            "src_tbl",
+            ["id"],
+            is_source=True,
+            key_rules=[DiffRule(column_names=["id"], case_insensitive=True)],
+            types={"id": pl.String()},
+        )
+
+        assert 'SELECT LOWER("src"."id") AS "id" FROM "src_tbl" AS "src"' in sql
+
+    def test_it_reads_the_target_under_its_own_spelling(self) -> None:
+        """Ensure the target side reads the renamed key and skips the source-only crosswalk."""
+        sql = _snowflake().compile_duplicate_key_query(
+            "tgt_tbl",
+            ["user_id"],
+            is_source=False,
+            key_rules=[
+                DiffRule(column_names=["legacy_id"], rename_to="user_id", value_map={"A": "B"})
+            ],
+        )
+
+        assert 'SELECT "tgt"."user_id" AS "user_id" FROM "tgt_tbl" AS "tgt"' in sql
+        assert "legacy_id" not in sql
+
+    def test_it_rejects_empty_primary_keys(self) -> None:
+        """Ensure the check cannot be compiled without keys."""
+        with pytest.raises(ConnectorError, match="primary key"):
+            _snowflake().compile_duplicate_key_query("src_tbl", [], is_source=True)
 
 
 @pytest.mark.unit
