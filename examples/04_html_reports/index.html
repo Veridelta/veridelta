@@ -12,13 +12,13 @@
         <meta name="author" content="Veridelta Maintainers">
       
       
-        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/advanced_rules/">
+        <link rel="canonical" href="https://Veridelta.github.io/veridelta/examples/04_html_reports/">
       
       
-        <link rel="prev" href="../quickstart_cli/">
+        <link rel="prev" href="../03_advanced_rules/">
       
       
-        <link rel="next" href="../html_reports/">
+        <link rel="next" href="../../configuration/">
       
       
         
@@ -29,7 +29,7 @@
     
     
       
-        <title>Advanced Heuristics & Data Normalization - Veridelta</title>
+        <title>HTML Discrepancy Reports - Veridelta</title>
       
     
     
@@ -82,7 +82,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#advanced-heuristics-data-normalization" class="md-skip">
+        <a href="#html-discrepancy-reports" class="md-skip">
           Skip to content
         </a>
       
@@ -120,7 +120,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Advanced Heuristics &amp; Data Normalization
+              HTML Discrepancy Reports
             
           </span>
         </div>
@@ -254,7 +254,7 @@
     
     
       <li class="md-tabs__item md-tabs__item--active">
-        <a href="../getting_started/" class="md-tabs__link">
+        <a href="../01_core_concepts/" class="md-tabs__link">
           
   
   
@@ -461,14 +461,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../getting_started/" class="md-nav__link">
+      <a href="../01_core_concepts/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Getting Started: Local Diffing
+    1. Core Concepts
   
 
     
@@ -489,14 +489,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../quickstart/" class="md-nav__link">
+      <a href="../02_yaml_and_cli/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Veridelta Quickstart
+    2. YAML and CLI
   
 
     
@@ -517,14 +517,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../quickstart_cli/" class="md-nav__link">
+      <a href="../03_advanced_rules/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Veridelta CLI: End-to-End Execution
+    3. Advanced Rules
   
 
     
@@ -561,7 +561,7 @@
   <span class="md-ellipsis">
     
   
-    Advanced Heuristics &amp; Data Normalization
+    HTML Discrepancy Reports
   
 
     
@@ -579,7 +579,7 @@
   <span class="md-ellipsis">
     
   
-    Advanced Heuristics &amp; Data Normalization
+    HTML Discrepancy Reports
   
 
     
@@ -605,38 +605,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-simulating-systemic-formatting-discrepancies" class="md-nav__link">
+  <a href="#1-a-comparison-with-something-to-report" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Simulating Systemic Formatting Discrepancies
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="1. Simulating Systemic Formatting Discrepancies">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#the-baseline-failure" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The Baseline Failure
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-programmatic-transformation-rules" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Programmatic Transformation Rules
+        1. A comparison with something to report
       
     </span>
   </a>
@@ -644,38 +616,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-rule-chaining-type-coercion" class="md-nav__link">
+  <a href="#2-write-the-report" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Rule Chaining &amp; Type Coercion
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="3. Rule Chaining &amp; Type Coercion">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#applying-the-chain" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Applying the Chain
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-schema-asymmetry-and-data-quality" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Schema Asymmetry and Data Quality
+        2. Write the report
       
     </span>
   </a>
@@ -683,10 +627,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#5-zero-padded-identifiers-and-timestamps-as-text" class="md-nav__link">
+  <a href="#3-reading-the-report" class="md-nav__link">
     <span class="md-ellipsis">
       
-        5. Zero-Padded Identifiers and Timestamps as Text
+        3. Reading the report
       
     </span>
   </a>
@@ -694,21 +638,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#6-pattern-rules-and-schema-contracts" class="md-nav__link">
+  <a href="#4-capping-large-tables" class="md-nav__link">
     <span class="md-ellipsis">
       
-        6. Pattern Rules and Schema Contracts
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#conclusion-architecting-for-maintainability" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Conclusion: Architecting for Maintainability
+        4. Capping large tables
       
     </span>
   </a>
@@ -719,62 +652,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../html_reports/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    HTML Discrepancy Reports
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../yaml_config/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CI/CD &amp; Production Workflows
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1609,31 +1486,30 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </style>
 <!-- End of mermaid configuration --><div class="jupyter-wrapper">
 <div class="jp-Notebook" data-jp-theme-light="true" data-jp-theme-name="JupyterLab Light">
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=bca2e07d">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h1 id="advanced-heuristics-data-normalization">Advanced Heuristics &amp; Data Normalization<a class="anchor-link" href="#advanced-heuristics-data-normalization">¶</a></h1><p>While Veridelta supports declarative YAML configurations for CI/CD pipelines, its native Python API provides programmatic flexibility for complex data environments. This notebook demonstrates how to construct advanced heuristics, deterministic value mapping, and rule chaining directly within Python using Veridelta's configuration models.</p>
-<p>The engine consumes Polars <code>LazyFrame</code> inputs, so in-memory <code>DataFrame</code> objects are handed over with <code>.lazy()</code>. Operating directly on Polars frames via the Python API is ideal for interactive exploratory data analysis, dynamic rule generation, and integration into existing Python-based orchestrators.</p>
+<h1 id="html-discrepancy-reports">HTML Discrepancy Reports<a class="anchor-link" href="#html-discrepancy-reports">¶</a></h1><p>This notebook is the audit and compliance hand-off. A <code>DiffResult</code> is easy to read in a notebook and awkward to hand to anyone else. <code>veridelta.report</code> renders it as a single HTML file with no external references: the verdict, the row counts, the column-level drift, and the discrepancy rows themselves, paginated. It opens offline from a CI artifact, an email attachment, or a shared drive.</p>
+<p>This notebook builds a comparison with something worth reporting, writes the report, and walks through how to read it. The CLI's <code>--html</code> flag produces the same document from YAML; see the <a href="../configuration.md#command-line">Configuration Guide</a>.</p>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=3eb5cc2b">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="1-simulating-systemic-formatting-discrepancies">1. Simulating Systemic Formatting Discrepancies<a class="anchor-link" href="#1-simulating-systemic-formatting-discrepancies">¶</a></h2><p>During cross-platform migrations (e.g., legacy CRM to a modern SaaS platform), categorical enumerations and string formats routinely diverge.</p>
-<p>The following DataFrames simulate a scenario where the target system utilizes abbreviated tier codes and strips all non-numeric characters from phone numbers.</p>
+<h2 id="1-a-comparison-with-something-to-report">1. A comparison with something to report<a class="anchor-link" href="#1-a-comparison-with-something-to-report">¶</a></h2><p>Two billing exports that disagree in every way a report distinguishes: one invoice exists only in the target, one only in the source, and two shared invoices drifted in different columns. A tolerance rule forgives a one-cent rounding difference so the report shows a rule at work, not just raw inequality.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=3020de53">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1653,77 +1529,129 @@ span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 
 </div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
 
-<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.engine</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffEngine</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.models</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffConfig</span><span class="p">,</span> <span class="n">DiffRule</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta</span><span class="w"> </span><span class="kn">import</span> <span class="n">DiffConfig</span><span class="p">,</span> <span class="n">DiffEngine</span><span class="p">,</span> <span class="n">DiffRule</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.report</span><span class="w"> </span><span class="kn">import</span> <span class="n">render_html</span><span class="p">,</span> <span class="n">write_html</span>
 
-<span class="c1"># Source System: Legacy CRM (Verbose statuses, formatted phone numbers)</span>
-<span class="n">src_crm</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+<span class="c1"># Source: last night's billing export</span>
+<span class="n">source</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">"customer_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"CUST-801"</span><span class="p">,</span> <span class="s2">"CUST-802"</span><span class="p">],</span>
-        <span class="s2">"subscription_tier"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Premium"</span><span class="p">,</span> <span class="s2">"Enterprise"</span><span class="p">],</span>
-        <span class="s2">"contact_number"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"(555) 123-4567"</span><span class="p">,</span> <span class="s2">"+1 555-987-6543"</span><span class="p">],</span>
+        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">,</span> <span class="s2">"INV-003"</span><span class="p">,</span> <span class="s2">"INV-004"</span><span class="p">,</span> <span class="s2">"INV-005"</span><span class="p">],</span>
+        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">100.00</span><span class="p">,</span> <span class="mf">250.50</span><span class="p">,</span> <span class="mf">75.25</span><span class="p">,</span> <span class="mf">310.00</span><span class="p">,</span> <span class="mf">42.00</span><span class="p">],</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">,</span> <span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"void"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">)</span>
 
-<span class="c1"># Target System: Modern Platform (Abbreviated tiers, numeric-only phones)</span>
-<span class="n">tgt_saas</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
+<span class="c1"># Target: the replacement pipeline. INV-005 is gone, INV-006 is new, INV-002 moved</span>
+<span class="c1"># by a cent, INV-003 by a dollar, and INV-004 changed its status casing.</span>
+<span class="n">target</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
     <span class="p">{</span>
-        <span class="s2">"customer_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"CUST-801"</span><span class="p">,</span> <span class="s2">"CUST-802"</span><span class="p">],</span>
-        <span class="s2">"subscription_tier"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"PRM"</span><span class="p">,</span> <span class="s2">"ENT"</span><span class="p">],</span>
-        <span class="s2">"contact_number"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"5551234567"</span><span class="p">,</span> <span class="s2">"15559876543"</span><span class="p">],</span>
+        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">,</span> <span class="s2">"INV-003"</span><span class="p">,</span> <span class="s2">"INV-004"</span><span class="p">,</span> <span class="s2">"INV-006"</span><span class="p">],</span>
+        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">100.00</span><span class="p">,</span> <span class="mf">250.51</span><span class="p">,</span> <span class="mf">76.25</span><span class="p">,</span> <span class="mf">310.00</span><span class="p">,</span> <span class="mf">18.00</span><span class="p">],</span>
+        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">,</span> <span class="s2">"paid"</span><span class="p">,</span> <span class="s2">"VOID"</span><span class="p">,</span> <span class="s2">"open"</span><span class="p">],</span>
     <span class="p">}</span>
 <span class="p">)</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="s2">"In-memory data artifacts initialized."</span><span class="p">)</span>
+<span class="n">config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
+    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">],</span>
+    <span class="n">rules</span><span class="o">=</span><span class="p">[</span><span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"amount"</span><span class="p">],</span> <span class="n">absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">)],</span>
+<span class="p">)</span>
+
+<span class="c1"># The engine consumes LazyFrames, so in-memory DataFrames are wrapped with .lazy()</span>
+<span class="n">result</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">config</span><span class="p">,</span> <span class="n">source</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">target</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># In-memory data artifacts initialized.</span>
+<span class="c1"># Veridelta Execution Summary</span>
+<span class="c1"># ===========================</span>
+<span class="c1"># Status:        FAILED</span>
+<span class="c1"># Match Rate:    20.0%</span>
+<span class="c1"># Source Rows:   5</span>
+<span class="c1"># Target Rows:   5</span>
+<span class="c1"># Volume Shift:  +0 rows</span>
+<span class="c1">#</span>
+<span class="c1"># Row-Level Discrepancies:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># Added:         1</span>
+<span class="c1"># Removed:       1</span>
+<span class="c1"># Changed:       2</span>
+<span class="c1"># Total Issues:  4</span>
+<span class="c1">#</span>
+<span class="c1"># Top Column-Level Drifts:</span>
+<span class="c1"># ---------------------------</span>
+<span class="c1"># - amount: 1 mismatches</span>
+<span class="c1"># - status: 1 mismatches</span>
 </pre></div>
 <div class="clipboard-copy-txt" id="cell-1">import polars as pl
 
-from veridelta.engine import DiffEngine
-from veridelta.models import DiffConfig, DiffRule
+from veridelta import DiffConfig, DiffEngine, DiffRule
+from veridelta.report import render_html, write_html
 
-# Source System: Legacy CRM (Verbose statuses, formatted phone numbers)
-src_crm = pl.DataFrame(
+# Source: last night's billing export
+source = pl.DataFrame(
     {
-        "customer_id": ["CUST-801", "CUST-802"],
-        "subscription_tier": ["Premium", "Enterprise"],
-        "contact_number": ["(555) 123-4567", "+1 555-987-6543"],
+        "invoice_id": ["INV-001", "INV-002", "INV-003", "INV-004", "INV-005"],
+        "amount": [100.00, 250.50, 75.25, 310.00, 42.00],
+        "status": ["paid", "open", "paid", "void", "open"],
     }
 )
 
-# Target System: Modern Platform (Abbreviated tiers, numeric-only phones)
-tgt_saas = pl.DataFrame(
+# Target: the replacement pipeline. INV-005 is gone, INV-006 is new, INV-002 moved
+# by a cent, INV-003 by a dollar, and INV-004 changed its status casing.
+target = pl.DataFrame(
     {
-        "customer_id": ["CUST-801", "CUST-802"],
-        "subscription_tier": ["PRM", "ENT"],
-        "contact_number": ["5551234567", "15559876543"],
+        "invoice_id": ["INV-001", "INV-002", "INV-003", "INV-004", "INV-006"],
+        "amount": [100.00, 250.51, 76.25, 310.00, 18.00],
+        "status": ["paid", "open", "paid", "VOID", "open"],
     }
 )
 
-print("In-memory data artifacts initialized.")
+config = DiffConfig(
+    primary_keys=["invoice_id"],
+    rules=[DiffRule(column_names=["amount"], absolute_tolerance=0.01)],
+)
+
+# The engine consumes LazyFrames, so in-memory DataFrames are wrapped with .lazy()
+result = DiffEngine(config, source.lazy(), target.lazy()).run()
+print(result.summary.report_summary)
 
 # Output:
-# In-memory data artifacts initialized.</div>
+# Veridelta Execution Summary
+# ===========================
+# Status:        FAILED
+# Match Rate:    20.0%
+# Source Rows:   5
+# Target Rows:   5
+# Volume Shift:  +0 rows
+#
+# Row-Level Discrepancies:
+# ---------------------------
+# Added:         1
+# Removed:       1
+# Changed:       2
+# Total Issues:  4
+#
+# Top Column-Level Drifts:
+# ---------------------------
+# - amount: 1 mismatches
+# - status: 1 mismatches</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=070fc54e">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="the-baseline-failure">The Baseline Failure<a class="anchor-link" href="#the-baseline-failure">¶</a></h3><p>If we run a comparison using standard strict equality, the engine correctly flags that 100% of the rows contain semantic discrepancies due to the formatting drift.</p>
+<h2 id="2-write-the-report">2. Write the report<a class="anchor-link" href="#2-write-the-report">¶</a></h2><p><code>write_html</code> takes the result and a destination, creates any missing parent directories, and returns the path it wrote. Styles and the small paging script are embedded, so the file is complete on its own.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=bce4413d">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1741,75 +1669,48 @@ print("In-memory data artifacts initialized.")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">baseline_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"customer_id"</span><span class="p">])</span>
-<span class="n">engine_baseline</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">baseline_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_saas</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">report_path</span> <span class="o">=</span> <span class="n">write_html</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="s2">"reports/nightly.html"</span><span class="p">)</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="n">engine_baseline</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">report_path</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">report_path</span><span class="o">.</span><span class="n">stat</span><span class="p">()</span><span class="o">.</span><span class="n">st_size</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="mi">1024</span><span class="si">:</span><span class="s2">.0f</span><span class="si">}</span><span class="s2"> KiB, no external references"</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># Veridelta Execution Summary</span>
-<span class="c1"># ===========================</span>
-<span class="c1"># Status:        FAILED</span>
-<span class="c1"># Match Rate:    0.0%</span>
-<span class="c1"># Source Rows:   2</span>
-<span class="c1"># Target Rows:   2</span>
-<span class="c1"># Volume Shift:  +0 rows</span>
-<span class="c1">#</span>
-<span class="c1"># Row-Level Discrepancies:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># Added:         0</span>
-<span class="c1"># Removed:       0</span>
-<span class="c1"># Changed:       2</span>
-<span class="c1"># Total Issues:  2</span>
-<span class="c1">#</span>
-<span class="c1"># Top Column-Level Drifts:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># - subscription_tier: 2 mismatches</span>
-<span class="c1"># - contact_number: 2 mismatches</span>
+<span class="c1"># reports/nightly.html</span>
+<span class="c1"># 6 KiB, no external references</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-2">baseline_config = DiffConfig(primary_keys=["customer_id"])
-engine_baseline = DiffEngine(baseline_config, src_crm.lazy(), tgt_saas.lazy())
+<div class="clipboard-copy-txt" id="cell-2">report_path = write_html(result, "reports/nightly.html")
 
-print(engine_baseline.run().summary.report_summary)
+print(report_path)
+print(f"{report_path.stat().st_size / 1024:.0f} KiB, no external references")
 
 # Output:
-# Veridelta Execution Summary
-# ===========================
-# Status:        FAILED
-# Match Rate:    0.0%
-# Source Rows:   2
-# Target Rows:   2
-# Volume Shift:  +0 rows
-#
-# Row-Level Discrepancies:
-# ---------------------------
-# Added:         0
-# Removed:       0
-# Changed:       2
-# Total Issues:  2
-#
-# Top Column-Level Drifts:
-# ---------------------------
-# - subscription_tier: 2 mismatches
-# - contact_number: 2 mismatches</div>
+# reports/nightly.html
+# 6 KiB, no external references</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=41454129">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="2-programmatic-transformation-rules">2. Programmatic Transformation Rules<a class="anchor-link" href="#2-programmatic-transformation-rules">¶</a></h2><p>Value mappings and regular expression replacements execute natively within the Polars Rust engine, ensuring optimal execution speed. By instantiating <code>DiffRule</code> objects, we instruct the engine to sanitize the data <em>prior</em> to evaluating equality, bridging the gap between the two systems.</p>
+<h2 id="3-reading-the-report">3. Reading the report<a class="anchor-link" href="#3-reading-the-report">¶</a></h2><p>Open <code>reports/nightly.html</code> in a browser. From top to bottom:</p>
+<ul>
+<li><strong>Verdict badge</strong>: <code>PASSED</code> or <code>FAILED</code>, the same <code>is_match</code> decision the CLI turns into an exit code, judged against <code>threshold</code>. The generation time sits beside it.</li>
+<li><strong>Six cards</strong>: match rate, source and target row counts, and the added, removed, and changed counts. These are the <code>DiffSummary</code> fields, so they agree with <code>report_summary</code> above.</li>
+<li><strong>Column-level drift</strong>: one row per compared column that mismatched at least once, ranked by mismatch count. Columns that matched everywhere are left out.</li>
+<li><strong>Changed rows</strong>, <strong>Added rows</strong>, <strong>Removed rows</strong>: the discrepancy frames, paginated. Added and removed rows are complete records. Changed rows carry both values side by side as <code>&lt;column&gt;_source</code> and <code>&lt;column&gt;_target</code>, plus one <code>&lt;column&gt;_is_match</code> flag per compared column, so a <code>false</code> flag names the column that failed for that row.</li>
+</ul>
+<p>The changed table is the <code>result.changed</code> frame; the flags below are the same ones the report displays.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=454f82c5">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1827,98 +1728,62 @@ print(engine_baseline.run().summary.report_summary)
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Construct the configuration</span>
-<span class="n">mapping_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"customer_id"</span><span class="p">],</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"subscription_tier"</span><span class="p">],</span> <span class="n">value_map</span><span class="o">=</span><span class="p">{</span><span class="s2">"Premium"</span><span class="p">:</span> <span class="s2">"PRM"</span><span class="p">,</span> <span class="s2">"Enterprise"</span><span class="p">:</span> <span class="s2">"ENT"</span><span class="p">}</span>
-        <span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"contact_number"</span><span class="p">],</span>
-            <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span>
-                <span class="s2">"[^0-9]"</span><span class="p">:</span> <span class="s2">""</span>  <span class="c1"># Strip all non-numeric characters</span>
-            <span class="p">},</span>
-        <span class="p">),</span>
-    <span class="p">],</span>
-<span class="p">)</span>
-
-<span class="n">engine</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">mapping_config</span><span class="p">,</span> <span class="n">src_crm</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_saas</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">engine</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">flags</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">changed</span><span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">"invoice_id"</span><span class="p">,</span> <span class="s2">"amount_is_match"</span><span class="p">,</span> <span class="s2">"status_is_match"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">flags</span><span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">"invoice_id"</span><span class="p">))</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># Veridelta Execution Summary</span>
-<span class="c1"># ===========================</span>
-<span class="c1"># Status:        PASSED (Perfect Match)</span>
-<span class="c1"># Match Rate:    100.0%</span>
-<span class="c1"># Source Rows:   2</span>
-<span class="c1"># Target Rows:   2</span>
-<span class="c1"># Volume Shift:  +0 rows</span>
-<span class="c1">#</span>
-<span class="c1"># Row-Level Discrepancies:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># Added:         0</span>
-<span class="c1"># Removed:       0</span>
-<span class="c1"># Changed:       0</span>
-<span class="c1"># Total Issues:  0</span>
+<span class="c1"># shape: (2, 3)</span>
+<span class="c1"># ┌────────────┬─────────────────┬─────────────────┐</span>
+<span class="c1"># │ invoice_id ┆ amount_is_match ┆ status_is_match │</span>
+<span class="c1"># │ ---        ┆ ---             ┆ ---             │</span>
+<span class="c1"># │ str        ┆ bool            ┆ bool            │</span>
+<span class="c1"># ╞════════════╪═════════════════╪═════════════════╡</span>
+<span class="c1"># │ INV-003    ┆ false           ┆ true            │</span>
+<span class="c1"># │ INV-004    ┆ true            ┆ false           │</span>
+<span class="c1"># └────────────┴─────────────────┴─────────────────┘</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-3"># Construct the configuration
-mapping_config = DiffConfig(
-    primary_keys=["customer_id"],
-    rules=[
-        DiffRule(
-            column_names=["subscription_tier"], value_map={"Premium": "PRM", "Enterprise": "ENT"}
-        ),
-        DiffRule(
-            column_names=["contact_number"],
-            regex_replace={
-                "[^0-9]": ""  # Strip all non-numeric characters
-            },
-        ),
-    ],
-)
-
-engine = DiffEngine(mapping_config, src_crm.lazy(), tgt_saas.lazy())
-summary = engine.run().summary
-
-print(summary.report_summary)
+<div class="clipboard-copy-txt" id="cell-3">flags = result.changed.select("invoice_id", "amount_is_match", "status_is_match")
+print(flags.sort("invoice_id"))
 
 # Output:
-# Veridelta Execution Summary
-# ===========================
-# Status:        PASSED (Perfect Match)
-# Match Rate:    100.0%
-# Source Rows:   2
-# Target Rows:   2
-# Volume Shift:  +0 rows
-#
-# Row-Level Discrepancies:
-# ---------------------------
-# Added:         0
-# Removed:       0
-# Changed:       0
-# Total Issues:  0</div>
+# shape: (2, 3)
+# ┌────────────┬─────────────────┬─────────────────┐
+# │ invoice_id ┆ amount_is_match ┆ status_is_match │
+# │ ---        ┆ ---             ┆ ---             │
+# │ str        ┆ bool            ┆ bool            │
+# ╞════════════╪═════════════════╪═════════════════╡
+# │ INV-003    ┆ false           ┆ true            │
+# │ INV-004    ┆ true            ┆ false           │
+# └────────────┴─────────────────┴─────────────────┘</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=e7df5cbd">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="3-rule-chaining-type-coercion">3. Rule Chaining &amp; Type Coercion<a class="anchor-link" href="#3-rule-chaining-type-coercion">¶</a></h2><p>Real-world migrations often feature compounding discrepancies. For example, a legacy billing system might export invoice amounts as formatted strings (e.g., <code>"$10.00"</code>), while the modern system exports raw numeric values (e.g., <code>10.0</code>).</p>
-<p>If we compare these without rules, they immediately fail due to both Type mismatches (<code>String</code> vs <code>Float</code>) and Value mismatches (<code>$10.00</code> vs <code>10.0</code>).</p>
+<p>INV-002 is absent: its one-cent drift fell inside the <code>absolute_tolerance</code>, so the report counts it as a match. INV-003 failed on <code>amount</code> and INV-004 on <code>status</code>, which is exactly what the drift table's two single-mismatch rows say.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=1f3e5e8b">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<h2 id="4-capping-large-tables">4. Capping large tables<a class="anchor-link" href="#4-capping-large-tables">¶</a></h2><p>A comparison of ten million rows must not produce a ten-million-row HTML file. Every table is capped at <code>max_rows</code> (default 1000) and says so when it has truncated, so a reader never mistakes the visible rows for the whole story. <code>render_html</code> returns the document as a string, which is convenient for checking that note here and for attaching a report in CI without touching disk.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=0646ef89">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1936,110 +1801,52 @@ print(summary.report_summary)
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Source: Legacy Billing (Strings with currency symbols)</span>
-<span class="n">src_billing</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span>
-        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">],</span>
-        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"$10.00"</span><span class="p">,</span> <span class="s2">"$99.99"</span><span class="p">],</span>
-    <span class="p">}</span>
-<span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="n">capped</span> <span class="o">=</span> <span class="n">render_html</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">max_rows</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 
-<span class="c1"># Target: Modern Billing (Raw numbers, missing the penny on INV-002 due to a known tax bug)</span>
-<span class="n">tgt_billing</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span>
-        <span class="s2">"invoice_id"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"INV-001"</span><span class="p">,</span> <span class="s2">"INV-002"</span><span class="p">],</span>
-        <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.00</span><span class="p">,</span> <span class="mf">99.98</span><span class="p">],</span>
-    <span class="p">}</span>
-<span class="p">)</span>
-
-<span class="c1"># Baseline failure: Veridelta gracefully handles the String vs Float mismatch</span>
-<span class="c1"># (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.</span>
-<span class="n">baseline_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span>
-    <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">]),</span> <span class="n">src_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">()</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">baseline_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
+<span class="n">note_start</span> <span class="o">=</span> <span class="n">capped</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">"Showing the first"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">capped</span><span class="p">[</span><span class="n">note_start</span> <span class="p">:</span> <span class="n">capped</span><span class="o">.</span><span class="n">index</span><span class="p">(</span><span class="s2">"&lt;/p&gt;"</span><span class="p">,</span> <span class="n">note_start</span><span class="p">)])</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># Veridelta Execution Summary</span>
-<span class="c1"># ===========================</span>
-<span class="c1"># Status:        FAILED</span>
-<span class="c1"># Match Rate:    0.0%</span>
-<span class="c1"># Source Rows:   2</span>
-<span class="c1"># Target Rows:   2</span>
-<span class="c1"># Volume Shift:  +0 rows</span>
-<span class="c1">#</span>
-<span class="c1"># Row-Level Discrepancies:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># Added:         0</span>
-<span class="c1"># Removed:       0</span>
-<span class="c1"># Changed:       2</span>
-<span class="c1"># Total Issues:  2</span>
-<span class="c1">#</span>
-<span class="c1"># Top Column-Level Drifts:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># - amount: 2 mismatches</span>
+<span class="c1"># Showing the first 1 of 2 rows. Export artifacts with &lt;code&gt;output_path&lt;/code&gt; for the complete set.</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-4"># Source: Legacy Billing (Strings with currency symbols)
-src_billing = pl.DataFrame(
-    {
-        "invoice_id": ["INV-001", "INV-002"],
-        "amount": ["$10.00", "$99.99"],
-    }
-)
+<div class="clipboard-copy-txt" id="cell-4">capped = render_html(result, max_rows=1)
 
-# Target: Modern Billing (Raw numbers, missing the penny on INV-002 due to a known tax bug)
-tgt_billing = pl.DataFrame(
-    {
-        "invoice_id": ["INV-001", "INV-002"],
-        "amount": [10.00, 99.98],
-    }
-)
-
-# Baseline failure: Veridelta gracefully handles the String vs Float mismatch
-# (preventing a pipeline crash) and correctly flags 100% of the rows as semantic failures.
-baseline_billing = DiffEngine(
-    DiffConfig(primary_keys=["invoice_id"]), src_billing.lazy(), tgt_billing.lazy()
-)
-print(baseline_billing.run().summary.report_summary)
+note_start = capped.index("Showing the first")
+print(capped[note_start : capped.index("&lt;/p&gt;", note_start)])
 
 # Output:
-# Veridelta Execution Summary
-# ===========================
-# Status:        FAILED
-# Match Rate:    0.0%
-# Source Rows:   2
-# Target Rows:   2
-# Volume Shift:  +0 rows
-#
-# Row-Level Discrepancies:
-# ---------------------------
-# Added:         0
-# Removed:       0
-# Changed:       2
-# Total Issues:  2
-#
-# Top Column-Level Drifts:
-# ---------------------------
-# - amount: 2 mismatches</div>
+# Showing the first 1 of 2 rows. Export artifacts with &lt;code&gt;output_path&lt;/code&gt; for the complete set.</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=0d932a32">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h3 id="applying-the-chain">Applying the Chain<a class="anchor-link" href="#applying-the-chain">¶</a></h3><p>Instead of writing complex row-by-row lambda functions in Pandas, Veridelta allows you to <strong>chain rules declaratively</strong>.</p>
-<p>In the following configuration, we define a single <code>DiffRule</code> that strips the currency symbol, casts the strings to Polars <code>Float64</code> objects, and applies an absolute tolerance to handle penny-rounding differences—all executed in sequence within the optimized C-level pipeline.</p>
+<p>Only the changed table was truncated: the added and removed tables held one row each, under the cap. When a report is truncated, set <code>output_path</code> on the configuration to export the complete <code>added</code>, <code>removed</code>, and <code>changed</code> frames as files alongside it.</p>
+<p>Two notes for pipelines. A report from warehouse pushdown is labeled as primary-keys-only, because the comparison SQL never extracts values; its tables list keys rather than rows. And from the CLI, <code>veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000</code> writes this same document without any Python.</p>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=99afd1c0">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<hr/>
+<p><em>(Run the cell below to clean up the report written by this notebook)</em></p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=eb8b6149">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -2057,427 +1864,17 @@ print(baseline_billing.run().summary.report_summary)
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Chain rules: Regex Clean -&gt; Type Cast -&gt; Numeric Tolerance</span>
-<span class="n">chained_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"invoice_id"</span><span class="p">],</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"amount"</span><span class="p">],</span>
-            <span class="n">regex_replace</span><span class="o">=</span><span class="p">{</span><span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span><span class="p">},</span>  <span class="c1"># 1. Strip the dollar sign</span>
-            <span class="n">cast_to</span><span class="o">=</span><span class="s2">"Float64"</span><span class="p">,</span>  <span class="c1"># 2. Coerce to Float for mathematical comparison</span>
-            <span class="n">absolute_tolerance</span><span class="o">=</span><span class="mf">0.01</span><span class="p">,</span>  <span class="c1"># 3. Forgive the 1-cent tax rounding variance</span>
-        <span class="p">)</span>
-    <span class="p">],</span>
-<span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
 
-<span class="n">engine_billing</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">chained_config</span><span class="p">,</span> <span class="n">src_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_billing</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">engine_billing</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
-
-<span class="c1"># Output:</span>
-<span class="c1"># Veridelta Execution Summary</span>
-<span class="c1"># ===========================</span>
-<span class="c1"># Status:        PASSED (Perfect Match)</span>
-<span class="c1"># Match Rate:    100.0%</span>
-<span class="c1"># Source Rows:   2</span>
-<span class="c1"># Target Rows:   2</span>
-<span class="c1"># Volume Shift:  +0 rows</span>
-<span class="c1">#</span>
-<span class="c1"># Row-Level Discrepancies:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># Added:         0</span>
-<span class="c1"># Removed:       0</span>
-<span class="c1"># Changed:       0</span>
-<span class="c1"># Total Issues:  0</span>
+<span class="c1"># Remove the report directory (housekeeping)</span>
+<span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="s2">"reports"</span><span class="p">,</span> <span class="n">ignore_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-5"># Chain rules: Regex Clean -&gt; Type Cast -&gt; Numeric Tolerance
-chained_config = DiffConfig(
-    primary_keys=["invoice_id"],
-    rules=[
-        DiffRule(
-            column_names=["amount"],
-            regex_replace={"\\$": ""},  # 1. Strip the dollar sign
-            cast_to="Float64",  # 2. Coerce to Float for mathematical comparison
-            absolute_tolerance=0.01,  # 3. Forgive the 1-cent tax rounding variance
-        )
-    ],
-)
+<div class="clipboard-copy-txt" id="cell-5">import shutil
 
-engine_billing = DiffEngine(chained_config, src_billing.lazy(), tgt_billing.lazy())
-print(engine_billing.run().summary.report_summary)
-
-# Output:
-# Veridelta Execution Summary
-# ===========================
-# Status:        PASSED (Perfect Match)
-# Match Rate:    100.0%
-# Source Rows:   2
-# Target Rows:   2
-# Volume Shift:  +0 rows
-#
-# Row-Level Discrepancies:
-# ---------------------------
-# Added:         0
-# Removed:       0
-# Changed:       0
-# Total Issues:  0</div>
+# Remove the report directory (housekeeping)
+shutil.rmtree("reports", ignore_errors=True)</div>
 </div>
 </div>
-</div>
-</div>
-</div>
-</div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
-</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="4-schema-asymmetry-and-data-quality">4. Schema Asymmetry and Data Quality<a class="anchor-link" href="#4-schema-asymmetry-and-data-quality">¶</a></h2><p>Schema instability is a routine aspect of system evolution. Veridelta manages naming drifts and legacy data representations as semantic equivalents rather than execution failures.</p>
-<ul>
-<li><strong>Schema Mapping</strong>: <code>rename_to</code> aligns disparate field names between datasets, consolidating duplicated knowledge into a single representation.</li>
-<li><strong>Data Quality</strong>: <code>null_values</code> and <code>treat_null_as_equal</code> provide an authoritative definition for missing data. This centralizes intent and prevents maintenance nightmares caused by implicit guesses or fragmented validation logic.</li>
-</ul>
-<p>This declarative approach establishes a <strong>Single Source of Truth (SSoT)</strong>.</p>
-</div>
-</div>
-</div>
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
-<div class="CodeMirror cm-s-jupyter">
-<div class="zeroclipboard-container">
-<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-6">
-<div>
-<span class="notice" hidden="">Copied!</span>
-<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
-<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
-<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
-</svg>
-</div>
-</clipboard-copy>
-</div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="c1"># Scenario: Target system renamed the legacy ID and uses actual NULLs</span>
-<span class="n">src_legacy</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">({</span><span class="s2">"id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span> <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="s2">"UNKNOWN"</span><span class="p">,</span> <span class="s2">"Active"</span><span class="p">]})</span>
-
-<span class="n">tgt_modern</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span>
-        <span class="s2">"user_id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">],</span>  <span class="c1"># The authoritative column name (Target/Modern)</span>
-        <span class="s2">"status"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"Active"</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="s2">"Active"</span><span class="p">],</span>
-    <span class="p">}</span>
-<span class="p">)</span>
-
-<span class="n">asymmetry_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"user_id"</span><span class="p">],</span>  <span class="c1"># Reference the authoritative Target name</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="n">DiffRule</span><span class="p">(</span>
-            <span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"id"</span><span class="p">],</span>
-            <span class="n">rename_to</span><span class="o">=</span><span class="s2">"user_id"</span><span class="p">,</span>  <span class="c1"># Source will be renamed to match Target</span>
-        <span class="p">),</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"status"</span><span class="p">],</span> <span class="n">null_values</span><span class="o">=</span><span class="p">[</span><span class="s2">"UNKNOWN"</span><span class="p">],</span> <span class="n">treat_null_as_equal</span><span class="o">=</span><span class="kc">True</span><span class="p">),</span>
-    <span class="p">],</span>
-<span class="p">)</span>
-
-<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">asymmetry_config</span><span class="p">,</span> <span class="n">src_legacy</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_modern</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
-
-<span class="c1"># Output:</span>
-<span class="c1"># Veridelta Execution Summary</span>
-<span class="c1"># ===========================</span>
-<span class="c1"># Status:        PASSED (Perfect Match)</span>
-<span class="c1"># Match Rate:    100.0%</span>
-<span class="c1"># Source Rows:   3</span>
-<span class="c1"># Target Rows:   3</span>
-<span class="c1"># Volume Shift:  +0 rows</span>
-<span class="c1">#</span>
-<span class="c1"># Row-Level Discrepancies:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># Added:         0</span>
-<span class="c1"># Removed:       0</span>
-<span class="c1"># Changed:       0</span>
-<span class="c1"># Total Issues:  0</span>
-</pre></div>
-<div class="clipboard-copy-txt" id="cell-6"># Scenario: Target system renamed the legacy ID and uses actual NULLs
-src_legacy = pl.DataFrame({"id": [1, 2, 3], "status": ["Active", "UNKNOWN", "Active"]})
-
-tgt_modern = pl.DataFrame(
-    {
-        "user_id": [1, 2, 3],  # The authoritative column name (Target/Modern)
-        "status": ["Active", None, "Active"],
-    }
-)
-
-asymmetry_config = DiffConfig(
-    primary_keys=["user_id"],  # Reference the authoritative Target name
-    rules=[
-        DiffRule(
-            column_names=["id"],
-            rename_to="user_id",  # Source will be renamed to match Target
-        ),
-        DiffRule(column_names=["status"], null_values=["UNKNOWN"], treat_null_as_equal=True),
-    ],
-)
-
-summary = DiffEngine(asymmetry_config, src_legacy.lazy(), tgt_modern.lazy()).run().summary
-print(summary.report_summary)
-
-# Output:
-# Veridelta Execution Summary
-# ===========================
-# Status:        PASSED (Perfect Match)
-# Match Rate:    100.0%
-# Source Rows:   3
-# Target Rows:   3
-# Volume Shift:  +0 rows
-#
-# Row-Level Discrepancies:
-# ---------------------------
-# Added:         0
-# Removed:       0
-# Changed:       0
-# Total Issues:  0</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
-</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="5-zero-padded-identifiers-and-timestamps-as-text">5. Zero-Padded Identifiers and Timestamps as Text<a class="anchor-link" href="#5-zero-padded-identifiers-and-timestamps-as-text">¶</a></h2><p>Legacy exports often carry identifiers as zero-padded strings and timestamps as formatted text, while the modern system stores integers and native timestamps. <code>pad_zeros</code> stringifies both sides and left-pads to a fixed width so <code>42</code> and <code>"00042"</code> converge, and <code>datetime_format</code> parses text with a <code>strptime</code> pattern into a real timestamp. Both stages run before the join, so they apply to primary keys as well as compared columns.</p>
-</div>
-</div>
-</div>
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
-<div class="CodeMirror cm-s-jupyter">
-<div class="zeroclipboard-container">
-<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-7">
-<div>
-<span class="notice" hidden="">Copied!</span>
-<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
-<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
-<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
-</svg>
-</div>
-</clipboard-copy>
-</div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">datetime</span>
-
-<span class="c1"># Source: Legacy inventory export (padded text SKUs, timestamps as text)</span>
-<span class="n">src_inventory</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span>
-        <span class="s2">"sku"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"00042"</span><span class="p">,</span> <span class="s2">"00917"</span><span class="p">],</span>
-        <span class="s2">"restocked_at"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"2026-03-01 09:30:00"</span><span class="p">,</span> <span class="s2">"2026-03-02 14:05:00"</span><span class="p">],</span>
-    <span class="p">}</span>
-<span class="p">)</span>
-
-<span class="c1"># Target: Modern inventory service (integer SKUs, native timestamps)</span>
-<span class="n">tgt_inventory</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span>
-        <span class="s2">"sku"</span><span class="p">:</span> <span class="p">[</span><span class="mi">42</span><span class="p">,</span> <span class="mi">917</span><span class="p">],</span>
-        <span class="s2">"restocked_at"</span><span class="p">:</span> <span class="p">[</span><span class="n">datetime</span><span class="p">(</span><span class="mi">2026</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">9</span><span class="p">,</span> <span class="mi">30</span><span class="p">),</span> <span class="n">datetime</span><span class="p">(</span><span class="mi">2026</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">14</span><span class="p">,</span> <span class="mi">5</span><span class="p">)],</span>
-    <span class="p">}</span>
-<span class="p">)</span>
-
-<span class="n">temporal_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span>
-    <span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"sku"</span><span class="p">],</span>
-    <span class="n">rules</span><span class="o">=</span><span class="p">[</span>
-        <span class="c1"># Stringify and left-pad both sides to five characters before joining on the key</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"sku"</span><span class="p">],</span> <span class="n">pad_zeros</span><span class="o">=</span><span class="mi">5</span><span class="p">),</span>
-        <span class="c1"># Parse the text side; a side that is already a timestamp is left alone</span>
-        <span class="n">DiffRule</span><span class="p">(</span><span class="n">column_names</span><span class="o">=</span><span class="p">[</span><span class="s2">"restocked_at"</span><span class="p">],</span> <span class="n">datetime_format</span><span class="o">=</span><span class="s2">"%Y-%m-</span><span class="si">%d</span><span class="s2"> %H:%M:%S"</span><span class="p">),</span>
-    <span class="p">],</span>
-<span class="p">)</span>
-
-<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">temporal_config</span><span class="p">,</span> <span class="n">src_inventory</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_inventory</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span><span class="o">.</span><span class="n">summary</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">report_summary</span><span class="p">)</span>
-
-<span class="c1"># Output:</span>
-<span class="c1"># Veridelta Execution Summary</span>
-<span class="c1"># ===========================</span>
-<span class="c1"># Status:        PASSED (Perfect Match)</span>
-<span class="c1"># Match Rate:    100.0%</span>
-<span class="c1"># Source Rows:   2</span>
-<span class="c1"># Target Rows:   2</span>
-<span class="c1"># Volume Shift:  +0 rows</span>
-<span class="c1">#</span>
-<span class="c1"># Row-Level Discrepancies:</span>
-<span class="c1"># ---------------------------</span>
-<span class="c1"># Added:         0</span>
-<span class="c1"># Removed:       0</span>
-<span class="c1"># Changed:       0</span>
-<span class="c1"># Total Issues:  0</span>
-</pre></div>
-<div class="clipboard-copy-txt" id="cell-7">from datetime import datetime
-
-# Source: Legacy inventory export (padded text SKUs, timestamps as text)
-src_inventory = pl.DataFrame(
-    {
-        "sku": ["00042", "00917"],
-        "restocked_at": ["2026-03-01 09:30:00", "2026-03-02 14:05:00"],
-    }
-)
-
-# Target: Modern inventory service (integer SKUs, native timestamps)
-tgt_inventory = pl.DataFrame(
-    {
-        "sku": [42, 917],
-        "restocked_at": [datetime(2026, 3, 1, 9, 30), datetime(2026, 3, 2, 14, 5)],
-    }
-)
-
-temporal_config = DiffConfig(
-    primary_keys=["sku"],
-    rules=[
-        # Stringify and left-pad both sides to five characters before joining on the key
-        DiffRule(column_names=["sku"], pad_zeros=5),
-        # Parse the text side; a side that is already a timestamp is left alone
-        DiffRule(column_names=["restocked_at"], datetime_format="%Y-%m-%d %H:%M:%S"),
-    ],
-)
-
-summary = DiffEngine(temporal_config, src_inventory.lazy(), tgt_inventory.lazy()).run().summary
-print(summary.report_summary)
-
-# Output:
-# Veridelta Execution Summary
-# ===========================
-# Status:        PASSED (Perfect Match)
-# Match Rate:    100.0%
-# Source Rows:   2
-# Target Rows:   2
-# Volume Shift:  +0 rows
-#
-# Row-Level Discrepancies:
-# ---------------------------
-# Added:         0
-# Removed:       0
-# Changed:       0
-# Total Issues:  0</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
-</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="6-pattern-rules-and-schema-contracts">6. Pattern Rules and Schema Contracts<a class="anchor-link" href="#6-pattern-rules-and-schema-contracts">¶</a></h2><p>Pipelines tend to append bookkeeping columns (<code>_etl_batch</code>, <code>_etl_loaded_at</code>) that carry no business meaning. A <code>pattern</code> rule with <code>ignore=True</code> excludes every column matching a regular expression, so the rule does not need editing each time a new audit column appears.</p>
-<p>Structural drift is a separate question from value drift. <code>schema_mode="exact"</code> turns a renamed or dropped column into a <code>ConfigError</code>, and <code>DiffEngine.validate_schemas</code> enforces that contract on metadata alone, so it can gate a deployment before any rows are read.</p>
-</div>
-</div>
-</div>
-</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea">
-<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
-<div class="CodeMirror cm-s-jupyter">
-<div class="zeroclipboard-container">
-<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-8">
-<div>
-<span class="notice" hidden="">Copied!</span>
-<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
-<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
-<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
-</svg>
-</div>
-</clipboard-copy>
-</div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">veridelta.exceptions</span><span class="w"> </span><span class="kn">import</span> <span class="n">ConfigError</span>
-
-<span class="n">src_audit</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span><span class="s2">"id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span> <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">],</span> <span class="s2">"_etl_batch"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span> <span class="s2">"_etl_loaded_at"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"a"</span><span class="p">,</span> <span class="s2">"a"</span><span class="p">]}</span>
-<span class="p">)</span>
-<span class="n">tgt_audit</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span>
-    <span class="p">{</span><span class="s2">"id"</span><span class="p">:</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">],</span> <span class="s2">"amount"</span><span class="p">:</span> <span class="p">[</span><span class="mf">10.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">],</span> <span class="s2">"_etl_batch"</span><span class="p">:</span> <span class="p">[</span><span class="mi">7</span><span class="p">,</span> <span class="mi">7</span><span class="p">],</span> <span class="s2">"_etl_loaded_at"</span><span class="p">:</span> <span class="p">[</span><span class="s2">"b"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">]}</span>
-<span class="p">)</span>
-
-<span class="c1"># Every column starting with "_etl_" is excluded, however many there are</span>
-<span class="n">audit_config</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"id"</span><span class="p">],</span> <span class="n">rules</span><span class="o">=</span><span class="p">[</span><span class="n">DiffRule</span><span class="p">(</span><span class="n">pattern</span><span class="o">=</span><span class="sa">r</span><span class="s2">"^_etl_"</span><span class="p">,</span> <span class="n">ignore</span><span class="o">=</span><span class="kc">True</span><span class="p">)])</span>
-<span class="n">result</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="p">(</span><span class="n">audit_config</span><span class="p">,</span> <span class="n">src_audit</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_audit</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span><span class="o">.</span><span class="n">run</span><span class="p">()</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Compared columns: </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">compared_columns</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Match: </span><span class="si">{</span><span class="n">result</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-
-<span class="c1"># A schema contract: the target renamed a column, which "exact" mode refuses</span>
-<span class="n">contract</span> <span class="o">=</span> <span class="n">DiffConfig</span><span class="p">(</span><span class="n">primary_keys</span><span class="o">=</span><span class="p">[</span><span class="s2">"id"</span><span class="p">],</span> <span class="n">schema_mode</span><span class="o">=</span><span class="s2">"exact"</span><span class="p">)</span>
-<span class="n">tgt_drifted</span> <span class="o">=</span> <span class="n">tgt_audit</span><span class="o">.</span><span class="n">rename</span><span class="p">({</span><span class="s2">"amount"</span><span class="p">:</span> <span class="s2">"amount_usd"</span><span class="p">})</span>
-<span class="k">try</span><span class="p">:</span>
-    <span class="n">DiffEngine</span><span class="o">.</span><span class="n">validate_schemas</span><span class="p">(</span><span class="n">contract</span><span class="p">,</span> <span class="n">src_audit</span><span class="o">.</span><span class="n">lazy</span><span class="p">(),</span> <span class="n">tgt_drifted</span><span class="o">.</span><span class="n">lazy</span><span class="p">())</span>
-<span class="k">except</span> <span class="n">ConfigError</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Schema contract violated: </span><span class="si">{</span><span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">)</span><span class="o">.</span><span class="n">splitlines</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-
-<span class="c1"># Output:</span>
-<span class="c1"># Compared columns: ('amount',)</span>
-<span class="c1"># Match: True</span>
-<span class="c1"># Schema contract violated: EXACT schema match failed.</span>
-</pre></div>
-<div class="clipboard-copy-txt" id="cell-8">from veridelta.exceptions import ConfigError
-
-src_audit = pl.DataFrame(
-    {"id": [1, 2], "amount": [10.0, 20.0], "_etl_batch": [1, 1], "_etl_loaded_at": ["a", "a"]}
-)
-tgt_audit = pl.DataFrame(
-    {"id": [1, 2], "amount": [10.0, 20.0], "_etl_batch": [7, 7], "_etl_loaded_at": ["b", "b"]}
-)
-
-# Every column starting with "_etl_" is excluded, however many there are
-audit_config = DiffConfig(primary_keys=["id"], rules=[DiffRule(pattern=r"^_etl_", ignore=True)])
-result = DiffEngine(audit_config, src_audit.lazy(), tgt_audit.lazy()).run()
-print(f"Compared columns: {result.compared_columns}")
-print(f"Match: {result.summary.is_match}")
-
-# A schema contract: the target renamed a column, which "exact" mode refuses
-contract = DiffConfig(primary_keys=["id"], schema_mode="exact")
-tgt_drifted = tgt_audit.rename({"amount": "amount_usd"})
-try:
-    DiffEngine.validate_schemas(contract, src_audit.lazy(), tgt_drifted.lazy())
-except ConfigError as exc:
-    print(f"Schema contract violated: {str(exc).splitlines()[0]}")
-
-# Output:
-# Compared columns: ('amount',)
-# Match: True
-# Schema contract violated: EXACT schema match failed.</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
-</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="conclusion-architecting-for-maintainability">Conclusion: Architecting for Maintainability<a class="anchor-link" href="#conclusion-architecting-for-maintainability">¶</a></h2><p>Veridelta’s programmatic API abstracts the boilerplate of cross-system data validation. By encapsulating semantic transformations, schema alignment, and tolerances within declarative <code>DiffRule</code> models, you prevent validation logic from fragmenting across custom Pandas scripts or SQL queries.</p>
-<p><strong>Key Architectural Takeaways:</strong></p>
-<ul>
-<li><strong>Single Source of Truth:</strong> Centralize migration assumptions (renames, null coercion, value maps) into version-controlled configuration objects.</li>
-<li><strong>Performance at Scale:</strong> Pushing operations down to the Polars Rust engine ensures validation scales efficiently out-of-core without memory bottlenecks.</li>
-<li><strong>Pipeline Integration:</strong> Use the Python API to dynamically generate configurations within orchestrators (e.g., Apache Airflow, Dagster) to gate downstream deployments based on strict data quality thresholds.</li>
-</ul>
-<p>For automated CI/CD workflows, these Python models map 1:1 with Veridelta's YAML specification, allowing a seamless transition from exploratory notebook analysis to strict, automated pipeline execution.</p>
 </div>
 </div>
 </div>

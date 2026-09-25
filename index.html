@@ -16,7 +16,7 @@
       
       
       
-        <link rel="next" href="examples/getting_started/">
+        <link rel="next" href="examples/01_core_concepts/">
       
       
         
@@ -252,7 +252,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="examples/getting_started/" class="md-tabs__link">
+        <a href="examples/01_core_concepts/" class="md-tabs__link">
           
   
   
@@ -556,14 +556,14 @@
   
   
     <li class="md-nav__item">
-      <a href="examples/getting_started/" class="md-nav__link">
+      <a href="examples/01_core_concepts/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Getting Started: Local Diffing
+    1. Core Concepts
   
 
     
@@ -584,14 +584,14 @@
   
   
     <li class="md-nav__item">
-      <a href="examples/quickstart/" class="md-nav__link">
+      <a href="examples/02_yaml_and_cli/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Veridelta Quickstart
+    2. YAML and CLI
   
 
     
@@ -612,14 +612,14 @@
   
   
     <li class="md-nav__item">
-      <a href="examples/quickstart_cli/" class="md-nav__link">
+      <a href="examples/03_advanced_rules/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Veridelta CLI: End-to-End Execution
+    3. Advanced Rules
   
 
     
@@ -640,35 +640,7 @@
   
   
     <li class="md-nav__item">
-      <a href="examples/advanced_rules/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Advanced Heuristics &amp; Data Normalization
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="examples/html_reports/" class="md-nav__link">
+      <a href="examples/04_html_reports/" class="md-nav__link">
         
   
   
@@ -676,34 +648,6 @@
     
   
     HTML Discrepancy Reports
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="examples/yaml_config/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CI/CD &amp; Production Workflows
   
 
     
@@ -833,7 +777,7 @@
 <li><strong>Deterministic verdicts.</strong> Nine fixed transform stages. The same rule produces the same result locally and in a warehouse, verified by a differential harness.</li>
 <li><strong>Scale.</strong> Lazy Polars scans. Warehouse pushdown compiles comparison SQL and never extracts full tables.</li>
 <li><strong>Exactness.</strong> Nothing is forgiven unless a rule says so. <code>strict_types</code> treats type drift as a mismatch, not a cast.</li>
-<li><strong>CI/CD.</strong> Exit code 0 or 1. <code>--json</code> on stdout. <code>--html</code> writes a standalone report. Artifacts for added, removed, and changed rows.</li>
+<li><strong>CI/CD.</strong> Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). <code>--json</code> on stdout. <code>--html</code> writes a standalone report. Artifacts for added, removed, and changed rows.</li>
 <li><strong>Schema evolution.</strong> <code>schema_mode</code> is <code>intersection</code>, <code>exact</code>, <code>allow_additions</code>, or <code>allow_removals</code>.</li>
 <li><strong>Connectors.</strong> Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans. Optional extras. See the <a href="configuration/">Configuration Guide</a> for YAML, extras, and routing.</li>
 </ul>
@@ -849,17 +793,17 @@
     lakehouse[Delta Iceberg]
     warehouse[Snowflake Databricks]
   end
-  files --&gt; ingestor[DataIngestor]
-  lakehouse --&gt; ingestor
+  files --&gt; loader[LoaderFactory]
+  lakehouse --&gt; loader
   warehouse --&gt; compiler[SQLPushdownCompiler]
-  ingestor --&gt; engine["DiffEngine"]
+  loader --&gt; engine["DiffEngine"]
   engine --&gt; result[DiffResult]
   compiler --&gt; warehouseSql[Warehouse SQL]
   warehouseSql --&gt; result
   result --&gt; artifacts[Artifacts]
   result --&gt; reports["HTML JSON"]
   result --&gt; exitCode[Exit code]</code></pre>
-<p>File and lakehouse sources load through <code>DataIngestor</code> into a local <code>DiffEngine</code> run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a <code>DiffResult</code>.</p>
+<p>File and lakehouse sources load through <code>LoaderFactory</code> into a local <code>DiffEngine</code> run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a <code>DiffResult</code>.</p>
 <h2 id="quick-start">Quick start</h2>
 <p>Python — <code>DiffEngine</code> consumes <code>LazyFrame</code>s:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
@@ -897,10 +841,10 @@
 <p>Set <code>output_path</code> to write <code>added</code> / <code>removed</code> / <code>changed</code> artifacts; <code>output_format</code> selects Parquet, CSV, JSON, NDJSON, or Arrow.</p>
 <h2 id="documentation">Documentation</h2>
 <ul>
-<li><a href="examples/getting_started/"><strong>1. Core Concepts</strong></a>: Python API, <code>DiffResult</code>, and rules.</li>
-<li><a href="examples/yaml_config/"><strong>2. YAML and CLI</strong></a>: pipeline automation, <code>--json</code>, artifacts.</li>
-<li><a href="examples/advanced_rules/"><strong>3. Advanced Rules</strong></a>: drift resolution on real data.</li>
-<li><a href="examples/html_reports/"><strong>4. HTML Reports</strong></a>: audit and compliance hand-off.</li>
+<li><a href="examples/01_core_concepts/"><strong>1. Core Concepts</strong></a>: Python API, <code>DiffResult</code>, and rules.</li>
+<li><a href="examples/02_yaml_and_cli/"><strong>2. YAML and CLI</strong></a>: pipeline automation, <code>--json</code>, artifacts.</li>
+<li><a href="examples/03_advanced_rules/"><strong>3. Advanced Rules</strong></a>: drift resolution on real data.</li>
+<li><a href="examples/04_html_reports/"><strong>4. HTML Reports</strong></a>: audit and compliance hand-off.</li>
 <li><a href="configuration/"><strong>Configuration Guide</strong></a>: fields, formats, extras, CLI flags, warehouse and lakehouse routing.</li>
 <li><a href="api/"><strong>API Reference</strong></a>: public Python surface.</li>
 <li><a href="roadmap/"><strong>Roadmap</strong></a>: work that is not built yet.</li>
