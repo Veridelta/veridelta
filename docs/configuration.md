@@ -19,6 +19,8 @@ target:
 primary_keys: ["user_id"]
 ```
 
+`primary_keys` must name at least one column, and together the keys must be unique on each side.
+
 File sources may omit `type` (it defaults to `file`) and continue to use `path`, `format`, and optional `options`.
 
 ### File formats
@@ -49,24 +51,28 @@ uv add 'veridelta[iceberg]'
 uv add 'veridelta[all]'
 ```
 
-Do not commit `password` or `access_token` in YAML. Inject secrets from the environment or your orchestrator's secret store at runtime.
+Do not commit `password` or `access_token` in YAML. The loader does not expand environment variables, so either render the file from your secret store at runtime, or build the connection in Python (for example `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`) and pass it to `DiffEngine.run_from_configs`.
 
-Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
+Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
 
-`table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Pattern-only `DiffRule` entries are not compiled to SQL; they raise `ConnectorError` on the warehouse path.
+`table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Rules that select columns by `pattern` are matched against the probed column names before any SQL is compiled, so they apply in the warehouse exactly as they do locally.
 
 Pushdown issues eight statements per run: a zero-row column probe and a `COUNT(*)` per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally. Those fill every `DiffSummary` field including `column_mismatches`, so `threshold`, `match_rate_percentage`, and the drift report mean the same thing they do for local comparisons.
 
-Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global `default_*` settings, so a `default_absolute_tolerance` applies in the warehouse too. Columns marked `ignore` are excluded, and `rename_to` pairs a source column with its renamed target counterpart.
+Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global `default_*` settings, so a `default_absolute_tolerance` applies in the warehouse too. As in a local run, a tolerance only loosens a column that is numeric once normalized, such as a text column with `cast_to: Float64`; text, boolean, and temporal columns are compared exactly. Columns marked `ignore` are excluded, and `rename_to` pairs a source column with its renamed target counterpart.
 
-The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase).
+The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase). `normalize_column_names` cannot change that: pushdown raises `ConfigError` if it would rename a stored column.
 
-All nine transform stages compile, so a rule means the same thing in a warehouse as it does locally. Two behaviors still differ from the file and lakehouse path:
+All nine transform stages compile for compared columns, so a rule means the same thing in a warehouse as it does locally. These behaviors still differ from the file and lakehouse path:
 
 - Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
-- Primary-key uniqueness is not verified, so duplicate keys inflate the inner-join mismatch count instead of raising `DataIntegrityError`.
+- Primary keys are joined as stored. Stages 1 through 7 normalize compared columns but not key columns, so keys that differ only by a transform (a `case_insensitive` or `pad_zeros` rule, or a global `default_whitespace_mode`) are reported as added and removed rather than matched.
+- Primary-key uniqueness is not verified. Duplicate keys inflate the mismatch count, or pass unnoticed when the duplicated rows are identical, instead of raising `DataIntegrityError`.
+- `strict_types` applies to local runs only. When the two relations store a column as different types, the warehouse compares them under its own coercion rules.
 
 Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead.
+
+Write `regex_replace` patterns, `value_map` entries, and text `null_values` exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in `\d` or `\N` and an apostrophe in `O'Brien` arrive intact; do not double them yourself. Escaping preserves the text, but each warehouse still runs its own regex engine: keep replacements free of capture-group references, which Polars and Databricks write as `$1` and Snowflake as `\1`. Likewise `whitespace_mode` trims only spaces in a warehouse, where Polars also strips tabs and line breaks.
 
 Two stages need explaining:
 
@@ -123,9 +129,9 @@ veridelta run -c veridelta.yaml --quiet
 veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
 ```
 
-`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
+`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
 
-Exit codes stay at `0` for a match within `threshold` and `1` for drift or any failure.
+Exit codes are `0` for a match within `threshold`, `1` for drift or any failure while running, and `2` for invalid command-line arguments.
 
 ```yaml
 source:
@@ -224,10 +230,10 @@ Global directives control the strictness of the underlying Polars evaluation eng
 | :--- | :--- |
 | `schema_mode` | Enforces column structure constraints. Options: `intersection` (default, compares common columns only), `exact`, `allow_additions`, `allow_removals`. |
 | `strict_types` | If `false` (default), the engine dynamically soft-casts target columns to source types to prevent execution halts on mismatched types. If `true`, type mismatches automatically fail the row. |
-| `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment. |
+| `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment, on every entry point including `DiffEngine(...).run()` and `validate_schemas`. Configured `primary_keys`, `column_names`, and `rename_to` are normalized the same way; a `pattern` is not, so write it against the lowercase names. Headers that collide once normalized raise `ConfigError`. |
 | `threshold` | The allowable mismatch ratio (0.0 to 1.0) before the pipeline exits with a failure code. |
-| `default_absolute_tolerance` | Global absolute numeric tolerance. A column without its own `absolute_tolerance` inherits this. |
-| `default_relative_tolerance` | Global relative numeric tolerance. A column without its own `relative_tolerance` inherits this. |
+| `default_absolute_tolerance` | Global absolute numeric tolerance. A column without its own `absolute_tolerance` inherits this. Columns that are not numeric after normalization are compared exactly. |
+| `default_relative_tolerance` | Global relative numeric tolerance. A column without its own `relative_tolerance` inherits this. Columns that are not numeric after normalization are compared exactly. |
 | `default_treat_null_as_equal` | Global `NULL == NULL` policy. Defaults to `true`. A column rule can override it. |
 | `default_whitespace_mode` | Global whitespace stripping: `none` (default), `left`, `right`, or `both`. |
 | `default_null_values` | Global sentinel list. Applied only to columns whose type can hold each value. |
@@ -266,14 +272,14 @@ It raises `ConfigError` on a violation and returns nothing otherwise.
 
 ## Column-Level Overrides (Rules)
 
-The `rules` array defines granular, per-column or regex-pattern tolerances. A rule selects columns by exact `column_names` or by a regular expression in `pattern`, and every other field is optional. When a column is named by more than one rule, the first rule listing it by exact name wins, then the first whose `pattern` matches.
+The `rules` array defines granular, per-column or regex-pattern tolerances. A rule selects columns by exact `column_names` or by a regular expression in `pattern`, and every other field is optional. When a column is named by more than one rule, the first rule listing it by exact name wins, then the first whose `pattern` matches. One rule governs each column, `ignore` included, so an exact-name rule keeps a column that a broader ignore `pattern` would otherwise drop. A renamed column answers to both spellings: a rule listing its target name wins, then the rule listing its source name. Local runs and warehouse pushdown resolve rules the same way.
 
 | Field | Description |
 | :--- | :--- |
 | `column_names` | Exact source column names this rule governs. |
-| `pattern` | Regular expression matched against the start of each column name. Pattern-only rules are not compiled to warehouse SQL and raise `ConnectorError` there. |
-| `absolute_tolerance` | Maximum absolute numeric difference. Overrides `default_absolute_tolerance`. |
-| `relative_tolerance` | Maximum relative numeric difference (`0.01` is 1%). Overrides `default_relative_tolerance`. |
+| `pattern` | Regular expression matched against the start of each column name. |
+| `absolute_tolerance` | Maximum absolute numeric difference. Overrides `default_absolute_tolerance`. Must be finite; use `ignore` to stop comparing a column. |
+| `relative_tolerance` | Maximum relative numeric difference (`0.01` is 1%). Overrides `default_relative_tolerance`. Must be finite. |
 | `case_insensitive` | Lowercase text before comparing. |
 | `whitespace_mode` | `none`, `left`, `right`, or `both`. Overrides `default_whitespace_mode`. |
 | `regex_replace` | Mapping of regex pattern to replacement, applied in order to text columns. |
@@ -284,7 +290,7 @@ The `rules` array defines granular, per-column or regex-pattern tolerances. A ru
 | `datetime_format` | `strptime` pattern that parses text into timestamps. |
 | `timezone` | Zone that timezone-aware timestamps are converted to. |
 | `cast_to` | `Int64`, `Float64`, `String`, `Boolean`, `Date`, or `Datetime`. |
-| `ignore` | Exclude the matched columns from the comparison entirely. |
+| `ignore` | Exclude the columns this rule governs from the comparison entirely. |
 | `rename_to` | Target name for a single source column. |
 
 ### Transform order
@@ -301,7 +307,7 @@ Rules are not applied in the order you write them. Every column follows one fixe
 8. Comparison (equality, or numeric tolerance)
 9. Null-safe equality (`treat_null_as_equal`)
 
-Stages 1 through 7 normalize each dataset on its own, before any join. That means they apply to primary keys as well: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion.
+Stages 1 through 7 normalize each dataset on its own, before any join. In local runs that means they apply to primary keys as well: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion. Warehouse pushdown joins keys as stored; see [Warehouse and lakehouse sources](#warehouse-and-lakehouse-sources).
 
 Stages 2, 3, and 4 operate on text and are skipped for non-string columns, so a global `default_whitespace_mode` is safe to set on a mixed schema. Stage 1 is filtered per column instead, as described below.
 
@@ -401,3 +407,14 @@ rules:
   - column_names: ["legacy_customer_id"]
     rename_to: "customer_id"
 ```
+
+The rule's other settings apply to the renamed pair on both sides, so a rename can carry a tolerance or a transform:
+
+```yaml
+rules:
+  - column_names: ["legacy_amt"]
+    rename_to: "amount"
+    absolute_tolerance: 0.01
+```
+
+`primary_keys` are written with the target spelling, so a renamed key works in local runs. Warehouse pushdown joins on stored column names and raises `ConfigError` for a key that exists on the source only under its old name.

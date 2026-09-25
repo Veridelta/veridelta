@@ -106,6 +106,27 @@ class TestStrictNumericFields:
                 {"primary_keys": ["id"], "default_relative_tolerance": "0.05"}
             )
 
+    def test_it_rejects_infinite_tolerances(self) -> None:
+        """Ensure an infinite tolerance fails when the config loads.
+
+        Locally it quietly passes every row, and in a warehouse the bare `inf`
+        it renders as is not a valid literal, so the two engines could only
+        disagree. `ignore` is the way to stop comparing a column.
+        """
+        with pytest.raises(ValidationError):
+            DiffRule(column_names=["amount"], absolute_tolerance=float("inf"))
+        with pytest.raises(ValidationError):
+            DiffRule(column_names=["amount"], relative_tolerance=float("inf"))
+        with pytest.raises(ValidationError):
+            DiffConfig(primary_keys=["id"], default_absolute_tolerance=float("inf"))
+        with pytest.raises(ValidationError):
+            DiffConfig(primary_keys=["id"], default_relative_tolerance=float("inf"))
+
+    def test_it_rejects_an_empty_primary_key_list(self) -> None:
+        """Ensure a comparison cannot be configured without a join key."""
+        with pytest.raises(ValidationError, match="at least 1"):
+            DiffConfig(primary_keys=[])
+
     def test_it_rejects_coerced_pad_zeros_widths(self) -> None:
         """Ensure a padding width cannot arrive as text or a float."""
         with pytest.raises(ValidationError):
@@ -165,6 +186,31 @@ class TestDiffConfigNormalization:
             rules=[DiffRule(column_names=["  ACCOUNT_BAL  "])],
         )
         assert config.rules[0].column_names == ["account_bal"]
+
+    def test_it_standardizes_rename_targets_when_normalization_is_enabled(self) -> None:
+        """Ensure a rename lands on the normalized target header rather than beside it.
+
+        Headers are lowercased on both sides, so a `rename_to` left in its
+        original case would pair with nothing, and under `intersection` the
+        column would silently drop out of the comparison.
+        """
+        config = DiffConfig(
+            primary_keys=["id"],
+            normalize_column_names=True,
+            rules=[DiffRule(column_names=[" Legacy_Amt "], rename_to=" Amount ")],
+        )
+        assert config.rules[0].column_names == ["legacy_amt"]
+        assert config.rules[0].rename_to == "amount"
+
+    def test_it_leaves_the_callers_rules_untouched(self) -> None:
+        """Ensure normalization copies rules instead of rewriting objects the caller holds."""
+        rule = DiffRule(column_names=["Amount"], rename_to="Total")
+
+        config = DiffConfig(primary_keys=["id"], normalize_column_names=True, rules=[rule])
+
+        assert rule.column_names == ["Amount"]
+        assert rule.rename_to == "Total"
+        assert config.rules[0].column_names == ["amount"]
 
     def test_it_preserves_original_casing_when_normalization_is_disabled(self) -> None:
         """Ensure configuration values remain untouched if normalization is False."""

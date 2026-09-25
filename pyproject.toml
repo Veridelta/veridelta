@@ -35,7 +35,9 @@ Issues = "https://github.com/Veridelta/veridelta/issues"
 
 [project.optional-dependencies]
 snowflake = [
-    "snowflake-connector-python>=3.0.0",
+    # 3.7.0 added fetch_arrow_all(force_return_table=True). Before it, a result
+    # with no rows arrives as None, and every pushdown run starts with one.
+    "snowflake-connector-python>=3.7.0",
     "pyarrow>=10.0.1; python_version < '3.14'",
     # The driver warns on any pyarrow outside this range once running on 3.14.
     "pyarrow>=14.0.1,<24; python_version >= '3.14'",

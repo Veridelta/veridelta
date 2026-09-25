@@ -87,6 +87,24 @@ _IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
 }
 """Character each dialect quotes identifiers with, doubled to escape itself."""
 
+_LITERAL_ESCAPES: Final[dict[SQLDialect, tuple[tuple[str, str], ...]]] = {
+    SQLDialect.SNOWFLAKE: (("\\", "\\\\"), ("'", "''")),
+    SQLDialect.DATABRICKS: (("\\", "\\\\"), ("'", "\\'")),
+    SQLDialect.DUCKDB: (("'", "''"),),
+}
+"""Replacements that keep text inside a single-quoted literal, applied in order.
+
+The dialects disagree on what a string literal is, and every difference is
+silent. Snowflake and Databricks read backslash escape sequences inside quotes:
+a regex `\\d` arrives as `d`, a `\\N` sentinel as `N`, and a value ending in a
+backslash escapes its own closing quote, carrying configuration text out of the
+literal and into the statement. Both therefore double backslashes first, before
+anything else adds one. Databricks also reads `''` as two adjacent literals and
+concatenates them, dropping the apostrophe, so it escapes quotes with a
+backslash instead. DuckDB follows the SQL standard, where a backslash is
+ordinary text and only the quote needs doubling.
+"""
+
 _STRPTIME_DIRECTIVES: Final[dict[SQLDialect, dict[str, str]]] = {
     SQLDialect.SNOWFLAKE: {
         "Y": "YYYY",
@@ -816,15 +834,23 @@ class SQLPushdownCompiler:
         return f"{self._quote_ident(alias)}.{self._quote_ident(column)}"
 
     def _literal(self, value: str) -> str:
-        """Render a single-quoted SQL string literal.
+        """Render a single-quoted SQL string literal for the active dialect.
+
+        Every configured string that reaches SQL as data -- regex patterns and
+        replacements, crosswalk keys and values, text sentinels, and translated
+        datetime formats -- passes through here, so this is where configuration
+        text is kept from becoming statement text.
 
         Args:
             value (str): Raw Python string.
 
         Returns:
-            str: Quoted SQL literal with escaped apostrophes.
+            str: Quoted literal that the dialect decodes back to `value`.
         """
-        return "'" + value.replace("'", "''") + "'"
+        escaped = value
+        for raw, replacement in _LITERAL_ESCAPES[self.dialect]:
+            escaped = escaped.replace(raw, replacement)
+        return f"'{escaped}'"
 
     def _number(self, value: float) -> str:
         """Render a numeric SQL literal.

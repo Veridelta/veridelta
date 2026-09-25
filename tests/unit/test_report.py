@@ -11,6 +11,7 @@ import polars as pl
 import pytest
 
 from veridelta.engine import DiffEngine
+from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, DiffResult, DiffSummary
 from veridelta.report import render_html, write_html
 
@@ -24,6 +25,43 @@ def _result() -> DiffResult:
     src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
     tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
     return DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
+
+
+def _embedded_rows(document: str) -> list[list[object]]:
+    """Decode every embedded table the way the page's `JSON.parse` would.
+
+    Python's `json.loads` accepts `NaN` and `Infinity`, which `JSON.parse`
+    rejects, so this decoder refuses them too.
+
+    Args:
+        document (str): Rendered HTML report.
+
+    Returns:
+        list[list[object]]: The rows of each embedded table, in page order.
+    """
+
+    def refuse(token: str) -> object:
+        raise ValueError(f"JSON.parse rejects the token {token}")
+
+    payloads = re.findall(r'<script type="application/json">(.*?)</script>', document, re.DOTALL)
+    return [json.loads(payload, parse_constant=refuse)["rows"] for payload in payloads]
+
+
+def _changed_only(changed: pl.DataFrame) -> DiffResult:
+    """Wrap a changed-rows frame in an otherwise empty result.
+
+    Args:
+        changed (pl.DataFrame): Rows to report as changed.
+
+    Returns:
+        DiffResult: Result whose added and removed tables are empty.
+    """
+    return DiffResult(
+        summary=_result().summary,
+        added=pl.DataFrame(),
+        removed=pl.DataFrame(),
+        changed=changed,
+    )
 
 
 @pytest.mark.unit
@@ -69,6 +107,48 @@ class TestHTMLReport:
 
         assert payloads
         assert all("rows" in json.loads(payload) for payload in payloads)
+
+    def test_it_embeds_non_finite_floats_as_text(self) -> None:
+        """Ensure NaN and infinities cannot stop the page from rendering.
+
+        Python's `json` writes bare `NaN` and `Infinity`, which `JSON.parse`
+        rejects. One such cell used to leave its table, and every table after
+        it, empty. Values nested in list and struct columns are covered too.
+        """
+        changed = pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "ratio": [float("nan"), float("inf"), float("-inf")],
+                "samples": [[0.5, float("nan")], [], [1.0]],
+                "pair": [{"a": float("inf")}, {"a": 1.0}, {"a": None}],
+            }
+        )
+
+        (rows,) = _embedded_rows(render_html(_changed_only(changed)))
+
+        assert rows == [
+            [1, "nan", [0.5, "nan"], {"a": "inf"}],
+            [2, "inf", [], {"a": 1.0}],
+            [3, "-inf", [1.0], {"a": None}],
+        ]
+
+    def test_it_embeds_integers_beyond_javascript_precision_as_text(self) -> None:
+        """Ensure a large identifier displays exactly rather than rounded.
+
+        A JavaScript number holds integers exactly only up to 2**53 - 1, so
+        two different keys past that could render as the same value.
+        """
+        big = 2**53 + 1
+        changed = pl.DataFrame({"id": [big, -big, 7]})
+
+        (rows,) = _embedded_rows(render_html(_changed_only(changed)))
+
+        assert rows == [[str(big)], [str(-big)], [7]]
+
+    def test_it_rejects_a_negative_row_cap(self) -> None:
+        """Ensure a negative cap fails rather than embedding all but the last rows."""
+        with pytest.raises(ConfigError, match="max_rows"):
+            render_html(_result(), max_rows=-5)
 
     def test_it_caps_embedded_rows_and_says_so(self) -> None:
         """Ensure a large diff cannot produce an unopenable file.

@@ -11,12 +11,14 @@ renders as unstyled text at exactly the moment someone needs to read it.
 
 import html
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 import polars as pl
 
+from veridelta.exceptions import ConfigError
 from veridelta.models import DiffResult
 
 DEFAULT_MAX_ROWS: Final[int] = 1000
@@ -26,6 +28,9 @@ A diff of ten million rows would otherwise produce an HTML file nobody can
 open. The report states when it has truncated, so a reader never mistakes a
 capped table for the whole story.
 """
+
+_JS_SAFE_INTEGER: Final[int] = 2**53 - 1
+"""Largest integer a JavaScript number holds exactly (`Number.MAX_SAFE_INTEGER`)."""
 
 _STYLE: Final[str] = """
 :root {
@@ -123,17 +128,49 @@ def _escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def _json_cell(value: object) -> object:
+    """Make one cell safe for the page's `JSON.parse` without changing what it shows.
+
+    Python's `json` writes non-finite floats as bare `NaN` and `Infinity`,
+    which `JSON.parse` rejects, and one such cell used to leave its table and
+    every later table empty. Integers beyond 2**53 would parse but round, so
+    a changed row could display two identical values. Both travel as text,
+    which the pager prints unchanged. Nested list and struct values are
+    handled the same way.
+
+    Args:
+        value (object): Cell from `DataFrame.iter_rows`.
+
+    Returns:
+        object: The value, or its text where JSON or JavaScript cannot hold it.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _JS_SAFE_INTEGER:
+        return str(value)
+    if isinstance(value, list):
+        return [_json_cell(item) for item in cast("list[object]", value)]
+    if isinstance(value, dict):
+        return {key: _json_cell(item) for key, item in cast("dict[str, object]", value).items()}
+    return value
+
+
 def _embed_json(payload: object) -> str:
     """Serialize a payload for a `<script type="application/json">` block.
 
     Args:
-        payload (object): JSON-serializable data.
+        payload (object): JSON-serializable data whose cells went through
+            `_json_cell`.
 
     Returns:
         str: JSON with `<` escaped, so a string in the data cannot close the
         script element and inject markup into the document.
+
+    Raises:
+        ValueError: If a non-finite float reached the payload anyway, rather
+            than emitting a document the browser cannot parse.
     """
-    return json.dumps(payload, default=str).replace("<", "\\u003c")
+    return json.dumps(payload, default=str, allow_nan=False).replace("<", "\\u003c")
 
 
 def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
@@ -160,7 +197,9 @@ def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
         )
 
     header = "".join(f"<th>{_escape(name)}</th>" for name in shown.columns)
-    payload = _embed_json({"rows": [list(row) for row in shown.iter_rows()]})
+    payload = _embed_json(
+        {"rows": [[_json_cell(cell) for cell in row] for row in shown.iter_rows()]}
+    )
 
     return (
         f"<h2>{_escape(title)}</h2>\n{truncated}"
@@ -198,7 +237,12 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
 
     Returns:
         str: A complete HTML document with no external references.
+
+    Raises:
+        ConfigError: If `max_rows` is negative.
     """
+    if max_rows < 0:
+        raise ConfigError(f"max_rows must be zero or more, got {max_rows}.")
     summary = result.summary
     verdict = "PASSED" if summary.is_match else "FAILED"
     generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -275,6 +319,9 @@ def write_html(result: DiffResult, path: str | Path, *, max_rows: int = DEFAULT_
 
     Returns:
         Path: The file that was written.
+
+    Raises:
+        ConfigError: If `max_rows` is negative.
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

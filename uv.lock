@@ -3824,7 +3824,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pyiceberg", marker = "extra == 'iceberg'", specifier = ">=0.6.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.0.0" },
+    { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.7.0" },
     { name = "veridelta", extras = ["databricks"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["delta"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["excel"], marker = "extra == 'all'" },

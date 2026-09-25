@@ -808,6 +808,147 @@ class TestEdgeCaseParity:
 
         assert summary.changed_count == 1
 
+    def test_it_agrees_on_a_renamed_column_that_carries_a_tolerance(self) -> None:
+        """Ensure a `rename_to` rule's other settings survive the rename.
+
+        The local engine used to look rules up by the renamed spelling, which
+        the rule does not list, so the tolerance silently fell away there
+        while pushdown, resolving by the source spelling, still applied it.
+        """
+        src = pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["legacy_amt"], rename_to="amount", absolute_tolerance=0.05)
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_on_a_renamed_column_normalized_on_both_sides(self) -> None:
+        """Ensure a rename rule's transforms reach the target spelling too."""
+        src = pl.DataFrame({"id": [1, 2], "legacy_name": ["ada", "grace"]})
+        tgt = pl.DataFrame({"id": [1, 2], "name": [" ada ", "Grace"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["legacy_name"],
+                    rename_to="name",
+                    whitespace_mode="both",
+                    case_insensitive=True,
+                )
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_when_a_rule_names_the_target_spelling(self) -> None:
+        """Ensure a rule written against the renamed spelling governs the pair on both paths."""
+        src = pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["legacy_amt"], rename_to="amount"),
+                DiffRule(column_names=["amount"], absolute_tolerance=0.05),
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.is_perfect_match is True
+
+    def test_it_agrees_that_an_exact_rule_outranks_a_pattern_ignore(self) -> None:
+        """Ensure an ignore pattern cannot hide a column an exact-name rule claims.
+
+        Precedence is exact names before patterns, for `ignore` as for every
+        other field. The local engine used to drop any column an ignore rule
+        matched, skipping a column the configuration asked it to compare.
+        """
+        src = pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 2], "_etl_loaded_at": ["a", "b"]})
+        tgt = pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 3], "_etl_loaded_at": ["x", "y"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(pattern="^_etl_", ignore=True),
+                DiffRule(column_names=["_etl_batch_id"]),
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+        assert summary.column_mismatches == {"_etl_batch_id": 1}
+
+    def test_it_rejects_a_renamed_primary_key_on_the_pushdown_path(self) -> None:
+        """Ensure a key that only exists after `rename_to` fails as a config error.
+
+        Pushdown joins on stored column names, so a renamed key used to reach
+        the warehouse as a join on a column the source does not have.
+        """
+        src = pl.DataFrame({"legacy_id": [1], "val": ["A"]})
+        tgt = pl.DataFrame({"user_id": [1], "val": ["A"]})
+
+        config = DiffConfig(
+            primary_keys=["user_id"],
+            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+        )
+
+        assert run_local(config, src, tgt).summary.is_perfect_match is True
+        with pytest.raises(ConfigError, match="rename_to"):
+            run_pushdown(config, src, tgt)
+
+    def test_it_refuses_header_normalization_that_would_rename_a_warehouse_column(self) -> None:
+        """Ensure pushdown fails loudly where normalizing would change a stored name.
+
+        The compiler quotes identifiers exactly as they are stored, so it
+        cannot refer to a column by the lowercase name a local run gives it.
+        """
+        frame = pl.DataFrame({"ID": [1], "val": ["A"]})
+        config = DiffConfig(primary_keys=["ID"], normalize_column_names=True)
+
+        assert run_local(config, frame, frame).summary.is_perfect_match is True
+        with pytest.raises(ConfigError, match="normalize_column_names"):
+            run_pushdown(config, frame, frame)
+
+    def test_it_agrees_when_header_normalization_changes_nothing(self) -> None:
+        """Ensure names already in normalized form still compare with the flag on."""
+        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "C"]})
+        config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
+    def test_it_agrees_on_row_totals_when_a_key_is_null(self) -> None:
+        """Ensure a row with a null key still counts toward the totals.
+
+        The totals are the threshold's denominator. The local engine used to
+        count non-null values of the first key, so it disagreed with the
+        warehouse's `COUNT(*)` and could flip the verdict near the threshold.
+        """
+        src = pl.DataFrame({"id": [1, 2, None], "val": ["A", "B", "C"]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]})
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"], threshold=0.7), src, tgt)
+
+        # A null key never joins, so that row is removed and key 3 is added.
+        assert summary.total_rows_source == 3
+        assert summary.removed_count == 1
+        assert summary.added_count == 1
+        assert summary.is_match is True
+
     def test_it_agrees_that_the_first_matching_rule_wins(self) -> None:
         """Ensure both engines resolve a doubly-ruled column to the same rule.
 
@@ -831,6 +972,81 @@ class TestEdgeCaseParity:
         # `cost` takes the strict exact-name rule; `count` falls through to the pattern.
         assert summary.changed_count == 1
         assert summary.column_mismatches == {"cost": 1}
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestToleranceScopeParity:
+    """Validate that a tolerance only ever loosens a numeric comparison.
+
+    The local engine applies tolerances to columns that are numeric once
+    normalized and compares everything else exactly. A global
+    `default_absolute_tolerance` reaches every column, so the warehouse has to
+    draw the same line instead of subtracting text, booleans, or dates.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "target", "rules", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", ["a", "b"]),
+                pl.Series("val", ["a", "B"]),
+                [],
+                1,
+                id="text",
+            ),
+            pytest.param(
+                pl.Series("val", [True, False]),
+                pl.Series("val", [True, True]),
+                [],
+                1,
+                id="boolean",
+            ),
+            pytest.param(
+                pl.Series("val", [date(2024, 1, 2), date(2024, 1, 2)]),
+                pl.Series("val", [date(2024, 1, 2), date(2024, 1, 3)]),
+                [],
+                1,
+                id="date-a-day-apart",
+            ),
+            pytest.param(
+                pl.Series("val", [7, 42]),
+                pl.Series("val", ["00007", "00042"]),
+                [DiffRule(column_names=["val"], pad_zeros=5)],
+                0,
+                id="padded-to-text",
+            ),
+            pytest.param(
+                pl.Series("val", ["2024-01-01 00:00:00", "2024-01-01 00:00:00"]),
+                pl.Series("val", [datetime(2024, 1, 1), datetime(2024, 1, 1, 0, 0, 1)]),
+                [DiffRule(column_names=["val"], datetime_format="%Y-%m-%d %H:%M:%S")],
+                1,
+                id="parsed-timestamp",
+            ),
+            pytest.param(
+                pl.Series("val", ["10.00", "20.00"]),
+                pl.Series("val", [10.4, 20.5]),
+                [DiffRule(column_names=["val"], cast_to="Float64")],
+                0,
+                id="cast-to-float-keeps-the-tolerance",
+            ),
+        ],
+    )
+    def test_it_agrees_that_tolerances_only_reach_numeric_columns(
+        self,
+        source: pl.Series,
+        target: pl.Series,
+        rules: list[DiffRule],
+        expected_changed: int,
+    ) -> None:
+        """Ensure a global tolerance leaves non-numeric columns compared exactly."""
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=1.0, rules=rules)
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
 
 
 @pytest.mark.integration

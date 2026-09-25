@@ -5,6 +5,7 @@
 
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import get_args
 
@@ -21,7 +22,9 @@ from veridelta.engine import (
     LoaderFactory,
     _alignment_maps,
     _column_mismatches_from_frame,
+    _compares_numerically,
     _fold_rule_defaults,
+    _match_rule,
     _optional_module,
     _resolve_pushdown_rules,
 )
@@ -324,6 +327,49 @@ class TestStructuralAlignment:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestHeaderNormalization:
+    """Validate that `normalize_column_names` holds on every entry point."""
+
+    def test_it_normalizes_headers_on_a_direct_run(self) -> None:
+        """Ensure `DiffEngine(...).run()` honors the flag, not only the YAML path.
+
+        The config's keys and rule names were lowercased while the frames kept
+        their headers, so a direct run failed to find its own primary key.
+        """
+        src = pl.DataFrame({" ID ": [1, 2], "Legacy_Amt": [10.0, 20.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "AMOUNT": [10.0, 20.04]})
+        config = DiffConfig(
+            primary_keys=["ID"],
+            normalize_column_names=True,
+            rules=[
+                DiffRule(column_names=["Legacy_Amt"], rename_to="Amount", absolute_tolerance=0.05)
+            ],
+        )
+
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ("amount",)
+        assert result.summary.is_perfect_match is True
+
+    def test_it_normalizes_headers_before_validating_schemas(self) -> None:
+        """Ensure a schema dry run sees the same headers a real run would."""
+        src = pl.DataFrame(schema={"ID": pl.Int64, "Amount": pl.Float64})
+        tgt = pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Float64})
+        config = DiffConfig(primary_keys=["id"], schema_mode="exact", normalize_column_names=True)
+
+        DiffEngine.validate_schemas(config, src.lazy(), tgt.lazy())
+
+    def test_it_rejects_headers_that_collide_once_normalized(self) -> None:
+        """Ensure two headers that normalize to one name fail as a configuration error."""
+        frame = pl.DataFrame({"id": [1], "Amount": [1.0], "amount ": [2.0]})
+        config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
+
+        with pytest.raises(ConfigError, match="normalize_column_names"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+
+@pytest.mark.unit
+@pytest.mark.fast
 class TestSemanticNormalization:
     """Validate complex data transformations, strings, and numeric tolerances."""
 
@@ -506,6 +552,15 @@ class TestDataIntegrityAndSetDifferences:
 
         with pytest.raises(DataIntegrityError, match="not unique in TARGET dataset"):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+    def test_it_counts_rows_whose_first_key_is_null(self) -> None:
+        """Ensure the totals count rows, not non-null key values."""
+        frame = pl.DataFrame({"id": [1, None], "val": ["A", "B"]})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), frame.lazy(), frame.lazy()).run()
+
+        assert summary.summary.total_rows_source == 2
+        assert summary.summary.total_rows_target == 2
 
     def test_it_correctly_isolates_added_and_removed_records(self) -> None:
         """Ensure anti-joins accurately route missing records to the correct summary tallies."""
@@ -900,6 +955,111 @@ class TestPushdownRuleHelpers:
         assert len(rules) == 1
         assert rules[0].timezone == "UTC"
 
+    def test_it_zeroes_tolerances_the_local_engine_would_skip(self) -> None:
+        """Ensure only columns that compare numerically carry a tolerance to the warehouse.
+
+        Folding `default_absolute_tolerance` into every column used to emit
+        `ABS(tgt - src)` over text, booleans, and dates, which a warehouse
+        either rejects or quietly coerces.
+        """
+        schema = pl.Schema(
+            {
+                "id": pl.Int64,
+                "amount": pl.Float64,
+                "name": pl.String,
+                "flag": pl.Boolean,
+                "day": pl.Date,
+                "code": pl.Int64,
+                "raw": pl.String,
+                "stamp": pl.String,
+            }
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            default_absolute_tolerance=0.5,
+            default_relative_tolerance=0.1,
+            rules=[
+                DiffRule(column_names=["name"], absolute_tolerance=2.0),
+                DiffRule(column_names=["code"], pad_zeros=5),
+                DiffRule(column_names=["raw"], cast_to="Float64"),
+                DiffRule(column_names=["stamp"], datetime_format="%Y-%m-%d"),
+            ],
+        )
+
+        tolerances = {
+            rule.column_names[0]: (rule.absolute_tolerance, rule.relative_tolerance)
+            for rule in _resolve_pushdown_rules(config, schema, schema)
+        }
+
+        assert tolerances == {
+            "amount": (0.5, 0.1),
+            "name": (0.0, 0.0),
+            "flag": (0.0, 0.0),
+            "day": (0.0, 0.0),
+            "code": (0.0, 0.0),
+            "raw": (0.5, 0.1),
+            "stamp": (0.0, 0.0),
+        }
+
+    @pytest.mark.parametrize(
+        ("values", "dtype", "rule"),
+        [
+            pytest.param([1.5], pl.Float64, DiffRule(column_names=["val"]), id="float"),
+            pytest.param(
+                [Decimal("1.50")], pl.Decimal(10, 2), DiffRule(column_names=["val"]), id="decimal"
+            ),
+            pytest.param(["x"], pl.String, DiffRule(column_names=["val"]), id="text"),
+            pytest.param([True], pl.Boolean, DiffRule(column_names=["val"]), id="boolean"),
+            pytest.param(
+                ["1.5"], pl.String, DiffRule(column_names=["val"], cast_to="Float64"), id="cast-up"
+            ),
+            pytest.param(
+                [1.5], pl.Float64, DiffRule(column_names=["val"], cast_to="String"), id="cast-down"
+            ),
+            pytest.param([7], pl.Int64, DiffRule(column_names=["val"], pad_zeros=3), id="padded"),
+            pytest.param(
+                [7],
+                pl.Int64,
+                DiffRule(column_names=["val"], pad_zeros=8, datetime_format="%Y%m%d"),
+                id="padded-then-parsed",
+            ),
+            pytest.param(
+                ["2024-01-02"],
+                pl.String,
+                DiffRule(column_names=["val"], datetime_format="%Y-%m-%d"),
+                id="parsed-text",
+            ),
+            pytest.param(
+                [20240102],
+                pl.Int64,
+                DiffRule(column_names=["val"], datetime_format="%Y%m%d"),
+                id="format-skips-an-integer",
+            ),
+            pytest.param(
+                ["2024"],
+                pl.Categorical,
+                DiffRule(column_names=["val"], datetime_format="%Y"),
+                id="format-skips-a-categorical",
+            ),
+        ],
+    )
+    def test_it_predicts_what_the_local_normalizer_compares(
+        self, values: list[object], dtype: pl.DataType, rule: DiffRule
+    ) -> None:
+        """Ensure the pushdown prediction agrees with the dtype Polars actually compares.
+
+        Pushdown never materializes the normalized column, so it predicts the
+        dtype from the probe and the rule. This pins that prediction to the
+        real normalizer so the two cannot drift apart.
+        """
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+        frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
+        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+
+        compared = _normalized(config, frame).schema["val"]
+
+        assert _compares_numerically(effective, frame.schema["val"]) is compared.is_numeric()
+
     def test_it_drops_null_mismatch_counts_and_rejects_non_numeric_ones(self) -> None:
         """Ensure an empty join and a garbled tally are both handled."""
         assert _column_mismatches_from_frame(pl.DataFrame({"amount": [None]})) == {}
@@ -971,6 +1131,103 @@ class TestSharedRuleAndAlignmentHelpers:
         assert source_drops == target_drops == {"tmp_1", "tmp_2"}
         # A multi-column rule cannot rename, and the target never renames.
         assert target_renames == {}
+
+    def test_it_drops_only_columns_whose_governing_rule_ignores_them(self) -> None:
+        """Ensure `ignore` follows the same precedence as every other field."""
+        rules = [
+            DiffRule(pattern="^tmp_", ignore=True),
+            DiffRule(column_names=["tmp_keep"]),
+            DiffRule(column_names=["val"]),
+            DiffRule(column_names=["val"], ignore=True),
+        ]
+        columns = ["tmp_drop", "tmp_keep", "val"]
+
+        source_renames, source_drops = _alignment_maps(rules, columns, rename=True)
+        _target_renames, target_drops = _alignment_maps(rules, columns, rename=False)
+
+        assert source_renames == {}
+        assert source_drops == target_drops == {"tmp_drop"}
+
+    def test_it_renames_with_the_first_rule_that_declares_a_rename(self) -> None:
+        """Ensure both engines pair a column the same way when rules split its settings."""
+        rules = [
+            DiffRule(column_names=["s"], absolute_tolerance=0.05),
+            DiffRule(column_names=["s"], rename_to="c"),
+            DiffRule(column_names=["s"], rename_to="d"),
+        ]
+
+        renames, drops = _alignment_maps(rules, ["id", "s"], rename=True)
+        (rule,) = _resolve_pushdown_rules(
+            DiffConfig(primary_keys=["id"], rules=rules),
+            pl.Schema({"id": pl.Int64, "s": pl.Float64}),
+            pl.Schema({"id": pl.Int64, "c": pl.Float64}),
+        )
+
+        assert renames == {"s": "c"}
+        assert drops == set()
+        assert rule.column_names == ["s"]
+        assert rule.rename_to == "c"
+        assert rule.absolute_tolerance == 0.05
+
+    def test_it_does_not_rename_a_column_its_governing_rule_ignores(self) -> None:
+        """Ensure an ignored column is dropped, not dropped and then renamed.
+
+        The two maps used to be built independently, so `drop` removed the
+        column and `rename` then failed on it with a raw Polars error.
+        """
+        src = pl.DataFrame({"id": [1], "s": [1]})
+        tgt = pl.DataFrame({"id": [1], "c": [2]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["s"], ignore=True),
+                DiffRule(column_names=["s"], rename_to="c"),
+            ],
+        )
+
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ()
+        assert result.summary.is_perfect_match is True
+
+    def test_it_drops_both_spellings_when_an_ignored_rule_renames(self) -> None:
+        """Ensure an ignored rename removes the target spelling as well as the source one."""
+        src = pl.DataFrame({"id": [1], "s": [1]})
+        tgt = pl.DataFrame({"id": [1], "c": [2]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            schema_mode="exact",
+            rules=[DiffRule(column_names=["s"], rename_to="c", ignore=True)],
+        )
+
+        DiffEngine.validate_schemas(config, src.lazy(), tgt.lazy())
+        result = DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert result.compared_columns == ()
+
+    def test_it_resolves_swapped_columns_by_their_source_rule(self) -> None:
+        """Ensure a swap does not hand each column the other's settings.
+
+        After `a -> b` and `b -> a`, the column now called `b` came from `a`.
+        A rule listing `b` governs the column that started as `b`, so the
+        target spelling must not win here the way it does for a plain rename.
+        """
+        rules = [
+            DiffRule(column_names=["a"], rename_to="b", absolute_tolerance=1.0),
+            DiffRule(column_names=["b"], rename_to="a", absolute_tolerance=0.1),
+        ]
+        config = DiffConfig(primary_keys=["id"], rules=rules)
+        engine = DiffEngine(config, pl.LazyFrame(), pl.LazyFrame())
+        schema = pl.Schema({"id": pl.Int64, "a": pl.Float64, "b": pl.Float64})
+
+        pushdown = {
+            rule.column_names[0]: (rule.rename_to, rule.absolute_tolerance)
+            for rule in _resolve_pushdown_rules(config, schema, schema)
+        }
+
+        assert engine._get_effective_rule("b")["abs_tol"] == 1.0  # pyright: ignore[reportPrivateUsage]
+        assert engine._get_effective_rule("a")["abs_tol"] == 0.1  # pyright: ignore[reportPrivateUsage]
+        assert pushdown == {"a": ("b", 1.0), "b": ("a", 0.1)}
 
 
 @pytest.mark.unit

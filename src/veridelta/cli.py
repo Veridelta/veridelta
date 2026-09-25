@@ -43,6 +43,27 @@ def _progress(message: str, *, quiet: bool) -> None:
         print(message, file=sys.stderr)
 
 
+def _row_limit(text: str) -> int:
+    """Parse `--html-max-rows`, which must be a whole number of zero or more.
+
+    Args:
+        text (str): Raw argument value.
+
+    Returns:
+        int: The row limit.
+
+    Raises:
+        argparse.ArgumentTypeError: If the value is not a non-negative integer.
+    """
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a whole number, got {text!r}") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must be zero or more, got {value}")
+    return value
+
+
 def run(args: argparse.Namespace) -> int:
     """Executes the comparison workflow based on CLI arguments.
 
@@ -156,7 +177,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--html-max-rows",
-        type=int,
+        type=_row_limit,
         default=DEFAULT_MAX_ROWS,
         metavar="N",
         help=f"Rows to embed per HTML table before truncating (default: {DEFAULT_MAX_ROWS}).",

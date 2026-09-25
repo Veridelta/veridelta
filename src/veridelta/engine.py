@@ -10,7 +10,8 @@ and the `DiffEngine` which performs the high-performance Polars comparisons.
 import importlib
 import re
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import ClassVar, Final, TypedDict
@@ -433,36 +434,74 @@ def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
     )
 
 
-def _match_rule(rules: list[DiffRule], column: str) -> DiffRule | None:
-    """Resolve the single rule governing a column, exact names before patterns.
+def _rename_pairs(rules: Sequence[DiffRule]) -> dict[str, str]:
+    """Map each renamed source column to its target spelling.
+
+    The first single-column rule that declares a `rename_to` for a column
+    wins. Rules that also `ignore` the column count too: the pair still tells
+    the target side which spelling belongs to the ignored column.
 
     Args:
-        rules (list[DiffRule]): Declared rules, in configuration order.
-        column (str): Column name to resolve.
+        rules (Sequence[DiffRule]): Declared rules, in configuration order.
 
     Returns:
-        DiffRule | None: First exact-name match, else first pattern match, else None.
+        dict[str, str]: Source name to target name.
     """
+    pairs: dict[str, str] = {}
     for rule in rules:
-        if column in rule.column_names:
-            return rule
+        if rule.rename_to and len(rule.column_names) == 1:
+            pairs.setdefault(rule.column_names[0], rule.rename_to)
+    return pairs
+
+
+def _rule_spellings(pairs: Mapping[str, str], column: str) -> tuple[str, ...]:
+    """List the names a rule may use for a column, in order of precedence.
+
+    `column` is the post-rename name that every aligned frame carries. A
+    renamed column answers to its target spelling first and its source
+    spelling second, so a rule written against either one governs the pair.
+    When the target spelling also names a source column that is itself
+    renamed away -- a swap or a chain -- a rule listing it governs that other
+    column, and only the source spelling counts.
+
+    Args:
+        pairs (Mapping[str, str]): Source-to-target renames from `_rename_pairs`.
+        column (str): Post-rename column name.
+
+    Returns:
+        tuple[str, ...]: Names to try for an exact-name match, in order.
+    """
+    source = next((src for src, tgt in pairs.items() if tgt == column), column)
+    if source == column:
+        return (column,)
+    if pairs.get(column, column) != column:
+        return (source,)
+    return (column, source)
+
+
+def _match_rule(rules: Sequence[DiffRule], column: str) -> DiffRule | None:
+    """Resolve the single rule governing a column, exact names before patterns.
+
+    Both engines resolve through here, keyed by the post-rename name, so a
+    rule means the same thing wherever it runs: to `ignore` as much as to a
+    tolerance, and to a renamed column as much as to one that kept its name.
+
+    Args:
+        rules (Sequence[DiffRule]): Declared rules, in configuration order.
+        column (str): Post-rename column name to resolve.
+
+    Returns:
+        DiffRule | None: The first rule naming one of the column's spellings,
+            else the first whose pattern matches it, else None.
+    """
+    for name in _rule_spellings(_rename_pairs(rules), column):
+        for rule in rules:
+            if name in rule.column_names:
+                return rule
     for rule in rules:
         if rule.pattern and re.match(rule.pattern, column):
             return rule
     return None
-
-
-def _matches_rule(rule: DiffRule, column: str) -> bool:
-    """Return whether a rule names a column directly or through its pattern.
-
-    Args:
-        rule (DiffRule): Declared rule.
-        column (str): Column name to test.
-
-    Returns:
-        bool: True when the column is listed or matches the rule's pattern.
-    """
-    return column in rule.column_names or bool(rule.pattern and re.match(rule.pattern, column))
 
 
 def _alignment_maps(
@@ -470,33 +509,57 @@ def _alignment_maps(
 ) -> tuple[dict[str, str], set[str]]:
     """Derive the `rename_to` map and `ignore` drop set for one frame's columns.
 
-    Shared by `DataIngestor._align_columns` and `DiffEngine._align_structure`,
-    which previously each carried a copy of this loop.
+    Shared by `DataIngestor._align_columns` and `DiffEngine._align_structure`
+    for both sides. Each column is dropped only when the rule governing it
+    ignores it, so an exact-name rule keeps a column a broader ignore pattern
+    would otherwise remove, and a column is never both dropped and renamed.
 
     Args:
         rules (list[DiffRule]): Declared rules, in configuration order.
         columns (Sequence[str]): Column names present in the frame.
         rename (bool): Whether `rename_to` applies. It is a source-only mapping,
-            so the target side passes False and only collects drops.
+            so the target side, which already carries the post-rename
+            spellings, passes False and only collects drops.
 
     Returns:
         tuple[dict[str, str], set[str]]: Rename map and the columns to drop.
     """
+    pairs = _rename_pairs(rules)
     rename_map: dict[str, str] = {}
     to_drop: set[str] = set()
-    for rule in rules:
-        matched = [col for col in columns if _matches_rule(rule, col)]
-        if rule.ignore:
-            to_drop.update(matched)
-            continue
-        if (
-            rename
-            and rule.rename_to
-            and len(rule.column_names) == 1
-            and rule.column_names[0] in columns
-        ):
-            rename_map[rule.column_names[0]] = rule.rename_to
+    for column in columns:
+        aligned = pairs.get(column, column) if rename else column
+        rule = _match_rule(rules, aligned)
+        if rule is not None and rule.ignore:
+            to_drop.add(column)
+        elif aligned != column:
+            rename_map[column] = aligned
     return rename_map, to_drop
+
+
+def _normalize_header_names(frame: pl.LazyFrame) -> pl.LazyFrame:
+    """Strip and lowercase every column name, as `normalize_column_names` asks.
+
+    Args:
+        frame (pl.LazyFrame): Frame whose headers to normalize.
+
+    Returns:
+        pl.LazyFrame: The frame with normalized headers. Normalizing an already
+            normalized frame changes nothing, so every entry point may call it.
+
+    Raises:
+        ConfigError: If two headers normalize to the same name, which would
+            otherwise surface as a raw Polars duplicate-column error.
+    """
+    names = frame.collect_schema().names()
+    normalized = [name.strip().lower() for name in names]
+    collisions = sorted(name for name, count in Counter(normalized).items() if count > 1)
+    if collisions:
+        raise ConfigError(
+            f"normalize_column_names maps more than one header onto {collisions}. "
+            "Rename the duplicates at the source, or disable normalize_column_names."
+        )
+    return frame.rename(dict(zip(names, normalized, strict=True)))
 
 
 def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRule:
@@ -592,6 +655,33 @@ def _enforce_pushdown_preconditions(
                 _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
 
+def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
+    """Predict whether the local engine compares a source column as a number.
+
+    `_build_match_expr` applies tolerances only when the normalized source
+    column is numeric and compares everything else exactly. Pushdown never
+    materializes the normalized column, so the answer is predicted from the
+    probed dtype by following the same stage gates as `_normalize_value_expr`
+    and `_normalize_temporal_expr`.
+
+    Args:
+        effective (EffectiveRule): Rule with global defaults folded in.
+        dtype (pl.DataType | None): Probed source dtype, or None when the
+            probe did not report one, in which case the tolerance is kept.
+
+    Returns:
+        bool: True when a tolerance should reach the warehouse predicate.
+    """
+    if effective["cast_to"] is not None:
+        return _CAST_TARGETS[effective["cast_to"]].is_numeric()
+    if effective["pad_zeros"] is not None:
+        # Stage 5 stringifies, and a datetime_format then parses the text.
+        return False
+    if effective["datetime_format"] and isinstance(dtype, (pl.String, pl.Utf8)):
+        return False
+    return dtype is None or dtype.is_numeric()
+
+
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
@@ -600,8 +690,9 @@ def _resolve_pushdown_rules(
     The compiler reads semantics from `DiffRule` alone, while the local engine
     layers each rule over the `default_*` settings. Without this expansion a
     warehouse run would ignore global tolerances and would skip every column
-    lacking an explicit rule, reporting all joined rows as changed. Columns are
-    resolved from the raw probe names so `rename_to` still pairs the two sides.
+    lacking an explicit rule, reporting all joined rows as changed. Each probed
+    source column is paired with its post-rename spelling and resolved under
+    that name, exactly as the local engine resolves its aligned frames.
 
     Args:
         diff (DiffConfig): Master comparison rules, keys, and global defaults.
@@ -619,33 +710,32 @@ def _resolve_pushdown_rules(
     """
     target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
+    pairs = _rename_pairs(diff.rules)
 
     resolved: list[DiffRule] = []
     for column in source_schema.names():
-        if column in keys:
+        aligned = pairs.get(column, column)
+        if aligned in keys or aligned not in target_lookup:
             continue
 
-        rule = _match_rule(diff.rules, column)
+        rule = _match_rule(diff.rules, aligned)
         if rule is not None and rule.ignore:
-            continue
-
-        rename_to = None
-        if rule is not None and rule.rename_to is not None and len(rule.column_names) == 1:
-            rename_to = rule.rename_to
-        if (rename_to or column) not in target_lookup:
             continue
 
         effective = _fold_rule_defaults(rule, diff)
         _enforce_pushdown_preconditions(
-            effective, ((column, source_schema), (rename_to or column, target_schema))
+            effective, ((column, source_schema), (aligned, target_schema))
         )
+        # A global tolerance reaches every column, but only a numeric one may
+        # compare within it; the rest compare exactly, as they do locally.
+        numeric = _compares_numerically(effective, source_schema.get(column))
 
         resolved.append(
             DiffRule(
                 column_names=[column],
-                rename_to=rename_to,
-                absolute_tolerance=effective["abs_tol"],
-                relative_tolerance=effective["rel_tol"],
+                rename_to=None if aligned == column else aligned,
+                absolute_tolerance=effective["abs_tol"] if numeric else 0.0,
+                relative_tolerance=effective["rel_tol"] if numeric else 0.0,
                 treat_null_as_equal=effective["treat_null"],
                 whitespace_mode=effective["whitespace"],
                 null_values=effective["null_values"],
@@ -854,6 +944,34 @@ def _pushdown_row_count(
         ) from exc
 
 
+def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema) -> None:
+    """Refuse `normalize_column_names` where it would rename a warehouse column.
+
+    A local run renames headers inside its frames. Pushdown cannot: the
+    compiler quotes identifiers exactly as they are stored, so a column whose
+    stored name normalization would change could no longer be referenced.
+
+    Args:
+        diff (DiffConfig): Comparison settings carrying the flag.
+        *schemas (pl.Schema): Probed schemas of the compared relations.
+
+    Raises:
+        ConfigError: If the flag is on and a probed name is not already
+            stripped and lowercase.
+    """
+    if not diff.normalize_column_names:
+        return
+    changed = [
+        name for schema in schemas for name in schema.names() if name != name.strip().lower()
+    ]
+    if changed:
+        raise ConfigError(
+            f"normalize_column_names would rename the warehouse columns {changed}. "
+            "Pushdown quotes identifiers exactly as they are stored, so disable "
+            "normalize_column_names and write column names in their stored case."
+        )
+
+
 def _validate_pushdown_schema(
     connector: PushdownSession,
     source_table: str,
@@ -878,7 +996,9 @@ def _validate_pushdown_schema(
             names, and the compiler needs both to filter null sentinels.
 
     Raises:
-        ConfigError: If primary keys are missing or schema constraints are violated.
+        ConfigError: If primary keys are missing, a key exists on the source
+            only under a `rename_to` spelling, `normalize_column_names` would
+            rename a stored column, or schema constraints are violated.
     """
     source_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(source_table), query_type="schema"
@@ -886,8 +1006,20 @@ def _validate_pushdown_schema(
     target_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(target_table), query_type="schema"
     )
+    source_schema = source_probe.collect_schema()
+    target_schema = target_probe.collect_schema()
+    _reject_warehouse_header_normalization(diff, source_schema, target_schema)
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
-    return source_probe.collect_schema(), target_probe.collect_schema()
+    # Validation aligns names first, so a renamed key passes it. The compiled
+    # joins read stored names, though, and would reference a missing column.
+    renamed_keys = [key for key in diff.primary_keys if key not in source_schema.names()]
+    if renamed_keys:
+        raise ConfigError(
+            f"Primary keys {renamed_keys} exist in the source only through rename_to. "
+            "Warehouse pushdown joins on stored column names, so renaming a key "
+            "is supported for local runs only."
+        )
+    return source_schema, target_schema
 
 
 def _collect_pushdown_summary(
@@ -991,6 +1123,28 @@ def _collect_pushdown_summary(
     )
 
 
+def _reject_self_comparison(source_table: str, target_table: str) -> None:
+    """Refuse a pushdown run whose two sides name the same relation.
+
+    Both sides share one connection by this point, so equal names are one
+    table. Comparing a table with itself always matches, which would turn a
+    copy-pasted configuration into a passing run whatever the data held.
+
+    Args:
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+
+    Raises:
+        ConfigError: If the two names are identical.
+    """
+    if source_table == target_table:
+        raise ConfigError(
+            f"Source and target both name the same table '{source_table}' on one "
+            "connection, so the comparison could only ever match. Point one side "
+            "at the table it should be compared with."
+        )
+
+
 def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
     """Execute same-warehouse SQL pushdown or raise for unsupported pairings.
 
@@ -1004,7 +1158,8 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
             with the primary-key frames they were derived from.
 
     Raises:
-        ConfigError: If the probed relations violate `schema_mode`.
+        ConfigError: If both sides name the same table, or the probed
+            relations violate `schema_mode`.
         ConnectorError: If backends are mixed, dialects differ, or connections
             do not share a fingerprint.
     """
@@ -1023,6 +1178,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
                 "Cross-account warehouse pushdown is unsupported. "
                 "Source and target Snowflake connections must match."
             )
+        _reject_self_comparison(source.table, target.table)
         snowflake = SnowflakeConnector(source)
         snowflake.connect()
         try:
@@ -1035,6 +1191,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
                 "Cross-account warehouse pushdown is unsupported. "
                 "Source and target Databricks connections must match."
             )
+        _reject_self_comparison(source.table, target.table)
         databricks = DatabricksConnector(source)
         databricks.connect()
         try:
@@ -1047,8 +1204,12 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
 class DataIngestor:
     """Coordinates the loading, renaming, and structural alignment of datasets.
 
-    This class prepares raw external data for comparison by normalizing headers
-    and dropping ignored columns before handing them off to the DiffEngine.
+    This class prepares raw external data for inspection by normalizing
+    headers, dropping ignored columns, and applying renames. `DiffEngine`
+    performs the same alignment itself, so `run_from_configs` loads sources
+    directly rather than through this class. Frames from `get_dataframes` are
+    already aligned: passing them to `DiffEngine` aligns them a second time,
+    which is harmless except for renames that swap or chain names.
     """
 
     def __init__(
@@ -1076,10 +1237,7 @@ class DataIngestor:
         """
         if not self.config.normalize_column_names:
             return df
-
-        cols = df.collect_schema().names()
-        rename_map = {col: col.strip().lower() for col in cols}
-        return df.rename(rename_map)
+        return _normalize_header_names(df)
 
     def _align_columns(self, df: pl.LazyFrame, is_source: bool = True) -> pl.LazyFrame:
         """Applies configured renames and drops ignored columns.
@@ -1132,7 +1290,7 @@ class DiffEngine:
     - `DiffEngine(config, source, target).run()` for frames you already hold.
       In-memory `DataFrame` inputs must be wrapped with `.lazy()` first.
     - `DiffEngine.run_from_configs(diff, source, target)` for `SourceRef`
-      pairs from YAML. File and lakehouse pairs load through `DataIngestor`
+      pairs from YAML. File and lakehouse pairs load through `LoaderFactory`
       and run locally; same-warehouse pairs compile to SQL pushdown instead.
     - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
       key presence on metadata alone, before any rows are read.
@@ -1186,9 +1344,10 @@ class DiffEngine:
         if source_is_warehouse or target_is_warehouse:
             return _run_warehouse_pushdown(diff, source, target)
 
-        ingestor = DataIngestor(diff, source, target)
-        source_df, target_df = ingestor.get_dataframes()
-        return cls(diff, source_df, target_df).run()
+        # `run()` normalizes headers and applies renames exactly once. Loading
+        # through `DataIngestor` would align first and have `run()` rename the
+        # aligned frames again, which undoes a swap and collapses a chain.
+        return cls(diff, LoaderFactory.load(source), LoaderFactory.load(target)).run()
 
     @classmethod
     def validate_schemas(
@@ -1525,20 +1684,17 @@ class DiffEngine:
             Mandatory prerequisite for `_validate_schema`. Validating raw data
             metadata before alignment results in `ConfigError` during migrations.
         """
+        if self.config.normalize_column_names:
+            self.source = _normalize_header_names(self.source)
+            self.target = _normalize_header_names(self.target)
+
         src_cols = self.source.collect_schema().names()
         tgt_cols = self.target.collect_schema().names()
 
         src_rename, src_drop = _alignment_maps(self.config.rules, src_cols, rename=True)
-
-        # The target matches by name or pattern like the source, and additionally
-        # by `rename_to`, since it already carries the post-rename spelling.
-        tgt_drop: set[str] = set()
-        for rule in self.config.rules:
-            if not rule.ignore:
-                continue
-            tgt_drop.update(
-                col for col in tgt_cols if col == rule.rename_to or _matches_rule(rule, col)
-            )
+        # The target already carries the post-rename spellings, which the
+        # resolver matches under either name.
+        _, tgt_drop = _alignment_maps(self.config.rules, tgt_cols, rename=False)
 
         self.source = self.source.drop(list(src_drop)).rename(src_rename)
         self.target = self.target.drop(list(tgt_drop))
@@ -1725,9 +1881,11 @@ class DiffEngine:
         """
         column_mismatches = _local_column_mismatches(changed_df, compared_columns)
 
-        pk_col = self.config.primary_keys[0]
-        src_total = self.source.select(pl.col(pk_col).count()).collect().item()
-        tgt_total = self.target.select(pl.col(pk_col).count()).collect().item()
+        # Count rows, as the warehouse's COUNT(*) does. Counting a key column
+        # would skip rows whose key is null, which still count as removed or
+        # added and so belong in the threshold's denominator.
+        src_total = self.source.select(pl.len()).collect().item()
+        tgt_total = self.target.select(pl.len()).collect().item()
 
         total_mismatches = added_df.height + removed_df.height + changed_df.height
         is_match = total_mismatches / max(src_total, 1) <= self.config.threshold

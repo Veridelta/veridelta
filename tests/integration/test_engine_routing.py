@@ -644,6 +644,34 @@ class TestEngineConnectorRouting:
 
         connector_cls.assert_not_called()
 
+    def test_it_refuses_to_compare_a_warehouse_table_with_itself(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a copy-pasted table name fails instead of reporting a perfect match.
+
+        A relation compared with itself always matches, so the run would pass
+        whatever the data held. It is refused before any session opens.
+        """
+        snowflake_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        databricks_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        diff = DiffConfig(primary_keys=["id"])
+
+        with pytest.raises(ConfigError, match="same table"):
+            DiffEngine.run_from_configs(
+                diff,
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+            )
+        with pytest.raises(ConfigError, match="same table"):
+            DiffEngine.run_from_configs(
+                diff,
+                _databricks_config(table="main.default.src"),
+                _databricks_config(table="main.default.src"),
+            )
+
+        snowflake_cls.assert_not_called()
+        databricks_cls.assert_not_called()
+
     def test_it_treats_the_databricks_token_as_part_of_the_fingerprint(
         self, mocker: MockerFixture
     ) -> None:
@@ -700,6 +728,32 @@ class TestEngineConnectorRouting:
 
         assert summary.is_match is False
         assert summary.changed_count == 1
+
+    def test_it_applies_renames_once_through_run_from_configs(self, tmp_path: Path) -> None:
+        """Ensure the YAML path renames once, so swapped names stay swapped.
+
+        Loading used to rename through the ingestor, and `run()` then renamed
+        the already-aligned frames again, undoing a swap and collapsing a chain.
+        """
+        src_file = tmp_path / "source.csv"
+        tgt_file = tmp_path / "target.csv"
+        pl.DataFrame({"id": [1], "lat": [10.0], "lon": [20.0]}).write_csv(src_file)
+        pl.DataFrame({"id": [1], "lat": [20.0], "lon": [10.0]}).write_csv(tgt_file)
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["lat"], rename_to="lon"),
+                DiffRule(column_names=["lon"], rename_to="lat"),
+            ],
+        )
+
+        result = DiffEngine.run_from_configs(
+            config,
+            SourceConfig(path=str(src_file), format="csv"),
+            SourceConfig(path=str(tgt_file), format="csv"),
+        )
+
+        assert result.summary.is_perfect_match is True
 
     def test_it_round_trips_file_yaml_when_type_is_omitted(self, tmp_path: Path) -> None:
         """Ensure existing file YAML remains valid without an explicit type."""
