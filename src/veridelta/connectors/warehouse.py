@@ -14,7 +14,8 @@ and timings, never SQL text or credentials.
 
 import logging
 import time
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Final
 
 import polars as pl
 
@@ -50,6 +51,15 @@ _DATABRICKS_EXTRA = "Databricks extra is not installed. Install it with: uv sync
 _UNCONNECTED = "Warehouse connector is not connected. Call connect() first."
 _NO_STATEMENT = "Call execute_pushdown before fetch_schema."
 _NON_TABULAR = "Warehouse cursor did not return a tabular Arrow result."
+
+_SNOWFLAKE_FETCH_KWARGS: Final[Mapping[str, Any]] = {"force_return_table": True}
+"""Arguments for `SnowflakeCursor.fetch_arrow_all`.
+
+Without `force_return_table` the driver returns None rather than an empty table
+when a statement yields no rows. Every pushdown run opens with a zero-row
+schema probe and a clean comparison returns empty sets, so the default would
+fail the common case. The flag arrived in snowflake-connector-python 3.7.0,
+which is why the `snowflake` extra requires that release."""
 
 
 def _lazy_from_arrow(table: Any) -> pl.LazyFrame:
@@ -96,7 +106,13 @@ def _schema_from_arrow(table: Any, description: Any) -> pl.Schema:
 
 
 def _run_arrow_query(
-    session: Any, statement: str, fetch_method: str, *, backend: str, query_type: str
+    session: Any,
+    statement: str,
+    fetch_method: str,
+    *,
+    backend: str,
+    query_type: str,
+    fetch_kwargs: Mapping[str, Any] | None = None,
 ) -> tuple[Any, Any]:
     """Execute SQL on a native session and fetch an Arrow payload.
 
@@ -106,6 +122,8 @@ def _run_arrow_query(
         fetch_method (str): Cursor method name that returns Arrow.
         backend (str): Warehouse name for log lines.
         query_type (str): Pushdown round-trip this statement represents.
+        fetch_kwargs (Mapping[str, Any] | None): Keyword arguments for the
+            fetch method, for drivers that need one to return empty results.
 
     Returns:
         tuple[Any, Any]: Arrow payload and cursor description metadata.
@@ -117,7 +135,7 @@ def _run_arrow_query(
     cursor = session.cursor()
     try:
         cursor.execute(statement)
-        table = getattr(cursor, fetch_method)()
+        table = getattr(cursor, fetch_method)(**(fetch_kwargs or {}))
     except ConnectorError:
         raise
     except Exception as exc:
@@ -246,6 +264,7 @@ class SnowflakeConnector(VerideltaConnector):
             "fetch_arrow_all",
             backend="Snowflake",
             query_type=query_type,
+            fetch_kwargs=_SNOWFLAKE_FETCH_KWARGS,
         )
         self._last_statement = statement
         return _lazy_from_arrow(table)
@@ -269,6 +288,7 @@ class SnowflakeConnector(VerideltaConnector):
             "fetch_arrow_all",
             backend="Snowflake",
             query_type="schema",
+            fetch_kwargs=_SNOWFLAKE_FETCH_KWARGS,
         )
         return _schema_from_arrow(table, description)
 

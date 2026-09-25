@@ -4,6 +4,7 @@
 """Unit tests for warehouse connector execution over mocked drivers."""
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import polars as pl
@@ -47,10 +48,26 @@ def _arrow_table() -> Any:
     return pl.DataFrame({"id": [1, 2], "status": ["open", "closed"]}).to_arrow()
 
 
+def _snowflake_fetch_contract(table: Any) -> Callable[..., Any]:
+    """Mimic `SnowflakeCursor.fetch_arrow_all`, including its zero-row behavior.
+
+    The real driver returns None instead of an empty table unless the caller
+    passes `force_return_table=True`, so a mock that always hands back the
+    table would hide exactly the case every pushdown run starts with.
+    """
+
+    def fetch_arrow_all(force_return_table: bool = False) -> Any:
+        if getattr(table, "num_rows", None) == 0 and not force_return_table:
+            return None
+        return table
+
+    return fetch_arrow_all
+
+
 def _patch_snowflake_session(mocker: MockerFixture, table: Any) -> tuple[Any, Any]:
     """Patch the Snowflake driver and return the mocked session and cursor."""
     cursor = mocker.MagicMock()
-    cursor.fetch_arrow_all.return_value = table
+    cursor.fetch_arrow_all.side_effect = _snowflake_fetch_contract(table)
     session = mocker.MagicMock()
     session.cursor.return_value = cursor
     driver = mocker.MagicMock()
@@ -104,11 +121,31 @@ class TestSnowflakeExecution:
             role="SYSADMIN",
         )
         cursor.execute.assert_called_once_with(statement)
-        cursor.fetch_arrow_all.assert_called_once()
+        cursor.fetch_arrow_all.assert_called_once_with(force_return_table=True)
         assert isinstance(result, pl.LazyFrame)
         collected = result.collect()
         assert collected.columns == ["id", "status"]
         assert collected.height == 2
+
+    def test_it_returns_an_empty_frame_for_a_zero_row_result(self, mocker: MockerFixture) -> None:
+        """Ensure an empty result keeps its columns instead of failing the run.
+
+        Every pushdown run opens with a `WHERE 1 = 0` schema probe, and a clean
+        comparison returns empty sets, so reading zero rows is the common case.
+        """
+        empty = pl.DataFrame(schema={"id": pl.Int64, "status": pl.String}).to_arrow()
+        _session, cursor = _patch_snowflake_session(mocker, empty)
+        connector = SnowflakeConnector(_snowflake_config())
+        connector.connect()
+
+        probe = connector.execute_pushdown(
+            connector.compiler.compile_schema_probe_query("analytics.public.source_orders"),
+            query_type="schema",
+        )
+
+        assert probe.collect_schema() == pl.Schema({"id": pl.Int64, "status": pl.String})
+        assert probe.collect().height == 0
+        cursor.fetch_arrow_all.assert_called_once_with(force_return_table=True)
 
     def test_it_executes_count_and_probe_statements_verbatim(self, mocker: MockerFixture) -> None:
         """Ensure count and schema round-trips reach the cursor unmodified."""
@@ -145,6 +182,7 @@ class TestSnowflakeExecution:
         assert "LIMIT 0" in schema_sql
         assert "_veridelta_schema" in schema_sql
         assert schema.names() == ["id", "status"]
+        assert cursor.fetch_arrow_all.call_args_list[1].kwargs == {"force_return_table": True}
 
     def test_it_raises_when_not_connected(self, mocker: MockerFixture) -> None:
         """Ensure pushdown and schema require an open Snowflake session."""
