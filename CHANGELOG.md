@@ -1,3 +1,107 @@
+## v0.10.0 (2026-09-26)
+
+Warehouse pushdown now reaches the same verdict as a local run in every case the
+differential harness covers, and several local comparisons that reported a match on
+values that differ are fixed. Read the behavior changes before upgrading: a run that
+passed on 0.9.1 can fail on 0.10.0 because the data really does differ.
+
+Snowflake pushdown failed on every real run before this release. The driver returns
+`None` for a zero-row result, and every run starts with a zero-row schema probe, so
+the `snowflake` extra now requires `snowflake-connector-python` 3.7.0. String literals
+are escaped per dialect: a backslash in a regex or sentinel reaches Snowflake and
+Databricks intact, an apostrophe survives on Databricks, and a value ending in a
+backslash can no longer close its literal and run as part of the statement. Primary
+keys go through the same normalization in a warehouse join as in a local run, and a
+key that repeats after normalization raises `DataIntegrityError` in the warehouse too,
+so added, removed, and changed counts can change.
+
+Numeric comparisons no longer cast the target to the source's type. With
+`strict_types` off, an integer `10` and a float `10.7` now differ, as they already did
+in a warehouse, and a `Float32` `0.1` no longer equals a `Float64` `0.1`; add a
+tolerance or a `cast_to` to forgive precision gaps. Under a tolerance, NaN matches only
+NaN and an infinity only itself, on both paths, and unsigned differences no longer
+wrap.
+
+Strings in the `source` and `target` blocks expand `${NAME}` and `${NAME:-default}`
+from the environment, so credentials can stay out of the file. A literal `${` must now
+be written `$${`. Printed configs leave out `password`, `access_token`, and
+`storage_options`, and validation errors no longer quote the input they reject;
+`model_dump()` still returns every field.
+
+Two additions: `max_levenshtein_distance` and `min_jaro_winkler_similarity` forgive
+typos in text columns through the new `fuzzy` extra, and `veridelta crosswalk` proposes
+`value_map` entries from how the source and target values line up, with the evidence
+for each. Jaro-Winkler runs locally only; pushdown refuses it before any comparison
+query runs.
+
+The tutorials are now one numbered path of four notebooks, `01_core_concepts` through
+`04_html_reports`, so the old notebook URLs return 404. The README and the site index
+were rewritten around them.
+
+### Feat
+
+- expand `${NAME}` and `${NAME:-default}` in `source` and `target` strings, with `$${`
+  for a literal `${`, and name the variable and its location when one is unset
+- forgive text typos within `max_levenshtein_distance` or
+  `min_jaro_winkler_similarity`, scored locally through the new `fuzzy` extra. Pushdown
+  compiles the edit distance to `EDITDISTANCE` or `levenshtein` and refuses
+  Jaro-Winkler before any comparison query runs
+- propose `value_map` entries with `veridelta crosswalk` and
+  `DiffEngine.propose_value_maps()`, printing paste-ready rules on stdout and the
+  evidence for each entry on stderr
+- normalize primary keys through stages 1-7 in every warehouse join, accept renamed
+  keys, and reject keys that repeat after normalization with the same
+  `DataIntegrityError` a local run raises
+- give connectors `close()` and context-manager support, log connections and
+  statements without SQL or credentials, and tell a missing lakehouse extra apart from
+  a failed scan
+
+### Fix
+
+- pass `force_return_table=True` to Snowflake's Arrow fetch and require
+  `snowflake-connector-python>=3.7.0`, so a zero-row result no longer fails the run
+- escape string literals per dialect, so backslashes and apostrophes survive and a
+  trailing backslash cannot escape its literal
+- compare mixed numeric types in their common type instead of casting the target to
+  the source's type
+- stop NaN and infinity from matching any value under a tolerance, and measure
+  unsigned differences without wrapping
+- apply tolerances in pushdown only to columns a local run compares as numbers, and
+  resolve one rule per column by its post-rename name on both paths
+- count a row with one NULL side in pushdown's `changed_count`, and select no rows
+  when every compared column is ignored
+- count rows with null keys in the row totals, as the warehouse's `COUNT(*)` does
+- drop pattern-ignored columns from the target side too, so `schema_mode: exact` no
+  longer fails on them
+- reject an empty `primary_keys`, an infinite tolerance, the same table on both sides
+  of a pushdown, headers that collide after normalization, and a negative
+  `--html-max-rows`
+- keep the HTML report readable when a value is NaN or infinite, and show integers
+  beyond 2^53 exactly
+- leave `password`, `access_token`, and `storage_options`, including a file source's
+  nested one, out of printed configs, and keep inputs out of validation errors
+
+### Refactor
+
+- share one rule folder and one rename and drop matcher between the two engines, and
+  split `DiffEngine.run` into named stages
+- raise `DatasetError`, a `VerideltaError`, from `load_nyc_taxi` instead of
+  `RuntimeError`
+
+### Chore
+
+- run CI on stacked pull requests and execute the tutorial notebooks against their
+  recorded output
+- enable Ruff's McCabe complexity check at 10 and tighten the Cursor rules
+
+### BREAKING CHANGE
+
+- a literal `${` inside `source` or `target` must be written `$${`
+- mixed numeric types compare by value, so integer and float columns that differ only
+  in the fraction now mismatch locally
+- `load_nyc_taxi` raises `DatasetError`, which `except RuntimeError` no longer catches
+- the tutorial notebooks were renamed, and their old URLs return 404
+
 ## v0.9.1 (2026-09-11)
 
 CI now pins JavaScript actions that declare Node 24, so GitHub-hosted runners
