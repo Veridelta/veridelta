@@ -2811,7 +2811,9 @@ validate cleanly, and then fail at run time on a format nobody had written.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Optional personal access token.</p>
+                <p>Optional personal access token. Left out
+when the config is printed, but kept by <code>model_dump()</code>, which the
+connector needs.</p>
               </div>
             </td>
           </tr>
@@ -2849,9 +2851,7 @@ validate cleanly, and then fail at run time on a format nobody had written.</p>
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src/veridelta/models.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-918">918</a></span>
-<span class="normal"><a href="#__codelineno-0-919">919</a></span>
-<span class="normal"><a href="#__codelineno-0-920">920</a></span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-920">920</a></span>
 <span class="normal"><a href="#__codelineno-0-921">921</a></span>
 <span class="normal"><a href="#__codelineno-0-922">922</a></span>
 <span class="normal"><a href="#__codelineno-0-923">923</a></span>
@@ -2875,33 +2875,43 @@ validate cleanly, and then fail at run time on a format nobody had written.</p>
 <span class="normal"><a href="#__codelineno-0-941">941</a></span>
 <span class="normal"><a href="#__codelineno-0-942">942</a></span>
 <span class="normal"><a href="#__codelineno-0-943">943</a></span>
-<span class="normal"><a href="#__codelineno-0-944">944</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-918" name="__codelineno-0-918"></a><span class="k">class</span><span class="w"> </span><span class="nc">DatabricksConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<a id="__codelineno-0-919" name="__codelineno-0-919"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable connection settings for Databricks SQL warehouse pushdown.</span>
-<a id="__codelineno-0-920" name="__codelineno-0-920"></a>
-<a id="__codelineno-0-921" name="__codelineno-0-921"></a><span class="sd">    Attributes:</span>
-<a id="__codelineno-0-922" name="__codelineno-0-922"></a><span class="sd">        type (Literal[&quot;databricks&quot;]): Discriminator for YAML source routing.</span>
-<a id="__codelineno-0-923" name="__codelineno-0-923"></a><span class="sd">        table (str): Fully qualified table or view to compare.</span>
-<a id="__codelineno-0-924" name="__codelineno-0-924"></a><span class="sd">        server_hostname (str): Workspace hostname for the SQL warehouse.</span>
-<a id="__codelineno-0-925" name="__codelineno-0-925"></a><span class="sd">        http_path (str): HTTP path of the SQL warehouse or cluster.</span>
-<a id="__codelineno-0-926" name="__codelineno-0-926"></a><span class="sd">        access_token (str | None): Optional personal access token.</span>
-<a id="__codelineno-0-927" name="__codelineno-0-927"></a><span class="sd">        catalog (str | None): Optional Unity Catalog name.</span>
-<a id="__codelineno-0-928" name="__codelineno-0-928"></a><span class="sd">        schema_name (str | None): Optional default schema name.</span>
-<a id="__codelineno-0-929" name="__codelineno-0-929"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-930" name="__codelineno-0-930"></a>
-<a id="__codelineno-0-931" name="__codelineno-0-931"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-932" name="__codelineno-0-932"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-933" name="__codelineno-0-933"></a>
-<a id="__codelineno-0-934" name="__codelineno-0-934"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;databricks&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;databricks&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Databricks.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-935" name="__codelineno-0-935"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-936" name="__codelineno-0-936"></a>        <span class="o">...</span><span class="p">,</span>
-<a id="__codelineno-0-937" name="__codelineno-0-937"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
-<a id="__codelineno-0-938" name="__codelineno-0-938"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-939" name="__codelineno-0-939"></a>    <span class="p">)</span>
-<a id="__codelineno-0-940" name="__codelineno-0-940"></a>    <span class="n">server_hostname</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Workspace hostname for the SQL warehouse.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-941" name="__codelineno-0-941"></a>    <span class="n">http_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;HTTP path of the SQL warehouse or cluster.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-942" name="__codelineno-0-942"></a>    <span class="n">access_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional personal access token.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-943" name="__codelineno-0-943"></a>    <span class="n">catalog</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional Unity Catalog name.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-944" name="__codelineno-0-944"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional default schema name.&quot;</span><span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-944">944</a></span>
+<span class="normal"><a href="#__codelineno-0-945">945</a></span>
+<span class="normal"><a href="#__codelineno-0-946">946</a></span>
+<span class="normal"><a href="#__codelineno-0-947">947</a></span>
+<span class="normal"><a href="#__codelineno-0-948">948</a></span>
+<span class="normal"><a href="#__codelineno-0-949">949</a></span>
+<span class="normal"><a href="#__codelineno-0-950">950</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-920" name="__codelineno-0-920"></a><span class="k">class</span><span class="w"> </span><span class="nc">DatabricksConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<a id="__codelineno-0-921" name="__codelineno-0-921"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable connection settings for Databricks SQL warehouse pushdown.</span>
+<a id="__codelineno-0-922" name="__codelineno-0-922"></a>
+<a id="__codelineno-0-923" name="__codelineno-0-923"></a><span class="sd">    Attributes:</span>
+<a id="__codelineno-0-924" name="__codelineno-0-924"></a><span class="sd">        type (Literal[&quot;databricks&quot;]): Discriminator for YAML source routing.</span>
+<a id="__codelineno-0-925" name="__codelineno-0-925"></a><span class="sd">        table (str): Fully qualified table or view to compare.</span>
+<a id="__codelineno-0-926" name="__codelineno-0-926"></a><span class="sd">        server_hostname (str): Workspace hostname for the SQL warehouse.</span>
+<a id="__codelineno-0-927" name="__codelineno-0-927"></a><span class="sd">        http_path (str): HTTP path of the SQL warehouse or cluster.</span>
+<a id="__codelineno-0-928" name="__codelineno-0-928"></a><span class="sd">        access_token (str | None): Optional personal access token. Left out</span>
+<a id="__codelineno-0-929" name="__codelineno-0-929"></a><span class="sd">            when the config is printed, but kept by `model_dump()`, which the</span>
+<a id="__codelineno-0-930" name="__codelineno-0-930"></a><span class="sd">            connector needs.</span>
+<a id="__codelineno-0-931" name="__codelineno-0-931"></a><span class="sd">        catalog (str | None): Optional Unity Catalog name.</span>
+<a id="__codelineno-0-932" name="__codelineno-0-932"></a><span class="sd">        schema_name (str | None): Optional default schema name.</span>
+<a id="__codelineno-0-933" name="__codelineno-0-933"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-934" name="__codelineno-0-934"></a>
+<a id="__codelineno-0-935" name="__codelineno-0-935"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-936" name="__codelineno-0-936"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-937" name="__codelineno-0-937"></a>
+<a id="__codelineno-0-938" name="__codelineno-0-938"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;databricks&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;databricks&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Databricks.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-939" name="__codelineno-0-939"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-940" name="__codelineno-0-940"></a>        <span class="o">...</span><span class="p">,</span>
+<a id="__codelineno-0-941" name="__codelineno-0-941"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
+<a id="__codelineno-0-942" name="__codelineno-0-942"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-943" name="__codelineno-0-943"></a>    <span class="p">)</span>
+<a id="__codelineno-0-944" name="__codelineno-0-944"></a>    <span class="n">server_hostname</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Workspace hostname for the SQL warehouse.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-945" name="__codelineno-0-945"></a>    <span class="n">http_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;HTTP path of the SQL warehouse or cluster.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-946" name="__codelineno-0-946"></a>    <span class="n">access_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-947" name="__codelineno-0-947"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="nb">repr</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional personal access token.&quot;</span>
+<a id="__codelineno-0-948" name="__codelineno-0-948"></a>    <span class="p">)</span>
+<a id="__codelineno-0-949" name="__codelineno-0-949"></a>    <span class="n">catalog</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional Unity Catalog name.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-950" name="__codelineno-0-950"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional default schema name.&quot;</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -3012,13 +3022,7 @@ validate cleanly, and then fail at run time on a format nobody had written.</p>
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src/veridelta/models.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-947">947</a></span>
-<span class="normal"><a href="#__codelineno-0-948">948</a></span>
-<span class="normal"><a href="#__codelineno-0-949">949</a></span>
-<span class="normal"><a href="#__codelineno-0-950">950</a></span>
-<span class="normal"><a href="#__codelineno-0-951">951</a></span>
-<span class="normal"><a href="#__codelineno-0-952">952</a></span>
-<span class="normal"><a href="#__codelineno-0-953">953</a></span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-953">953</a></span>
 <span class="normal"><a href="#__codelineno-0-954">954</a></span>
 <span class="normal"><a href="#__codelineno-0-955">955</a></span>
 <span class="normal"><a href="#__codelineno-0-956">956</a></span>
@@ -3036,31 +3040,37 @@ validate cleanly, and then fail at run time on a format nobody had written.</p>
 <span class="normal"><a href="#__codelineno-0-968">968</a></span>
 <span class="normal"><a href="#__codelineno-0-969">969</a></span>
 <span class="normal"><a href="#__codelineno-0-970">970</a></span>
-<span class="normal"><a href="#__codelineno-0-971">971</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-947" name="__codelineno-0-947"></a><span class="k">class</span><span class="w"> </span><span class="nc">DeltaLakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<a id="__codelineno-0-948" name="__codelineno-0-948"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for a Delta Lake table scan.</span>
-<a id="__codelineno-0-949" name="__codelineno-0-949"></a>
-<a id="__codelineno-0-950" name="__codelineno-0-950"></a><span class="sd">    Attributes:</span>
-<a id="__codelineno-0-951" name="__codelineno-0-951"></a><span class="sd">        type (Literal[&quot;delta&quot;]): Discriminator for YAML source routing.</span>
-<a id="__codelineno-0-952" name="__codelineno-0-952"></a><span class="sd">        table_uri (str): Filesystem path or object-store URI of the table.</span>
-<a id="__codelineno-0-953" name="__codelineno-0-953"></a><span class="sd">        version (int | None): Optional table version to time-travel.</span>
-<a id="__codelineno-0-954" name="__codelineno-0-954"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
-<a id="__codelineno-0-955" name="__codelineno-0-955"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-956" name="__codelineno-0-956"></a>
-<a id="__codelineno-0-957" name="__codelineno-0-957"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-958" name="__codelineno-0-958"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-959" name="__codelineno-0-959"></a>
-<a id="__codelineno-0-960" name="__codelineno-0-960"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;delta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Delta Lake.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-961" name="__codelineno-0-961"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Filesystem path or object-store URI of the table.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-962" name="__codelineno-0-962"></a>    <span class="n">version</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-963" name="__codelineno-0-963"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-964" name="__codelineno-0-964"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
-<a id="__codelineno-0-965" name="__codelineno-0-965"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<a id="__codelineno-0-966" name="__codelineno-0-966"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional table version to time-travel.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-967" name="__codelineno-0-967"></a>    <span class="p">)</span>
-<a id="__codelineno-0-968" name="__codelineno-0-968"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-969" name="__codelineno-0-969"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
-<a id="__codelineno-0-970" name="__codelineno-0-970"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-971" name="__codelineno-0-971"></a>    <span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-971">971</a></span>
+<span class="normal"><a href="#__codelineno-0-972">972</a></span>
+<span class="normal"><a href="#__codelineno-0-973">973</a></span>
+<span class="normal"><a href="#__codelineno-0-974">974</a></span>
+<span class="normal"><a href="#__codelineno-0-975">975</a></span>
+<span class="normal"><a href="#__codelineno-0-976">976</a></span>
+<span class="normal"><a href="#__codelineno-0-977">977</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-953" name="__codelineno-0-953"></a><span class="k">class</span><span class="w"> </span><span class="nc">DeltaLakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<a id="__codelineno-0-954" name="__codelineno-0-954"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for a Delta Lake table scan.</span>
+<a id="__codelineno-0-955" name="__codelineno-0-955"></a>
+<a id="__codelineno-0-956" name="__codelineno-0-956"></a><span class="sd">    Attributes:</span>
+<a id="__codelineno-0-957" name="__codelineno-0-957"></a><span class="sd">        type (Literal[&quot;delta&quot;]): Discriminator for YAML source routing.</span>
+<a id="__codelineno-0-958" name="__codelineno-0-958"></a><span class="sd">        table_uri (str): Filesystem path or object-store URI of the table.</span>
+<a id="__codelineno-0-959" name="__codelineno-0-959"></a><span class="sd">        version (int | None): Optional table version to time-travel.</span>
+<a id="__codelineno-0-960" name="__codelineno-0-960"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
+<a id="__codelineno-0-961" name="__codelineno-0-961"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-962" name="__codelineno-0-962"></a>
+<a id="__codelineno-0-963" name="__codelineno-0-963"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-964" name="__codelineno-0-964"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-965" name="__codelineno-0-965"></a>
+<a id="__codelineno-0-966" name="__codelineno-0-966"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;delta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Delta Lake.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-967" name="__codelineno-0-967"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Filesystem path or object-store URI of the table.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-968" name="__codelineno-0-968"></a>    <span class="n">version</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-969" name="__codelineno-0-969"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-970" name="__codelineno-0-970"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-971" name="__codelineno-0-971"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-0-972" name="__codelineno-0-972"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional table version to time-travel.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-973" name="__codelineno-0-973"></a>    <span class="p">)</span>
+<a id="__codelineno-0-974" name="__codelineno-0-974"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-975" name="__codelineno-0-975"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
+<a id="__codelineno-0-976" name="__codelineno-0-976"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-977" name="__codelineno-0-977"></a>    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -6772,55 +6782,55 @@ clean markdown format ready for immediate pipeline logging.</p>
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src/veridelta/models.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-974">974</a></span>
-<span class="normal"><a href="#__codelineno-0-975">975</a></span>
-<span class="normal"><a href="#__codelineno-0-976">976</a></span>
-<span class="normal"><a href="#__codelineno-0-977">977</a></span>
-<span class="normal"><a href="#__codelineno-0-978">978</a></span>
-<span class="normal"><a href="#__codelineno-0-979">979</a></span>
-<span class="normal"><a href="#__codelineno-0-980">980</a></span>
-<span class="normal"><a href="#__codelineno-0-981">981</a></span>
-<span class="normal"><a href="#__codelineno-0-982">982</a></span>
-<span class="normal"><a href="#__codelineno-0-983">983</a></span>
-<span class="normal"><a href="#__codelineno-0-984">984</a></span>
-<span class="normal"><a href="#__codelineno-0-985">985</a></span>
-<span class="normal"><a href="#__codelineno-0-986">986</a></span>
-<span class="normal"><a href="#__codelineno-0-987">987</a></span>
-<span class="normal"><a href="#__codelineno-0-988">988</a></span>
-<span class="normal"><a href="#__codelineno-0-989">989</a></span>
-<span class="normal"><a href="#__codelineno-0-990">990</a></span>
-<span class="normal"><a href="#__codelineno-0-991">991</a></span>
-<span class="normal"><a href="#__codelineno-0-992">992</a></span>
-<span class="normal"><a href="#__codelineno-0-993">993</a></span>
-<span class="normal"><a href="#__codelineno-0-994">994</a></span>
-<span class="normal"><a href="#__codelineno-0-995">995</a></span>
-<span class="normal"><a href="#__codelineno-0-996">996</a></span>
-<span class="normal"><a href="#__codelineno-0-997">997</a></span>
-<span class="normal"><a href="#__codelineno-0-998">998</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-974" name="__codelineno-0-974"></a><span class="k">class</span><span class="w"> </span><span class="nc">IcebergConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<a id="__codelineno-0-975" name="__codelineno-0-975"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for an Apache Iceberg table scan.</span>
-<a id="__codelineno-0-976" name="__codelineno-0-976"></a>
-<a id="__codelineno-0-977" name="__codelineno-0-977"></a><span class="sd">    Attributes:</span>
-<a id="__codelineno-0-978" name="__codelineno-0-978"></a><span class="sd">        type (Literal[&quot;iceberg&quot;]): Discriminator for YAML source routing.</span>
-<a id="__codelineno-0-979" name="__codelineno-0-979"></a><span class="sd">        table_uri (str): Catalog identifier or filesystem URI of the table.</span>
-<a id="__codelineno-0-980" name="__codelineno-0-980"></a><span class="sd">        snapshot_id (int | None): Optional snapshot to time-travel.</span>
-<a id="__codelineno-0-981" name="__codelineno-0-981"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
-<a id="__codelineno-0-982" name="__codelineno-0-982"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-983" name="__codelineno-0-983"></a>
-<a id="__codelineno-0-984" name="__codelineno-0-984"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-985" name="__codelineno-0-985"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-986" name="__codelineno-0-986"></a>
-<a id="__codelineno-0-987" name="__codelineno-0-987"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;iceberg&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;iceberg&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Apache Iceberg.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-988" name="__codelineno-0-988"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Catalog identifier or filesystem URI of the table.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-989" name="__codelineno-0-989"></a>    <span class="n">snapshot_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-990" name="__codelineno-0-990"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-991" name="__codelineno-0-991"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
-<a id="__codelineno-0-992" name="__codelineno-0-992"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<a id="__codelineno-0-993" name="__codelineno-0-993"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional snapshot identifier to time-travel.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-994" name="__codelineno-0-994"></a>    <span class="p">)</span>
-<a id="__codelineno-0-995" name="__codelineno-0-995"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-996" name="__codelineno-0-996"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
-<a id="__codelineno-0-997" name="__codelineno-0-997"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-998" name="__codelineno-0-998"></a>    <span class="p">)</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-980"> 980</a></span>
+<span class="normal"><a href="#__codelineno-0-981"> 981</a></span>
+<span class="normal"><a href="#__codelineno-0-982"> 982</a></span>
+<span class="normal"><a href="#__codelineno-0-983"> 983</a></span>
+<span class="normal"><a href="#__codelineno-0-984"> 984</a></span>
+<span class="normal"><a href="#__codelineno-0-985"> 985</a></span>
+<span class="normal"><a href="#__codelineno-0-986"> 986</a></span>
+<span class="normal"><a href="#__codelineno-0-987"> 987</a></span>
+<span class="normal"><a href="#__codelineno-0-988"> 988</a></span>
+<span class="normal"><a href="#__codelineno-0-989"> 989</a></span>
+<span class="normal"><a href="#__codelineno-0-990"> 990</a></span>
+<span class="normal"><a href="#__codelineno-0-991"> 991</a></span>
+<span class="normal"><a href="#__codelineno-0-992"> 992</a></span>
+<span class="normal"><a href="#__codelineno-0-993"> 993</a></span>
+<span class="normal"><a href="#__codelineno-0-994"> 994</a></span>
+<span class="normal"><a href="#__codelineno-0-995"> 995</a></span>
+<span class="normal"><a href="#__codelineno-0-996"> 996</a></span>
+<span class="normal"><a href="#__codelineno-0-997"> 997</a></span>
+<span class="normal"><a href="#__codelineno-0-998"> 998</a></span>
+<span class="normal"><a href="#__codelineno-0-999"> 999</a></span>
+<span class="normal"><a href="#__codelineno-0-1000">1000</a></span>
+<span class="normal"><a href="#__codelineno-0-1001">1001</a></span>
+<span class="normal"><a href="#__codelineno-0-1002">1002</a></span>
+<span class="normal"><a href="#__codelineno-0-1003">1003</a></span>
+<span class="normal"><a href="#__codelineno-0-1004">1004</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-980" name="__codelineno-0-980"></a><span class="k">class</span><span class="w"> </span><span class="nc">IcebergConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<a id="__codelineno-0-981" name="__codelineno-0-981"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for an Apache Iceberg table scan.</span>
+<a id="__codelineno-0-982" name="__codelineno-0-982"></a>
+<a id="__codelineno-0-983" name="__codelineno-0-983"></a><span class="sd">    Attributes:</span>
+<a id="__codelineno-0-984" name="__codelineno-0-984"></a><span class="sd">        type (Literal[&quot;iceberg&quot;]): Discriminator for YAML source routing.</span>
+<a id="__codelineno-0-985" name="__codelineno-0-985"></a><span class="sd">        table_uri (str): Catalog identifier or filesystem URI of the table.</span>
+<a id="__codelineno-0-986" name="__codelineno-0-986"></a><span class="sd">        snapshot_id (int | None): Optional snapshot to time-travel.</span>
+<a id="__codelineno-0-987" name="__codelineno-0-987"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
+<a id="__codelineno-0-988" name="__codelineno-0-988"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-989" name="__codelineno-0-989"></a>
+<a id="__codelineno-0-990" name="__codelineno-0-990"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-991" name="__codelineno-0-991"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-992" name="__codelineno-0-992"></a>
+<a id="__codelineno-0-993" name="__codelineno-0-993"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;iceberg&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;iceberg&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Apache Iceberg.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-994" name="__codelineno-0-994"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Catalog identifier or filesystem URI of the table.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-995" name="__codelineno-0-995"></a>    <span class="n">snapshot_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-996" name="__codelineno-0-996"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-997" name="__codelineno-0-997"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-998" name="__codelineno-0-998"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-0-999" name="__codelineno-0-999"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional snapshot identifier to time-travel.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-1000" name="__codelineno-0-1000"></a>    <span class="p">)</span>
+<a id="__codelineno-0-1001" name="__codelineno-0-1001"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-1002" name="__codelineno-0-1002"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
+<a id="__codelineno-0-1003" name="__codelineno-0-1003"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-1004" name="__codelineno-0-1004"></a>    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -6959,7 +6969,9 @@ clean markdown format ready for immediate pipeline logging.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Optional password; omitted when using SSO.</p>
+                <p>Optional password; omitted when using SSO. Left
+out when the config is printed, but kept by <code>model_dump()</code>, which
+the connector needs.</p>
               </div>
             </td>
           </tr>
@@ -7020,7 +7032,9 @@ clean markdown format ready for immediate pipeline logging.</p>
 <span class="normal"><a href="#__codelineno-0-912">912</a></span>
 <span class="normal"><a href="#__codelineno-0-913">913</a></span>
 <span class="normal"><a href="#__codelineno-0-914">914</a></span>
-<span class="normal"><a href="#__codelineno-0-915">915</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-881" name="__codelineno-0-881"></a><span class="k">class</span><span class="w"> </span><span class="nc">SnowflakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-915">915</a></span>
+<span class="normal"><a href="#__codelineno-0-916">916</a></span>
+<span class="normal"><a href="#__codelineno-0-917">917</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-881" name="__codelineno-0-881"></a><span class="k">class</span><span class="w"> </span><span class="nc">SnowflakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
 <a id="__codelineno-0-882" name="__codelineno-0-882"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable connection settings for Snowflake warehouse pushdown.</span>
 <a id="__codelineno-0-883" name="__codelineno-0-883"></a>
 <a id="__codelineno-0-884" name="__codelineno-0-884"></a><span class="sd">    Attributes:</span>
@@ -7031,30 +7045,32 @@ clean markdown format ready for immediate pipeline logging.</p>
 <a id="__codelineno-0-889" name="__codelineno-0-889"></a><span class="sd">        warehouse (str): Virtual warehouse that executes pushdown SQL.</span>
 <a id="__codelineno-0-890" name="__codelineno-0-890"></a><span class="sd">        database (str): Default database for unqualified object names.</span>
 <a id="__codelineno-0-891" name="__codelineno-0-891"></a><span class="sd">        schema_name (str): Default schema for unqualified object names.</span>
-<a id="__codelineno-0-892" name="__codelineno-0-892"></a><span class="sd">        password (str | None): Optional password; omitted when using SSO.</span>
-<a id="__codelineno-0-893" name="__codelineno-0-893"></a><span class="sd">        role (str | None): Optional role assumed after authentication.</span>
-<a id="__codelineno-0-894" name="__codelineno-0-894"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-895" name="__codelineno-0-895"></a>
-<a id="__codelineno-0-896" name="__codelineno-0-896"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-897" name="__codelineno-0-897"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-898" name="__codelineno-0-898"></a>
-<a id="__codelineno-0-899" name="__codelineno-0-899"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;snowflake&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;snowflake&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Snowflake.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-900" name="__codelineno-0-900"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-901" name="__codelineno-0-901"></a>        <span class="o">...</span><span class="p">,</span>
-<a id="__codelineno-0-902" name="__codelineno-0-902"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
-<a id="__codelineno-0-903" name="__codelineno-0-903"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-904" name="__codelineno-0-904"></a>    <span class="p">)</span>
-<a id="__codelineno-0-905" name="__codelineno-0-905"></a>    <span class="n">account</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Snowflake account identifier.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-906" name="__codelineno-0-906"></a>    <span class="n">user</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Login name used to authenticate the session.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-907" name="__codelineno-0-907"></a>    <span class="n">warehouse</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Virtual warehouse that executes pushdown SQL.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-908" name="__codelineno-0-908"></a>    <span class="n">database</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default database for unqualified object names.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-909" name="__codelineno-0-909"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default schema for unqualified object names.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-910" name="__codelineno-0-910"></a>    <span class="n">password</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-911" name="__codelineno-0-911"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional password; omitted when using SSO.&quot;</span>
-<a id="__codelineno-0-912" name="__codelineno-0-912"></a>    <span class="p">)</span>
-<a id="__codelineno-0-913" name="__codelineno-0-913"></a>    <span class="n">role</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-914" name="__codelineno-0-914"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional role assumed after authentication.&quot;</span>
-<a id="__codelineno-0-915" name="__codelineno-0-915"></a>    <span class="p">)</span>
+<a id="__codelineno-0-892" name="__codelineno-0-892"></a><span class="sd">        password (str | None): Optional password; omitted when using SSO. Left</span>
+<a id="__codelineno-0-893" name="__codelineno-0-893"></a><span class="sd">            out when the config is printed, but kept by `model_dump()`, which</span>
+<a id="__codelineno-0-894" name="__codelineno-0-894"></a><span class="sd">            the connector needs.</span>
+<a id="__codelineno-0-895" name="__codelineno-0-895"></a><span class="sd">        role (str | None): Optional role assumed after authentication.</span>
+<a id="__codelineno-0-896" name="__codelineno-0-896"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-897" name="__codelineno-0-897"></a>
+<a id="__codelineno-0-898" name="__codelineno-0-898"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-899" name="__codelineno-0-899"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-900" name="__codelineno-0-900"></a>
+<a id="__codelineno-0-901" name="__codelineno-0-901"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;snowflake&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;snowflake&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Snowflake.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-902" name="__codelineno-0-902"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-903" name="__codelineno-0-903"></a>        <span class="o">...</span><span class="p">,</span>
+<a id="__codelineno-0-904" name="__codelineno-0-904"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
+<a id="__codelineno-0-905" name="__codelineno-0-905"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-906" name="__codelineno-0-906"></a>    <span class="p">)</span>
+<a id="__codelineno-0-907" name="__codelineno-0-907"></a>    <span class="n">account</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Snowflake account identifier.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-908" name="__codelineno-0-908"></a>    <span class="n">user</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Login name used to authenticate the session.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-909" name="__codelineno-0-909"></a>    <span class="n">warehouse</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Virtual warehouse that executes pushdown SQL.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-910" name="__codelineno-0-910"></a>    <span class="n">database</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default database for unqualified object names.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-911" name="__codelineno-0-911"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default schema for unqualified object names.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-912" name="__codelineno-0-912"></a>    <span class="n">password</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-913" name="__codelineno-0-913"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="nb">repr</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional password; omitted when using SSO.&quot;</span>
+<a id="__codelineno-0-914" name="__codelineno-0-914"></a>    <span class="p">)</span>
+<a id="__codelineno-0-915" name="__codelineno-0-915"></a>    <span class="n">role</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-916" name="__codelineno-0-916"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional role assumed after authentication.&quot;</span>
+<a id="__codelineno-0-917" name="__codelineno-0-917"></a>    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -13711,7 +13727,9 @@ and the strict Pydantic models required by the execution engine.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Optional personal access token.</p>
+                <p>Optional personal access token. Left out
+when the config is printed, but kept by <code>model_dump()</code>, which the
+connector needs.</p>
               </div>
             </td>
           </tr>
@@ -13749,9 +13767,7 @@ and the strict Pydantic models required by the execution engine.</p>
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src/veridelta/models.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-918">918</a></span>
-<span class="normal"><a href="#__codelineno-0-919">919</a></span>
-<span class="normal"><a href="#__codelineno-0-920">920</a></span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-920">920</a></span>
 <span class="normal"><a href="#__codelineno-0-921">921</a></span>
 <span class="normal"><a href="#__codelineno-0-922">922</a></span>
 <span class="normal"><a href="#__codelineno-0-923">923</a></span>
@@ -13775,33 +13791,43 @@ and the strict Pydantic models required by the execution engine.</p>
 <span class="normal"><a href="#__codelineno-0-941">941</a></span>
 <span class="normal"><a href="#__codelineno-0-942">942</a></span>
 <span class="normal"><a href="#__codelineno-0-943">943</a></span>
-<span class="normal"><a href="#__codelineno-0-944">944</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-918" name="__codelineno-0-918"></a><span class="k">class</span><span class="w"> </span><span class="nc">DatabricksConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<a id="__codelineno-0-919" name="__codelineno-0-919"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable connection settings for Databricks SQL warehouse pushdown.</span>
-<a id="__codelineno-0-920" name="__codelineno-0-920"></a>
-<a id="__codelineno-0-921" name="__codelineno-0-921"></a><span class="sd">    Attributes:</span>
-<a id="__codelineno-0-922" name="__codelineno-0-922"></a><span class="sd">        type (Literal[&quot;databricks&quot;]): Discriminator for YAML source routing.</span>
-<a id="__codelineno-0-923" name="__codelineno-0-923"></a><span class="sd">        table (str): Fully qualified table or view to compare.</span>
-<a id="__codelineno-0-924" name="__codelineno-0-924"></a><span class="sd">        server_hostname (str): Workspace hostname for the SQL warehouse.</span>
-<a id="__codelineno-0-925" name="__codelineno-0-925"></a><span class="sd">        http_path (str): HTTP path of the SQL warehouse or cluster.</span>
-<a id="__codelineno-0-926" name="__codelineno-0-926"></a><span class="sd">        access_token (str | None): Optional personal access token.</span>
-<a id="__codelineno-0-927" name="__codelineno-0-927"></a><span class="sd">        catalog (str | None): Optional Unity Catalog name.</span>
-<a id="__codelineno-0-928" name="__codelineno-0-928"></a><span class="sd">        schema_name (str | None): Optional default schema name.</span>
-<a id="__codelineno-0-929" name="__codelineno-0-929"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-930" name="__codelineno-0-930"></a>
-<a id="__codelineno-0-931" name="__codelineno-0-931"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-932" name="__codelineno-0-932"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-933" name="__codelineno-0-933"></a>
-<a id="__codelineno-0-934" name="__codelineno-0-934"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;databricks&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;databricks&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Databricks.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-935" name="__codelineno-0-935"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-936" name="__codelineno-0-936"></a>        <span class="o">...</span><span class="p">,</span>
-<a id="__codelineno-0-937" name="__codelineno-0-937"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
-<a id="__codelineno-0-938" name="__codelineno-0-938"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-939" name="__codelineno-0-939"></a>    <span class="p">)</span>
-<a id="__codelineno-0-940" name="__codelineno-0-940"></a>    <span class="n">server_hostname</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Workspace hostname for the SQL warehouse.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-941" name="__codelineno-0-941"></a>    <span class="n">http_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;HTTP path of the SQL warehouse or cluster.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-942" name="__codelineno-0-942"></a>    <span class="n">access_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional personal access token.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-943" name="__codelineno-0-943"></a>    <span class="n">catalog</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional Unity Catalog name.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-944" name="__codelineno-0-944"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional default schema name.&quot;</span><span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-944">944</a></span>
+<span class="normal"><a href="#__codelineno-0-945">945</a></span>
+<span class="normal"><a href="#__codelineno-0-946">946</a></span>
+<span class="normal"><a href="#__codelineno-0-947">947</a></span>
+<span class="normal"><a href="#__codelineno-0-948">948</a></span>
+<span class="normal"><a href="#__codelineno-0-949">949</a></span>
+<span class="normal"><a href="#__codelineno-0-950">950</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-920" name="__codelineno-0-920"></a><span class="k">class</span><span class="w"> </span><span class="nc">DatabricksConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<a id="__codelineno-0-921" name="__codelineno-0-921"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable connection settings for Databricks SQL warehouse pushdown.</span>
+<a id="__codelineno-0-922" name="__codelineno-0-922"></a>
+<a id="__codelineno-0-923" name="__codelineno-0-923"></a><span class="sd">    Attributes:</span>
+<a id="__codelineno-0-924" name="__codelineno-0-924"></a><span class="sd">        type (Literal[&quot;databricks&quot;]): Discriminator for YAML source routing.</span>
+<a id="__codelineno-0-925" name="__codelineno-0-925"></a><span class="sd">        table (str): Fully qualified table or view to compare.</span>
+<a id="__codelineno-0-926" name="__codelineno-0-926"></a><span class="sd">        server_hostname (str): Workspace hostname for the SQL warehouse.</span>
+<a id="__codelineno-0-927" name="__codelineno-0-927"></a><span class="sd">        http_path (str): HTTP path of the SQL warehouse or cluster.</span>
+<a id="__codelineno-0-928" name="__codelineno-0-928"></a><span class="sd">        access_token (str | None): Optional personal access token. Left out</span>
+<a id="__codelineno-0-929" name="__codelineno-0-929"></a><span class="sd">            when the config is printed, but kept by `model_dump()`, which the</span>
+<a id="__codelineno-0-930" name="__codelineno-0-930"></a><span class="sd">            connector needs.</span>
+<a id="__codelineno-0-931" name="__codelineno-0-931"></a><span class="sd">        catalog (str | None): Optional Unity Catalog name.</span>
+<a id="__codelineno-0-932" name="__codelineno-0-932"></a><span class="sd">        schema_name (str | None): Optional default schema name.</span>
+<a id="__codelineno-0-933" name="__codelineno-0-933"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-934" name="__codelineno-0-934"></a>
+<a id="__codelineno-0-935" name="__codelineno-0-935"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-936" name="__codelineno-0-936"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-937" name="__codelineno-0-937"></a>
+<a id="__codelineno-0-938" name="__codelineno-0-938"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;databricks&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;databricks&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Databricks.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-939" name="__codelineno-0-939"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-940" name="__codelineno-0-940"></a>        <span class="o">...</span><span class="p">,</span>
+<a id="__codelineno-0-941" name="__codelineno-0-941"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
+<a id="__codelineno-0-942" name="__codelineno-0-942"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-943" name="__codelineno-0-943"></a>    <span class="p">)</span>
+<a id="__codelineno-0-944" name="__codelineno-0-944"></a>    <span class="n">server_hostname</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Workspace hostname for the SQL warehouse.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-945" name="__codelineno-0-945"></a>    <span class="n">http_path</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;HTTP path of the SQL warehouse or cluster.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-946" name="__codelineno-0-946"></a>    <span class="n">access_token</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-947" name="__codelineno-0-947"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="nb">repr</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional personal access token.&quot;</span>
+<a id="__codelineno-0-948" name="__codelineno-0-948"></a>    <span class="p">)</span>
+<a id="__codelineno-0-949" name="__codelineno-0-949"></a>    <span class="n">catalog</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional Unity Catalog name.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-950" name="__codelineno-0-950"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional default schema name.&quot;</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -13912,13 +13938,7 @@ and the strict Pydantic models required by the execution engine.</p>
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src/veridelta/models.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-947">947</a></span>
-<span class="normal"><a href="#__codelineno-0-948">948</a></span>
-<span class="normal"><a href="#__codelineno-0-949">949</a></span>
-<span class="normal"><a href="#__codelineno-0-950">950</a></span>
-<span class="normal"><a href="#__codelineno-0-951">951</a></span>
-<span class="normal"><a href="#__codelineno-0-952">952</a></span>
-<span class="normal"><a href="#__codelineno-0-953">953</a></span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-953">953</a></span>
 <span class="normal"><a href="#__codelineno-0-954">954</a></span>
 <span class="normal"><a href="#__codelineno-0-955">955</a></span>
 <span class="normal"><a href="#__codelineno-0-956">956</a></span>
@@ -13936,31 +13956,37 @@ and the strict Pydantic models required by the execution engine.</p>
 <span class="normal"><a href="#__codelineno-0-968">968</a></span>
 <span class="normal"><a href="#__codelineno-0-969">969</a></span>
 <span class="normal"><a href="#__codelineno-0-970">970</a></span>
-<span class="normal"><a href="#__codelineno-0-971">971</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-947" name="__codelineno-0-947"></a><span class="k">class</span><span class="w"> </span><span class="nc">DeltaLakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<a id="__codelineno-0-948" name="__codelineno-0-948"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for a Delta Lake table scan.</span>
-<a id="__codelineno-0-949" name="__codelineno-0-949"></a>
-<a id="__codelineno-0-950" name="__codelineno-0-950"></a><span class="sd">    Attributes:</span>
-<a id="__codelineno-0-951" name="__codelineno-0-951"></a><span class="sd">        type (Literal[&quot;delta&quot;]): Discriminator for YAML source routing.</span>
-<a id="__codelineno-0-952" name="__codelineno-0-952"></a><span class="sd">        table_uri (str): Filesystem path or object-store URI of the table.</span>
-<a id="__codelineno-0-953" name="__codelineno-0-953"></a><span class="sd">        version (int | None): Optional table version to time-travel.</span>
-<a id="__codelineno-0-954" name="__codelineno-0-954"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
-<a id="__codelineno-0-955" name="__codelineno-0-955"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-956" name="__codelineno-0-956"></a>
-<a id="__codelineno-0-957" name="__codelineno-0-957"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-958" name="__codelineno-0-958"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-959" name="__codelineno-0-959"></a>
-<a id="__codelineno-0-960" name="__codelineno-0-960"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;delta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Delta Lake.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-961" name="__codelineno-0-961"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Filesystem path or object-store URI of the table.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-962" name="__codelineno-0-962"></a>    <span class="n">version</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-963" name="__codelineno-0-963"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-964" name="__codelineno-0-964"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
-<a id="__codelineno-0-965" name="__codelineno-0-965"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<a id="__codelineno-0-966" name="__codelineno-0-966"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional table version to time-travel.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-967" name="__codelineno-0-967"></a>    <span class="p">)</span>
-<a id="__codelineno-0-968" name="__codelineno-0-968"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-969" name="__codelineno-0-969"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
-<a id="__codelineno-0-970" name="__codelineno-0-970"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-971" name="__codelineno-0-971"></a>    <span class="p">)</span>
+<span class="normal"><a href="#__codelineno-0-971">971</a></span>
+<span class="normal"><a href="#__codelineno-0-972">972</a></span>
+<span class="normal"><a href="#__codelineno-0-973">973</a></span>
+<span class="normal"><a href="#__codelineno-0-974">974</a></span>
+<span class="normal"><a href="#__codelineno-0-975">975</a></span>
+<span class="normal"><a href="#__codelineno-0-976">976</a></span>
+<span class="normal"><a href="#__codelineno-0-977">977</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-953" name="__codelineno-0-953"></a><span class="k">class</span><span class="w"> </span><span class="nc">DeltaLakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<a id="__codelineno-0-954" name="__codelineno-0-954"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for a Delta Lake table scan.</span>
+<a id="__codelineno-0-955" name="__codelineno-0-955"></a>
+<a id="__codelineno-0-956" name="__codelineno-0-956"></a><span class="sd">    Attributes:</span>
+<a id="__codelineno-0-957" name="__codelineno-0-957"></a><span class="sd">        type (Literal[&quot;delta&quot;]): Discriminator for YAML source routing.</span>
+<a id="__codelineno-0-958" name="__codelineno-0-958"></a><span class="sd">        table_uri (str): Filesystem path or object-store URI of the table.</span>
+<a id="__codelineno-0-959" name="__codelineno-0-959"></a><span class="sd">        version (int | None): Optional table version to time-travel.</span>
+<a id="__codelineno-0-960" name="__codelineno-0-960"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
+<a id="__codelineno-0-961" name="__codelineno-0-961"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-962" name="__codelineno-0-962"></a>
+<a id="__codelineno-0-963" name="__codelineno-0-963"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-964" name="__codelineno-0-964"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-965" name="__codelineno-0-965"></a>
+<a id="__codelineno-0-966" name="__codelineno-0-966"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;delta&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;delta&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Delta Lake.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-967" name="__codelineno-0-967"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Filesystem path or object-store URI of the table.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-968" name="__codelineno-0-968"></a>    <span class="n">version</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-969" name="__codelineno-0-969"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-970" name="__codelineno-0-970"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-971" name="__codelineno-0-971"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-0-972" name="__codelineno-0-972"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional table version to time-travel.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-973" name="__codelineno-0-973"></a>    <span class="p">)</span>
+<a id="__codelineno-0-974" name="__codelineno-0-974"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-975" name="__codelineno-0-975"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
+<a id="__codelineno-0-976" name="__codelineno-0-976"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-977" name="__codelineno-0-977"></a>    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -14071,55 +14097,55 @@ and the strict Pydantic models required by the execution engine.</p>
 
               <details class="mkdocstrings-source">
                 <summary>Source code in <code>src/veridelta/models.py</code></summary>
-                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-974">974</a></span>
-<span class="normal"><a href="#__codelineno-0-975">975</a></span>
-<span class="normal"><a href="#__codelineno-0-976">976</a></span>
-<span class="normal"><a href="#__codelineno-0-977">977</a></span>
-<span class="normal"><a href="#__codelineno-0-978">978</a></span>
-<span class="normal"><a href="#__codelineno-0-979">979</a></span>
-<span class="normal"><a href="#__codelineno-0-980">980</a></span>
-<span class="normal"><a href="#__codelineno-0-981">981</a></span>
-<span class="normal"><a href="#__codelineno-0-982">982</a></span>
-<span class="normal"><a href="#__codelineno-0-983">983</a></span>
-<span class="normal"><a href="#__codelineno-0-984">984</a></span>
-<span class="normal"><a href="#__codelineno-0-985">985</a></span>
-<span class="normal"><a href="#__codelineno-0-986">986</a></span>
-<span class="normal"><a href="#__codelineno-0-987">987</a></span>
-<span class="normal"><a href="#__codelineno-0-988">988</a></span>
-<span class="normal"><a href="#__codelineno-0-989">989</a></span>
-<span class="normal"><a href="#__codelineno-0-990">990</a></span>
-<span class="normal"><a href="#__codelineno-0-991">991</a></span>
-<span class="normal"><a href="#__codelineno-0-992">992</a></span>
-<span class="normal"><a href="#__codelineno-0-993">993</a></span>
-<span class="normal"><a href="#__codelineno-0-994">994</a></span>
-<span class="normal"><a href="#__codelineno-0-995">995</a></span>
-<span class="normal"><a href="#__codelineno-0-996">996</a></span>
-<span class="normal"><a href="#__codelineno-0-997">997</a></span>
-<span class="normal"><a href="#__codelineno-0-998">998</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-974" name="__codelineno-0-974"></a><span class="k">class</span><span class="w"> </span><span class="nc">IcebergConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
-<a id="__codelineno-0-975" name="__codelineno-0-975"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for an Apache Iceberg table scan.</span>
-<a id="__codelineno-0-976" name="__codelineno-0-976"></a>
-<a id="__codelineno-0-977" name="__codelineno-0-977"></a><span class="sd">    Attributes:</span>
-<a id="__codelineno-0-978" name="__codelineno-0-978"></a><span class="sd">        type (Literal[&quot;iceberg&quot;]): Discriminator for YAML source routing.</span>
-<a id="__codelineno-0-979" name="__codelineno-0-979"></a><span class="sd">        table_uri (str): Catalog identifier or filesystem URI of the table.</span>
-<a id="__codelineno-0-980" name="__codelineno-0-980"></a><span class="sd">        snapshot_id (int | None): Optional snapshot to time-travel.</span>
-<a id="__codelineno-0-981" name="__codelineno-0-981"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
-<a id="__codelineno-0-982" name="__codelineno-0-982"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-983" name="__codelineno-0-983"></a>
-<a id="__codelineno-0-984" name="__codelineno-0-984"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-985" name="__codelineno-0-985"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-986" name="__codelineno-0-986"></a>
-<a id="__codelineno-0-987" name="__codelineno-0-987"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;iceberg&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;iceberg&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Apache Iceberg.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-988" name="__codelineno-0-988"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Catalog identifier or filesystem URI of the table.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-989" name="__codelineno-0-989"></a>    <span class="n">snapshot_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-990" name="__codelineno-0-990"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-<a id="__codelineno-0-991" name="__codelineno-0-991"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
-<a id="__codelineno-0-992" name="__codelineno-0-992"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-<a id="__codelineno-0-993" name="__codelineno-0-993"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional snapshot identifier to time-travel.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-994" name="__codelineno-0-994"></a>    <span class="p">)</span>
-<a id="__codelineno-0-995" name="__codelineno-0-995"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-996" name="__codelineno-0-996"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
-<a id="__codelineno-0-997" name="__codelineno-0-997"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-998" name="__codelineno-0-998"></a>    <span class="p">)</span>
+                <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"><a href="#__codelineno-0-980"> 980</a></span>
+<span class="normal"><a href="#__codelineno-0-981"> 981</a></span>
+<span class="normal"><a href="#__codelineno-0-982"> 982</a></span>
+<span class="normal"><a href="#__codelineno-0-983"> 983</a></span>
+<span class="normal"><a href="#__codelineno-0-984"> 984</a></span>
+<span class="normal"><a href="#__codelineno-0-985"> 985</a></span>
+<span class="normal"><a href="#__codelineno-0-986"> 986</a></span>
+<span class="normal"><a href="#__codelineno-0-987"> 987</a></span>
+<span class="normal"><a href="#__codelineno-0-988"> 988</a></span>
+<span class="normal"><a href="#__codelineno-0-989"> 989</a></span>
+<span class="normal"><a href="#__codelineno-0-990"> 990</a></span>
+<span class="normal"><a href="#__codelineno-0-991"> 991</a></span>
+<span class="normal"><a href="#__codelineno-0-992"> 992</a></span>
+<span class="normal"><a href="#__codelineno-0-993"> 993</a></span>
+<span class="normal"><a href="#__codelineno-0-994"> 994</a></span>
+<span class="normal"><a href="#__codelineno-0-995"> 995</a></span>
+<span class="normal"><a href="#__codelineno-0-996"> 996</a></span>
+<span class="normal"><a href="#__codelineno-0-997"> 997</a></span>
+<span class="normal"><a href="#__codelineno-0-998"> 998</a></span>
+<span class="normal"><a href="#__codelineno-0-999"> 999</a></span>
+<span class="normal"><a href="#__codelineno-0-1000">1000</a></span>
+<span class="normal"><a href="#__codelineno-0-1001">1001</a></span>
+<span class="normal"><a href="#__codelineno-0-1002">1002</a></span>
+<span class="normal"><a href="#__codelineno-0-1003">1003</a></span>
+<span class="normal"><a href="#__codelineno-0-1004">1004</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-980" name="__codelineno-0-980"></a><span class="k">class</span><span class="w"> </span><span class="nc">IcebergConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<a id="__codelineno-0-981" name="__codelineno-0-981"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable settings for an Apache Iceberg table scan.</span>
+<a id="__codelineno-0-982" name="__codelineno-0-982"></a>
+<a id="__codelineno-0-983" name="__codelineno-0-983"></a><span class="sd">    Attributes:</span>
+<a id="__codelineno-0-984" name="__codelineno-0-984"></a><span class="sd">        type (Literal[&quot;iceberg&quot;]): Discriminator for YAML source routing.</span>
+<a id="__codelineno-0-985" name="__codelineno-0-985"></a><span class="sd">        table_uri (str): Catalog identifier or filesystem URI of the table.</span>
+<a id="__codelineno-0-986" name="__codelineno-0-986"></a><span class="sd">        snapshot_id (int | None): Optional snapshot to time-travel.</span>
+<a id="__codelineno-0-987" name="__codelineno-0-987"></a><span class="sd">        storage_options (dict[str, str]): Object-store credentials and options.</span>
+<a id="__codelineno-0-988" name="__codelineno-0-988"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-989" name="__codelineno-0-989"></a>
+<a id="__codelineno-0-990" name="__codelineno-0-990"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-991" name="__codelineno-0-991"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-992" name="__codelineno-0-992"></a>
+<a id="__codelineno-0-993" name="__codelineno-0-993"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;iceberg&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;iceberg&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Apache Iceberg.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-994" name="__codelineno-0-994"></a>    <span class="n">table_uri</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Catalog identifier or filesystem URI of the table.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-995" name="__codelineno-0-995"></a>    <span class="n">snapshot_id</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-996" name="__codelineno-0-996"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-0-997" name="__codelineno-0-997"></a>        <span class="n">ge</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-0-998" name="__codelineno-0-998"></a>        <span class="n">strict</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-0-999" name="__codelineno-0-999"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional snapshot identifier to time-travel.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-1000" name="__codelineno-0-1000"></a>    <span class="p">)</span>
+<a id="__codelineno-0-1001" name="__codelineno-0-1001"></a>    <span class="n">storage_options</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-1002" name="__codelineno-0-1002"></a>        <span class="n">default_factory</span><span class="o">=</span><span class="nb">dict</span><span class="p">,</span>
+<a id="__codelineno-0-1003" name="__codelineno-0-1003"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Object-store credentials and options passed to Polars.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-1004" name="__codelineno-0-1004"></a>    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 
@@ -14258,7 +14284,9 @@ and the strict Pydantic models required by the execution engine.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Optional password; omitted when using SSO.</p>
+                <p>Optional password; omitted when using SSO. Left
+out when the config is printed, but kept by <code>model_dump()</code>, which
+the connector needs.</p>
               </div>
             </td>
           </tr>
@@ -14319,7 +14347,9 @@ and the strict Pydantic models required by the execution engine.</p>
 <span class="normal"><a href="#__codelineno-0-912">912</a></span>
 <span class="normal"><a href="#__codelineno-0-913">913</a></span>
 <span class="normal"><a href="#__codelineno-0-914">914</a></span>
-<span class="normal"><a href="#__codelineno-0-915">915</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-881" name="__codelineno-0-881"></a><span class="k">class</span><span class="w"> </span><span class="nc">SnowflakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+<span class="normal"><a href="#__codelineno-0-915">915</a></span>
+<span class="normal"><a href="#__codelineno-0-916">916</a></span>
+<span class="normal"><a href="#__codelineno-0-917">917</a></span></pre></div></td><td class="code"><div><pre><span></span><code><a id="__codelineno-0-881" name="__codelineno-0-881"></a><span class="k">class</span><span class="w"> </span><span class="nc">SnowflakeConfig</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
 <a id="__codelineno-0-882" name="__codelineno-0-882"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Immutable connection settings for Snowflake warehouse pushdown.</span>
 <a id="__codelineno-0-883" name="__codelineno-0-883"></a>
 <a id="__codelineno-0-884" name="__codelineno-0-884"></a><span class="sd">    Attributes:</span>
@@ -14330,30 +14360,32 @@ and the strict Pydantic models required by the execution engine.</p>
 <a id="__codelineno-0-889" name="__codelineno-0-889"></a><span class="sd">        warehouse (str): Virtual warehouse that executes pushdown SQL.</span>
 <a id="__codelineno-0-890" name="__codelineno-0-890"></a><span class="sd">        database (str): Default database for unqualified object names.</span>
 <a id="__codelineno-0-891" name="__codelineno-0-891"></a><span class="sd">        schema_name (str): Default schema for unqualified object names.</span>
-<a id="__codelineno-0-892" name="__codelineno-0-892"></a><span class="sd">        password (str | None): Optional password; omitted when using SSO.</span>
-<a id="__codelineno-0-893" name="__codelineno-0-893"></a><span class="sd">        role (str | None): Optional role assumed after authentication.</span>
-<a id="__codelineno-0-894" name="__codelineno-0-894"></a><span class="sd">    &quot;&quot;&quot;</span>
-<a id="__codelineno-0-895" name="__codelineno-0-895"></a>
-<a id="__codelineno-0-896" name="__codelineno-0-896"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
-<a id="__codelineno-0-897" name="__codelineno-0-897"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-<a id="__codelineno-0-898" name="__codelineno-0-898"></a>
-<a id="__codelineno-0-899" name="__codelineno-0-899"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;snowflake&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;snowflake&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Snowflake.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-900" name="__codelineno-0-900"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-901" name="__codelineno-0-901"></a>        <span class="o">...</span><span class="p">,</span>
-<a id="__codelineno-0-902" name="__codelineno-0-902"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
-<a id="__codelineno-0-903" name="__codelineno-0-903"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
-<a id="__codelineno-0-904" name="__codelineno-0-904"></a>    <span class="p">)</span>
-<a id="__codelineno-0-905" name="__codelineno-0-905"></a>    <span class="n">account</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Snowflake account identifier.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-906" name="__codelineno-0-906"></a>    <span class="n">user</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Login name used to authenticate the session.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-907" name="__codelineno-0-907"></a>    <span class="n">warehouse</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Virtual warehouse that executes pushdown SQL.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-908" name="__codelineno-0-908"></a>    <span class="n">database</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default database for unqualified object names.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-909" name="__codelineno-0-909"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default schema for unqualified object names.&quot;</span><span class="p">)</span>
-<a id="__codelineno-0-910" name="__codelineno-0-910"></a>    <span class="n">password</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-911" name="__codelineno-0-911"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional password; omitted when using SSO.&quot;</span>
-<a id="__codelineno-0-912" name="__codelineno-0-912"></a>    <span class="p">)</span>
-<a id="__codelineno-0-913" name="__codelineno-0-913"></a>    <span class="n">role</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
-<a id="__codelineno-0-914" name="__codelineno-0-914"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional role assumed after authentication.&quot;</span>
-<a id="__codelineno-0-915" name="__codelineno-0-915"></a>    <span class="p">)</span>
+<a id="__codelineno-0-892" name="__codelineno-0-892"></a><span class="sd">        password (str | None): Optional password; omitted when using SSO. Left</span>
+<a id="__codelineno-0-893" name="__codelineno-0-893"></a><span class="sd">            out when the config is printed, but kept by `model_dump()`, which</span>
+<a id="__codelineno-0-894" name="__codelineno-0-894"></a><span class="sd">            the connector needs.</span>
+<a id="__codelineno-0-895" name="__codelineno-0-895"></a><span class="sd">        role (str | None): Optional role assumed after authentication.</span>
+<a id="__codelineno-0-896" name="__codelineno-0-896"></a><span class="sd">    &quot;&quot;&quot;</span>
+<a id="__codelineno-0-897" name="__codelineno-0-897"></a>
+<a id="__codelineno-0-898" name="__codelineno-0-898"></a>    <span class="c1"># Credentials pass through here, and Pydantic quotes raw input in its errors.</span>
+<a id="__codelineno-0-899" name="__codelineno-0-899"></a>    <span class="n">model_config</span> <span class="o">=</span> <span class="n">ConfigDict</span><span class="p">(</span><span class="n">extra</span><span class="o">=</span><span class="s2">&quot;forbid&quot;</span><span class="p">,</span> <span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">hide_input_in_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-0-900" name="__codelineno-0-900"></a>
+<a id="__codelineno-0-901" name="__codelineno-0-901"></a>    <span class="nb">type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;snowflake&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="s2">&quot;snowflake&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Discriminator for Snowflake.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-902" name="__codelineno-0-902"></a>    <span class="n">table</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-903" name="__codelineno-0-903"></a>        <span class="o">...</span><span class="p">,</span>
+<a id="__codelineno-0-904" name="__codelineno-0-904"></a>        <span class="n">pattern</span><span class="o">=</span><span class="n">SQL_RELATION_PATTERN</span><span class="p">,</span>
+<a id="__codelineno-0-905" name="__codelineno-0-905"></a>        <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Fully qualified table or view to compare.&quot;</span><span class="p">,</span>
+<a id="__codelineno-0-906" name="__codelineno-0-906"></a>    <span class="p">)</span>
+<a id="__codelineno-0-907" name="__codelineno-0-907"></a>    <span class="n">account</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Snowflake account identifier.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-908" name="__codelineno-0-908"></a>    <span class="n">user</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Login name used to authenticate the session.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-909" name="__codelineno-0-909"></a>    <span class="n">warehouse</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Virtual warehouse that executes pushdown SQL.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-910" name="__codelineno-0-910"></a>    <span class="n">database</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default database for unqualified object names.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-911" name="__codelineno-0-911"></a>    <span class="n">schema_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span><span class="o">...</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Default schema for unqualified object names.&quot;</span><span class="p">)</span>
+<a id="__codelineno-0-912" name="__codelineno-0-912"></a>    <span class="n">password</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-913" name="__codelineno-0-913"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="nb">repr</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional password; omitted when using SSO.&quot;</span>
+<a id="__codelineno-0-914" name="__codelineno-0-914"></a>    <span class="p">)</span>
+<a id="__codelineno-0-915" name="__codelineno-0-915"></a>    <span class="n">role</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">Field</span><span class="p">(</span>
+<a id="__codelineno-0-916" name="__codelineno-0-916"></a>        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;Optional role assumed after authentication.&quot;</span>
+<a id="__codelineno-0-917" name="__codelineno-0-917"></a>    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
               </details>
 

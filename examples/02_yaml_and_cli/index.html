@@ -1886,7 +1886,8 @@ print(f"is_match={summary.is_match}  changed={summary.changed_count}  added={sum
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="5-environment-override">5. Environment override<a class="anchor-link" href="#5-environment-override">¶</a></h2><p>Keep the reviewed policy file identical and override only where the data lives. <code>model_copy</code> with a new <code>path</code> (or cloud <code>storage_options</code> inside <code>options</code>) is the whole override.</p>
+<h2 id="5-environment-override">5. Environment override<a class="anchor-link" href="#5-environment-override">¶</a></h2><p>Keep one reviewed policy file and let each environment say where the data lives. Any string inside <code>source</code> or <code>target</code> can read an environment variable: <code>${NAME}</code>, or <code>${NAME:-default}</code> to fall back when the variable is unset or empty. A warehouse <code>password</code> stays out of the file the same way. Rules and root settings are read verbatim; see <a href="../configuration.md#environment-variables">Environment variables</a>.</p>
+<p>From Python, <code>model_copy(update={"path": ...})</code> overrides a loaded config directly.</p>
 </div>
 </div>
 </div>
@@ -1909,51 +1910,57 @@ print(f"is_match={summary.is_match}  changed={summary.changed_count}  added={sum
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
-
-<span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">load_config</span><span class="p">(</span><span class="s2">"veridelta.yaml"</span><span class="p">)</span>
-<span class="n">data_root</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"VERIDELTA_DATA_ROOT"</span><span class="p">,</span> <span class="s2">"."</span><span class="p">)</span>
-<span class="n">src_cfg</span> <span class="o">=</span> <span class="n">src_cfg</span><span class="o">.</span><span class="n">model_copy</span><span class="p">(</span><span class="n">update</span><span class="o">=</span><span class="p">{</span><span class="s2">"path"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">data_root</span><span class="si">}</span><span class="s2">/source.parquet"</span><span class="p">})</span>
-<span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">tgt_cfg</span><span class="o">.</span><span class="n">model_copy</span><span class="p">(</span><span class="n">update</span><span class="o">=</span><span class="p">{</span><span class="s2">"path"</span><span class="p">:</span> <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">data_root</span><span class="si">}</span><span class="s2">/target.parquet"</span><span class="p">})</span>
-<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="o">.</span><span class="n">run_from_configs</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span><span class="o">.</span><span class="n">summary</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"source=</span><span class="si">{</span><span class="n">src_cfg</span><span class="o">.</span><span class="n">path</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"is_match=</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="o">%%</span><span class="n">writefile</span> <span class="n">veridelta</span><span class="o">.</span><span class="n">env</span><span class="o">.</span><span class="n">yaml</span>
+<span class="n">source</span><span class="p">:</span>
+  <span class="n">path</span><span class="p">:</span> <span class="s2">"${VERIDELTA_DATA_ROOT:-.}/source.parquet"</span>
+  <span class="nb">format</span><span class="p">:</span> <span class="s2">"parquet"</span>
+<span class="n">target</span><span class="p">:</span>
+  <span class="n">path</span><span class="p">:</span> <span class="s2">"${VERIDELTA_DATA_ROOT:-.}/target.parquet"</span>
+  <span class="nb">format</span><span class="p">:</span> <span class="s2">"parquet"</span>
+<span class="n">primary_keys</span><span class="p">:</span> <span class="p">[</span><span class="s2">"user_id"</span><span class="p">]</span>
+<span class="n">rules</span><span class="p">:</span>
+  <span class="o">-</span> <span class="n">column_names</span><span class="p">:</span> <span class="p">[</span><span class="s2">"status"</span><span class="p">]</span>
+    <span class="n">value_map</span><span class="p">:</span>
+      <span class="n">Active</span><span class="p">:</span> <span class="n">ACT</span>
+      <span class="n">Pending</span><span class="p">:</span> <span class="n">PND</span>
+      <span class="n">Closed</span><span class="p">:</span> <span class="n">CLS</span>
+  <span class="o">-</span> <span class="n">column_names</span><span class="p">:</span> <span class="p">[</span><span class="s2">"balance"</span><span class="p">]</span>
+    <span class="n">regex_replace</span><span class="p">:</span>
+      <span class="s2">"</span><span class="se">\\</span><span class="s2">$"</span><span class="p">:</span> <span class="s2">""</span>
+    <span class="n">cast_to</span><span class="p">:</span> <span class="n">Float64</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># source=./source.parquet</span>
-<span class="c1"># is_match=False</span>
+<span class="c1"># Writing veridelta.env.yaml</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-6">import os
-
-diff_cfg, src_cfg, tgt_cfg = load_config("veridelta.yaml")
-data_root = os.environ.get("VERIDELTA_DATA_ROOT", ".")
-src_cfg = src_cfg.model_copy(update={"path": f"{data_root}/source.parquet"})
-tgt_cfg = tgt_cfg.model_copy(update={"path": f"{data_root}/target.parquet"})
-summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg).summary
-print(f"source={src_cfg.path}")
-print(f"is_match={summary.is_match}")
+<div class="clipboard-copy-txt" id="cell-6">%%writefile veridelta.env.yaml
+source:
+  path: "${VERIDELTA_DATA_ROOT:-.}/source.parquet"
+  format: "parquet"
+target:
+  path: "${VERIDELTA_DATA_ROOT:-.}/target.parquet"
+  format: "parquet"
+primary_keys: ["user_id"]
+rules:
+  - column_names: ["status"]
+    value_map:
+      Active: ACT
+      Pending: PND
+      Closed: CLS
+  - column_names: ["balance"]
+    regex_replace:
+      "\\$": ""
+    cast_to: Float64
 
 # Output:
-# source=./source.parquet
-# is_match=False</div>
+# Writing veridelta.env.yaml
 </div>
 </div>
 </div>
-</div>
-</div>
-</div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=cell-12">
-<div class="jp-Cell-inputWrapper" tabindex="0">
-<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
-</div>
-<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
-</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<h2 id="6-artifacts">6. Artifacts<a class="anchor-link" href="#6-artifacts">¶</a></h2><p>Non-empty <code>added</code>, <code>removed</code>, and <code>changed</code> frames are written under <code>output_path</code>.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=cell-13">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=cell-12">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -1971,37 +1978,67 @@ print(f"is_match={summary.is_match}")
 </div>
 </clipboard-copy>
 </div>
-<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">os</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">path</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"diff_results"</span><span class="p">)</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()))</span>
+<span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">pop</span><span class="p">(</span><span class="s2">"VERIDELTA_DATA_ROOT"</span><span class="p">,</span> <span class="kc">None</span><span class="p">)</span>
+<span class="n">_</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">load_config</span><span class="p">(</span><span class="s2">"veridelta.env.yaml"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"unset: </span><span class="si">{</span><span class="n">src_cfg</span><span class="o">.</span><span class="n">path</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="n">Path</span><span class="p">(</span><span class="s2">"data"</span><span class="p">)</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"source.parquet"</span><span class="p">,</span> <span class="s2">"target.parquet"</span><span class="p">):</span>
+    <span class="n">shutil</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">name</span><span class="p">,</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"data"</span><span class="p">)</span> <span class="o">/</span> <span class="n">name</span><span class="p">)</span>
+<span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="p">[</span><span class="s2">"VERIDELTA_DATA_ROOT"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"data"</span>
+<span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span> <span class="o">=</span> <span class="n">load_config</span><span class="p">(</span><span class="s2">"veridelta.env.yaml"</span><span class="p">)</span>
+<span class="n">summary</span> <span class="o">=</span> <span class="n">DiffEngine</span><span class="o">.</span><span class="n">run_from_configs</span><span class="p">(</span><span class="n">diff_cfg</span><span class="p">,</span> <span class="n">src_cfg</span><span class="p">,</span> <span class="n">tgt_cfg</span><span class="p">)</span><span class="o">.</span><span class="n">summary</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"set:   </span><span class="si">{</span><span class="n">src_cfg</span><span class="o">.</span><span class="n">path</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"is_match=</span><span class="si">{</span><span class="n">summary</span><span class="o">.</span><span class="n">is_match</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
-<span class="c1"># ['added_rows.parquet', 'changed_rows.parquet']</span>
+<span class="c1"># unset: ./source.parquet</span>
+<span class="c1"># set:   data/source.parquet</span>
+<span class="c1"># is_match=False</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-7">from pathlib import Path
+<div class="clipboard-copy-txt" id="cell-7">import os
+import shutil
+from pathlib import Path
 
-print(sorted(path.name for path in Path("diff_results").iterdir()))
+os.environ.pop("VERIDELTA_DATA_ROOT", None)
+_, src_cfg, _ = load_config("veridelta.env.yaml")
+print(f"unset: {src_cfg.path}")
+
+Path("data").mkdir(exist_ok=True)
+for name in ("source.parquet", "target.parquet"):
+    shutil.copy(name, Path("data") / name)
+os.environ["VERIDELTA_DATA_ROOT"] = "data"
+diff_cfg, src_cfg, tgt_cfg = load_config("veridelta.env.yaml")
+summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg).summary
+print(f"set:   {src_cfg.path}")
+print(f"is_match={summary.is_match}")
 
 # Output:
-# ['added_rows.parquet', 'changed_rows.parquet']</div>
+# unset: ./source.parquet
+# set:   data/source.parquet
+# is_match=False</div>
 </div>
 </div>
 </div>
 </div>
 </div>
 </div>
-<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=cell-14">
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=cell-13">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
 <div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
 </div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
-<p>Advanced drift on real data is <a href="03_advanced_rules.ipynb">3. Advanced Rules</a>. The HTML hand-off is <a href="04_html_reports.ipynb">4. HTML Reports</a>.</p>
+<h2 id="6-artifacts">6. Artifacts<a class="anchor-link" href="#6-artifacts">¶</a></h2><p>Non-empty <code>added</code>, <code>removed</code>, and <code>changed</code> frames are written under <code>output_path</code>.</p>
 </div>
 </div>
 </div>
 </div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
-<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=cell-15">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=cell-14">
 <div class="jp-Cell-inputWrapper" tabindex="0">
 <div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
 </div>
@@ -2019,23 +2056,73 @@ print(sorted(path.name for path in Path("diff_results").iterdir()))
 </div>
 </clipboard-copy>
 </div>
+<div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="nb">sorted</span><span class="p">(</span><span class="n">path</span><span class="o">.</span><span class="n">name</span> <span class="k">for</span> <span class="n">path</span> <span class="ow">in</span> <span class="n">Path</span><span class="p">(</span><span class="s2">"diff_results"</span><span class="p">)</span><span class="o">.</span><span class="n">iterdir</span><span class="p">()))</span>
+
+<span class="c1"># Output:</span>
+<span class="c1"># ['added_rows.parquet', 'changed_rows.parquet']</span>
+</pre></div>
+<div class="clipboard-copy-txt" id="cell-8">from pathlib import Path
+
+print(sorted(path.name for path in Path("diff_results").iterdir()))
+
+# Output:
+# ['added_rows.parquet', 'changed_rows.parquet']</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="jp-Cell jp-MarkdownCell jp-Notebook-cell" id="cell-id=cell-15">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea"><div class="jp-InputPrompt jp-InputArea-prompt">
+</div><div class="jp-RenderedHTMLCommon jp-RenderedMarkdown jp-MarkdownOutput" data-mime-type="text/markdown">
+<p>Advanced drift on real data is <a href="03_advanced_rules.ipynb">3. Advanced Rules</a>. The HTML hand-off is <a href="04_html_reports.ipynb">4. HTML Reports</a>.</p>
+</div>
+</div>
+</div>
+</div><div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs">
+<div class="jp-Cell jp-CodeCell jp-Notebook-cell jp-mod-noOutputs" id="cell-id=cell-16">
+<div class="jp-Cell-inputWrapper" tabindex="0">
+<div class="jp-Collapser jp-InputCollapser jp-Cell-inputCollapser">
+</div>
+<div class="jp-InputArea jp-Cell-inputArea">
+<div class="jp-InputPrompt jp-InputArea-prompt">In [ ]:</div><div class="jp-CodeMirrorEditor jp-Editor jp-InputArea-editor" data-type="inline">
+<div class="CodeMirror cm-s-jupyter">
+<div class="zeroclipboard-container">
+<clipboard-copy ,="" aria-label="Copy to Clipboard" for="cell-9">
+<div>
+<span class="notice" hidden="">Copied!</span>
+<svg aria-hidden="true" class="clipboard-copy-icon" data-view-component="true" height="20" version="1.1" viewbox="0 0 16 16" width="20">
+<path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+<path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z" fill="currentColor" fill-rule="evenodd"></path>
+</svg>
+</div>
+</clipboard-copy>
+</div>
 <div class="highlight-ipynb hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">shutil</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 
-<span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"source.parquet"</span><span class="p">,</span> <span class="s2">"target.parquet"</span><span class="p">,</span> <span class="s2">"veridelta.yaml"</span><span class="p">):</span>
+<span class="k">for</span> <span class="n">name</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"source.parquet"</span><span class="p">,</span> <span class="s2">"target.parquet"</span><span class="p">,</span> <span class="s2">"veridelta.yaml"</span><span class="p">,</span> <span class="s2">"veridelta.env.yaml"</span><span class="p">):</span>
     <span class="n">Path</span><span class="p">(</span><span class="n">name</span><span class="p">)</span><span class="o">.</span><span class="n">unlink</span><span class="p">(</span><span class="n">missing_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="s2">"diff_results"</span><span class="p">,</span> <span class="n">ignore_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">shutil</span><span class="o">.</span><span class="n">rmtree</span><span class="p">(</span><span class="s2">"data"</span><span class="p">,</span> <span class="n">ignore_errors</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="s2">"cleaned"</span><span class="p">)</span>
 
 <span class="c1"># Output:</span>
 <span class="c1"># cleaned</span>
 </pre></div>
-<div class="clipboard-copy-txt" id="cell-8">import shutil
+<div class="clipboard-copy-txt" id="cell-9">import shutil
 from pathlib import Path
 
-for name in ("source.parquet", "target.parquet", "veridelta.yaml"):
+for name in ("source.parquet", "target.parquet", "veridelta.yaml", "veridelta.env.yaml"):
     Path(name).unlink(missing_ok=True)
 shutil.rmtree("diff_results", ignore_errors=True)
+shutil.rmtree("data", ignore_errors=True)
 print("cleaned")
 
 # Output:

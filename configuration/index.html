@@ -1162,6 +1162,7 @@
 </tbody>
 </table>
 <p><code>version</code> and <code>snapshot_id</code> must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse and lakehouse blocks are frozen once loaded.</p>
+<p>Printing a Snowflake or Databricks config, or formatting one into a log line, leaves out <code>password</code> and <code>access_token</code>. Both stay readable as attributes and in <code>model_dump()</code>, because the connectors need them, so log a dump only after removing them.</p>
 <h3 id="environment-variables">Environment variables</h3>
 <p>Any string inside <code>source</code> or <code>target</code> can read an environment variable, so credentials and per-environment paths stay out of the file:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">source</span><span class="p">:</span><span class="w"> </span><span class="nl">&amp;warehouse</span>
