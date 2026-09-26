@@ -49,12 +49,16 @@ databricks = [
 delta = ["deltalake>=0.15.0"]
 iceberg = ["pyiceberg>=0.6.0"]
 excel = ["fastexcel>=0.11.0"]
+# 3.0.0 settled the `score_cutoff` behavior the fuzzy rules rely on. Leave the
+# floor there: later releases drop Python 3.10, and uv resolves per version.
+fuzzy = ["rapidfuzz>=3.0.0"]
 all = [
     "veridelta[snowflake]",
     "veridelta[databricks]",
     "veridelta[delta]",
     "veridelta[iceberg]",
     "veridelta[excel]",
+    "veridelta[fuzzy]",
 ]
 
 [dependency-groups]
