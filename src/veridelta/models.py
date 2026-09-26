@@ -129,6 +129,8 @@ class SourceConfig(BaseModel):
         format (SourceType): The format of the file (e.g., 'csv', 'parquet').
         options (dict[str, Any]): Format-specific keyword arguments passed
             directly to the underlying Polars reader (e.g., `{'separator': ';'}`).
+            A nested `storage_options` map is left out when the config is
+            printed, but kept by `model_dump()`, which the reader needs.
     """
 
     # Reader options can carry object-store credentials, which Pydantic would
@@ -142,6 +144,26 @@ class SourceConfig(BaseModel):
         default_factory=dict,
         description="Format-specific options (e.g., {'separator': ';'}).",
     )
+
+    def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
+        """Leave object-store credentials out of the printed reader options.
+
+        A cloud path's credentials travel in a nested `storage_options` map.
+        Printing drops that one key and keeps the other options, which are the
+        useful part when debugging. `repr()`, `str()`, and rich displays all
+        read from here, while `model_dump()` and the reader get the full map.
+
+        Yields:
+            tuple[str | None, Any]: Each field name with the value to print.
+        """
+        for name, value in super().__repr_args__():
+            if name == "options" and "storage_options" in self.options:
+                yield (
+                    name,
+                    {key: item for key, item in self.options.items() if key != "storage_options"},
+                )
+            else:
+                yield name, value
 
 
 def _reject_non_finite_sentinels(values: Iterable[SentinelValue] | None) -> None:
