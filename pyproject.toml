@@ -52,6 +52,13 @@ excel = ["fastexcel>=0.11.0"]
 # 3.0.0 settled the `score_cutoff` behavior the fuzzy rules rely on. Leave the
 # floor there: later releases drop Python 3.10, and uv resolves per version.
 fuzzy = ["rapidfuzz>=3.0.0"]
+database = [
+    # ConnectorX ships wheels only, and 0.4.5 is the first with Python 3.14
+    # wheels. It declares no dependencies, but Polars reads its results
+    # through pyarrow, so the extra names pyarrow itself.
+    "connectorx>=0.4.5",
+    "pyarrow>=14.0.1",
+]
 all = [
     "veridelta[snowflake]",
     "veridelta[databricks]",
@@ -59,6 +66,7 @@ all = [
     "veridelta[iceberg]",
     "veridelta[excel]",
     "veridelta[fuzzy]",
+    "veridelta[database]",
 ]
 
 [dependency-groups]
@@ -139,6 +147,8 @@ module = [
     "deltalake.*",
     "pyiceberg",
     "pyiceberg.*",
+    "connectorx",
+    "connectorx.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"
