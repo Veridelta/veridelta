@@ -1135,7 +1135,12 @@ class DatabaseConfig(BaseModel):
 
 
 SourceRef = Annotated[
-    SourceConfig | SnowflakeConfig | DatabricksConfig | DeltaLakeConfig | IcebergConfig,
+    SourceConfig
+    | SnowflakeConfig
+    | DatabricksConfig
+    | DeltaLakeConfig
+    | IcebergConfig
+    | DatabaseConfig,
     Field(discriminator="type"),
 ]
-"""YAML/Python source or target: file, warehouse, or lakehouse."""
+"""YAML/Python source or target: file, warehouse, lakehouse, or database."""

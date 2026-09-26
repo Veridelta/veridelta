@@ -210,8 +210,9 @@ Every connector block is selected by `type` and rejects keys it does not list.
 | `databricks` | `table`, `server_hostname`, `http_path` | `access_token`, `catalog`, `schema_name` |
 | `delta` | `table_uri` | `version`, `storage_options` |
 | `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
+| `database` | `uri`, and exactly one of `table` or `query` | `password` |
 
-`version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse and lakehouse blocks are frozen once loaded.
+`version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse, lakehouse, and database blocks are frozen once loaded.
 
 Printing a connection config, or formatting one into a log line, leaves out its credentials: `password` for Snowflake, `access_token` for Databricks, `storage_options` for Delta Lake and Iceberg, and a `storage_options` map nested in a file source's `options`, whose other reader options still print. They stay readable as attributes and in `model_dump()`, because the connectors and readers need them, so log a dump only after removing them.
 

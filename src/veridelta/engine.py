@@ -20,12 +20,14 @@ from typing import ClassVar, Final, Literal, TypedDict
 import polars as pl
 
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
+from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
+    DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -337,11 +339,12 @@ class ExcelLoader(BaseLoader):
 
 
 class LoaderFactory:
-    """Resolve any file or lakehouse `SourceRef` to an unevaluated LazyFrame.
+    """Resolve any file, lakehouse, or database `SourceRef` to a LazyFrame.
 
     File sources are dispatched by their `format` through the `_loaders`
     registry; Delta Lake and Iceberg sources open a connector and return its
-    lazy scan. Warehouse sources are refused here because their comparison
+    lazy scan; a database source is read once through its connector, which is
+    then closed. Warehouse sources are refused here because their comparison
     runs as SQL pushdown via `DiffEngine.run_from_configs`, never as a local
     scan.
 
@@ -387,17 +390,20 @@ class LoaderFactory:
 
     @classmethod
     def load(cls, config: SourceRef) -> pl.LazyFrame:
-        """Load a file or lakehouse source into an unevaluated LazyFrame.
+        """Load a file, lakehouse, or database source into a LazyFrame.
 
         Args:
-            config (SourceRef): File, Delta, or Iceberg configuration.
+            config (SourceRef): File, Delta, Iceberg, or database configuration.
 
         Returns:
-            pl.LazyFrame: Unevaluated scan graph.
+            pl.LazyFrame: Unevaluated scan graph, or a lazy wrapper over the
+                rows a database source read.
 
         Raises:
-            ConnectorError: If `config` is a warehouse source.
-            ConfigError: If the file format has no loader.
+            ConnectorError: If `config` is a warehouse source, or a lakehouse
+                scan or database read fails.
+            ConfigError: If the file format has no loader, or a database
+                `table` names a scheme Veridelta cannot quote for.
         """
         if isinstance(config, DeltaLakeConfig):
             delta_connector = DeltaLakeConnector(config)
@@ -407,6 +413,10 @@ class LoaderFactory:
             iceberg_connector = IcebergConnector(config)
             iceberg_connector.connect()
             return iceberg_connector.lazyframe()
+        if isinstance(config, DatabaseConfig):
+            with DatabaseConnector(config) as database:
+                database.connect()
+                return database.lazyframe()
         if isinstance(config, SourceConfig):
             return cls.get_loader(config.format).load(config)
         raise ConnectorError(
@@ -1503,7 +1513,9 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
     source_wh = _is_warehouse(source)
     target_wh = _is_warehouse(target)
     if source_wh != target_wh:
-        raise ConnectorError("Mixed file/lakehouse and warehouse backends are unsupported.")
+        raise ConnectorError(
+            "Mixed file/lakehouse/database and warehouse backends are unsupported."
+        )
     if type(source) is not type(target):
         raise ConnectorError(
             "Cross-dialect warehouse pushdown is unsupported. "
@@ -1535,7 +1547,7 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
             return _collect_pushdown_summary(databricks, source.table, target.table, diff)
         finally:
             databricks.close()
-    raise ConnectorError("Mixed file/lakehouse and warehouse backends are unsupported.")
+    raise ConnectorError("Mixed file/lakehouse/database and warehouse backends are unsupported.")
 
 
 DEFAULT_MIN_CONFIDENCE: Final = 0.95
@@ -1666,8 +1678,10 @@ class DataIngestor:
 
         Args:
             diff_config (DiffConfig): The master comparison configuration.
-            source_config (SourceRef): File or lakehouse settings for the source.
-            target_config (SourceRef): File or lakehouse settings for the target.
+            source_config (SourceRef): File, lakehouse, or database settings for
+                the source.
+            target_config (SourceRef): File, lakehouse, or database settings for
+                the target.
         """
         self.config = diff_config
         self.source_config = source_config
@@ -1737,14 +1751,15 @@ class DiffEngine:
     - `DiffEngine(config, source, target).run()` for frames you already hold.
       In-memory `DataFrame` inputs must be wrapped with `.lazy()` first.
     - `DiffEngine.run_from_configs(diff, source, target)` for `SourceRef`
-      pairs from YAML. File and lakehouse pairs load through `LoaderFactory`
-      and run locally; same-warehouse pairs compile to SQL pushdown instead.
+      pairs from YAML. File, lakehouse, and database pairs load through
+      `LoaderFactory` and run locally; same-warehouse pairs compile to SQL
+      pushdown instead.
     - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
       key presence on metadata alone, before any rows are read.
     - `DiffEngine(config, source, target).propose_value_maps()`, or
-      `DiffEngine.propose_value_maps_from_configs(...)` for file and lakehouse
-      `SourceRef` pairs, to suggest `value_map` entries from how the two sides'
-      values line up, without running the comparison.
+      `DiffEngine.propose_value_maps_from_configs(...)` for file, lakehouse,
+      and database `SourceRef` pairs, to suggest `value_map` entries from how
+      the two sides' values line up, without running the comparison.
 
     Attributes:
         config (DiffConfig): Primary keys, rules, defaults, and threshold.
@@ -1779,12 +1794,12 @@ class DiffEngine:
 
         Args:
             diff (DiffConfig): Master comparison rules and keys.
-            source (SourceRef): Source file, lakehouse, or warehouse config.
-            target (SourceRef): Target file, lakehouse, or warehouse config.
+            source (SourceRef): Source file, lakehouse, database, or warehouse config.
+            target (SourceRef): Target file, lakehouse, database, or warehouse config.
 
         Returns:
             DiffResult: Pushdown mismatch and anti-join counts, or a full Polars
-                diff for file and lakehouse pairs.
+                diff for file, lakehouse, and database pairs.
 
         Raises:
             ConfigError: If primary keys are missing or `schema_mode` is violated.
@@ -1836,8 +1851,8 @@ class DiffEngine:
 
         Args:
             diff (DiffConfig): Master comparison rules and keys.
-            source (SourceRef): Source file or lakehouse config.
-            target (SourceRef): Target file or lakehouse config.
+            source (SourceRef): Source file, lakehouse, or database config.
+            target (SourceRef): Target file, lakehouse, or database config.
             min_confidence (float): Share of rows that must agree, above 0.5.
             min_support (int): Agreeing rows a proposal needs.
             sample_fraction (float): Share of source rows to read.
@@ -1854,7 +1869,7 @@ class DiffEngine:
         if _is_warehouse(source) or _is_warehouse(target):
             raise ConnectorError(
                 "Value map proposals read source and target rows locally, so both sides "
-                "must be file or lakehouse sources. Export the warehouse tables, or a "
+                "must be file, lakehouse, or database sources. Export the warehouse tables, or a "
                 "sample of them, to Parquet and point the configuration at those files."
             )
         engine = cls(diff, LoaderFactory.load(source), LoaderFactory.load(target))
