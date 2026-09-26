@@ -213,6 +213,8 @@ Every connector block is selected by `type` and rejects keys it does not list.
 
 `version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse and lakehouse blocks are frozen once loaded.
 
+Printing a Snowflake or Databricks config, or formatting one into a log line, leaves out `password` and `access_token`. Both stay readable as attributes and in `model_dump()`, because the connectors need them, so log a dump only after removing them.
+
 ### Environment variables
 
 Any string inside `source` or `target` can read an environment variable, so credentials and per-environment paths stay out of the file:
