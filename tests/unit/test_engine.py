@@ -509,8 +509,8 @@ class TestEvaluationStrictness:
 
         assert summary.is_match is False
 
-    def test_it_soft_casts_mixed_types_when_strict_types_is_disabled(self) -> None:
-        """Ensure the engine safely soft-casts targets to source types by default."""
+    def test_it_matches_mixed_types_by_value_when_strict_types_is_disabled(self) -> None:
+        """Ensure a float and an integer holding the same number match by default."""
         src = pl.DataFrame({"id": [1], "val": [10.0]})
         tgt = pl.DataFrame({"id": [1], "val": [10]})
 
@@ -518,6 +518,153 @@ class TestEvaluationStrictness:
         summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
+
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(pl.Series([10]), pl.Series([10.7]), id="int-vs-float"),
+            pytest.param(pl.Series([10.7]), pl.Series([10]), id="float-vs-int"),
+            pytest.param(pl.Series([10]), pl.Series([Decimal("10.50")]), id="int-vs-decimal"),
+            pytest.param(pl.Series([Decimal("10.70")]), pl.Series([10.704]), id="decimal-vs-float"),
+            pytest.param(
+                pl.Series([0.5], dtype=pl.Float32),
+                pl.Series([0.5000000001]),
+                id="float32-vs-float64",
+            ),
+            pytest.param(
+                pl.Series([Decimal("10.50")], dtype=pl.Decimal(10, 2)),
+                pl.Series([Decimal("10.5049")], dtype=pl.Decimal(12, 4)),
+                id="decimal-scales",
+            ),
+        ],
+    )
+    def test_it_compares_mixed_numeric_types_by_value(
+        self, source: pl.Series, target: pl.Series
+    ) -> None:
+        """Ensure a difference survives when the two sides store numbers differently.
+
+        Casting the target to the source's type used to truncate a Float64
+        `10.7` to an Int64 `10`, so the pair matched locally while a warehouse,
+        which promotes both sides, reported the difference.
+        """
+        src = pl.DataFrame({"id": [1], "val": source})
+        tgt = pl.DataFrame({"id": [1], "val": target})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 1
+
+    @pytest.mark.parametrize(
+        ("source_dtype", "target_dtype"),
+        [
+            pytest.param(pl.Int32, pl.Int64, id="int-widths"),
+            pytest.param(pl.UInt8, pl.Int8, id="unsigned-vs-signed"),
+            pytest.param(pl.Decimal(10, 2), pl.Int64, id="decimal-vs-int"),
+            pytest.param(pl.Float32, pl.Float64, id="float-widths"),
+            pytest.param(pl.Int64, pl.Float64, id="int-vs-float"),
+        ],
+    )
+    def test_it_matches_equal_values_stored_as_different_numeric_types(
+        self, source_dtype: pl.DataType, target_dtype: pl.DataType
+    ) -> None:
+        """Ensure comparing by value still matches the same number across types."""
+        src = pl.DataFrame({"id": [1], "val": pl.Series([5], dtype=source_dtype)})
+        tgt = pl.DataFrame({"id": [1], "val": pl.Series([5], dtype=target_dtype)})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.is_perfect_match is True
+
+    @pytest.mark.parametrize(
+        ("source", "target", "expected_changed"),
+        [
+            pytest.param(pl.Series([float("nan")]), pl.Series([1_000_000.0]), 1, id="nan-source"),
+            pytest.param(pl.Series([float("inf")]), pl.Series([1e308]), 1, id="infinite-source"),
+            pytest.param(pl.Series([float("nan")]), pl.Series([float("nan")]), 0, id="nan-pair"),
+            pytest.param(
+                pl.Series([Decimal("10.00")]),
+                pl.Series([Decimal("10.40")]),
+                0,
+                id="decimal-within",
+            ),
+        ],
+    )
+    def test_it_never_forgives_a_non_finite_source_under_a_tolerance(
+        self, source: pl.Series, target: pl.Series, expected_changed: int
+    ) -> None:
+        """Ensure NaN matches only NaN, and an infinity only itself, whatever the tolerance.
+
+        The allowance is `abs + rel * |src|`, and `0 * inf` is NaN. Polars sorts
+        NaN above every number, so `|diff| <= NaN` used to accept any target.
+        """
+        src = pl.DataFrame({"id": [1], "val": source})
+        tgt = pl.DataFrame({"id": [1], "val": target})
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=0.5)
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == expected_changed
+
+    @pytest.mark.parametrize(
+        ("source", "target", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series([7], dtype=pl.UInt64),
+                pl.Series([5], dtype=pl.UInt64),
+                0,
+                id="target-below-source",
+            ),
+            pytest.param(
+                pl.Series([5], dtype=pl.UInt64),
+                pl.Series([7], dtype=pl.UInt64),
+                0,
+                id="target-above-source",
+            ),
+            pytest.param(
+                pl.Series([10], dtype=pl.UInt64),
+                pl.Series([5], dtype=pl.UInt64),
+                1,
+                id="outside-the-tolerance",
+            ),
+            pytest.param(
+                pl.Series([255], dtype=pl.UInt8),
+                pl.Series([0], dtype=pl.UInt8),
+                1,
+                id="full-range",
+            ),
+            pytest.param(
+                pl.Series([7], dtype=pl.UInt64),
+                pl.Series([5], dtype=pl.Int64),
+                0,
+                id="unsigned-vs-signed",
+            ),
+        ],
+    )
+    def test_it_measures_unsigned_differences_without_wrapping(
+        self, source: pl.Series, target: pl.Series, expected_changed: int
+    ) -> None:
+        """Ensure a tolerance judges unsigned columns by their true distance.
+
+        `tgt - src` on two unsigned values wraps around below zero, so `5 - 7`
+        measured 18446744073709551614 and the verdict depended on which side
+        held the larger number.
+        """
+        src = pl.DataFrame({"id": [1], "val": source})
+        tgt = pl.DataFrame({"id": [1], "val": target})
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=3.0)
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == expected_changed
+
+    def test_it_still_soft_casts_text_to_a_numeric_source(self) -> None:
+        """Ensure a text target keeps being cast to the source type rather than compared as text."""
+        src = pl.DataFrame({"id": [1, 2], "val": [10, 10]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["10", "10.7"]})
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 1
 
     def test_it_evaluates_nulls_as_mismatches_when_treat_null_as_equal_is_disabled(self) -> None:
         """Ensure identical null records flag as failures when strict null matching is explicitly turned off."""

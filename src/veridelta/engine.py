@@ -1804,11 +1804,13 @@ class DiffEngine:
         evaluates the aligned pair without applying any further transformations.
 
         Implicit Type Alignment:
-            Polars is strictly typed. Comparing a Float64 to an Int64 or String raises
-            a ComputeError. If a schema drift is detected between Source and Target:
+            When the source and target store a column as different types:
             - If `strict_types=True`: The mismatch is immediately evaluated as `False`.
-            - If `strict_types=False` (Default): The target column is dynamically soft-cast
-              to the source's data type purely for the mathematical evaluation.
+            - If `strict_types=False` (Default): Two numeric types compare by value in
+              their common supertype, as a warehouse compares them. Casting the target
+              to the source's type instead would truncate a Float64 `10.7` to an Int64
+              `10` and hide the difference. Any other pair soft-casts the target to the
+              source's type purely for the evaluation, so text `"10"` meets an Int64.
 
         Args:
             col_name (str): The column being compared.
@@ -1830,13 +1832,21 @@ class DiffEngine:
                     null_match = src.is_null() & tgt.is_null()
                     return (val_match | null_match).fill_null(False)
                 return val_match
-            else:
+            elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
 
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
-            abs_diff = (tgt - src).abs()
+            # Subtract the smaller value from the larger: `tgt - src` on unsigned
+            # columns wraps below zero instead of going negative.
+            abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
             threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
-            val_match = abs_diff <= threshold
+            within = abs_diff <= threshold
+            if dtype.is_float():
+                # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
+                # non-finite source must never reach the allowance.
+                within = within & src.is_finite()
+            # Equal values match outright: NaN meets NaN, and an infinity itself.
+            val_match = (src == tgt) | within
         else:
             val_match = src == tgt
 

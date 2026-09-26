@@ -191,6 +191,16 @@ The strict variants abort the whole statement on one unparseable row where the
 local engine yields a null and keeps going.
 """
 
+_INFINITY_LITERALS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: "'inf'::FLOAT",
+    SQLDialect.DATABRICKS: "CAST('Infinity' AS DOUBLE)",
+    SQLDialect.DUCKDB: "'inf'::DOUBLE",
+}
+"""Each dialect's positive infinity, which bounds the finite values a tolerance
+may apply to. `ABS(x) < inf` is false for an infinity and for NaN, whether an
+engine treats NaN comparisons as false or sorts NaN above every number.
+"""
+
 
 class SQLPushdownCompiler:
     """Compile `DiffRule` semantics into dialect-specific SQL strings.
@@ -1345,17 +1355,26 @@ class SQLPushdownCompiler:
     def _numeric_predicate(self, src_expr: str, tgt_expr: str, rule: DiffRule) -> str:
         """Build the engine-equivalent absolute/relative tolerance predicate.
 
+        Equal values match outright, so NaN meets NaN and an infinity meets
+        itself. The allowance applies only to a finite source: `0 * ABS(inf)` is
+        NaN, and every supported engine sorts NaN above all numbers, so an
+        unguarded `ABS(diff) <= NaN` would accept any target.
+
         Args:
             src_expr (str): Transformed source expression.
             tgt_expr (str): Transformed target expression.
             rule (DiffRule): Rule providing tolerances.
 
         Returns:
-            str: `ABS(tgt - src) <= abs + (rel * ABS(src))`.
+            str: `(src = tgt OR (ABS(src) < inf AND ABS(tgt - src) <= abs + (rel * ABS(src))))`.
         """
         abs_tol = self._number(rule.absolute_tolerance or 0.0)
         rel_tol = self._number(rule.relative_tolerance or 0.0)
-        return f"ABS({tgt_expr} - {src_expr}) <= {abs_tol} + ({rel_tol} * ABS({src_expr}))"
+        infinity = _INFINITY_LITERALS[self.dialect]
+        return (
+            f"({src_expr} = {tgt_expr} OR (ABS({src_expr}) < {infinity} AND "
+            f"ABS({tgt_expr} - {src_expr}) <= {abs_tol} + ({rel_tol} * ABS({src_expr}))))"
+        )
 
     def _compare(self, src_expr: str, tgt_expr: str, rule: DiffRule) -> str:
         """Build the final match predicate, including null-safe equality.

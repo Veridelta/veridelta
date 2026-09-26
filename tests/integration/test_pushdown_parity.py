@@ -4,6 +4,7 @@
 """Differential parity tests between the local engine and compiled pushdown SQL."""
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 import polars as pl
 import pytest
@@ -1311,6 +1312,120 @@ class TestToleranceScopeParity:
         summary = assert_parity(config, src, tgt)
 
         assert summary.changed_count == expected_changed
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestNumericComparisonParity:
+    """Validate that both paths compare numbers by value, whatever their storage."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", [10, 10]), pl.Series("val", [10.7, 10.0]), 1, id="int-vs-float"
+            ),
+            pytest.param(
+                pl.Series("val", [10.7, 10.0]), pl.Series("val", [10, 10]), 1, id="float-vs-int"
+            ),
+            pytest.param(
+                pl.Series("val", [10, 10]),
+                pl.Series("val", [Decimal("10.50"), Decimal("10.00")]),
+                1,
+                id="int-vs-decimal",
+            ),
+            pytest.param(
+                pl.Series("val", [Decimal("10.70"), Decimal("10.70")]),
+                pl.Series("val", [10.704, 10.7]),
+                1,
+                id="decimal-vs-float",
+            ),
+            pytest.param(
+                pl.Series("val", [Decimal("10.50"), Decimal("10.50")], dtype=pl.Decimal(10, 2)),
+                pl.Series("val", [Decimal("10.5049"), Decimal("10.5000")], dtype=pl.Decimal(12, 4)),
+                1,
+                id="decimal-scales",
+            ),
+        ],
+    )
+    def test_it_agrees_on_mixed_numeric_types(
+        self, source: pl.Series, target: pl.Series, expected_changed: int
+    ) -> None:
+        """Ensure a local run no longer truncates the target to the source's type.
+
+        A warehouse promotes both sides before comparing, so it always saw
+        `10` and `10.7` as different while the local engine cast `10.7` to `10`.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+    def test_it_agrees_on_a_decimal_source_under_a_tolerance(self) -> None:
+        """Ensure the finiteness guard accepts a decimal source on both paths.
+
+        Decimals are always finite. Polars refuses `is_finite` on them, so the
+        local engine skips the guard, while the SQL compares the decimal with a
+        floating-point infinity.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(
+            pl.Series("val", [Decimal("10.00"), Decimal("10.00")], dtype=pl.Decimal(10, 2))
+        )
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(
+            pl.Series("val", [Decimal("10.40"), Decimal("11.00")], dtype=pl.Decimal(10, 2))
+        )
+        config = DiffConfig(primary_keys=["id"], default_absolute_tolerance=0.5)
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
+    @pytest.mark.parametrize(
+        ("source", "target", "tolerance", "matches"),
+        [
+            pytest.param(float("nan"), 1e6, (0.5, 0.0), False, id="nan-source"),
+            pytest.param(float("nan"), 1e6, (0.0, 0.1), False, id="nan-source-relative"),
+            pytest.param(float("inf"), 1e308, (0.5, 0.0), False, id="inf-source"),
+            pytest.param(float("inf"), 1e308, (0.0, 0.1), False, id="inf-source-relative"),
+            pytest.param(float("inf"), float("-inf"), (0.5, 0.0), False, id="inf-vs-neg"),
+            pytest.param(
+                float("inf"),
+                float("-inf"),
+                (0.0, 0.1),
+                False,
+                id="inf-vs-neg-relative",
+            ),
+            pytest.param(1.0, float("nan"), (0.5, 0.0), False, id="nan-target"),
+            pytest.param(1.0, float("inf"), (0.5, 0.0), False, id="inf-target"),
+            pytest.param(float("nan"), float("nan"), (0.5, 0.0), True, id="nan-pair"),
+            pytest.param(float("inf"), float("inf"), (0.5, 0.0), True, id="inf-pair"),
+            pytest.param(float("-inf"), float("-inf"), (0.0, 0.1), True, id="neg-inf-pair"),
+            pytest.param(1.0, 1.4, (0.5, 0.0), True, id="finite-within"),
+            pytest.param(100.0, 109.0, (0.0, 0.1), True, id="finite-relative"),
+        ],
+    )
+    def test_it_agrees_that_a_tolerance_never_forgives_a_non_finite_value(
+        self, source: float, target: float, tolerance: tuple[float, float], matches: bool
+    ) -> None:
+        """Ensure NaN matches only NaN and an infinity only itself, on both paths.
+
+        The allowance `abs + rel * ABS(src)` is NaN for an infinite source when
+        `rel` is 0, and infinite when it is not. Polars, DuckDB, Snowflake, and
+        Spark all sort NaN above every number, so both paths used to accept
+        any target once the source was not finite.
+        """
+        src = pl.DataFrame({"id": [1], "val": [source]})
+        tgt = pl.DataFrame({"id": [1], "val": [target]})
+        absolute, relative = tolerance
+        rule = DiffRule(
+            column_names=["val"], absolute_tolerance=absolute, relative_tolerance=relative
+        )
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"], rules=[rule]), src, tgt)
+
+        assert summary.changed_count == (0 if matches else 1)
 
 
 @pytest.mark.integration
