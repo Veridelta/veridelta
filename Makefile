@@ -1,4 +1,4 @@
-.PHONY: install format lint test docs docs-serve all clean
+.PHONY: install format lint test notebooks docs docs-serve all clean
 
 install:
 	uv sync --all-extras
@@ -17,6 +17,9 @@ lint:
 test:
 	uv run pytest tests/ --cov=src/veridelta --cov-report=term-missing
 	uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py' --fail-under=100
+
+notebooks:
+	uv run pytest tests/notebooks --no-cov
 
 docs:
 	uv run mkdocs build --strict

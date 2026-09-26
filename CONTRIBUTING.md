@@ -34,6 +34,7 @@ We strictly follow Trunk-Based Development. **Never commit directly to `main`.**
    ```bash
    make all  # Runs formatting, linting, strict type-checking, and tests
    ```
+   The tests include the tutorial notebooks in `docs/examples/`: each one is executed, and every `# Output:` comment must match what its cell prints. Run `make notebooks` to check just those after editing a tutorial.
 
 ## 3. Commit Standards
 
