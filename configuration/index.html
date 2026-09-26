@@ -838,6 +838,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="5. Value Mapping (Crosswalks)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#proposing-a-value-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proposing a value map
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1044,9 +1061,12 @@
 <a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--json
 <a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--quiet
 <a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>veridelta<span class="w"> </span>run<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--html<span class="w"> </span>report.html<span class="w"> </span>--html-max-rows<span class="w"> </span><span class="m">1000</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>veridelta<span class="w"> </span>crosswalk<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>veridelta<span class="w"> </span>crosswalk<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>--min-confidence<span class="w"> </span><span class="m">0</span>.99<span class="w"> </span>--json
 </code></pre></div>
 <p><code>--json</code> prints <code>DiffSummary</code> as JSON on stdout. <code>--quiet</code> suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so <code>veridelta run --json | jq</code> does not have to strip anything first. <code>--html</code> writes a standalone report with no CDN references, capped at <code>--html-max-rows</code> (zero or more; default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.</p>
 <p>Exit codes are <code>0</code> for a match within <code>threshold</code>, <code>1</code> for drift or any failure while running, and <code>2</code> for invalid command-line arguments.</p>
+<p><code>crosswalk</code> proposes <code>value_map</code> rules instead of comparing; see <a href="#proposing-a-value-map">Proposing a value map</a>. It exits <code>0</code> once the proposals are computed, whether or not it found any, <code>1</code> on failure, and <code>2</code> for invalid arguments.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">source</span><span class="p">:</span>
 <a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">snowflake</span>
 <a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="nt">table</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ANALYTICS.PUBLIC.LEGACY_EVENTS</span>
@@ -1414,36 +1434,61 @@
 <a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a><span class="w">      </span><span class="s">&quot;1&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;ACTIVE&quot;</span>
 <a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="w">      </span><span class="s">&quot;2&quot;</span><span class="p p-Indicator">:</span><span class="w"> </span><span class="s">&quot;PENDING&quot;</span>
 </code></pre></div>
+<h4 id="proposing-a-value-map">Proposing a value map</h4>
+<p>Veridelta can draft these entries from the data. <code>veridelta crosswalk</code> aligns, normalizes, and joins the configured datasets exactly as <code>run</code> does, then proposes each source value for the target value it lines up with:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a>veridelta<span class="w"> </span>crosswalk<span class="w"> </span>-c<span class="w"> </span>veridelta.yaml<span class="w"> </span>&gt;<span class="w"> </span>proposed.yaml
+</code></pre></div>
+<p>The evidence goes to stderr and the rules to stdout, ready to paste into the configuration:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>gender: 2 new value_map entries
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a>  &#39;M&#39; -&gt; &#39;Male&#39;: 599 of 600 rows (99.8%)
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a>  &#39;F&#39; -&gt; &#39;Female&#39;: 400 of 400 rows (100.0%)
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span>
+<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gender</span>
+<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">  </span><span class="nt">value_map</span><span class="p">:</span>
+<a id="__codelineno-21-5" name="__codelineno-21-5" href="#__codelineno-21-5"></a><span class="w">    </span><span class="nt">M</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Male</span>
+<a id="__codelineno-21-6" name="__codelineno-21-6" href="#__codelineno-21-6"></a><span class="w">    </span><span class="nt">F</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Female</span>
+</code></pre></div>
+<p>An entry needs two things:</p>
+<ul>
+<li><strong>Confidence</strong>, <code>--min-confidence</code> (default 0.95): the share of the source value's joined rows whose target is the proposed value. Every row with that source value counts, including rows that already match and rows whose target is NULL, so an entry that would break a matching row pays for it. The floor must be above 0.5, which leaves at most one candidate per source value.</li>
+<li><strong>Support</strong>, <code>--min-support</code> (default 5): how many rows agree, so a coincidence in a handful of rows is never proposed.</li>
+</ul>
+<p>Values are read as the <code>value_map</code> stage sees them, after null sentinels, <code>regex_replace</code>, whitespace, and case folding, so a <code>case_insensitive</code> column gets lowercase entries. Only compared text columns qualify, and only when nothing after stage 4 changes the mapped value: a column with <code>pad_zeros</code>, <code>datetime_format</code>, or a <code>cast_to</code> other than <code>String</code> is skipped, as are primary keys and ignored columns. A non-text target is read as the text it is compared as, so a <code>Y</code>/<code>N</code> source against a <code>1</code>/<code>0</code> target proposes <code>Y: '1'</code>, unless <code>strict_types</code> rules the pair out.</p>
+<p>An existing <code>value_map</code> is kept and extended. Rows it already translates are left out of the counts, so a raw value that equals one of its outputs cannot receive an entry. Only one rule governs a column, so when a rule already governs one, the command says so on stderr, even with <code>--quiet</code>, and the new entries belong in that rule's <code>value_map</code> rather than in a second rule. If that rule also governs other columns, by listing several names or by a <code>pattern</code>, the column needs a rule of its own first, since a map merged into a shared rule applies to every column it governs; the note says which case applies.</p>
+<p><code>--sample-fraction</code> (default 1.0) reads that share of source rows, picked by a hash of the primary keys, so rerunning on the same data under one Polars version samples the same rows. <code>--json</code> prints each proposal with its evidence instead of YAML. Warehouse sources raise <code>ConnectorError</code>: proposals read rows locally, so export the tables, or a sample of them, to Parquet first.</p>
+<p>From Python, <code>DiffEngine(config, source, target).propose_value_maps()</code> returns <code>ValueMapProposal</code> objects, and <code>DiffEngine.propose_value_maps_from_configs(diff, source, target)</code> loads a YAML pair first. Each proposal's <code>to_rule()</code> returns the standalone rule.</p>
 <h3 id="6-exclusion-routing">6. Exclusion Routing</h3>
 <p>Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;^etl_loaded_at_.*&quot;</span>
-<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="w">    </span><span class="nt">ignore</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-22-2" name="__codelineno-22-2" href="#__codelineno-22-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;^etl_loaded_at_.*&quot;</span>
+<a id="__codelineno-22-3" name="__codelineno-22-3" href="#__codelineno-22-3"></a><span class="w">    </span><span class="nt">ignore</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </code></pre></div>
 <h3 id="7-column-rename">7. Column rename</h3>
 <p><code>rename_to</code> maps a source column onto a different target name before comparison. Use it when the same field was renamed between systems.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;legacy_customer_id&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="w">    </span><span class="nt">rename_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;customer_id&quot;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;legacy_customer_id&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">    </span><span class="nt">rename_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;customer_id&quot;</span>
 </code></pre></div>
 <p>The rule's other settings apply to the renamed pair on both sides, so a rename can carry a tolerance or a transform:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-21-1" name="__codelineno-21-1" href="#__codelineno-21-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-21-2" name="__codelineno-21-2" href="#__codelineno-21-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;legacy_amt&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-21-3" name="__codelineno-21-3" href="#__codelineno-21-3"></a><span class="w">    </span><span class="nt">rename_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;amount&quot;</span>
-<a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">    </span><span class="nt">absolute_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.01</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-24-1" name="__codelineno-24-1" href="#__codelineno-24-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-24-2" name="__codelineno-24-2" href="#__codelineno-24-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;legacy_amt&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-24-3" name="__codelineno-24-3" href="#__codelineno-24-3"></a><span class="w">    </span><span class="nt">rename_to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;amount&quot;</span>
+<a id="__codelineno-24-4" name="__codelineno-24-4" href="#__codelineno-24-4"></a><span class="w">    </span><span class="nt">absolute_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.01</span>
 </code></pre></div>
 <p><code>primary_keys</code> are written with the target spelling, so a renamed key works in local runs and warehouse pushdown alike; pushdown reads it from the source under its stored name.</p>
 <h3 id="8-fuzzy-text-matching">8. Fuzzy Text Matching</h3>
 <p>Forgive typos in free text, such as names keyed by hand into two systems, without writing a <code>regex_replace</code> for each one. Scores come from <a href="https://github.com/rapidfuzz/RapidFuzz">RapidFuzz</a>, an optional extra:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s1">&#39;veridelta[fuzzy]&#39;</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-25-1" name="__codelineno-25-1" href="#__codelineno-25-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s1">&#39;veridelta[fuzzy]&#39;</span>
 </code></pre></div>
 <p>A rule sets one of two limits:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">rules</span><span class="p">:</span>
-<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;customer_name&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">    </span><span class="nt">case_insensitive</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">    </span><span class="nt">max_levenshtein_distance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
-<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;city&quot;</span><span class="p p-Indicator">]</span>
-<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">    </span><span class="nt">min_jaro_winkler_similarity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.95</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-26-1" name="__codelineno-26-1" href="#__codelineno-26-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-26-2" name="__codelineno-26-2" href="#__codelineno-26-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;customer_name&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-26-3" name="__codelineno-26-3" href="#__codelineno-26-3"></a><span class="w">    </span><span class="nt">case_insensitive</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-26-4" name="__codelineno-26-4" href="#__codelineno-26-4"></a><span class="w">    </span><span class="nt">max_levenshtein_distance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<a id="__codelineno-26-5" name="__codelineno-26-5" href="#__codelineno-26-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;city&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-26-6" name="__codelineno-26-6" href="#__codelineno-26-6"></a><span class="w">    </span><span class="nt">min_jaro_winkler_similarity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.95</span>
 </code></pre></div>
 <ul>
 <li><code>max_levenshtein_distance</code> counts single-character insertions, deletions, and substitutions. <code>Jon</code> and <code>John</code> are one edit apart, so they match at <code>1</code>; <code>kitten</code> and <code>sitting</code> need <code>3</code>.</li>
