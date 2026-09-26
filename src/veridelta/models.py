@@ -889,7 +889,9 @@ class SnowflakeConfig(BaseModel):
         warehouse (str): Virtual warehouse that executes pushdown SQL.
         database (str): Default database for unqualified object names.
         schema_name (str): Default schema for unqualified object names.
-        password (str | None): Optional password; omitted when using SSO.
+        password (str | None): Optional password; omitted when using SSO. Left
+            out when the config is printed, but kept by `model_dump()`, which
+            the connector needs.
         role (str | None): Optional role assumed after authentication.
     """
 
@@ -908,7 +910,7 @@ class SnowflakeConfig(BaseModel):
     database: str = Field(..., description="Default database for unqualified object names.")
     schema_name: str = Field(..., description="Default schema for unqualified object names.")
     password: str | None = Field(
-        default=None, description="Optional password; omitted when using SSO."
+        default=None, repr=False, description="Optional password; omitted when using SSO."
     )
     role: str | None = Field(
         default=None, description="Optional role assumed after authentication."
@@ -923,7 +925,9 @@ class DatabricksConfig(BaseModel):
         table (str): Fully qualified table or view to compare.
         server_hostname (str): Workspace hostname for the SQL warehouse.
         http_path (str): HTTP path of the SQL warehouse or cluster.
-        access_token (str | None): Optional personal access token.
+        access_token (str | None): Optional personal access token. Left out
+            when the config is printed, but kept by `model_dump()`, which the
+            connector needs.
         catalog (str | None): Optional Unity Catalog name.
         schema_name (str | None): Optional default schema name.
     """
@@ -939,7 +943,9 @@ class DatabricksConfig(BaseModel):
     )
     server_hostname: str = Field(..., description="Workspace hostname for the SQL warehouse.")
     http_path: str = Field(..., description="HTTP path of the SQL warehouse or cluster.")
-    access_token: str | None = Field(default=None, description="Optional personal access token.")
+    access_token: str | None = Field(
+        default=None, repr=False, description="Optional personal access token."
+    )
     catalog: str | None = Field(default=None, description="Optional Unity Catalog name.")
     schema_name: str | None = Field(default=None, description="Optional default schema name.")
 

@@ -356,6 +356,47 @@ class TestModelStrictness:
 
         assert _SECRET not in str(exc_info.value)
 
+    @pytest.mark.parametrize(
+        ("config", "field"),
+        [
+            pytest.param(
+                SnowflakeConfig(
+                    table="T",
+                    account="a",
+                    user="u",
+                    warehouse="w",
+                    database="d",
+                    schema_name="s",
+                    password=_SECRET,
+                ),
+                "password",
+                id="snowflake-password",
+            ),
+            pytest.param(
+                DatabricksConfig(
+                    table="t", server_hostname="h", http_path="/sql", access_token=_SECRET
+                ),
+                "access_token",
+                id="databricks-token",
+            ),
+        ],
+    )
+    def test_it_keeps_credentials_out_of_printed_configs(
+        self, config: BaseModel, field: str
+    ) -> None:
+        """Ensure printing or logging a connection never shows its secret.
+
+        The connector still needs the value, so it stays readable as an
+        attribute and in `model_dump()`, and still tells two connections apart.
+        """
+        assert _SECRET not in repr(config)
+        assert _SECRET not in str(config)
+        assert _SECRET not in f"{config}"
+        assert field not in repr(config)
+        assert getattr(config, field) == _SECRET
+        assert config.model_dump()[field] == _SECRET
+        assert config != config.model_copy(update={field: "another-secret"})
+
 
 @pytest.mark.unit
 @pytest.mark.fast
