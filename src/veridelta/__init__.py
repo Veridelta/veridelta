@@ -16,6 +16,7 @@ from veridelta.exceptions import (
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
+    DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -43,6 +44,7 @@ __all__ = [
     "ConnectorError",
     "DataIngestor",
     "DataIntegrityError",
+    "DatabaseConfig",
     "DatabricksConfig",
     "DatasetError",
     "DeltaLakeConfig",
