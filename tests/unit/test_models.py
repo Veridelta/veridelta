@@ -421,6 +421,38 @@ class TestModelStrictness:
         assert config.model_dump()[field] == value
         assert config != config.model_copy(update={field: replacement})
 
+    def test_it_keeps_nested_storage_options_out_of_printed_file_configs(self) -> None:
+        """Ensure a reader's object-store credentials are hidden while its settings still show.
+
+        Reader `options` mostly hold settings worth seeing when debugging, so
+        only the nested `storage_options` map is left out. The reader still
+        receives it, so it stays in the attribute and in `model_dump()`.
+        """
+        options = {"separator": ";", "storage_options": {"aws_secret_access_key": _SECRET}}
+        config = SourceConfig(path="s3://lake/events.csv", options=options)
+
+        assert _SECRET not in repr(config)
+        assert _SECRET not in str(config)
+        assert _SECRET not in f"{config}"
+        # Rich displays are built from the same arguments.
+        assert _SECRET not in str(list(config.__repr_args__()))
+        assert "storage_options" not in repr(config)
+        assert "options={'separator': ';'}" in repr(config)
+        assert config.options == options
+        assert config.model_dump()["options"] == options
+        assert config != config.model_copy(
+            update={"options": {**options, "storage_options": {"aws_secret_access_key": "other"}}}
+        )
+
+    def test_it_prints_file_options_without_storage_options_unchanged(self) -> None:
+        """Ensure a config with no nested credentials prints every reader option."""
+        config = SourceConfig(path="data.csv", options={"separator": ";", "has_header": False})
+
+        assert repr(config) == (
+            "SourceConfig(type='file', path='data.csv', format='csv', "
+            "options={'separator': ';', 'has_header': False})"
+        )
+
 
 @pytest.mark.unit
 @pytest.mark.fast
