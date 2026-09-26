@@ -748,6 +748,91 @@ class DiffResult:
             ) from exc
 
 
+class ValueMapEntry(BaseModel):
+    """One proposed `value_map` entry and the rows that support it.
+
+    Attributes:
+        source_value (str): Source text as the `value_map` stage sees it, after
+            null sentinels, regex replacement, whitespace, and case folding.
+        target_value (str): The target value those rows compare against, as text.
+        rows (int): Joined rows whose source holds `source_value`, whatever
+            their target, NULL included.
+        agreeing_rows (int): Those rows whose target is `target_value`.
+        confidence (float): `agreeing_rows / rows`, the share of the source
+            value's rows the entry would make match.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_value: str = Field(..., description="Source text as the value_map stage sees it.")
+    target_value: str = Field(..., description="Target value the rows compare against.")
+    rows: int = Field(..., ge=1, description="Joined rows holding the source value.")
+    agreeing_rows: int = Field(
+        ..., ge=1, description="Rows among them whose target is the target value."
+    )
+
+    @computed_field
+    @property
+    def confidence(self) -> float:
+        """Calculates the share of the source value's rows that agree.
+
+        Returns:
+            float: `agreeing_rows / rows`.
+        """
+        return self.agreeing_rows / self.rows
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "ValueMapEntry":
+        """Rejects more agreeing rows than rows.
+
+        Returns:
+            ValueMapEntry: The validated entry.
+
+        Raises:
+            ValueError: If `agreeing_rows` exceeds `rows`.
+        """
+        if self.agreeing_rows > self.rows:
+            raise ValueError(
+                f"agreeing_rows ({self.agreeing_rows}) cannot exceed rows ({self.rows})."
+            )
+        return self
+
+
+class ValueMapProposal(BaseModel):
+    """A proposed `value_map` for one column, with the evidence for each new entry.
+
+    Attributes:
+        column (str): Compared column, named as it appears after any `rename_to`.
+        value_map (dict[str, str]): The governing rule's existing entries plus
+            the proposed ones.
+        entries (tuple[ValueMapEntry, ...]): The proposed entries alone, most
+            agreeing rows first.
+        governing_rule_index (int | None): Position in `DiffConfig.rules` of the
+            rule that governs the column today, or None when no rule does. Only
+            one rule governs a column, so new entries belong in that rule.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    column: str = Field(..., description="Compared column, after any rename_to.")
+    value_map: dict[str, str] = Field(..., description="Existing plus proposed entries.")
+    entries: tuple[ValueMapEntry, ...] = Field(..., description="Proposed entries alone.")
+    governing_rule_index: int | None = Field(
+        default=None, description="Index of the rule that governs the column today."
+    )
+
+    def to_rule(self) -> DiffRule:
+        """Build a rule for the column carrying the proposed map.
+
+        When `governing_rule_index` is set, merge `value_map` into that rule
+        instead, since a second rule for the column would not apply.
+
+        Returns:
+            DiffRule: Rule naming the column, with the full proposed map.
+        """
+        return DiffRule(column_names=[self.column], value_map=self.value_map)
+
+
 class SnowflakeConfig(BaseModel):
     """Immutable connection settings for Snowflake warehouse pushdown.
 

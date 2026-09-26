@@ -36,6 +36,8 @@ from veridelta.models import (
     SnowflakeConfig,
     SourceConfig,
     SourceRef,
+    ValueMapEntry,
+    ValueMapProposal,
     WhitespaceMode,
 )
 from veridelta.sentinels import usable_sentinels
@@ -1385,6 +1387,116 @@ def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceR
     raise ConnectorError("Mixed file/lakehouse and warehouse backends are unsupported.")
 
 
+DEFAULT_MIN_CONFIDENCE: Final = 0.95
+"""Share of a source value's rows that must agree on one target value before it
+is proposed. Above one half, at most one target can qualify, and 5% leaves room
+for noise in legacy data."""
+
+DEFAULT_MIN_SUPPORT: Final = 5
+"""Agreeing rows a proposal needs, so a one-off coincidence is never offered."""
+
+_SAMPLE_BUCKETS: Final = 1_000_000
+"""Resolution of `sample_fraction`: a sample keeps rows whose key hash falls in
+the first `sample_fraction * _SAMPLE_BUCKETS` buckets."""
+
+
+def _check_value_map_thresholds(
+    min_confidence: float, min_support: int, sample_fraction: float
+) -> None:
+    """Reject proposal thresholds that cannot produce a meaningful answer.
+
+    Args:
+        min_confidence (float): Share of rows that must agree.
+        min_support (int): Agreeing rows a proposal needs.
+        sample_fraction (float): Share of source rows to read.
+
+    Raises:
+        ConfigError: If a threshold is out of range, NaN included.
+    """
+    if not 0.5 < min_confidence <= 1:
+        raise ConfigError(
+            f"min_confidence must be above 0.5 and at most 1, got {min_confidence}. "
+            "Above one half, at most one target value can qualify for a source value."
+        )
+    if min_support < 1:
+        raise ConfigError(f"min_support must be at least 1, got {min_support}.")
+    if not 0 < sample_fraction <= 1:
+        raise ConfigError(f"sample_fraction must be above 0 and at most 1, got {sample_fraction}.")
+
+
+def _compares_mapped_text(effective: EffectiveRule, dtype: pl.DataType) -> bool:
+    """Decide whether a `value_map` output reaches the comparison unchanged.
+
+    Stage 4 maps only text, and stages 5 through 7 would pad, parse, or cast
+    whatever it produced, so a proposal is only sound for a stored text column
+    those stages leave alone.
+
+    Args:
+        effective (EffectiveRule): Rule with global defaults folded in.
+        dtype (pl.DataType): Stored source dtype, before normalization.
+
+    Returns:
+        bool: True when a proposed entry would be compared as written.
+    """
+    return (
+        isinstance(dtype, (pl.String, pl.Utf8))
+        and effective["pad_zeros"] is None
+        and not effective["datetime_format"]
+        and effective["cast_to"] in (None, "String")
+    )
+
+
+def _value_map_query(
+    joined: pl.LazyFrame,
+    column: str,
+    *,
+    mapped_values: Sequence[str],
+    min_confidence: float,
+    min_support: int,
+) -> pl.LazyFrame:
+    """Count how each source value lines up with the target, and keep strong pairs.
+
+    Every joined row with a given source value counts toward its `rows`,
+    including rows that already match and rows whose target is NULL, so a
+    proposal can never break a row that matches today without paying for it
+    in confidence.
+
+    Args:
+        joined (pl.LazyFrame): Keys plus `<column>_source` and `<column>_target`.
+        column (str): Column to count.
+        mapped_values (Sequence[str]): Outputs of the column's existing map.
+            Rows comparing as one of them are left out, since their raw text
+            cannot be recovered from the mapped value.
+        min_confidence (float): Share of rows that must agree.
+        min_support (int): Agreeing rows a proposal needs.
+
+    Returns:
+        pl.LazyFrame: `source_value`, `target_value`, `agreeing_rows`, and
+            `rows`, one row per proposed entry, most agreeing rows first.
+    """
+    source = pl.col("source_value")
+    target = pl.col("target_value")
+    agreeing = pl.col("agreeing_rows")
+    return (
+        joined.select(
+            pl.col(f"{column}_source").alias("source_value"),
+            # The same soft cast the comparison applies to a non-text target.
+            pl.col(f"{column}_target").cast(pl.String, strict=False).alias("target_value"),
+        )
+        .filter(source.is_not_null() & ~source.is_in(list(mapped_values)))
+        .group_by("source_value", "target_value")
+        .agg(pl.len().alias("agreeing_rows"))
+        .with_columns(agreeing.sum().over("source_value").alias("rows"))
+        # A NULL target makes the inequality NULL, so it counts but is never proposed.
+        .filter(
+            (target != source)
+            & (agreeing >= min_support)
+            & (agreeing / pl.col("rows") >= min_confidence)
+        )
+        .sort(["agreeing_rows", "source_value"], descending=[True, False])
+    )
+
+
 class DataIngestor:
     """Coordinates the loading, renaming, and structural alignment of datasets.
 
@@ -1469,7 +1581,7 @@ class DiffEngine:
     differing). Nothing is materialized until `run()` collects the joins, so
     the source frames can be `scan_*` graphs over files far larger than memory.
 
-    Three entry points cover the usual situations:
+    These entry points cover the usual situations:
 
     - `DiffEngine(config, source, target).run()` for frames you already hold.
       In-memory `DataFrame` inputs must be wrapped with `.lazy()` first.
@@ -1478,6 +1590,10 @@ class DiffEngine:
       and run locally; same-warehouse pairs compile to SQL pushdown instead.
     - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
       key presence on metadata alone, before any rows are read.
+    - `DiffEngine(config, source, target).propose_value_maps()`, or
+      `DiffEngine.propose_value_maps_from_configs(...)` for file and lakehouse
+      `SourceRef` pairs, to suggest `value_map` entries from how the two sides'
+      values line up, without running the comparison.
 
     Attributes:
         config (DiffConfig): Primary keys, rules, defaults, and threshold.
@@ -1553,6 +1669,185 @@ class DiffEngine:
         engine = cls(config, source_df, target_df)
         engine._align_structure()
         engine._validate_schema()
+
+    @classmethod
+    def propose_value_maps_from_configs(
+        cls,
+        diff: DiffConfig,
+        source: SourceRef,
+        target: SourceRef,
+        *,
+        min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+        min_support: int = DEFAULT_MIN_SUPPORT,
+        sample_fraction: float = 1.0,
+    ) -> list[ValueMapProposal]:
+        """Load a `SourceRef` pair and propose `value_map` entries for it.
+
+        Args:
+            diff (DiffConfig): Master comparison rules and keys.
+            source (SourceRef): Source file or lakehouse config.
+            target (SourceRef): Target file or lakehouse config.
+            min_confidence (float): Share of rows that must agree, above 0.5.
+            min_support (int): Agreeing rows a proposal needs.
+            sample_fraction (float): Share of source rows to read.
+
+        Returns:
+            list[ValueMapProposal]: One proposal per column with new entries.
+
+        Raises:
+            ConnectorError: If either side is a warehouse table.
+            ConfigError: If a threshold is out of range, or the configuration
+                fails as it would in a run.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
+        """
+        if _is_warehouse(source) or _is_warehouse(target):
+            raise ConnectorError(
+                "Value map proposals read source and target rows locally, so both sides "
+                "must be file or lakehouse sources. Export the warehouse tables, or a "
+                "sample of them, to Parquet and point the configuration at those files."
+            )
+        engine = cls(diff, LoaderFactory.load(source), LoaderFactory.load(target))
+        return engine.propose_value_maps(
+            min_confidence=min_confidence,
+            min_support=min_support,
+            sample_fraction=sample_fraction,
+        )
+
+    def propose_value_maps(
+        self,
+        *,
+        min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+        min_support: int = DEFAULT_MIN_SUPPORT,
+        sample_fraction: float = 1.0,
+    ) -> list[ValueMapProposal]:
+        """Propose `value_map` entries from how source and target values line up.
+
+        Rows are aligned, normalized, and joined exactly as `run()` does, on a
+        copy, so this engine can still run afterward. For each compared text
+        column that stage 4 can map, a source value is proposed for the target
+        value it lines up with in at least `min_confidence` of its joined rows,
+        provided at least `min_support` rows agree. Values are read as the
+        `value_map` stage sees them, so a `case_insensitive` column gets
+        lowercase keys. Rows a column's existing map already translates are
+        left out, which also means a raw value equal to one of that map's
+        outputs cannot receive an entry.
+
+        Args:
+            min_confidence (float): Share of rows that must agree, above 0.5.
+            min_support (int): Agreeing rows a proposal needs.
+            sample_fraction (float): Share of source rows to read, picked by a
+                hash of the primary keys, so the same data samples the same
+                rows under one Polars version.
+
+        Returns:
+            list[ValueMapProposal]: One proposal per column with new entries,
+                in source column order.
+
+        Raises:
+            ConfigError: If a threshold is out of range, or the configuration
+                fails as it would in a run.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
+        """
+        _check_value_map_thresholds(min_confidence, min_support, sample_fraction)
+        prepared = type(self)(self.config, self.source, self.target)
+        prepared._align_structure()
+        prepared._validate_schema()
+        stored = prepared.source.collect_schema()
+        prepared.source = prepared._normalize_frame(prepared.source, is_source=True)
+        prepared.target = prepared._normalize_frame(prepared.target, is_source=False)
+        prepared._check_uniqueness()
+
+        columns = prepared._value_map_columns(stored)
+        if not columns:
+            return []
+        joined = prepared._value_map_join(columns, sample_fraction)
+        frames = pl.collect_all(
+            _value_map_query(
+                joined,
+                column,
+                mapped_values=list(
+                    (prepared._get_effective_rule(column)["value_map"] or {}).values()
+                ),
+                min_confidence=min_confidence,
+                min_support=min_support,
+            )
+            for column in columns
+        )
+        proposals = (
+            prepared._value_map_proposal(column, frame)
+            for column, frame in zip(columns, frames, strict=True)
+        )
+        return [proposal for proposal in proposals if proposal is not None]
+
+    def _value_map_columns(self, stored: pl.Schema) -> list[str]:
+        """Pick the compared columns a `value_map` proposal can apply to.
+
+        Args:
+            stored (pl.Schema): Aligned source schema, before normalization.
+
+        Returns:
+            list[str]: Candidate columns, in source order.
+        """
+        keys = set(self.config.primary_keys)
+        target_schema = self.target.collect_schema()
+        columns: list[str] = []
+        for column, dtype in stored.items():
+            if column in keys or column not in target_schema:
+                continue
+            rule = self._get_effective_rule(column)
+            if rule["ignore"] or not _compares_mapped_text(rule, dtype):
+                continue
+            if self.config.strict_types and not isinstance(
+                target_schema[column], (pl.String, pl.Utf8)
+            ):
+                # Types that differ always mismatch under strict_types; no map helps.
+                continue
+            columns.append(column)
+        return columns
+
+    def _value_map_join(self, columns: list[str], sample_fraction: float) -> pl.LazyFrame:
+        """Pair each candidate column's normalized values on the primary keys.
+
+        Args:
+            columns (list[str]): Candidate columns.
+            sample_fraction (float): Share of source rows to keep.
+
+        Returns:
+            pl.LazyFrame: Keys plus `<column>_source` and `<column>_target`.
+        """
+        keys = self.config.primary_keys
+        source = self.source.select(
+            *keys, *(pl.col(column).alias(f"{column}_source") for column in columns)
+        )
+        target = self.target.select(
+            *keys, *(pl.col(column).alias(f"{column}_target") for column in columns)
+        )
+        if sample_fraction < 1:
+            cutoff = round(sample_fraction * _SAMPLE_BUCKETS)
+            source = source.filter(pl.struct(keys).hash(seed=0) % _SAMPLE_BUCKETS < cutoff)
+        return source.join(target, on=keys, how="inner")
+
+    def _value_map_proposal(self, column: str, frame: pl.DataFrame) -> ValueMapProposal | None:
+        """Turn one column's counted pairs into a proposal.
+
+        Args:
+            column (str): Candidate column.
+            frame (pl.DataFrame): Output of `_value_map_query` for it.
+
+        Returns:
+            ValueMapProposal | None: The proposal, or None without new entries.
+        """
+        if frame.is_empty():
+            return None
+        entries = tuple(ValueMapEntry(**row) for row in frame.iter_rows(named=True))
+        governing = _match_rule(self.config.rules, column)
+        existing = governing.value_map if governing is not None and governing.value_map else {}
+        return ValueMapProposal(
+            column=column,
+            value_map={**existing, **{entry.source_value: entry.target_value for entry in entries}},
+            entries=entries,
+            governing_rule_index=None if governing is None else self.config.rules.index(governing),
+        )
 
     def _get_effective_rule(self, col_name: str) -> EffectiveRule:
         """Resolves all rules (Specific > Pattern > Global) into a unified dictionary.

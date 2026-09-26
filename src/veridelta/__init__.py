@@ -29,6 +29,8 @@ from veridelta.models import (
     SourceConfig,
     SourceRef,
     SourceType,
+    ValueMapEntry,
+    ValueMapProposal,
     WhitespaceMode,
 )
 
@@ -56,6 +58,8 @@ __all__ = [
     "SourceConfig",
     "SourceRef",
     "SourceType",
+    "ValueMapEntry",
+    "ValueMapProposal",
     "VerideltaError",
     "WhitespaceMode",
     "datasets",
