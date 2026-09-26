@@ -64,6 +64,37 @@ def _row_limit(text: str) -> int:
     return value
 
 
+def _report_failure(exc: Exception) -> int:
+    """Explain on stderr why a command stopped.
+
+    Args:
+        exc (Exception): What stopped the command.
+
+    Returns:
+        int: `EXIT_MISMATCH`, since CI treats a failure like drift.
+    """
+    if isinstance(exc, ConfigError):
+        print(f"\nConfiguration Error\n{exc}", file=sys.stderr)
+        print(
+            "\nThis is a problem with the configuration file, not with the data. "
+            "Correct the setting above and run again.",
+            file=sys.stderr,
+        )
+    elif isinstance(exc, VerideltaError):
+        print(f"\n{type(exc).__name__}\n{exc}", file=sys.stderr)
+    else:
+        # Anything reaching here came from Polars or a driver, where the message
+        # alone rarely says what the user should do about it.
+        print(f"\nUnexpected System Error\n{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            "\nThis is a bug or an unsupported input. Please report it at "
+            "https://github.com/Veridelta/veridelta/issues with the configuration "
+            "file and this message.",
+            file=sys.stderr,
+        )
+    return EXIT_MISMATCH
+
+
 def run(args: argparse.Namespace) -> int:
     """Executes the comparison workflow based on CLI arguments.
 
@@ -106,28 +137,8 @@ def run(args: argparse.Namespace) -> int:
 
         return EXIT_MATCH if summary.is_match else EXIT_MISMATCH
 
-    except ConfigError as e:
-        print(f"\nConfiguration Error\n{e}", file=sys.stderr)
-        print(
-            "\nThis is a problem with the configuration file, not with the data. "
-            "Correct the setting above and run again.",
-            file=sys.stderr,
-        )
-        return EXIT_MISMATCH
-    except VerideltaError as e:
-        print(f"\n{type(e).__name__}\n{e}", file=sys.stderr)
-        return EXIT_MISMATCH
-    except Exception as e:
-        # Anything reaching here came from Polars or a driver, where the message
-        # alone rarely says what the user should do about it.
-        print(f"\nUnexpected System Error\n{type(e).__name__}: {e}", file=sys.stderr)
-        print(
-            "\nThis is a bug or an unsupported input. Please report it at "
-            "https://github.com/Veridelta/veridelta/issues with the configuration "
-            "file and this message.",
-            file=sys.stderr,
-        )
-        return EXIT_MISMATCH
+    except Exception as exc:
+        return _report_failure(exc)
 
 
 def build_parser() -> argparse.ArgumentParser:
