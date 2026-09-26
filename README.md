@@ -16,14 +16,14 @@ Powered by [Polars](https://pola.rs/). **[Documentation](https://veridelta.githu
 - **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
 - **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report. Artifacts for added, removed, and changed rows.
 - **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
-- **Connectors.** Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans. Optional extras.
+- **Connectors.** Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras.
 
 ## Install
 
 ```bash
 uv add veridelta
 # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, excel, fuzzy, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, database, excel, fuzzy, all
 ```
 
 Routing, YAML fields, and time travel: [configuration guide](https://veridelta.github.io/veridelta/configuration/).
@@ -35,10 +35,12 @@ flowchart LR
   subgraph sources [Sources]
     files[Files]
     lakehouse[Delta Iceberg]
+    databases[Postgres MySQL SQLite]
     warehouse[Snowflake Databricks]
   end
   files --> loader[LoaderFactory]
   lakehouse --> loader
+  databases --> loader
   warehouse --> compiler[SQLPushdownCompiler]
   loader --> engine["DiffEngine"]
   engine --> result[DiffResult]
@@ -49,7 +51,7 @@ flowchart LR
   result --> exitCode[Exit code]
 ```
 
-File and lakehouse sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a `DiffResult`.
+File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a `DiffResult`.
 
 ## Quick start
 
@@ -100,7 +102,7 @@ veridelta run -c veridelta.yaml
 - [2. YAML and CLI](https://veridelta.github.io/veridelta/examples/02_yaml_and_cli/) — pipeline automation, `--json`, artifacts.
 - [3. Advanced Rules](https://veridelta.github.io/veridelta/examples/03_advanced_rules/) — drift resolution on real data.
 - [4. HTML Reports](https://veridelta.github.io/veridelta/examples/04_html_reports/) — audit and compliance hand-off.
-- [Configuration](https://veridelta.github.io/veridelta/configuration/) — fields, formats, extras, warehouse and lakehouse routing.
+- [Configuration](https://veridelta.github.io/veridelta/configuration/) — fields, formats, extras, warehouse, lakehouse, and database routing.
 - [API Reference](https://veridelta.github.io/veridelta/api/) — public Python surface.
 - [Roadmap](https://veridelta.github.io/veridelta/roadmap/) — work that is not built yet.
 

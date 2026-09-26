@@ -6,7 +6,8 @@
 Translates `DiffRule` models into Snowflake and Databricks SQL predicates and
 assembles inner-join mismatch queries, per-column mismatch tallies, anti-join
 queries for added and removed rows, row counts, and column probes without
-extracting source tables.
+extracting source tables. It also compiles the one statement a database source
+reads its `table` with, so every SQL string Veridelta builds is assembled here.
 
 Every dialect-specific spelling lives in a table at module scope rather than in
 the method that needs it. Adding a dialect is then a matter of filling in the
@@ -212,6 +213,81 @@ above it and needs Runtime 13.3, so neither is portable. Snowflake and
 Databricks count characters, as the local engine does. DuckDB counts UTF-8
 bytes, which is why the parity tests compare ASCII text.
 """
+
+
+_DATABASE_IDENTIFIER_QUOTES: Final[dict[str, tuple[str, str]]] = {
+    "clickhouse": ("`", "`"),
+    "mssql": ("[", "]"),
+    "mysql": ("`", "`"),
+    "oracle": ('"', '"'),
+    "postgres": ('"', '"'),
+    "postgresql": ('"', '"'),
+    "redshift": ('"', '"'),
+    "sqlite": ('"', '"'),
+}
+"""Opening and closing identifier quote for each database URI scheme a `table` may name.
+
+Keyed by URI scheme rather than `SQLDialect`, whose members are pushdown
+dialects that must fill every table above. A database source is compared
+locally and only ever reads `SELECT * FROM <table>`, so quoting is all it
+needs from this module. Quoting keeps a name's stored case and lets it be a
+reserved word. A scheme missing here refuses `table` instead of borrowing
+another database's quote character.
+"""
+
+
+def _relation_segments(name: str) -> list[str]:
+    """Split a possibly dotted relation name into allowlisted segments.
+
+    The allowlist admits letters, digits, and underscores only, so no segment
+    can contain a quote character of any dialect or close its own quoting.
+
+    Args:
+        name (str): Relation name, optionally `catalog.schema.table`.
+
+    Returns:
+        list[str]: One to three unquoted identifier segments.
+
+    Raises:
+        ConnectorError: If the name is empty, has more than three segments, or
+            contains a disallowed identifier.
+    """
+    trimmed = name.strip()
+    if not trimmed:
+        raise ConnectorError("Table name must be a non-empty string.")
+    parts = trimmed.split(".")
+    if len(parts) > 3:
+        raise ConnectorError("Table name must have at most three dotted segments.")
+    for part in parts:
+        if SQL_IDENTIFIER_SEGMENT.fullmatch(part) is None:
+            raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
+    return parts
+
+
+def compile_database_select(scheme: str, table: str) -> str:
+    """Compile the statement that reads a database source's `table` whole.
+
+    Args:
+        scheme (str): Lowercase URI scheme, such as `postgresql`.
+        table (str): One to three dotted identifier segments.
+
+    Returns:
+        str: `SELECT * FROM` the table, each segment quoted for the database.
+
+    Raises:
+        ConfigError: If Veridelta has no quoting for the scheme.
+        ConnectorError: If the table name falls outside the identifier allowlist.
+    """
+    quotes = _DATABASE_IDENTIFIER_QUOTES.get(scheme)
+    if quotes is None:
+        known = ", ".join(sorted(_DATABASE_IDENTIFIER_QUOTES))
+        raise ConfigError(
+            f"'table' needs a URI scheme Veridelta knows how to quote; '{scheme}' is not "
+            f"one ({known}). Write the statement in 'query' instead."
+        )
+    opening, closing = quotes
+    quoted = ".".join(f"{opening}{part}{closing}" for part in _relation_segments(table))
+    return f"SELECT * FROM {quoted}"
 
 
 class SQLPushdownCompiler:
@@ -964,13 +1040,7 @@ class SQLPushdownCompiler:
             ConnectorError: If the relation name is empty, has more than three
                 segments, or contains a disallowed identifier.
         """
-        trimmed = name.strip()
-        if not trimmed:
-            raise ConnectorError("Table name must be a non-empty string.")
-        parts = trimmed.split(".")
-        if len(parts) > 3:
-            raise ConnectorError("Table name must have at most three dotted segments.")
-        return ".".join(self._quote_ident(part) for part in parts)
+        return ".".join(self._quote_ident(part) for part in _relation_segments(name))
 
     def _qualify(self, alias: str, column: str) -> str:
         """Return `alias.column` with both parts quoted.

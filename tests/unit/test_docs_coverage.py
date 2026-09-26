@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from veridelta.models import (
+    DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -27,6 +28,7 @@ _CONFIG_MODELS = (
     DatabricksConfig,
     DeltaLakeConfig,
     IcebergConfig,
+    DatabaseConfig,
 )
 
 
@@ -39,9 +41,10 @@ class TestConfigurationGuideCoverage:
         """Ensure a new field cannot ship without appearing in the guide.
 
         A one-time audit goes stale the next time someone adds a field. Binding
-        the guide to the models makes the gap fail the suite instead. Warehouse
-        and lakehouse connection models are held to the same standard, since a
-        credential or time-travel field nobody documents is one nobody can use.
+        the guide to the models makes the gap fail the suite instead. Warehouse,
+        lakehouse, and database connection models are held to the same standard,
+        since a credential or time-travel field nobody documents is one nobody
+        can use.
         """
         guide = _GUIDE.read_text(encoding="utf-8")
         missing = [

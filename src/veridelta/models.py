@@ -13,6 +13,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
@@ -1032,8 +1033,114 @@ class IcebergConfig(BaseModel):
     )
 
 
+class DatabaseConfig(BaseModel):
+    """Immutable settings for reading a database table or query into a local comparison.
+
+    The rows are read through ConnectorX into Polars and compared by the local
+    engine, so a database pairs with files, lakehouse tables, or another
+    database. Requires the `database` extra (`uv add 'veridelta[database]'`).
+
+    Attributes:
+        type (Literal["database"]): Discriminator for YAML source routing.
+        uri (str): ConnectorX connection URI, such as
+            `postgresql://analyst@db.internal:5432/sales` or
+            `sqlite:///srv/data/legacy.db`. A password written inside it is
+            masked when the config is printed, but kept by `model_dump()`,
+            which the connector needs.
+        password (str | None): Optional password, percent-encoded into the
+            URI's user information when the connector reads. Left out when the
+            config is printed, but kept by `model_dump()`.
+        table (str | None): Table or view to read whole, as one to three
+            unquoted identifier segments.
+        query (str | None): SQL statement to run instead, sent to the database
+            exactly as written. Set exactly one of `table` and `query`.
+    """
+
+    # Credentials pass through here, and Pydantic quotes raw input in its errors.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    type: Literal["database"] = Field("database", description="Discriminator for databases.")
+    uri: str = Field(
+        ..., description="ConnectorX connection URI, such as postgresql://user@host/db."
+    )
+    password: str | None = Field(
+        default=None,
+        repr=False,
+        description="Optional password, percent-encoded into the URI when the source is read.",
+    )
+    table: str | None = Field(
+        default=None,
+        pattern=SQL_RELATION_PATTERN,
+        description="Table or view to read whole.",
+    )
+    query: str | None = Field(
+        default=None,
+        min_length=1,
+        description="SQL statement to run instead of reading a table, sent as written.",
+    )
+
+    @model_validator(mode="after")
+    def validate_connection(self) -> "DatabaseConfig":
+        """Reject a source that is ambiguous about its rows or its password.
+
+        Returns:
+            DatabaseConfig: The validated instance.
+
+        Raises:
+            ValueError: If both or neither of `table` and `query` are set, the
+                URI has no scheme, or `password` conflicts with the URI.
+        """
+        if (self.table is None) == (self.query is None):
+            raise ValueError(
+                "A database source reads a 'table' or runs a 'query'; set exactly one."
+            )
+        parts = urlsplit(self.uri)
+        if not parts.scheme:
+            raise ValueError("'uri' needs a scheme such as postgresql:// or sqlite://.")
+        if self.password is not None:
+            if parts.password is not None:
+                raise ValueError("Set the password in 'password' or inside 'uri', not both.")
+            if not parts.username:
+                raise ValueError(
+                    "'password' needs a user name in 'uri', as in "
+                    "postgresql://analyst@db.internal/sales."
+                )
+        return self
+
+    @property
+    def redacted_uri(self) -> str:
+        """The URI with any password written into it replaced by `***`.
+
+        Returns:
+            str: The URI, safe to print or log.
+        """
+        parts = urlsplit(self.uri)
+        if parts.password is None:
+            return self.uri
+        userinfo, _, hostinfo = parts.netloc.rpartition("@")
+        user = userinfo.partition(":")[0]
+        return urlunsplit(parts._replace(netloc=f"{user}:***@{hostinfo}"))
+
+    def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
+        """Print the URI with its password masked.
+
+        `repr()`, `str()`, and rich displays all read from here, while
+        `model_dump()` and the connector get the URI as written.
+
+        Yields:
+            tuple[str | None, Any]: Each field name with the value to print.
+        """
+        for name, value in super().__repr_args__():
+            yield (name, self.redacted_uri) if name == "uri" else (name, value)
+
+
 SourceRef = Annotated[
-    SourceConfig | SnowflakeConfig | DatabricksConfig | DeltaLakeConfig | IcebergConfig,
+    SourceConfig
+    | SnowflakeConfig
+    | DatabricksConfig
+    | DeltaLakeConfig
+    | IcebergConfig
+    | DatabaseConfig,
     Field(discriminator="type"),
 ]
-"""YAML/Python source or target: file, warehouse, or lakehouse."""
+"""YAML/Python source or target: file, warehouse, lakehouse, or database."""

@@ -39,21 +39,22 @@ uv add 'veridelta[excel]'
 
 Discrepancy artifacts write to `csv`, `parquet`, `json`, `ndjson`, or `arrow` via `output_format`. Excel is deliberately absent: writing a workbook needs a second dependency that a discrepancy dump does not justify.
 
-## Warehouse and lakehouse sources
+## Warehouse, lakehouse, and database sources
 
-Set `type` on `source` and `target` to select a connector. Warehouse and lakehouse drivers are optional extras:
+Set `type` on `source` and `target` to select a connector. Warehouse, lakehouse, and database drivers are optional extras:
 
 ```bash
 uv add 'veridelta[snowflake]'
 uv add 'veridelta[databricks]'
 uv add 'veridelta[delta]'
 uv add 'veridelta[iceberg]'
+uv add 'veridelta[database]'
 uv add 'veridelta[all]'
 ```
 
-Do not commit `password` or `access_token` in YAML. Write `${NAME}` so the loader reads them from the environment (see [Environment variables](#environment-variables)), or build the connection in Python (for example `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`) and pass it to `DiffEngine.run_from_configs`.
+Do not commit `password` or `access_token` in YAML, including a database source's `password`. Write `${NAME}` so the loader reads them from the environment (see [Environment variables](#environment-variables)), or build the connection in Python (for example `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`) and pass it to `DiffEngine.run_from_configs`.
 
-Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
+Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse/database and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`. Database sources are read into the local engine like files, so they never push down; see [Database sources](#database-sources).
 
 `table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Rules that select columns by `pattern` are matched against the probed column names before any SQL is compiled, so they apply in the warehouse exactly as they do locally.
 
@@ -63,7 +64,7 @@ Every column present on both sides is compared, exactly as it is locally. Column
 
 The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase). `normalize_column_names` cannot change that: pushdown raises `ConfigError` if it would rename a stored column.
 
-All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. The exception is `min_jaro_winkler_similarity`, which pushdown refuses with `ConfigError` before any comparison query runs rather than approximating it; see [Fuzzy Text Matching](#8-fuzzy-text-matching). These behaviors still differ from the file and lakehouse path:
+All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. The exception is `min_jaro_winkler_similarity`, which pushdown refuses with `ConfigError` before any comparison query runs rather than approximating it; see [Fuzzy Text Matching](#8-fuzzy-text-matching). These behaviors still differ from the local path that files, lakehouse tables, and databases take:
 
 - Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
 - `strict_types` applies to local runs only. When the two relations store a column as different types, the warehouse compares them under its own coercion rules.
@@ -199,6 +200,33 @@ primary_keys: ["event_id"]
 
 `storage_options` is a string map passed through to the Delta or Iceberg scanner (credentials, region, and other object-store settings).
 
+### Database sources
+
+A `database` source reads a table, or the result of a query, from an operational database into Polars through [ConnectorX](https://github.com/sfu-db/connector-x). Install the `database` extra. The comparison runs locally, so a database pairs with a file, a lakehouse table, or another database, and `crosswalk` reads it too.
+
+```yaml
+source:
+  type: database
+  uri: postgresql://analyst@legacy-db.internal:5432/sales
+  password: ${LEGACY_DB_PASSWORD}
+  table: public.orders
+
+target:
+  type: database
+  uri: mysql://analyst@modern-db.internal:3306/sales
+  password: ${MODERN_DB_PASSWORD}
+  query: SELECT order_id, total, status FROM orders WHERE placed >= '2024-01-01'
+
+primary_keys: ["order_id"]
+```
+
+- `uri` is a ConnectorX connection string: `postgresql://`, `mysql://` (MariaDB too), `mssql://`, `oracle://`, `redshift://`, `clickhouse://`, or `sqlite://` followed by a file path, as in `sqlite:///srv/data/legacy.db` or, on Windows, `sqlite://C:/data/legacy.db`. A SQLite path must name an existing file; Veridelta refuses a missing one rather than let ConnectorX create an empty database there.
+- Set exactly one of `table` and `query`. `table` is one to three identifier segments, each quoted for the database: double quotes for Postgres, Redshift, Oracle, and SQLite, backticks for MySQL and ClickHouse, and brackets for SQL Server. Quoting keeps case, so write names as they are stored. Any other scheme needs `query`.
+- `query` is sent to the database exactly as written. Veridelta cannot tell a read from a write, so connect with a role that can only read. It is expanded like any other `source` string, so write a literal `${` inside it as `$${`.
+- `password` is percent-encoded into the URI, so it may contain `@`, `:`, `/`, or any other character, and needs a user name in `uri`. A password written into `uri` itself must already be percent-encoded, which an expanded `${VAR}` is not, and setting both fails when the file loads. Credentials passed as URI parameters, such as `?password=`, are not masked in logs or errors, so use `password`.
+- The rows are read into memory once, before the comparison starts, because Polars has no lazy database reader. Select and filter in `query` rather than reading a whole table you mostly ignore.
+- Column types come from the database driver. For SQLite that means declared types: `INTEGER`, `REAL`, `TEXT`, `DATE`, `DATETIME`, `BOOLEAN`, and `NUMERIC` arrive as Int64, Float64, String, Date, Datetime, Boolean, and Float64. A column declared without a type whose first rows are NULL cannot be typed and fails the read.
+
 ### Connection fields
 
 Every connector block is selected by `type` and rejects keys it does not list.
@@ -210,10 +238,11 @@ Every connector block is selected by `type` and rejects keys it does not list.
 | `databricks` | `table`, `server_hostname`, `http_path` | `access_token`, `catalog`, `schema_name` |
 | `delta` | `table_uri` | `version`, `storage_options` |
 | `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
+| `database` | `uri`, and exactly one of `table` or `query` | `password` |
 
-`version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse and lakehouse blocks are frozen once loaded.
+`version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse, lakehouse, and database blocks are frozen once loaded.
 
-Printing a connection config, or formatting one into a log line, leaves out its credentials: `password` for Snowflake, `access_token` for Databricks, `storage_options` for Delta Lake and Iceberg, and a `storage_options` map nested in a file source's `options`, whose other reader options still print. They stay readable as attributes and in `model_dump()`, because the connectors and readers need them, so log a dump only after removing them.
+Printing a connection config, or formatting one into a log line, leaves out its credentials: `password` for Snowflake and databases, `access_token` for Databricks, `storage_options` for Delta Lake and Iceberg, and a `storage_options` map nested in a file source's `options`, whose other reader options still print. A password written inside a database `uri` prints as `***`, and the rest of the URI prints as written. They stay readable as attributes and in `model_dump()`, because the connectors and readers need them, so log a dump only after removing them.
 
 ### Environment variables
 
@@ -246,11 +275,13 @@ primary_keys: ["event_id"]
 
 A reference to an unset variable without a default, or a malformed one (`${1}`, `${NAME`, `${NAME-x}`, or a nested `${A:-${B}}`), raises `ConfigError` when the file loads. The error names the field, such as `source -> password`, and the variable when there is one, but never repeats a value; validation errors for `source` and `target` omit their input for the same reason.
 
+A database `password` is percent-encoded when it joins the URI, but a `${VAR}` expanded inside `uri` is not, so keep database passwords in `password`.
+
 Expanded values are text. `version` and `snapshot_id` accept only YAML integers, so write those literally, and file `options` reach the reader as they are, so an expanded option arrives as a string.
 
 ### Connector logging
 
-Connectors log under `veridelta.connectors.warehouse` and `veridelta.connectors.lakehouse`, with a `NullHandler` attached so nothing prints unless you opt in. `INFO` records a session or scan opening and closing; `DEBUG` records each pushdown statement by its round-trip kind (`schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`) with its duration. Log lines never contain SQL text, `storage_options`, passwords, or tokens. A warehouse session is closed when the run finishes, whether it succeeded or raised.
+Connectors log under `veridelta.connectors.warehouse`, `veridelta.connectors.lakehouse`, and `veridelta.connectors.database`, with a `NullHandler` attached so nothing prints unless you opt in. `INFO` records a session or scan opening and closing, and each database read with its row count and the URI with its password masked; `DEBUG` records each pushdown statement by its round-trip kind (`schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`) with its duration. Log lines never contain SQL text, `storage_options`, passwords, or tokens. A warehouse session is closed when the run finishes, whether it succeeded or raised.
 
 ```python
 import logging
