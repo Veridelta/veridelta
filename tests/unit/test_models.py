@@ -357,7 +357,7 @@ class TestModelStrictness:
         assert _SECRET not in str(exc_info.value)
 
     @pytest.mark.parametrize(
-        ("config", "field"),
+        ("config", "field", "value", "replacement"),
         [
             pytest.param(
                 SnowflakeConfig(
@@ -370,6 +370,8 @@ class TestModelStrictness:
                     password=_SECRET,
                 ),
                 "password",
+                _SECRET,
+                "another-secret",
                 id="snowflake-password",
             ),
             pytest.param(
@@ -377,12 +379,34 @@ class TestModelStrictness:
                     table="t", server_hostname="h", http_path="/sql", access_token=_SECRET
                 ),
                 "access_token",
+                _SECRET,
+                "another-secret",
                 id="databricks-token",
+            ),
+            pytest.param(
+                DeltaLakeConfig(
+                    table_uri="s3://lake/events",
+                    storage_options={"AWS_SECRET_ACCESS_KEY": _SECRET},
+                ),
+                "storage_options",
+                {"AWS_SECRET_ACCESS_KEY": _SECRET},
+                {"AWS_SECRET_ACCESS_KEY": "another-secret"},
+                id="delta-storage-options",
+            ),
+            pytest.param(
+                IcebergConfig(
+                    table_uri="s3://lake/iceberg/events",
+                    storage_options={"AWS_SECRET_ACCESS_KEY": _SECRET},
+                ),
+                "storage_options",
+                {"AWS_SECRET_ACCESS_KEY": _SECRET},
+                {"AWS_SECRET_ACCESS_KEY": "another-secret"},
+                id="iceberg-storage-options",
             ),
         ],
     )
     def test_it_keeps_credentials_out_of_printed_configs(
-        self, config: BaseModel, field: str
+        self, config: BaseModel, field: str, value: object, replacement: object
     ) -> None:
         """Ensure printing or logging a connection never shows its secret.
 
@@ -393,9 +417,9 @@ class TestModelStrictness:
         assert _SECRET not in str(config)
         assert _SECRET not in f"{config}"
         assert field not in repr(config)
-        assert getattr(config, field) == _SECRET
-        assert config.model_dump()[field] == _SECRET
-        assert config != config.model_copy(update={field: "another-secret"})
+        assert getattr(config, field) == value
+        assert config.model_dump()[field] == value
+        assert config != config.model_copy(update={field: replacement})
 
 
 @pytest.mark.unit
