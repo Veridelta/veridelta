@@ -958,6 +958,8 @@ class DeltaLakeConfig(BaseModel):
         table_uri (str): Filesystem path or object-store URI of the table.
         version (int | None): Optional table version to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
+            Left out when the config is printed, but kept by `model_dump()`,
+            which the scanner needs.
     """
 
     # Credentials pass through here, and Pydantic quotes raw input in its errors.
@@ -973,6 +975,7 @@ class DeltaLakeConfig(BaseModel):
     )
     storage_options: dict[str, str] = Field(
         default_factory=dict,
+        repr=False,
         description="Object-store credentials and options passed to Polars.",
     )
 
@@ -985,6 +988,8 @@ class IcebergConfig(BaseModel):
         table_uri (str): Catalog identifier or filesystem URI of the table.
         snapshot_id (int | None): Optional snapshot to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
+            Left out when the config is printed, but kept by `model_dump()`,
+            which the scanner needs.
     """
 
     # Credentials pass through here, and Pydantic quotes raw input in its errors.
@@ -1000,6 +1005,7 @@ class IcebergConfig(BaseModel):
     )
     storage_options: dict[str, str] = Field(
         default_factory=dict,
+        repr=False,
         description="Object-store credentials and options passed to Polars.",
     )
 
