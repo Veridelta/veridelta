@@ -11,14 +11,14 @@ Powered by [Polars](https://pola.rs/).
 - **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
 - **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report. Artifacts for added, removed, and changed rows.
 - **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
-- **Connectors.** Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
+- **Connectors.** Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
 
 ## Install
 
 ```bash
 uv add veridelta
 # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, excel, fuzzy, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, database, excel, fuzzy, all
 ```
 
 ## Architecture
@@ -28,10 +28,12 @@ flowchart LR
   subgraph sources [Sources]
     files[Files]
     lakehouse[Delta Iceberg]
+    databases[Postgres MySQL SQLite]
     warehouse[Snowflake Databricks]
   end
   files --> loader[LoaderFactory]
   lakehouse --> loader
+  databases --> loader
   warehouse --> compiler[SQLPushdownCompiler]
   loader --> engine["DiffEngine"]
   engine --> result[DiffResult]
@@ -42,7 +44,7 @@ flowchart LR
   result --> exitCode[Exit code]
 ```
 
-File and lakehouse sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a `DiffResult`.
+File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a `DiffResult`.
 
 ## Quick start
 
@@ -95,6 +97,6 @@ Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_fo
 - [**2. YAML and CLI**](examples/02_yaml_and_cli.ipynb): pipeline automation, `--json`, artifacts.
 - [**3. Advanced Rules**](examples/03_advanced_rules.ipynb): drift resolution on real data.
 - [**4. HTML Reports**](examples/04_html_reports.ipynb): audit and compliance hand-off.
-- [**Configuration Guide**](configuration.md): fields, formats, extras, CLI flags, warehouse and lakehouse routing.
+- [**Configuration Guide**](configuration.md): fields, formats, extras, CLI flags, warehouse, lakehouse, and database routing.
 - [**API Reference**](api.md): public Python surface.
 - [**Roadmap**](roadmap.md): work that is not built yet.
