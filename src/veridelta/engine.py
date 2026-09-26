@@ -12,6 +12,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 from types import ModuleType
 from typing import ClassVar, Final, Literal, TypedDict
@@ -60,6 +61,10 @@ fastexcel = _optional_module("fastexcel")
 """Presence probe for the `excel` extra. Polars imports this itself, but only
 at call time, so checking here turns a bare ImportError into an install hint."""
 
+rapidfuzz_distance = _optional_module("rapidfuzz.distance")
+"""Presence probe for the `fuzzy` extra, whose scorers evaluate
+`max_levenshtein_distance` and `min_jaro_winkler_similarity` locally."""
+
 
 class EffectiveRule(TypedDict):
     """Flattened per-column parameters after specific, pattern, and global merge."""
@@ -78,6 +83,8 @@ class EffectiveRule(TypedDict):
     timezone: str | None
     cast_to: CastTarget | None
     ignore: bool
+    max_levenshtein_distance: int | None
+    min_jaro_winkler_similarity: float | None
 
 
 def _unusable_sentinel_error(
@@ -614,6 +621,10 @@ def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRul
         "timezone": None,
         "cast_to": None,
         "ignore": False,
+        # No `default_*` counterpart: loosening every text column at once would
+        # also forgive identifiers and codes that must match exactly.
+        "max_levenshtein_distance": None,
+        "min_jaro_winkler_similarity": None,
     }
     if rule is None:
         return effective
@@ -641,6 +652,8 @@ def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRul
     effective["timezone"] = rule.timezone
     effective["cast_to"] = rule.cast_to
     effective["ignore"] = rule.ignore
+    effective["max_levenshtein_distance"] = rule.max_levenshtein_distance
+    effective["min_jaro_winkler_similarity"] = rule.min_jaro_winkler_similarity
     return effective
 
 
@@ -704,6 +717,49 @@ def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -
     return dtype is None or dtype.is_numeric()
 
 
+def _compares_as_text(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
+    """Predict whether the local engine compares a source column as text.
+
+    `_build_match_expr` applies a similarity limit only when the normalized
+    source column is a string, so pushdown follows the same stage gates as
+    `_compares_numerically` to decide which columns a limit may reach.
+
+    Args:
+        effective (EffectiveRule): Rule with global defaults folded in.
+        dtype (pl.DataType | None): Probed source dtype, or None when the
+            probe did not report one, in which case the limit is kept.
+
+    Returns:
+        bool: True when a similarity limit should reach the warehouse predicate.
+    """
+    if effective["cast_to"] is not None:
+        return effective["cast_to"] == "String"
+    is_text = dtype is None or isinstance(dtype, (pl.String, pl.Utf8))
+    if effective["datetime_format"] and (effective["pad_zeros"] is not None or is_text):
+        # A format parses text into a datetime, including text stage 5 padded.
+        return False
+    return effective["pad_zeros"] is not None or is_text
+
+
+def _jaro_winkler_pushdown_error(column: str) -> ConfigError:
+    """Build the refusal for a Jaro-Winkler limit on a warehouse comparison.
+
+    Args:
+        column (str): Column whose rule sets the limit.
+
+    Returns:
+        ConfigError: Error naming the column, why SQL cannot honor the limit,
+            and what to do instead.
+    """
+    return ConfigError(
+        f"Column '{column}' sets min_jaro_winkler_similarity, which warehouse pushdown "
+        "cannot evaluate the way a local run does: Snowflake's JAROWINKLER_SIMILARITY "
+        "ignores case and returns a whole number from 0 to 100, and Databricks has no "
+        "Jaro-Winkler function. Use max_levenshtein_distance, which compiles to SQL, or "
+        "compare file or lakehouse copies of these tables locally."
+    )
+
+
 def _pushdown_rule(
     stored: str,
     aligned: str,
@@ -713,6 +769,7 @@ def _pushdown_rule(
     absolute_tolerance: float | None = None,
     relative_tolerance: float | None = None,
     treat_null_as_equal: bool | None = None,
+    max_levenshtein_distance: int | None = None,
 ) -> DiffRule:
     """Re-materialize a folded rule as the fully specified `DiffRule` the compiler reads.
 
@@ -729,6 +786,7 @@ def _pushdown_rule(
         absolute_tolerance (float | None): Stage 8 absolute tolerance.
         relative_tolerance (float | None): Stage 8 relative tolerance.
         treat_null_as_equal (bool | None): Stage 9 null-safe equality.
+        max_levenshtein_distance (int | None): Stage 8 edit-distance limit.
 
     Returns:
         DiffRule: Rule naming the stored column, with a `rename_to` when the
@@ -750,6 +808,9 @@ def _pushdown_rule(
         datetime_format=effective["datetime_format"],
         timezone=effective["timezone"],
         cast_to=effective["cast_to"],
+        # No Jaro-Winkler counterpart: the resolver refuses that limit, since
+        # no warehouse can reproduce it.
+        max_levenshtein_distance=max_levenshtein_distance,
     )
 
 
@@ -818,8 +879,9 @@ def _resolve_pushdown_rules(
 
     Raises:
         ConfigError: If a column carries an explicit `null_values` rule whose
-            sentinels none of its probed types can hold, or a `timezone` rule
-            the probed types cannot satisfy.
+            sentinels none of its probed types can hold, a `timezone` rule the
+            probed types cannot satisfy, or a `min_jaro_winkler_similarity` on
+            a column compared as text.
     """
     target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
@@ -842,6 +904,10 @@ def _resolve_pushdown_rules(
         # A global tolerance reaches every column, but only a numeric one may
         # compare within it; the rest compare exactly, as they do locally.
         numeric = _compares_numerically(effective, source_schema.get(column))
+        # Likewise a similarity limit only ever loosens a column compared as text.
+        text = _compares_as_text(effective, source_schema.get(column))
+        if text and effective["min_jaro_winkler_similarity"] is not None:
+            raise _jaro_winkler_pushdown_error(aligned)
 
         resolved.append(
             _pushdown_rule(
@@ -852,6 +918,7 @@ def _resolve_pushdown_rules(
                 absolute_tolerance=effective["abs_tol"] if numeric else 0.0,
                 relative_tolerance=effective["rel_tol"] if numeric else 0.0,
                 treat_null_as_equal=effective["treat_null"],
+                max_levenshtein_distance=effective["max_levenshtein_distance"] if text else None,
             )
         )
     return resolved
@@ -918,6 +985,89 @@ _CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
 """`cast_to` name to the dtype it resolves to. An explicit table rather than a
 `getattr(pl, ...)` lookup, which returned None for anything unrecognized and
 skipped the cast without a word."""
+
+
+def _fuzzy_measures() -> ModuleType:
+    """Return rapidfuzz's distance module, or explain how to install it.
+
+    Returns:
+        ModuleType: The `rapidfuzz.distance` module.
+
+    Raises:
+        ConfigError: If the `fuzzy` extra is not installed.
+    """
+    if rapidfuzz_distance is None:
+        raise ConfigError(
+            "max_levenshtein_distance and min_jaro_winkler_similarity need the optional "
+            "'fuzzy' extra to compare text locally. Install it with: uv add 'veridelta[fuzzy]'"
+        )
+    return rapidfuzz_distance
+
+
+def _similarity_test(rule: EffectiveRule) -> Callable[[str, str], bool] | None:
+    """Build the test a differing text pair must pass to match at stage 8.
+
+    Args:
+        rule (EffectiveRule): Rule with global defaults folded in.
+
+    Returns:
+        Callable[[str, str], bool] | None: The test for the rule's similarity
+            limit, or None when the rule sets neither.
+
+    Raises:
+        ConfigError: If a limit is set but the `fuzzy` extra is not installed.
+    """
+    limit = rule["max_levenshtein_distance"]
+    if limit is not None:
+        distance = _fuzzy_measures().Levenshtein.distance
+        # Past `score_cutoff` rapidfuzz stops counting and reports limit + 1.
+        return lambda left, right: bool(distance(left, right, score_cutoff=limit) <= limit)
+    floor = rule["min_jaro_winkler_similarity"]
+    if floor is not None:
+        similarity = _fuzzy_measures().JaroWinkler.similarity
+        # Below `score_cutoff` rapidfuzz reports a similarity of 0.
+        return lambda left, right: bool(similarity(left, right, score_cutoff=floor) >= floor)
+    return None
+
+
+def _score_differing_pairs(pairs: pl.Series, *, test: Callable[[str, str], bool]) -> pl.Series:
+    """Mark the pairs that still differ after normalization but pass `test`.
+
+    Equal pairs already match through equality, and a missing value is never
+    similar to anything, so only non-null pairs that differ reach Python.
+
+    Args:
+        pairs (pl.Series): Struct series with `source` and `target` text fields.
+        test (Callable[[str, str], bool]): Similarity test for one pair.
+
+    Returns:
+        pl.Series: Boolean mask, True where a differing pair passes `test`.
+    """
+    differing = (
+        pairs.struct.unnest()
+        .with_row_index("row")
+        .filter((pl.col("source") != pl.col("target")).fill_null(False))
+    )
+    hits = [row for row, source, target in differing.iter_rows() if test(source, target)]
+    return pl.repeat(False, len(pairs), dtype=pl.Boolean, eager=True).scatter(hits, True)
+
+
+def _similarity_expr(src: pl.Expr, tgt: pl.Expr, test: Callable[[str, str], bool]) -> pl.Expr:
+    """Evaluate a similarity test over two aligned text columns, lazily.
+
+    Args:
+        src (pl.Expr): Normalized source column.
+        tgt (pl.Expr): Normalized target column, already cast to the source type.
+        test (Callable[[str, str], bool]): Similarity test for one pair.
+
+    Returns:
+        pl.Expr: Boolean expression, True where a differing pair passes `test`.
+    """
+    return pl.struct(src.alias("source"), tgt.alias("target")).map_batches(
+        partial(_score_differing_pairs, test=test),
+        return_dtype=pl.Boolean,
+        is_elementwise=True,
+    )
 
 
 _ARTIFACT_WRITERS: Final[dict[ArtifactFormat, Callable[[pl.DataFrame, Path], None]]] = {
@@ -1204,10 +1354,11 @@ def _collect_pushdown_summary(
 
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
-            primary key.
+            primary key, or a rule asks for what the warehouse cannot reproduce:
+            `min_jaro_winkler_similarity` on a column compared as text, or a
+            `datetime_format` directive with no SQL spelling.
         DataIntegrityError: If either relation repeats a normalized primary key.
-        ConnectorError: If a rule uses a field the compiler cannot express or the
-            warehouse returns a malformed aggregate.
+        ConnectorError: If the warehouse returns a malformed aggregate.
     """
     source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff
@@ -1835,6 +1986,7 @@ class DiffEngine:
             elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
 
+        similar = _similarity_test(rule) if isinstance(dtype, (pl.String, pl.Utf8)) else None
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
             # Subtract the smaller value from the larger: `tgt - src` on unsigned
             # columns wraps below zero instead of going negative.
@@ -1847,6 +1999,9 @@ class DiffEngine:
                 within = within & src.is_finite()
             # Equal values match outright: NaN meets NaN, and an infinity itself.
             val_match = (src == tgt) | within
+        elif similar is not None:
+            # Equal text matches outright, so only a differing pair is scored.
+            val_match = (src == tgt) | _similarity_expr(src, tgt, similar)
         else:
             val_match = src == tgt
 
@@ -1932,8 +2087,10 @@ class DiffEngine:
                Target as the authoritative structural contract.
             2. Validation: Asserts primary key existence and enforces the `SchemaMode`.
             3. Semantic Normalization: Applies stages 1-7 of the `DiffRule` transform
-               order to each dataset independently, then asserts key uniqueness on
-               the normalized keys (triggering a localized collection).
+               order to each dataset independently and builds the stage 8-9 match
+               expressions from the normalized schemas, so a rule the run cannot
+               honor fails before any data moves. It then asserts key uniqueness
+               on the normalized keys (triggering a localized collection).
             4. Relational Joins: Formulates the lazy anti-joins ('Added', 'Removed')
                and inner-joins ('Changed') to isolate discrepancies.
             5. Graph Execution: Executes the computation DAG via `.collect()` to
@@ -1947,7 +2104,8 @@ class DiffEngine:
 
         Raises:
             ConfigError: If schema constraints or primary keys are violated
-                post-alignment, or the requested artifact export format has no writer.
+                post-alignment, a similarity limit needs the missing `fuzzy`
+                extra, or the requested artifact export format has no writer.
             DataIntegrityError: If duplicate primary keys prevent deterministic joins.
         """
         self._align_structure()
@@ -1956,13 +2114,16 @@ class DiffEngine:
         self.source = self._normalize_frame(self.source, is_source=True)
         self.target = self._normalize_frame(self.target, is_source=False)
 
+        # Built from schemas alone, before any rows are collected, so a rule
+        # the run cannot honor fails first, as it does in a warehouse.
+        compared_columns, match_expressions = self._match_expressions()
+
         # Runs after normalization: case folding or sentinel coercion on a key
         # column can collapse distinct rows into duplicates, and that must fail
         # here rather than silently exploding the joins below.
         self._check_uniqueness()
 
         added_df, removed_df = self._collect_key_discrepancies()
-        compared_columns, match_expressions = self._match_expressions()
         changed_df = self._collect_changed_rows(compared_columns, match_expressions)
         return self._build_result(added_df, removed_df, changed_df, compared_columns)
 

@@ -8,6 +8,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import get_args
+from unittest.mock import call
 
 import polars as pl
 import pytest
@@ -22,12 +23,15 @@ from veridelta.engine import (
     LoaderFactory,
     _alignment_maps,
     _column_mismatches_from_frame,
+    _compares_as_text,
     _compares_numerically,
     _fold_rule_defaults,
     _match_rule,
     _optional_module,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
+    _score_differing_pairs,
+    _similarity_test,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import ArtifactFormat, DiffConfig, DiffRule, SourceConfig, SourceType
@@ -1050,6 +1054,353 @@ class TestCanonicalTransformPipeline:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestFuzzyTextMatching:
+    """Validate stage 8's text similarity limits on the local engine."""
+
+    def test_it_forgives_typos_within_the_edit_distance(self) -> None:
+        """Ensure a one-letter slip matches while a different name still does not."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1, 2, 3], "name": ["Jon", "Smith", "Jonathan"]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "name": ["John", "Smyth", "John"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], max_levenshtein_distance=1)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 1
+        assert summary.column_mismatches == {"name": 1}
+
+    @pytest.mark.parametrize(("limit", "changed"), [(2, 1), (3, 0)])
+    def test_it_counts_every_edit_toward_the_limit(self, limit: int, changed: int) -> None:
+        """Ensure kitten and sitting, three edits apart, need a limit of three."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1], "word": ["kitten"]})
+        tgt = pl.DataFrame({"id": [1], "word": ["sitting"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["word"], max_levenshtein_distance=limit)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == changed
+
+    @pytest.mark.parametrize(("floor", "changed"), [(0.96, 0), (0.97, 1)])
+    def test_it_forgives_names_above_the_jaro_winkler_floor(
+        self, floor: float, changed: int
+    ) -> None:
+        """Ensure MARTHA and MARHTA, which score 0.961, match only under a lower floor."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1], "name": ["MARTHA"]})
+        tgt = pl.DataFrame({"id": [1], "name": ["MARHTA"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=floor)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == changed
+
+    @pytest.mark.parametrize(("case_insensitive", "changed"), [(False, 1), (True, 0)])
+    def test_it_measures_case_unless_the_rule_folds_it_first(
+        self, case_insensitive: bool, changed: int
+    ) -> None:
+        """Ensure `ABD` and `abc` are three edits apart until stage 3 lowercases both."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1], "code": ["ABD"]})
+        tgt = pl.DataFrame({"id": [1], "code": ["abc"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["code"],
+                    max_levenshtein_distance=1,
+                    case_insensitive=case_insensitive,
+                )
+            ],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == changed
+
+    @pytest.mark.parametrize(("treat_null", "changed"), [(True, 1), (False, 2)])
+    def test_it_leaves_nulls_to_treat_null_as_equal(self, treat_null: bool, changed: int) -> None:
+        """Ensure a missing value is never within any distance of a present one."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1, 2, 3], "name": ["Jon", None, None]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "name": ["John", "x", None]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["name"],
+                    max_levenshtein_distance=1,
+                    treat_null_as_equal=treat_null,
+                )
+            ],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == changed
+
+    @pytest.mark.parametrize(
+        ("source", "target", "rule", "changed"),
+        [
+            pytest.param(
+                pl.Series([12]), pl.Series([13]), DiffRule(column_names=["val"]), 1, id="integer"
+            ),
+            pytest.param(
+                pl.Series(["12"]),
+                pl.Series(["13"]),
+                DiffRule(column_names=["val"], cast_to="Int64"),
+                1,
+                id="cast-to-integer",
+            ),
+            pytest.param(
+                pl.Series(["2024-01-02"]),
+                pl.Series(["2024-01-03"]),
+                DiffRule(column_names=["val"], datetime_format="%Y-%m-%d"),
+                1,
+                id="parsed-date",
+            ),
+            pytest.param(
+                pl.Series([7]),
+                pl.Series([8]),
+                DiffRule(column_names=["val"], pad_zeros=5),
+                0,
+                id="padded-to-text",
+            ),
+            pytest.param(
+                pl.Series([12]),
+                pl.Series([13]),
+                DiffRule(column_names=["val"], cast_to="String"),
+                0,
+                id="cast-to-text",
+            ),
+        ],
+    )
+    def test_it_only_loosens_columns_that_compare_as_text(
+        self, source: pl.Series, target: pl.Series, rule: DiffRule, changed: int
+    ) -> None:
+        """Ensure numbers and dates one apart still differ, while text one edit apart matches."""
+        pytest.importorskip("rapidfuzz")
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[rule.model_copy(update={"max_levenshtein_distance": 1})],
+        )
+        src = pl.DataFrame({"id": [1], "val": source})
+        tgt = pl.DataFrame({"id": [1], "val": target})
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == changed
+
+    def test_it_never_loosens_a_primary_key(self) -> None:
+        """Ensure keys one edit apart stay separate rows, since keys join on equality."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"code": ["abc"], "val": [1]})
+        tgt = pl.DataFrame({"code": ["abd"], "val": [1]})
+        config = DiffConfig(
+            primary_keys=["code"],
+            rules=[DiffRule(pattern=".*", max_levenshtein_distance=1)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert (summary.added_count, summary.removed_count) == (1, 1)
+
+    def test_it_measures_a_numeric_target_as_text_against_a_text_source(self) -> None:
+        """Ensure the soft cast to the source's type runs before the distance."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1], "val": ["12"]})
+        tgt = pl.DataFrame({"id": [1], "val": [13]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["val"], max_levenshtein_distance=1)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 0
+
+    def test_it_scores_only_pairs_that_still_differ(self, mocker: MockerFixture) -> None:
+        """Ensure equal and missing values never leave Polars to be scored."""
+        measures = mocker.patch("veridelta.engine.rapidfuzz_distance")
+        measures.Levenshtein.distance.return_value = 0
+        src = pl.DataFrame({"id": [1, 2, 3, 4], "name": ["Jon", "same", None, None]})
+        tgt = pl.DataFrame({"id": [1, 2, 3, 4], "name": ["John", "same", "x", None]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], max_levenshtein_distance=1)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert measures.Levenshtein.distance.call_args_list == [call("Jon", "John", score_cutoff=1)]
+        assert summary.changed_count == 1
+
+    def test_it_names_the_extra_when_rapidfuzz_is_missing(self, mocker: MockerFixture) -> None:
+        """Ensure a missing scorer reads as an install hint rather than an ImportError."""
+        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        frame = pl.DataFrame({"id": [1], "name": ["Jon"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.9)],
+        )
+
+        with pytest.raises(ConfigError, match=r"veridelta\[fuzzy\]"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    def test_it_reports_the_missing_extra_before_checking_keys(self, mocker: MockerFixture) -> None:
+        """Ensure a configuration problem surfaces before any rows are collected."""
+        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        frame = pl.DataFrame({"id": [1, 1], "name": ["Jon", "Ann"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], max_levenshtein_distance=1)],
+        )
+
+        with pytest.raises(ConfigError, match=r"veridelta\[fuzzy\]"):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    def test_it_needs_no_extra_when_no_text_column_uses_a_limit(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a limit on a numeric column neither loosens it nor needs rapidfuzz."""
+        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        src = pl.DataFrame({"id": [1], "val": [12]})
+        tgt = pl.DataFrame({"id": [1], "val": [13]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["val"], max_levenshtein_distance=1)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 1
+
+    def test_it_hands_only_differing_present_pairs_to_the_scorer(self) -> None:
+        """Ensure equal and missing pairs are skipped and hits keep their row positions.
+
+        Polars runs this helper on its own threads, which coverage cannot see,
+        so it is also called directly here.
+        """
+        pairs = pl.DataFrame(
+            {
+                "source": ["Jon", "same", None, "Ann", None],
+                "target": ["John", "same", "x", "Bob", None],
+            }
+        ).to_struct("pairs")
+        scored: list[tuple[str, str]] = []
+
+        def _first_name_only(left: str, right: str) -> bool:
+            scored.append((left, right))
+            return left == "Jon"
+
+        mask = _score_differing_pairs(pairs, test=_first_name_only)
+
+        assert mask.to_list() == [True, False, False, False, False]
+        assert scored == [("Jon", "John"), ("Ann", "Bob")]
+
+    @pytest.mark.parametrize(
+        ("rule", "matches"),
+        [
+            pytest.param(
+                DiffRule(column_names=["name"], max_levenshtein_distance=1),
+                [True, False],
+                id="levenshtein",
+            ),
+            pytest.param(
+                DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.96),
+                [False, True],
+                id="jaro-winkler",
+            ),
+        ],
+    )
+    def test_it_builds_the_test_for_the_limit_a_rule_sets(
+        self, rule: DiffRule, matches: list[bool]
+    ) -> None:
+        """Ensure each limit is compared in its own direction: at most, or at least."""
+        pytest.importorskip("rapidfuzz")
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+
+        test = _similarity_test(_fold_rule_defaults(rule, config))
+
+        assert test is not None
+        assert [test("Jon", "John"), test("MARTHA", "MARHTA")] == matches
+        assert _similarity_test(_fold_rule_defaults(None, config)) is None
+
+    def test_it_folds_similarity_limits_without_a_global_default(self) -> None:
+        """Ensure only a rule sets a limit, so no column is loosened by default."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.9)],
+        )
+
+        unruled = _fold_rule_defaults(None, config)
+        ruled = _fold_rule_defaults(config.rules[0], config)
+
+        assert unruled["max_levenshtein_distance"] is None
+        assert unruled["min_jaro_winkler_similarity"] is None
+        assert ruled["max_levenshtein_distance"] is None
+        assert ruled["min_jaro_winkler_similarity"] == 0.9
+
+
+_NORMALIZER_CASES = [
+    pytest.param([1.5], pl.Float64, DiffRule(column_names=["val"]), id="float"),
+    pytest.param(
+        [Decimal("1.50")], pl.Decimal(10, 2), DiffRule(column_names=["val"]), id="decimal"
+    ),
+    pytest.param(["x"], pl.String, DiffRule(column_names=["val"]), id="text"),
+    pytest.param([True], pl.Boolean, DiffRule(column_names=["val"]), id="boolean"),
+    pytest.param(
+        ["1.5"], pl.String, DiffRule(column_names=["val"], cast_to="Float64"), id="cast-up"
+    ),
+    pytest.param(
+        [1.5], pl.Float64, DiffRule(column_names=["val"], cast_to="String"), id="cast-down"
+    ),
+    pytest.param([7], pl.Int64, DiffRule(column_names=["val"], pad_zeros=3), id="padded"),
+    pytest.param(
+        [7],
+        pl.Int64,
+        DiffRule(column_names=["val"], pad_zeros=8, datetime_format="%Y%m%d"),
+        id="padded-then-parsed",
+    ),
+    pytest.param(
+        ["2024-01-02"],
+        pl.String,
+        DiffRule(column_names=["val"], datetime_format="%Y-%m-%d"),
+        id="parsed-text",
+    ),
+    pytest.param(
+        [20240102],
+        pl.Int64,
+        DiffRule(column_names=["val"], datetime_format="%Y%m%d"),
+        id="format-skips-an-integer",
+    ),
+    pytest.param(
+        ["2024"],
+        pl.Categorical,
+        DiffRule(column_names=["val"], datetime_format="%Y"),
+        id="format-skips-a-categorical",
+    ),
+    pytest.param(
+        [7], pl.Int64, DiffRule(column_names=["val"], cast_to="String"), id="cast-to-text"
+    ),
+]
+"""Probed dtypes and rules paired with what the local normalizer turns them into.
+
+Pushdown predicts the compared dtype from the probe alone, so every prediction
+helper is pinned to the real normalizer over these cases."""
+
+
+@pytest.mark.unit
+@pytest.mark.fast
 class TestPushdownRuleHelpers:
     """Validate the pushdown rule expander and tally reducer at the edges."""
 
@@ -1149,48 +1500,7 @@ class TestPushdownRuleHelpers:
             "stamp": (0.0, 0.0),
         }
 
-    @pytest.mark.parametrize(
-        ("values", "dtype", "rule"),
-        [
-            pytest.param([1.5], pl.Float64, DiffRule(column_names=["val"]), id="float"),
-            pytest.param(
-                [Decimal("1.50")], pl.Decimal(10, 2), DiffRule(column_names=["val"]), id="decimal"
-            ),
-            pytest.param(["x"], pl.String, DiffRule(column_names=["val"]), id="text"),
-            pytest.param([True], pl.Boolean, DiffRule(column_names=["val"]), id="boolean"),
-            pytest.param(
-                ["1.5"], pl.String, DiffRule(column_names=["val"], cast_to="Float64"), id="cast-up"
-            ),
-            pytest.param(
-                [1.5], pl.Float64, DiffRule(column_names=["val"], cast_to="String"), id="cast-down"
-            ),
-            pytest.param([7], pl.Int64, DiffRule(column_names=["val"], pad_zeros=3), id="padded"),
-            pytest.param(
-                [7],
-                pl.Int64,
-                DiffRule(column_names=["val"], pad_zeros=8, datetime_format="%Y%m%d"),
-                id="padded-then-parsed",
-            ),
-            pytest.param(
-                ["2024-01-02"],
-                pl.String,
-                DiffRule(column_names=["val"], datetime_format="%Y-%m-%d"),
-                id="parsed-text",
-            ),
-            pytest.param(
-                [20240102],
-                pl.Int64,
-                DiffRule(column_names=["val"], datetime_format="%Y%m%d"),
-                id="format-skips-an-integer",
-            ),
-            pytest.param(
-                ["2024"],
-                pl.Categorical,
-                DiffRule(column_names=["val"], datetime_format="%Y"),
-                id="format-skips-a-categorical",
-            ),
-        ],
-    )
+    @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
     def test_it_predicts_what_the_local_normalizer_compares(
         self, values: list[object], dtype: pl.DataType, rule: DiffRule
     ) -> None:
@@ -1207,6 +1517,84 @@ class TestPushdownRuleHelpers:
         compared = _normalized(config, frame).schema["val"]
 
         assert _compares_numerically(effective, frame.schema["val"]) is compared.is_numeric()
+
+    @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
+    def test_it_predicts_which_columns_compare_as_text(
+        self, values: list[object], dtype: pl.DataType, rule: DiffRule
+    ) -> None:
+        """Ensure pushdown loosens exactly the columns a local run measures as text."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+        frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
+        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+
+        compared = _normalized(config, frame).schema["val"]
+
+        assert _compares_as_text(effective, frame.schema["val"]) is isinstance(
+            compared, (pl.String, pl.Utf8)
+        )
+
+    def test_it_refuses_a_jaro_winkler_floor_on_a_text_column(self) -> None:
+        """Ensure a limit no warehouse can reproduce fails before any query runs."""
+        schema = pl.Schema({"id": pl.Int64, "name": pl.String})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.9)],
+        )
+
+        with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
+            _resolve_pushdown_rules(config, schema, schema)
+
+    def test_it_forwards_an_edit_distance_only_to_columns_compared_as_text(self) -> None:
+        """Ensure the warehouse loosens exactly the columns a local run measures as text."""
+        schema = pl.Schema(
+            {
+                "id": pl.Int64,
+                "name": pl.String,
+                "code": pl.Int64,
+                "padded": pl.Int64,
+                "parsed": pl.String,
+                "counted": pl.String,
+            }
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["name", "code"], max_levenshtein_distance=2),
+                DiffRule(column_names=["padded"], max_levenshtein_distance=2, pad_zeros=5),
+                DiffRule(
+                    column_names=["parsed"],
+                    max_levenshtein_distance=2,
+                    datetime_format="%Y-%m-%d",
+                ),
+                DiffRule(column_names=["counted"], max_levenshtein_distance=2, cast_to="Int64"),
+            ],
+        )
+
+        limits = {
+            rule.column_names[0]: rule.max_levenshtein_distance
+            for rule in _resolve_pushdown_rules(config, schema, schema)
+        }
+
+        assert limits == {"name": 2, "code": None, "padded": 2, "parsed": None, "counted": None}
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("min_jaro_winkler_similarity", 0.9), ("max_levenshtein_distance", 1)],
+    )
+    def test_it_drops_a_similarity_limit_from_a_column_compared_as_a_number(
+        self, field: str, value: float
+    ) -> None:
+        """Ensure a limit on a column that never compares as text is not refused or sent."""
+        schema = pl.Schema({"id": pl.Int64, "code": pl.Int64})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule.model_validate({"column_names": ["code"], field: value})],
+        )
+
+        (rule,) = _resolve_pushdown_rules(config, schema, schema)
+
+        assert rule.max_levenshtein_distance is None
+        assert rule.min_jaro_winkler_similarity is None
 
     def test_it_folds_global_defaults_into_key_rules(self) -> None:
         """Ensure a key is normalized by the same folded rule a local run applies.

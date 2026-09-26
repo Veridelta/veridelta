@@ -18,7 +18,7 @@ Powered by [Polars](https://pola.rs/).
 ```bash
 uv add veridelta
 # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, excel, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, excel, fuzzy, all
 ```
 
 ## Architecture
