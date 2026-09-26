@@ -164,3 +164,40 @@ primary_keys: [id]
         assert result.returncode == 1
         assert "Configuration Error" in result.stderr
         assert "'VERIDELTA_E2E_UNSET' is not set, but source -> path references it" in result.stderr
+
+    def test_e2e_crosswalk_proposals_make_the_comparison_pass(self, tmp_path: Path) -> None:
+        """Ensure the rules `crosswalk` prints, pasted into the config, clear the drift."""
+        ids = list(range(12))
+        pl.DataFrame({"id": ids, "gender": ["M"] * 6 + ["F"] * 6}).write_csv(
+            tmp_path / "source.csv"
+        )
+        pl.DataFrame({"id": ids, "gender": ["Male"] * 6 + ["Female"] * 6}).write_csv(
+            tmp_path / "target.csv"
+        )
+        config = (
+            f"source:\n  path: {tmp_path / 'source.csv'}\n"
+            f"target:\n  path: {tmp_path / 'target.csv'}\n"
+            "primary_keys: [id]\n"
+        )
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(config)
+
+        proposed = subprocess.run(
+            ["veridelta", "crosswalk", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        mapped_file = tmp_path / "mapped.yaml"
+        mapped_file.write_text(config + proposed.stdout)
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(mapped_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert proposed.returncode == 0
+        assert "'M' -> 'Male': 6 of 6 rows (100.0%)" in proposed.stderr
+        assert result.returncode == 0
+        assert "Total Issues:  0" in result.stdout

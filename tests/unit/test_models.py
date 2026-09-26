@@ -20,6 +20,8 @@ from veridelta.models import (
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
+    ValueMapEntry,
+    ValueMapProposal,
 )
 
 
@@ -547,3 +549,58 @@ class TestDiffResultRowAccess:
 
         with pytest.raises(ConfigError, match="requires pandas and pyarrow"):
             self._run().to_pandas()
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestValueMapProposalModels:
+    """Validate the evidence and rules a value_map proposal carries."""
+
+    def test_it_reports_confidence_as_the_share_of_rows_that_agree(self) -> None:
+        """Ensure 999 agreeing rows out of 1,000 read as 99.9%, in Python and in JSON."""
+        entry = ValueMapEntry(source_value="M", target_value="Male", rows=1000, agreeing_rows=999)
+
+        assert entry.confidence == 0.999
+        assert entry.model_dump(mode="json")["confidence"] == 0.999
+
+    def test_it_is_frozen(self) -> None:
+        """Ensure evidence cannot be edited after the engine reports it."""
+        entry = ValueMapEntry(source_value="M", target_value="Male", rows=5, agreeing_rows=5)
+
+        with pytest.raises(ValidationError, match="frozen"):
+            entry.rows = 6  # type: ignore[misc]
+
+    @pytest.mark.parametrize(
+        ("rows", "agreeing_rows", "message"),
+        [
+            pytest.param(0, 1, "greater than or equal to 1", id="no-rows"),
+            pytest.param(5, 0, "greater than or equal to 1", id="nothing-agrees"),
+            pytest.param(5, 6, "cannot exceed", id="more-agree-than-exist"),
+        ],
+    )
+    def test_it_rejects_counts_that_cannot_happen(
+        self, rows: int, agreeing_rows: int, message: str
+    ) -> None:
+        """Ensure a share above one or an empty entry cannot be constructed."""
+        with pytest.raises(ValidationError, match=message):
+            ValueMapEntry(
+                source_value="M", target_value="Male", rows=rows, agreeing_rows=agreeing_rows
+            )
+
+    def test_it_renders_a_standalone_rule_for_the_column(self) -> None:
+        """Ensure the proposed map becomes a rule a configuration can hold as written."""
+        proposal = ValueMapProposal(
+            column="gender",
+            value_map={"F": "Female", "M": "Male"},
+            entries=(
+                ValueMapEntry(source_value="M", target_value="Male", rows=5, agreeing_rows=5),
+            ),
+            governing_rule_index=0,
+        )
+
+        rule = proposal.to_rule()
+
+        assert rule.model_dump(exclude_none=True, exclude_defaults=True) == {
+            "column_names": ["gender"],
+            "value_map": {"F": "Female", "M": "Male"},
+        }

@@ -3,7 +3,7 @@
 
 """Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -34,7 +34,15 @@ from veridelta.engine import (
     _similarity_test,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
-from veridelta.models import ArtifactFormat, DiffConfig, DiffRule, SourceConfig, SourceType
+from veridelta.models import (
+    ArtifactFormat,
+    DiffConfig,
+    DiffRule,
+    SnowflakeConfig,
+    SourceConfig,
+    SourceType,
+    ValueMapProposal,
+)
 
 
 @pytest.mark.unit
@@ -1937,3 +1945,292 @@ class TestRemainingEngineBranches:
         summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is False
+
+
+def _propose(
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    rules: list[DiffRule] | None = None,
+    primary_keys: list[str] | None = None,
+    strict_types: bool = False,
+    min_confidence: float = 0.95,
+    min_support: int = 5,
+    sample_fraction: float = 1.0,
+) -> list[ValueMapProposal]:
+    """Propose value maps for two in-memory frames keyed on `id` by default."""
+    config = DiffConfig(
+        primary_keys=primary_keys or ["id"], rules=rules or [], strict_types=strict_types
+    )
+    return DiffEngine(config, source.lazy(), target.lazy()).propose_value_maps(
+        min_confidence=min_confidence, min_support=min_support, sample_fraction=sample_fraction
+    )
+
+
+def _codes(
+    source: Sequence[str | None], target: Sequence[str | None]
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Pair two code columns row by row under ascending ids."""
+    ids = list(range(len(source)))
+    return (
+        pl.DataFrame({"id": ids, "gender": pl.Series(source, dtype=pl.String)}),
+        pl.DataFrame({"id": ids, "gender": pl.Series(target, dtype=pl.String)}),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestValueMapProposals:
+    """Validate value_map proposals drawn from how source and target values line up."""
+
+    def test_it_proposes_a_mapping_the_rows_overwhelmingly_agree_on(self) -> None:
+        """Ensure M lines up with Male in 999 of 1,000 rows, counting the one that already matches."""
+        src, tgt = _codes(["M"] * 1000, ["Male"] * 999 + ["M"])
+
+        (proposal,) = _propose(src, tgt)
+
+        assert proposal.column == "gender"
+        assert proposal.value_map == {"M": "Male"}
+        assert proposal.governing_rule_index is None
+        (entry,) = proposal.entries
+        assert (entry.source_value, entry.target_value) == ("M", "Male")
+        assert (entry.rows, entry.agreeing_rows) == (1000, 999)
+        assert entry.confidence == 0.999
+
+    def test_it_holds_back_a_mapping_below_the_confidence_floor(self) -> None:
+        """Ensure 90 agreeing rows out of 100 is not enough at the default 95%."""
+        src, tgt = _codes(["M"] * 100, ["Male"] * 90 + ["Man"] * 10)
+
+        assert _propose(src, tgt) == []
+
+    @pytest.mark.parametrize(("min_support", "proposed"), [(5, False), (4, True)])
+    def test_it_needs_enough_agreeing_rows(self, min_support: int, proposed: bool) -> None:
+        """Ensure four coincidences stay a coincidence unless the caller lowers the bar."""
+        src, tgt = _codes(["M"] * 4, ["Male"] * 4)
+
+        proposals = _propose(src, tgt, min_support=min_support)
+
+        assert bool(proposals) is proposed
+
+    def test_it_proposes_nothing_for_values_that_already_match(self) -> None:
+        """Ensure an identity is never offered as a mapping."""
+        src, tgt = _codes(["M"] * 10, ["M"] * 10)
+
+        assert _propose(src, tgt) == []
+
+    @pytest.mark.parametrize(("min_confidence", "proposed"), [(0.96, False), (0.95, True)])
+    def test_it_counts_rows_with_a_null_target_against_the_mapping(
+        self, min_confidence: float, proposed: bool
+    ) -> None:
+        """Ensure 95 Male targets and 5 missing ones make a 95% mapping, not a certain one."""
+        src, tgt = _codes(["M"] * 100, ["Male"] * 95 + [None] * 5)
+
+        proposals = _propose(src, tgt, min_confidence=min_confidence)
+
+        assert bool(proposals) is proposed
+        if proposals:
+            assert proposals[0].entries[0].rows == 100
+
+    def test_it_ignores_rows_whose_source_value_is_missing(self) -> None:
+        """Ensure a NULL is never a key, since a value_map cannot map one."""
+        src, tgt = _codes([None] * 10 + ["M"] * 5, ["Male"] * 15)
+
+        (proposal,) = _propose(src, tgt)
+
+        assert proposal.value_map == {"M": "Male"}
+
+    def test_it_keeps_existing_entries_and_lists_only_the_new_ones(self) -> None:
+        """Ensure a proposal extends the governing rule's map instead of replacing it."""
+        src, tgt = _codes(["M"] * 5 + ["F"] * 5, ["Male"] * 5 + ["Female"] * 5)
+        rules = [DiffRule(column_names=["gender"], value_map={"F": "Female"})]
+
+        (proposal,) = _propose(src, tgt, rules=rules)
+
+        assert proposal.value_map == {"F": "Female", "M": "Male"}
+        assert [entry.source_value for entry in proposal.entries] == ["M"]
+        assert proposal.governing_rule_index == 0
+
+    def test_it_cannot_propose_for_values_an_existing_entry_produces(self) -> None:
+        """Ensure rows already mapped by the rule are left out, whatever they now compare to."""
+        src, tgt = _codes(["M"] * 5, ["Male"] * 5)
+        rules = [DiffRule(column_names=["gender"], value_map={"M": "Man"})]
+
+        assert _propose(src, tgt, rules=rules) == []
+
+    def test_it_proposes_folded_values_when_the_rule_folds_case(self) -> None:
+        """Ensure keys match the lowercased text the value_map stage actually sees."""
+        src, tgt = _codes(["M"] * 5, ["Male"] * 5)
+        rules = [DiffRule(column_names=["gender"], case_insensitive=True)]
+
+        (proposal,) = _propose(src, tgt, rules=rules)
+
+        assert proposal.value_map == {"m": "male"}
+
+    def test_it_skips_columns_whose_mapped_text_is_transformed_again(self) -> None:
+        """Ensure a map is proposed only where its output is compared exactly as written."""
+        codes = ["M"] * 5
+        src = pl.DataFrame(
+            {
+                "id": list(range(5)),
+                "number": [1] * 5,
+                "padded": codes,
+                "parsed": codes,
+                "counted": codes,
+                "texted": codes,
+            }
+        )
+        tgt = pl.DataFrame(
+            {
+                "id": list(range(5)),
+                "number": [2] * 5,
+                "padded": ["Male"] * 5,
+                "parsed": ["Male"] * 5,
+                "counted": ["Male"] * 5,
+                "texted": ["Male"] * 5,
+            }
+        )
+        rules = [
+            DiffRule(column_names=["padded"], pad_zeros=3),
+            DiffRule(column_names=["parsed"], datetime_format="%Y"),
+            DiffRule(column_names=["counted"], cast_to="Int64"),
+            DiffRule(column_names=["texted"], cast_to="String"),
+        ]
+
+        proposals = _propose(src, tgt, rules=rules)
+
+        assert [proposal.column for proposal in proposals] == ["texted"]
+
+    def test_it_skips_keys_ignored_columns_and_columns_the_target_lacks(self) -> None:
+        """Ensure only compared columns are considered."""
+        src = pl.DataFrame(
+            {"code": ["A", "B", "C", "D", "E"], "ignored": ["M"] * 5, "legacy": ["M"] * 5}
+        )
+        tgt = pl.DataFrame({"code": ["A", "B", "C", "D", "E"], "ignored": ["Male"] * 5})
+        rules = [DiffRule(column_names=["ignored"], ignore=True)]
+
+        assert _propose(src, tgt, rules=rules, primary_keys=["code"]) == []
+
+    @pytest.mark.parametrize(("strict_types", "expected"), [(False, {"Y": "1"}), (True, None)])
+    def test_it_maps_text_onto_the_text_form_of_a_non_text_target(
+        self, strict_types: bool, expected: dict[str, str] | None
+    ) -> None:
+        """Ensure the target is read as the text it is compared as, unless types must match."""
+        src = pl.DataFrame({"id": list(range(5)), "flag": ["Y"] * 5})
+        tgt = pl.DataFrame({"id": list(range(5)), "flag": [1] * 5})
+
+        proposals = _propose(src, tgt, strict_types=strict_types)
+
+        assert (proposals[0].value_map if proposals else None) == expected
+
+    def test_it_joins_on_keys_normalized_by_their_own_value_map(self) -> None:
+        """Ensure keys are mapped exactly as a run maps them, so rows still pair up."""
+        src = pl.DataFrame({"code": [f"K{i}" for i in range(5)], "gender": ["M"] * 5})
+        tgt = pl.DataFrame({"code": [f"k{i}" for i in range(5)], "gender": ["Male"] * 5})
+        rules = [DiffRule(column_names=["code"], value_map={f"K{i}": f"k{i}" for i in range(5)})]
+
+        (proposal,) = _propose(src, tgt, rules=rules, primary_keys=["code"])
+
+        assert proposal.value_map == {"M": "Male"}
+        assert proposal.entries[0].rows == 5
+
+    def test_it_reports_a_renamed_column_under_its_target_name(self) -> None:
+        """Ensure the proposal names the column as results do and points at its rule."""
+        src = pl.DataFrame({"id": list(range(5)), "sex": ["M"] * 5})
+        tgt = pl.DataFrame({"id": list(range(5)), "gender": ["Male"] * 5})
+        rules = [DiffRule(column_names=["sex"], rename_to="gender")]
+
+        (proposal,) = _propose(src, tgt, rules=rules)
+
+        assert proposal.column == "gender"
+        assert proposal.governing_rule_index == 0
+
+    def test_it_refuses_duplicate_keys(self) -> None:
+        """Ensure a key that repeats fails as it does in a run, rather than inflating counts."""
+        src, tgt = _codes(["M"] * 5, ["Male"] * 5)
+        src = src.with_columns(pl.lit(1).alias("id"))
+
+        with pytest.raises(DataIntegrityError):
+            _propose(src, tgt)
+
+    @pytest.mark.parametrize(
+        ("setting", "value", "message"),
+        [
+            pytest.param("min_confidence", 0.5, "min_confidence", id="confidence-at-half"),
+            pytest.param("min_confidence", 1.5, "min_confidence", id="confidence-above-one"),
+            pytest.param("min_confidence", float("nan"), "min_confidence", id="confidence-nan"),
+            pytest.param("min_support", 0, "min_support", id="support-zero"),
+            pytest.param("sample_fraction", 0.0, "sample_fraction", id="fraction-zero"),
+            pytest.param("sample_fraction", 1.5, "sample_fraction", id="fraction-above-one"),
+        ],
+    )
+    def test_it_rejects_thresholds_that_cannot_work(
+        self, setting: str, value: float, message: str
+    ) -> None:
+        """Ensure an unusable threshold fails as configuration before any rows are read."""
+        src, tgt = _codes(["M"] * 5, ["Male"] * 5)
+        engine = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy())
+
+        with pytest.raises(ConfigError, match=message):
+            engine.propose_value_maps(**{setting: value})  # type: ignore[arg-type]
+
+    def test_it_samples_the_same_rows_every_time(self) -> None:
+        """Ensure a sample is drawn by key, so repeating a run repeats its counts."""
+        src, tgt = _codes(["M"] * 1000, ["Male"] * 1000)
+
+        (first,) = _propose(src, tgt, sample_fraction=0.5)
+        (second,) = _propose(src, tgt, sample_fraction=0.5)
+        (everything,) = _propose(src, tgt)
+
+        assert first == second
+        assert 0 < first.entries[0].rows < 1000
+        assert everything.entries[0].rows == 1000
+
+    def test_it_leaves_the_engine_ready_to_run(self) -> None:
+        """Ensure proposing works on a copy, so the same engine still compares as before."""
+        src, tgt = _codes(["M"] * 5 + ["F"], ["Male"] * 5 + ["F"])
+        config = DiffConfig(primary_keys=["id"])
+        engine = DiffEngine(config, src.lazy(), tgt.lazy())
+
+        engine.propose_value_maps()
+
+        assert engine.run().summary == DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+    def test_it_proposes_nothing_without_a_text_column(self) -> None:
+        """Ensure numeric-only data returns an empty list rather than an error."""
+        src = pl.DataFrame({"id": [1, 2], "amount": [1.0, 2.0]})
+        tgt = pl.DataFrame({"id": [1, 2], "amount": [1.5, 2.5]})
+
+        assert _propose(src, tgt) == []
+
+    def test_it_loads_file_sources_from_configs(self, tmp_path: Path) -> None:
+        """Ensure the configuration entry point reads files the way a run does."""
+        src, tgt = _codes(["M"] * 5, ["Male"] * 5)
+        src.write_parquet(tmp_path / "source.parquet")
+        tgt.write_parquet(tmp_path / "target.parquet")
+
+        (proposal,) = DiffEngine.propose_value_maps_from_configs(
+            DiffConfig(primary_keys=["id"]),
+            SourceConfig(path=str(tmp_path / "source.parquet"), format="parquet"),
+            SourceConfig(path=str(tmp_path / "target.parquet"), format="parquet"),
+        )
+
+        assert proposal.value_map == {"M": "Male"}
+
+    def test_it_refuses_warehouse_sources_without_connecting(self, mocker: MockerFixture) -> None:
+        """Ensure a warehouse table is refused with advice, before any session opens."""
+        connector = mocker.patch("veridelta.engine.SnowflakeConnector")
+        warehouse = SnowflakeConfig(
+            table="ANALYTICS.PUBLIC.EVENTS",
+            account="xy12345",
+            user="analyst",
+            warehouse="COMPUTE_WH",
+            database="ANALYTICS",
+            schema_name="PUBLIC",
+        )
+
+        with pytest.raises(ConnectorError, match="file or lakehouse sources"):
+            DiffEngine.propose_value_maps_from_configs(
+                DiffConfig(primary_keys=["id"]), warehouse, SourceConfig(path="target.csv")
+            )
+
+        connector.assert_not_called()
