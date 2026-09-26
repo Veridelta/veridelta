@@ -179,7 +179,7 @@ class DiffRule(BaseModel):
         5. Pad zeros (`pad_zeros`)
         6. Datetime parsing, then timezone (`datetime_format`, `timezone`)
         7. Explicit cast (`cast_to`)
-        8. Comparison (equality, or numeric tolerance)
+        8. Comparison (equality, numeric tolerance, or text similarity)
         9. Null-safe equality (`treat_null_as_equal`)
 
         Stages 1 through 7 normalize each dataset independently and run before any
@@ -188,8 +188,9 @@ class DiffRule(BaseModel):
         stages never operate on placeholder text, and `cast_to` runs last so it
         casts already-sanitized values.
 
-        Warehouse pushdown implements every stage, so no rule silently changes
-        meaning by running in a warehouse. Two stages need explaining:
+        Warehouse pushdown implements every stage, and refuses the text
+        similarity limits rather than approximating them, so no rule silently
+        changes meaning by running in a warehouse. Two stages need explaining:
 
         * `pad_zeros` is emitted as a sign-aware, non-truncating expression
           rather than a bare `LPAD`, which pads in front of a minus sign and
@@ -210,6 +211,14 @@ class DiffRule(BaseModel):
         relative_tolerance (float | None): The maximum allowed relative difference
             (e.g., 0.01 for 1%). Must be finite. Neither tolerance ever forgives a
             non-finite value: NaN matches only NaN, and an infinity only itself.
+        max_levenshtein_distance (int | None): The most single-character
+            insertions, deletions, and substitutions that still count as a match,
+            for columns compared as text. Needs the `fuzzy` extra locally.
+        min_jaro_winkler_similarity (float | None): The lowest Jaro-Winkler
+            similarity, above 0 and at most 1, that still counts as a match for
+            columns compared as text. Needs the `fuzzy` extra, and runs locally
+            only: warehouse pushdown refuses it before any query runs. A rule
+            sets at most one of the two similarity limits.
         case_insensitive (bool | None): If True, ignores case differences in strings.
         whitespace_mode (WhitespaceMode | None): Granular control over stripping
             leading/trailing whitespace prior to string comparison.
@@ -270,6 +279,20 @@ class DiffRule(BaseModel):
         strict=True,
         allow_inf_nan=False,
         description="Relative tolerance (e.g., 0.01 for 1%).",
+    )
+    max_levenshtein_distance: int | None = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description="Most character edits between two text values that still match.",
+    )
+    min_jaro_winkler_similarity: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        strict=True,
+        allow_inf_nan=False,
+        description="Lowest Jaro-Winkler similarity between two text values that still matches.",
     )
 
     case_insensitive: bool | None = Field(
@@ -380,6 +403,27 @@ class DiffRule(BaseModel):
                 except re.error as err:  # noqa: PERF203
                     raise ValueError(f"Invalid regex replace pattern '{pattern}': {err}") from err
         return v
+
+    @model_validator(mode="after")
+    def validate_similarity_measure(self) -> "DiffRule":
+        """Rejects a rule that sets both text similarity limits.
+
+        Returns:
+            DiffRule: The validated rule.
+
+        Raises:
+            ValueError: If both `max_levenshtein_distance` and
+                `min_jaro_winkler_similarity` are set.
+        """
+        if (
+            self.max_levenshtein_distance is not None
+            and self.min_jaro_winkler_similarity is not None
+        ):
+            raise ValueError(
+                "Set max_levenshtein_distance or min_jaro_winkler_similarity, not both: "
+                "a rule compares text with one similarity measure."
+            )
+        return self
 
 
 class DiffConfig(BaseModel):

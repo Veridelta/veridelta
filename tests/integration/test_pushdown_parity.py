@@ -1430,6 +1430,26 @@ class TestNumericComparisonParity:
 
 @pytest.mark.integration
 @pytest.mark.slow
+class TestSimilarityParity:
+    """Validate text similarity limits on both engines."""
+
+    def test_it_runs_jaro_winkler_locally_and_refuses_it_in_a_warehouse(self) -> None:
+        """Ensure a limit SQL cannot reproduce is refused rather than approximated."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1], "name": ["MARTHA"]})
+        tgt = pl.DataFrame({"id": [1], "name": ["MARHTA"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.96)],
+        )
+
+        assert run_local(config, src, tgt).summary.changed_count == 0
+        with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
+            run_pushdown(config, src, tgt)
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 class TestHarnessSensitivity:
     """Prove the harness can actually observe divergence before it is trusted."""
 

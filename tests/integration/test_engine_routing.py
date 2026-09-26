@@ -553,6 +553,39 @@ class TestEngineConnectorRouting:
 
         connector.compiler.compile_query.assert_not_called()
 
+    def test_it_refuses_jaro_winkler_before_any_warehouse_query(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a limit no warehouse can reproduce fails after the probes alone."""
+        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector: Any = connector_cls.return_value
+        _configure_warehouse_compiler(connector)
+        text_schema = pl.Schema({"id": pl.Int64, "name": pl.String})
+
+        def _text_probe(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "schema":
+                return pl.DataFrame(schema=text_schema).lazy()
+            return _pushdown_by_query_type(statement, query_type)
+
+        connector.execute_pushdown.side_effect = _text_probe
+
+        with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
+            DiffEngine.run_from_configs(
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.9)],
+                ),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+            )
+
+        executed = [
+            query.kwargs["query_type"] for query in connector.execute_pushdown.call_args_list
+        ]
+        assert executed == ["schema", "schema"]
+        connector.compiler.compile_duplicate_key_query.assert_not_called()
+        connector.compiler.compile_query.assert_not_called()
+
     def test_it_forwards_global_sentinels_to_the_compiler_unfiltered(
         self, mocker: MockerFixture
     ) -> None:

@@ -63,7 +63,7 @@ Every column present on both sides is compared, exactly as it is locally. Column
 
 The column probes enforce `schema_mode` and primary-key existence before any comparison runs, raising `ConfigError` on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase). `normalize_column_names` cannot change that: pushdown raises `ConfigError` if it would rename a stored column.
 
-All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. These behaviors still differ from the file and lakehouse path:
+All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. The exception is a text similarity limit, which pushdown refuses with `ConfigError` before any comparison query runs rather than approximating it; see [Fuzzy Text Matching](#8-fuzzy-text-matching). These behaviors still differ from the file and lakehouse path:
 
 - Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
 - `strict_types` applies to local runs only. When the two relations store a column as different types, the warehouse compares them under its own coercion rules.
@@ -311,6 +311,8 @@ The `rules` array defines granular, per-column or regex-pattern tolerances. A ru
 | `pattern` | Regular expression matched against the start of each column name. |
 | `absolute_tolerance` | Maximum absolute numeric difference. Overrides `default_absolute_tolerance`. Must be finite; use `ignore` to stop comparing a column. |
 | `relative_tolerance` | Maximum relative numeric difference (`0.01` is 1%). Overrides `default_relative_tolerance`. Must be finite. |
+| `max_levenshtein_distance` | Most single-character edits between two text values that still count as a match. Needs the `fuzzy` extra; see [Fuzzy Text Matching](#8-fuzzy-text-matching). |
+| `min_jaro_winkler_similarity` | Lowest Jaro-Winkler similarity, above 0 and at most 1, between two text values that still counts as a match. Needs the `fuzzy` extra, and runs locally only. |
 | `case_insensitive` | Lowercase text before comparing. |
 | `whitespace_mode` | `none`, `left`, `right`, or `both`. Overrides `default_whitespace_mode`. |
 | `regex_replace` | Mapping of regex pattern to replacement, applied in order to text columns. |
@@ -335,7 +337,7 @@ Rules are not applied in the order you write them. Every column follows one fixe
 5. Pad zeros (`pad_zeros`)
 6. Datetime parsing, then timezone (`datetime_format`, `timezone`)
 7. Explicit cast (`cast_to`)
-8. Comparison (equality, or numeric tolerance)
+8. Comparison (equality, numeric tolerance, or text similarity)
 9. Null-safe equality (`treat_null_as_equal`)
 
 Stages 1 through 7 normalize each dataset on its own, before any join, so they apply to primary keys as well, in local runs and warehouse pushdown alike: a `case_insensitive` rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, `DataIntegrityError` is raised rather than allowing a join explosion.
@@ -451,3 +453,30 @@ rules:
 ```
 
 `primary_keys` are written with the target spelling, so a renamed key works in local runs and warehouse pushdown alike; pushdown reads it from the source under its stored name.
+
+### 8. Fuzzy Text Matching
+Forgive typos in free text, such as names keyed by hand into two systems, without writing a `regex_replace` for each one. Scores come from [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz), an optional extra:
+
+```bash
+uv add 'veridelta[fuzzy]'
+```
+
+A rule sets one of two limits:
+
+```yaml
+rules:
+  - column_names: ["customer_name"]
+    case_insensitive: true
+    max_levenshtein_distance: 1
+  - column_names: ["city"]
+    min_jaro_winkler_similarity: 0.95
+```
+
+- `max_levenshtein_distance` counts single-character insertions, deletions, and substitutions. `Jon` and `John` are one edit apart, so they match at `1`; `kitten` and `sitting` need `3`.
+- `min_jaro_winkler_similarity` scores two values from 0 to 1 and rewards a shared prefix. `MARTHA` and `MARHTA` score 0.961, so they match at `0.96` but not at `0.97`.
+
+A limit loosens only columns that are text after normalization, just as a tolerance loosens only numbers. A column cast to a number or parsed as a date is still compared exactly, while `pad_zeros` or `cast_to: String` make a column text. Equal values still match outright, and a missing value is never similar to anything, so `treat_null_as_equal` alone decides NULLs. Scores are case-sensitive: `case_insensitive` lowercases both sides first, in stage 3, which puts `ABD` and `abc` one edit apart. Primary keys are never loosened, because rows join on equal keys.
+
+A rule sets at most one of the two limits, and neither has a global default, since loosening every text column would also forgive identifiers and codes that must match exactly. Without the extra, a run that needs a score raises `ConfigError` with the install command before comparing any rows.
+
+Warehouse pushdown refuses both limits with `ConfigError` before any comparison query runs. Snowflake's `JAROWINKLER_SIMILARITY` ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function, so neither can reproduce a local verdict, and edit distances do not compile yet.

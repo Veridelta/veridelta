@@ -23,7 +23,7 @@ Powered by [Polars](https://pola.rs/). **[Documentation](https://veridelta.githu
 ```bash
 uv add veridelta
 # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, excel, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, excel, fuzzy, all
 ```
 
 Routing, YAML fields, and time travel: [configuration guide](https://veridelta.github.io/veridelta/configuration/).
