@@ -34,6 +34,7 @@ We strictly follow Trunk-Based Development. **Never commit directly to `main`.**
    ```bash
    make all  # Runs formatting, linting, strict type-checking, and tests
    ```
+   The tests include the tutorial notebooks in `docs/examples/`: each one is executed, and every `# Output:` comment must match what its cell prints. Run `make notebooks` to check just those after editing a tutorial.
 
 ## 3. Commit Standards
 
@@ -52,3 +53,4 @@ We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/)
 1. Ensure `make all` passes locally.
 2. Open a PR against the `main` branch. Ensure your PR title also follows the Conventional Commits format (e.g., `feat: added semantic parser`).
 3. **The CI Pipeline is the final gatekeeper.** It will automatically test your PR across multiple operating systems and Python versions. If the static analysis or test matrix fails, the PR cannot be merged.
+4. CI runs on every pull request, whatever its base branch, so a PR stacked on another one is checked too. Merge the base PR first and delete its branch: GitHub then retargets the stacked PR to `main`. Merging a stacked PR while its base branch still exists lands it on that branch instead of `main`.

@@ -3,8 +3,8 @@ name: CI Pipeline
 on:
   push:
     branches: ["main"]
+  # Every base branch, so a PR stacked on another PR is checked before it lands.
   pull_request:
-    branches: ["main"]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -138,3 +138,24 @@ jobs:
 
       - name: Execute E2E CLI Subprocess Tests
         run: uv run pytest tests/e2e --no-cov
+
+  test-notebooks:
+    name: Tutorial Notebooks
+    needs: test-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras
+
+      - name: Execute Notebooks and Check Recorded Output
+        run: uv run pytest tests/notebooks --no-cov

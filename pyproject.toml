@@ -68,6 +68,8 @@ dev = [
     "mkdocs-material>=9.7.6",
     "mkdocstrings[python]>=1.0.3",
     "mypy>=1.20.0",
+    "nbclient>=0.10.4",
+    "nbformat>=5.10.4",
     "pre-commit>=4.5.1",
     "pyright>=1.1.414",
     "pytest>=9.0.3",
@@ -92,6 +94,8 @@ strict = true
 plugins = ["pydantic.mypy"]
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
 disable_error_code = ["prop-decorator"]
+# nbformat ships no annotations, and the notebook tests only read files with it.
+untyped_calls_exclude = ["nbformat"]
 
 [[tool.mypy.overrides]]
 module = ["tests.*", "conftest"]
@@ -100,7 +104,19 @@ disable_error_code = ["untyped-decorator"]
 warn_return_any = false
 
 [[tool.mypy.overrides]]
-module = ["polars.*", "yaml.*", "pytest.*", "pytest_mock", "pytest_mock.*", "duckdb", "duckdb.*"]
+module = [
+    "polars.*",
+    "yaml.*",
+    "pytest.*",
+    "pytest_mock",
+    "pytest_mock.*",
+    "duckdb",
+    "duckdb.*",
+    "nbformat",
+    "nbformat.*",
+    "nbclient",
+    "nbclient.*",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
