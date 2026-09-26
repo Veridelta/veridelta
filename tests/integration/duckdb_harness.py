@@ -13,6 +13,10 @@ the compiled SQL is semantically correct, but it cannot validate dialect-specifi
 behavior: Snowflake's `TRY_TO_TIMESTAMP` format language, Databricks' Java
 format patterns, and vendor cast quirks are unreachable from here and must be
 covered by string assertions in `tests/unit/test_sql_compiler.py`.
+
+DuckDB's `levenshtein` also counts UTF-8 bytes where Snowflake, Databricks,
+and the local engine count characters, so edit-distance parity cases use ASCII
+text, on which the two agree.
 """
 
 from __future__ import annotations

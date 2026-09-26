@@ -176,6 +176,66 @@ class TestStrictNumericFields:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestSimilarityThresholds:
+    """Validate the text similarity limits a rule can loosen a comparison by."""
+
+    def test_it_accepts_one_similarity_measure_per_rule(self) -> None:
+        """Ensure either measure loads on its own, with an integral floor widened."""
+        edits = DiffRule.model_validate({"column_names": ["name"], "max_levenshtein_distance": 2})
+        similar = DiffRule.model_validate(
+            {"column_names": ["name"], "min_jaro_winkler_similarity": 1}
+        )
+
+        assert edits.max_levenshtein_distance == 2
+        assert edits.min_jaro_winkler_similarity is None
+        assert similar.min_jaro_winkler_similarity == 1.0
+        assert DiffRule(column_names=["name"]).max_levenshtein_distance is None
+
+    def test_it_rejects_both_measures_on_one_rule(self) -> None:
+        """Ensure a rule cannot ask for two verdicts on the same pair of values."""
+        with pytest.raises(ValidationError, match="not both"):
+            DiffRule(
+                column_names=["name"],
+                max_levenshtein_distance=1,
+                min_jaro_winkler_similarity=0.9,
+            )
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            pytest.param(0, "greater than or equal to 1", id="zero"),
+            pytest.param(-1, "greater than or equal to 1", id="negative"),
+            pytest.param(2.0, "valid integer", id="float"),
+            pytest.param("2", "valid integer", id="text"),
+            pytest.param(True, "valid integer", id="bool"),
+        ],
+    )
+    def test_it_rejects_an_unusable_edit_distance(self, value: object, message: str) -> None:
+        """Ensure the limit is a whole number of edits that can reach SQL as written."""
+        with pytest.raises(ValidationError, match=message):
+            DiffRule.model_validate({"column_names": ["name"], "max_levenshtein_distance": value})
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            pytest.param(0.0, "greater than 0", id="zero"),
+            pytest.param(1.5, "less than or equal to 1", id="above-one"),
+            pytest.param(float("nan"), "finite number", id="nan"),
+            pytest.param(float("inf"), "finite number", id="infinity"),
+            pytest.param("0.9", "valid number", id="text"),
+            pytest.param(True, "valid number", id="bool"),
+        ],
+    )
+    def test_it_rejects_an_unusable_similarity_floor(self, value: object, message: str) -> None:
+        """Ensure the floor is a finite share of a perfect score."""
+        with pytest.raises(ValidationError, match=message):
+            DiffRule.model_validate(
+                {"column_names": ["name"], "min_jaro_winkler_similarity": value}
+            )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
 class TestDiffConfigNormalization:
     """Validate the post-initialization normalization logic (lowercase/stripping)."""
 

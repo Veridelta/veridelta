@@ -201,6 +201,18 @@ may apply to. `ABS(x) < inf` is false for an infinity and for NaN, whether an
 engine treats NaN comparisons as false or sorts NaN above every number.
 """
 
+_EDIT_DISTANCE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: "EDITDISTANCE",
+    SQLDialect.DATABRICKS: "levenshtein",
+    SQLDialect.DUCKDB: "levenshtein",
+}
+"""Each dialect's Levenshtein distance, always called with two arguments.
+Snowflake's optional third argument caps the result, and Databricks' returns -1
+above it and needs Runtime 13.3, so neither is portable. Snowflake and
+Databricks count characters, as the local engine does. DuckDB counts UTF-8
+bytes, which is why the parity tests compare ASCII text.
+"""
+
 
 class SQLPushdownCompiler:
     """Compile `DiffRule` semantics into dialect-specific SQL strings.
@@ -258,7 +270,9 @@ class SQLPushdownCompiler:
         Follows the canonical transform order documented on `DiffRule`, which is
         the single source of truth shared with the local engine. All nine stages
         compile, so a pushdown run and a local run evaluate the same pipeline
-        rather than differing by whatever the warehouse happened to support.
+        rather than differing by whatever the warehouse happened to support. The
+        one setting refused is `min_jaro_winkler_similarity`, which no supported
+        warehouse scores the way the local engine does.
 
         Args:
             rule (DiffRule): Semantic comparison overrides for the column.
@@ -278,7 +292,7 @@ class SQLPushdownCompiler:
 
         Raises:
             ConfigError: If `datetime_format` uses a directive this dialect
-                cannot express.
+                cannot express, or the rule sets `min_jaro_winkler_similarity`.
             ConnectorError: If identifiers are empty or not allowlisted.
         """
         tgt_name = target_column if target_column is not None else source_column
@@ -340,6 +354,8 @@ class SQLPushdownCompiler:
             match expressions the local engine reports nothing as changed.
 
         Raises:
+            ConfigError: If a rule sets `min_jaro_winkler_similarity`, or a
+                `datetime_format` uses a directive this dialect cannot express.
             ConnectorError: If tables or keys are empty, a rule is pattern-only,
                 `rename_to` is used with multiple `column_names`, or a key rule
                 does not name exactly one primary key.
@@ -511,6 +527,8 @@ class SQLPushdownCompiler:
             skip the tally when there are no match expressions.
 
         Raises:
+            ConfigError: If a rule sets `min_jaro_winkler_similarity`, or a
+                `datetime_format` uses a directive this dialect cannot express.
             ConnectorError: If tables or keys are empty, a rule is pattern-only,
                 `rename_to` is used with multiple `column_names`, or a key rule
                 does not name exactly one primary key.
@@ -989,7 +1007,7 @@ class SQLPushdownCompiler:
         """Render a numeric SQL literal.
 
         Args:
-            value (float): Tolerance or coefficient.
+            value (float): Tolerance, coefficient, or edit-distance limit.
 
         Returns:
             str: Portable decimal literal.
@@ -1376,6 +1394,55 @@ class SQLPushdownCompiler:
             f"ABS({tgt_expr} - {src_expr}) <= {abs_tol} + ({rel_tol} * ABS({src_expr}))))"
         )
 
+    def _edit_distance_predicate(self, src_expr: str, tgt_expr: str, limit: int) -> str:
+        """Build the predicate matching text within a Levenshtein distance.
+
+        Equal values match outright, as in the local engine, which only scores
+        pairs that still differ. The distance of a NULL is NULL, so a one-sided
+        NULL stays a mismatch once the caller coalesces the predicate.
+
+        Args:
+            src_expr (str): Transformed source expression.
+            tgt_expr (str): Transformed target expression.
+            limit (int): Most character edits that still match.
+
+        Returns:
+            str: `(src = tgt OR <distance>(src, tgt) <= limit)`.
+        """
+        distance = _EDIT_DISTANCE_FUNCTIONS[self.dialect]
+        return (
+            f"({src_expr} = {tgt_expr} OR "
+            f"{distance}({src_expr}, {tgt_expr}) <= {self._number(limit)})"
+        )
+
+    def _loosened_predicate(self, src_expr: str, tgt_expr: str, rule: DiffRule) -> str | None:
+        """Build the stage 8 predicate for a rule that loosens equality.
+
+        Args:
+            src_expr (str): Transformed source expression.
+            tgt_expr (str): Transformed target expression.
+            rule (DiffRule): Rule providing a tolerance or a similarity limit.
+
+        Returns:
+            str | None: The tolerance or edit-distance predicate, or None when
+                the rule compares by equality alone.
+
+        Raises:
+            ConfigError: If the rule sets `min_jaro_winkler_similarity`.
+        """
+        if rule.min_jaro_winkler_similarity is not None:
+            raise ConfigError(
+                "min_jaro_winkler_similarity has no SQL translation: Snowflake's "
+                "JAROWINKLER_SIMILARITY ignores case and returns a whole number from 0 "
+                "to 100, and Databricks has no Jaro-Winkler function. Use "
+                "max_levenshtein_distance, or compare the tables locally."
+            )
+        if self._has_tolerance(rule):
+            return self._numeric_predicate(src_expr, tgt_expr, rule)
+        if rule.max_levenshtein_distance is not None:
+            return self._edit_distance_predicate(src_expr, tgt_expr, rule.max_levenshtein_distance)
+        return None
+
     def _compare(self, src_expr: str, tgt_expr: str, rule: DiffRule) -> str:
         """Build the final match predicate, including null-safe equality.
 
@@ -1386,12 +1453,15 @@ class SQLPushdownCompiler:
 
         Returns:
             str: Boolean SQL expression.
+
+        Raises:
+            ConfigError: If the rule sets `min_jaro_winkler_similarity`.
         """
-        if self._has_tolerance(rule):
-            numeric = self._numeric_predicate(src_expr, tgt_expr, rule)
+        loosened = self._loosened_predicate(src_expr, tgt_expr, rule)
+        if loosened is not None:
             if rule.treat_null_as_equal:
-                return f"({src_expr} IS NULL AND {tgt_expr} IS NULL) OR ({numeric})"
-            return numeric
+                return f"({src_expr} IS NULL AND {tgt_expr} IS NULL) OR ({loosened})"
+            return loosened
 
         if rule.treat_null_as_equal:
             if self.dialect is SQLDialect.SNOWFLAKE:

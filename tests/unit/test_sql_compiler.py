@@ -7,7 +7,12 @@ import polars as pl
 import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
-from veridelta.connectors.sql import _LITERAL_ESCAPES, COUNT_ALIAS, SCHEMA_ALIAS
+from veridelta.connectors.sql import (
+    _EDIT_DISTANCE_FUNCTIONS,
+    _LITERAL_ESCAPES,
+    COUNT_ALIAS,
+    SCHEMA_ALIAS,
+)
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
 
@@ -947,7 +952,11 @@ class TestCompilerErrors:
             )
 
     def test_it_compiles_every_transform_stage(self) -> None:
-        """Ensure no rule field is rejected as unimplemented any more."""
+        """Ensure no transform stage is rejected as unimplemented any more.
+
+        The only setting the compiler refuses is `min_jaro_winkler_similarity`,
+        which no warehouse computes the way a local run does.
+        """
         compiler = _snowflake()
         rule = DiffRule(
             column_names=["ts"],
@@ -1241,3 +1250,75 @@ class TestCTENormalization:
         # length times the column count is generous for quoting and aliases.
         assert last < first * 8 * 3
         assert last / first < 12
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestEditDistanceCompilation:
+    """Validate stage 8's text similarity limits across the dialect table."""
+
+    def test_it_names_an_edit_distance_function_for_every_dialect(self) -> None:
+        """Ensure a new dialect cannot inherit another's function name."""
+        assert set(_EDIT_DISTANCE_FUNCTIONS) == set(SQLDialect)
+
+    @pytest.mark.parametrize(
+        ("compiler", "expected"),
+        [
+            pytest.param(
+                _snowflake(),
+                '("src"."name" = "tgt"."name" OR EDITDISTANCE("src"."name", "tgt"."name") <= 2)',
+                id="snowflake",
+            ),
+            pytest.param(
+                _databricks(),
+                "(`src`.`name` = `tgt`.`name` OR levenshtein(`src`.`name`, `tgt`.`name`) <= 2)",
+                id="databricks",
+            ),
+            pytest.param(
+                _duckdb(),
+                '("src"."name" = "tgt"."name" OR levenshtein("src"."name", "tgt"."name") <= 2)',
+                id="duckdb",
+            ),
+        ],
+    )
+    def test_it_matches_text_within_the_edit_distance(
+        self, compiler: SQLPushdownCompiler, expected: str
+    ) -> None:
+        """Ensure equal text matches outright and differing text within the limit."""
+        rule = DiffRule(column_names=["name"], max_levenshtein_distance=2)
+
+        assert compiler.compile_column_predicate(rule, "name") == expected
+
+    def test_it_keeps_null_pairs_to_treat_null_as_equal(self) -> None:
+        """Ensure the limit sits inside the same null-safe form a tolerance uses."""
+        rule = DiffRule(column_names=["name"], max_levenshtein_distance=2, treat_null_as_equal=True)
+
+        sql = _snowflake().compile_column_predicate(rule, "name")
+
+        assert sql == (
+            '("src"."name" IS NULL AND "tgt"."name" IS NULL) OR '
+            '(("src"."name" = "tgt"."name" OR EDITDISTANCE("src"."name", "tgt"."name") <= 2))'
+        )
+        assert "EQUAL_NULL" not in sql
+
+    def test_it_loosens_the_join_and_the_tally_alike(self) -> None:
+        """Ensure a changed row and the per-column count read the same predicate."""
+        rules = [DiffRule(column_names=["name"], max_levenshtein_distance=2)]
+        predicate = (
+            'COALESCE(("src"."name" = "tgt"."name" OR '
+            'EDITDISTANCE("src"."name", "tgt"."name") <= 2), FALSE)'
+        )
+
+        query = _snowflake().compile_query("src_tbl", "tgt_tbl", ["id"], rules)
+        tally = _snowflake().compile_column_mismatch_query("src_tbl", "tgt_tbl", ["id"], rules)
+
+        assert predicate in query
+        assert tally is not None
+        assert predicate in tally
+
+    def test_it_refuses_a_jaro_winkler_floor(self) -> None:
+        """Ensure a caller using the compiler directly cannot get an approximation."""
+        rule = DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.9)
+
+        with pytest.raises(ConfigError, match="min_jaro_winkler_similarity has no SQL"):
+            _databricks().compile_column_predicate(rule, "name")
