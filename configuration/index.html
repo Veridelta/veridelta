@@ -1143,7 +1143,7 @@
 </tr>
 <tr>
 <td style="text-align: left;"><code>strict_types</code></td>
-<td style="text-align: left;">If <code>false</code> (default), the engine dynamically soft-casts target columns to source types to prevent execution halts on mismatched types. If <code>true</code>, type mismatches automatically fail the row.</td>
+<td style="text-align: left;">If <code>false</code> (default), a column stored as different types on the two sides is still compared. Two numeric types compare by value, so an integer <code>10</code> and a float <code>10.7</code> differ, and a <code>Float32</code> <code>0.1</code> differs slightly from a <code>Float64</code> <code>0.1</code>; add a tolerance to forgive precision gaps. Any other pair soft-casts the target to the source type, so text <code>"10"</code> matches an integer <code>10</code>. If <code>true</code>, type mismatches automatically fail the row.</td>
 </tr>
 <tr>
 <td style="text-align: left;"><code>normalize_column_names</code></td>
@@ -1307,6 +1307,7 @@
 <a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">    </span><span class="nt">absolute_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.01</span>
 <a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="nt">relative_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.005</span>
 </code></pre></div>
+<p>A tolerance only loosens the comparison of finite values. <code>NaN</code> matches only <code>NaN</code>, and an infinity matches only the same infinity, however wide the tolerance.</p>
 <h3 id="2-null-sentinels">2. Null Sentinels</h3>
 <p>Declare the placeholder values a system writes instead of NULL. Sentinels are not limited to text: a list can mix strings, numbers, and booleans.</p>
 <p>Each sentinel is applied only to columns whose type can hold it. A text sentinel reaches string, categorical, and enum columns; a number reaches any numeric column, including decimals; a boolean reaches boolean columns only. Sentinels that do not fit a given column are dropped for that column alone, so one global list can cover a mixed schema without failing.</p>
