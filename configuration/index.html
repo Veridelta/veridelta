@@ -862,6 +862,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#8-fuzzy-text-matching" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Fuzzy Text Matching
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -986,14 +997,14 @@
 <p>Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (<code>account</code>, <code>user</code>, <code>warehouse</code>, <code>database</code>, <code>schema_name</code>, <code>role</code>, and <code>password</code> for Snowflake; <code>server_hostname</code>, <code>http_path</code>, <code>access_token</code>, <code>catalog</code>, and <code>schema_name</code> for Databricks), and the <code>table</code> names differ; naming the same table twice raises <code>ConfigError</code>, since a table compared with itself always matches. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise <code>ConnectorError</code>.</p>
 <p><code>table</code> must be one to three unquoted identifier segments (<code>EVENTS</code>, <code>schema.table</code>, or <code>catalog.schema.table</code>). Rules that select columns by <code>pattern</code> are matched against the probed column names before any SQL is compiled, so they apply in the warehouse exactly as they do locally.</p>
 <p>Pushdown issues up to ten statements per run: a zero-row column probe, a duplicate-key check, and a <code>COUNT(*)</code> per side, then inner-join mismatches, target-only added rows, source-only removed rows, and a per-column mismatch tally, which is skipped when no column is compared. Those fill every <code>DiffSummary</code> field including <code>column_mismatches</code>, so <code>threshold</code>, <code>match_rate_percentage</code>, and the drift report mean the same thing they do for local comparisons. The duplicate-key check costs one grouped scan per relation, over its normalized keys, and raises <code>DataIntegrityError</code> before any count or join runs, exactly as a local run refuses keys that repeat.</p>
-<p>Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global <code>default_*</code> settings, so a <code>default_absolute_tolerance</code> applies in the warehouse too. As in a local run, a tolerance only loosens a column that is numeric once normalized, such as a text column with <code>cast_to: Float64</code>; text, boolean, and temporal columns are compared exactly. Columns marked <code>ignore</code> are excluded, and <code>rename_to</code> pairs a source column with its renamed target counterpart.</p>
+<p>Every column present on both sides is compared, exactly as it is locally. Columns without an explicit rule inherit the global <code>default_*</code> settings, so a <code>default_absolute_tolerance</code> applies in the warehouse too. As in a local run, a tolerance only loosens a column that is numeric once normalized, such as a text column with <code>cast_to: Float64</code>; text, boolean, and temporal columns are compared exactly. Likewise <code>max_levenshtein_distance</code> only loosens a column that is text once normalized, and compiles to Snowflake's <code>EDITDISTANCE</code> or Databricks' <code>levenshtein</code>, which count characters as a local run does. Columns marked <code>ignore</code> are excluded, and <code>rename_to</code> pairs a source column with its renamed target counterpart.</p>
 <p>The column probes enforce <code>schema_mode</code> and primary-key existence before any comparison runs, raising <code>ConfigError</code> on drift. Probed names are compared exactly as the compiler quotes them, with no case folding, so YAML identifiers must match the stored column case (Snowflake stores unquoted names uppercase). <code>normalize_column_names</code> cannot change that: pushdown raises <code>ConfigError</code> if it would rename a stored column.</p>
-<p>All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. These behaviors still differ from the file and lakehouse path:</p>
+<p>All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. The exception is <code>min_jaro_winkler_similarity</code>, which pushdown refuses with <code>ConfigError</code> before any comparison query runs rather than approximating it; see <a href="#8-fuzzy-text-matching">Fuzzy Text Matching</a>. These behaviors still differ from the file and lakehouse path:</p>
 <ul>
 <li>Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as <code>added_rows_pks_only</code>, <code>removed_rows_pks_only</code>, and <code>changed_rows_pks_only</code> so they cannot be confused with local artifacts, which hold complete records.</li>
 <li><code>strict_types</code> applies to local runs only. When the two relations store a column as different types, the warehouse compares them under its own coercion rules.</li>
 </ul>
-<p>Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead.</p>
+<p>Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead. DuckDB's <code>levenshtein</code> counts bytes rather than characters, so edit-distance parity is checked on ASCII text, where the two agree.</p>
 <p>Write <code>regex_replace</code> patterns, <code>value_map</code> entries, and text <code>null_values</code> exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in <code>\d</code> or <code>\N</code> and an apostrophe in <code>O'Brien</code> arrive intact; do not double them yourself. Escaping preserves the text, but each warehouse still runs its own regex engine: keep replacements free of capture-group references, which Polars and Databricks write as <code>$1</code> and Snowflake as <code>\1</code>. Likewise <code>whitespace_mode</code> trims only spaces in a warehouse, where Polars also strips tabs and line breaks.</p>
 <p>Two stages need explaining:</p>
 <ul>
@@ -1275,6 +1286,14 @@
 <td style="text-align: left;">Maximum relative numeric difference (<code>0.01</code> is 1%). Overrides <code>default_relative_tolerance</code>. Must be finite.</td>
 </tr>
 <tr>
+<td style="text-align: left;"><code>max_levenshtein_distance</code></td>
+<td style="text-align: left;">Most single-character edits between two text values that still count as a match. Needs the <code>fuzzy</code> extra locally, and compiles for warehouse pushdown; see <a href="#8-fuzzy-text-matching">Fuzzy Text Matching</a>.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>min_jaro_winkler_similarity</code></td>
+<td style="text-align: left;">Lowest Jaro-Winkler similarity, above 0 and at most 1, between two text values that still counts as a match. Needs the <code>fuzzy</code> extra, and runs locally only.</td>
+</tr>
+<tr>
 <td style="text-align: left;"><code>case_insensitive</code></td>
 <td style="text-align: left;">Lowercase text before comparing.</td>
 </tr>
@@ -1334,7 +1353,7 @@
 <li>Pad zeros (<code>pad_zeros</code>)</li>
 <li>Datetime parsing, then timezone (<code>datetime_format</code>, <code>timezone</code>)</li>
 <li>Explicit cast (<code>cast_to</code>)</li>
-<li>Comparison (equality, or numeric tolerance)</li>
+<li>Comparison (equality, numeric tolerance, or text similarity)</li>
 <li>Null-safe equality (<code>treat_null_as_equal</code>)</li>
 </ol>
 <p>Stages 1 through 7 normalize each dataset on its own, before any join, so they apply to primary keys as well, in local runs and warehouse pushdown alike: a <code>case_insensitive</code> rule on a key column changes how rows are matched, not just how they are compared. If normalizing a key collapses two rows into one, <code>DataIntegrityError</code> is raised rather than allowing a join explosion.</p>
@@ -1414,6 +1433,25 @@
 <a id="__codelineno-21-4" name="__codelineno-21-4" href="#__codelineno-21-4"></a><span class="w">    </span><span class="nt">absolute_tolerance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.01</span>
 </code></pre></div>
 <p><code>primary_keys</code> are written with the target spelling, so a renamed key works in local runs and warehouse pushdown alike; pushdown reads it from the source under its stored name.</p>
+<h3 id="8-fuzzy-text-matching">8. Fuzzy Text Matching</h3>
+<p>Forgive typos in free text, such as names keyed by hand into two systems, without writing a <code>regex_replace</code> for each one. Scores come from <a href="https://github.com/rapidfuzz/RapidFuzz">RapidFuzz</a>, an optional extra:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-22-1" name="__codelineno-22-1" href="#__codelineno-22-1"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s1">&#39;veridelta[fuzzy]&#39;</span>
+</code></pre></div>
+<p>A rule sets one of two limits:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-23-1" name="__codelineno-23-1" href="#__codelineno-23-1"></a><span class="nt">rules</span><span class="p">:</span>
+<a id="__codelineno-23-2" name="__codelineno-23-2" href="#__codelineno-23-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;customer_name&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-23-3" name="__codelineno-23-3" href="#__codelineno-23-3"></a><span class="w">    </span><span class="nt">case_insensitive</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<a id="__codelineno-23-4" name="__codelineno-23-4" href="#__codelineno-23-4"></a><span class="w">    </span><span class="nt">max_levenshtein_distance</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<a id="__codelineno-23-5" name="__codelineno-23-5" href="#__codelineno-23-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">column_names</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;city&quot;</span><span class="p p-Indicator">]</span>
+<a id="__codelineno-23-6" name="__codelineno-23-6" href="#__codelineno-23-6"></a><span class="w">    </span><span class="nt">min_jaro_winkler_similarity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.95</span>
+</code></pre></div>
+<ul>
+<li><code>max_levenshtein_distance</code> counts single-character insertions, deletions, and substitutions. <code>Jon</code> and <code>John</code> are one edit apart, so they match at <code>1</code>; <code>kitten</code> and <code>sitting</code> need <code>3</code>.</li>
+<li><code>min_jaro_winkler_similarity</code> scores two values from 0 to 1 and rewards a shared prefix. <code>MARTHA</code> and <code>MARHTA</code> score 0.961, so they match at <code>0.96</code> but not at <code>0.97</code>.</li>
+</ul>
+<p>A limit loosens only columns that are text after normalization, just as a tolerance loosens only numbers. A column cast to a number or parsed as a date is still compared exactly, while <code>pad_zeros</code> or <code>cast_to: String</code> make a column text. Equal values still match outright, and a missing value is never similar to anything, so <code>treat_null_as_equal</code> alone decides NULLs. Scores are case-sensitive: <code>case_insensitive</code> lowercases both sides first, in stage 3, which puts <code>ABD</code> and <code>abc</code> one edit apart. Primary keys are never loosened, because rows join on equal keys.</p>
+<p>A rule sets at most one of the two limits, and neither has a global default, since loosening every text column would also forgive identifiers and codes that must match exactly. Without the extra, a run that needs a score raises <code>ConfigError</code> with the install command before comparing any rows.</p>
+<p>Warehouse pushdown compiles <code>max_levenshtein_distance</code> to Snowflake's <code>EDITDISTANCE</code> or Databricks' <code>levenshtein</code>, which count characters as a local run does, so a warehouse run needs no extra. It refuses <code>min_jaro_winkler_similarity</code> with <code>ConfigError</code> before any comparison query runs: Snowflake's <code>JAROWINKLER_SIMILARITY</code> ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function, so neither can reproduce a local verdict.</p>
 
 
 
