@@ -3,6 +3,7 @@
 
 """End-to-End integration tests for the Veridelta CLI."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -114,3 +115,52 @@ output_format: parquet
         assert changed_df.item(0, "val_source") == "B"
         assert changed_df.item(0, "val_target") == "CHANGED"
         assert changed_df.item(0, "val_is_match") is False
+
+    def test_e2e_config_reads_references_from_the_environment(self, tmp_path: Path) -> None:
+        """Ensure `${NAME}` in the source and target blocks resolves from the CLI's environment."""
+        frame = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        frame.write_csv(tmp_path / "source.csv")
+        frame.write_csv(tmp_path / "target.csv")
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+source:
+  path: ${VERIDELTA_E2E_DIR}/source.csv
+target:
+  path: ${VERIDELTA_E2E_DIR}/target.csv
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "VERIDELTA_E2E_DIR": str(tmp_path)},
+        )
+
+        assert result.returncode == 0
+        assert "Total Issues:  0" in result.stdout
+
+    def test_e2e_unset_environment_variable_is_a_configuration_error(self, tmp_path: Path) -> None:
+        """Ensure a missing variable stops the run with a configuration error that names it."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+source:
+  path: ${VERIDELTA_E2E_UNSET}/source.csv
+target:
+  path: target.csv
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={key: value for key, value in os.environ.items() if key != "VERIDELTA_E2E_UNSET"},
+        )
+
+        assert result.returncode == 1
+        assert "Configuration Error" in result.stderr
+        assert "'VERIDELTA_E2E_UNSET' is not set, but source -> path references it" in result.stderr
