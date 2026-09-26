@@ -4,13 +4,16 @@
 """Unit tests for the Veridelta command-line interface."""
 
 import argparse
+import json
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 from pytest_mock import MockerFixture
 
-from veridelta.cli import build_parser, main, run
+from veridelta.cli import build_parser, crosswalk, main, run
 from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.models import DiffConfig, DiffRule, ValueMapEntry, ValueMapProposal
 
 
 @pytest.mark.unit
@@ -297,4 +300,274 @@ class TestCommandLineInterface:
         assert args_passed.command == "run"
         assert args_passed.config == "custom.yaml"
 
+        mock_exit.assert_called_once_with(0)
+
+
+_CROSSWALK_CONFIG = DiffConfig(
+    primary_keys=["id"],
+    rules=[
+        DiffRule(column_names=["gender"]),
+        DiffRule(column_names=["status", "state"]),
+        DiffRule(pattern="^fl"),
+    ],
+)
+"""Configuration the stubbed loader returns: one rule per way a rule can govern."""
+
+
+def _proposal(
+    column: str,
+    entries: dict[str, tuple[str, int, int]],
+    *,
+    existing: dict[str, str] | None = None,
+    governing_rule_index: int | None = None,
+) -> ValueMapProposal:
+    """Build a proposal from `{source: (target, rows, agreeing_rows)}` entries."""
+    evidence = tuple(
+        ValueMapEntry(source_value=source, target_value=target, rows=rows, agreeing_rows=agreeing)
+        for source, (target, rows, agreeing) in entries.items()
+    )
+    return ValueMapProposal(
+        column=column,
+        value_map={
+            **(existing or {}),
+            **{entry.source_value: entry.target_value for entry in evidence},
+        },
+        entries=evidence,
+        governing_rule_index=governing_rule_index,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestCrosswalkCommand:
+    """Validate `veridelta crosswalk`, which prints proposed value_map rules."""
+
+    @pytest.fixture
+    def crosswalk_args(self) -> argparse.Namespace:
+        """Provide the namespace `crosswalk` receives with every default."""
+        return argparse.Namespace(
+            config="dummy.yaml",
+            json=False,
+            quiet=False,
+            min_confidence=0.95,
+            min_support=5,
+            sample_fraction=1.0,
+        )
+
+    @pytest.fixture
+    def propose(self, mocker: MockerFixture) -> MagicMock:
+        """Stub configuration loading and return the patched proposal entry point."""
+        mocker.patch(
+            "veridelta.cli.load_config", return_value=(_CROSSWALK_CONFIG, "source", "target")
+        )
+        engine = mocker.patch("veridelta.cli.DiffEngine")
+        proposals: MagicMock = engine.propose_value_maps_from_configs
+        return proposals
+
+    def test_it_prints_rules_a_configuration_can_hold(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure stdout is YAML whose rules load back, codes like Y and 1 still text."""
+        propose.return_value = [
+            _proposal("gender", {"M": ("Male", 1000, 999)}),
+            _proposal("flag", {"Y": ("1", 5, 5)}),
+        ]
+
+        exit_code = crosswalk(crosswalk_args)
+        printed = yaml.safe_load(capsys.readouterr().out)
+        config = DiffConfig.model_validate({"primary_keys": ["id"], **printed})
+
+        assert exit_code == 0
+        assert [(rule.column_names, rule.value_map) for rule in config.rules] == [
+            (["gender"], {"M": "Male"}),
+            (["flag"], {"Y": "1"}),
+        ]
+
+    def test_it_writes_the_evidence_to_stderr_only(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure the counts behind each entry never end up in the pasted YAML."""
+        propose.return_value = [_proposal("gender", {"M": ("Male", 1000, 999)})]
+
+        crosswalk(crosswalk_args)
+        captured = capsys.readouterr()
+
+        assert "gender: 1 new value_map entry" in captured.err
+        assert "'M' -> 'Male': 999 of 1,000 rows (99.9%)" in captured.err
+        assert "rows" not in captured.out
+
+    def test_it_prints_proposals_as_json(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure `--json` hands scripts the evidence as well as the map."""
+        propose.return_value = [_proposal("gender", {"M": ("Male", 1000, 999)})]
+        crosswalk_args.json = True
+
+        exit_code = crosswalk(crosswalk_args)
+        (proposal,) = json.loads(capsys.readouterr().out)
+
+        assert exit_code == 0
+        assert proposal["value_map"] == {"M": "Male"}
+        assert proposal["entries"][0]["confidence"] == 0.999
+
+    @pytest.mark.parametrize(("as_json", "printed"), [(False, ""), (True, "[]\n")])
+    def test_it_succeeds_when_nothing_is_proposed(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        as_json: bool,
+        printed: str,
+    ) -> None:
+        """Ensure finding nothing to propose is a result, not a failure."""
+        propose.return_value = []
+        crosswalk_args.json = as_json
+
+        exit_code = crosswalk(crosswalk_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert captured.out == printed
+        assert ("No value_map entries met the thresholds." in captured.err) is not as_json
+
+    @pytest.mark.parametrize(
+        ("index", "column", "advice"),
+        [
+            pytest.param(0, "gender", "Add these entries to its value_map", id="own-rule"),
+            pytest.param(
+                1, "status", "move 'status' into a rule of its own", id="rule-lists-others"
+            ),
+            pytest.param(2, "flag", "add a rule listing 'flag' by name", id="pattern-rule"),
+        ],
+    )
+    def test_it_says_where_entries_go_when_a_rule_already_governs_the_column(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        index: int,
+        column: str,
+        advice: str,
+    ) -> None:
+        """Ensure the note survives `--quiet` and never sends a map into a shared rule."""
+        propose.return_value = [
+            _proposal(
+                column,
+                {"M": ("Male", 5, 5)},
+                existing={"F": "Female"},
+                governing_rule_index=index,
+            )
+        ]
+        crosswalk_args.quiet = True
+
+        crosswalk(crosswalk_args)
+        captured = capsys.readouterr()
+
+        assert f"rules[{index}] already governs '{column}'" in captured.err
+        assert advice in captured.err
+        assert "Loading configuration" not in captured.err
+        assert yaml.safe_load(captured.out)["rules"][0]["value_map"] == {
+            "F": "Female",
+            "M": "Male",
+        }
+
+    def test_it_passes_the_thresholds_to_the_engine(
+        self, propose: MagicMock, crosswalk_args: argparse.Namespace
+    ) -> None:
+        """Ensure every flag reaches the proposal entry point unchanged."""
+        propose.return_value = []
+        crosswalk_args.min_confidence = 0.9
+        crosswalk_args.min_support = 3
+        crosswalk_args.sample_fraction = 0.5
+
+        crosswalk(crosswalk_args)
+
+        propose.assert_called_once_with(
+            _CROSSWALK_CONFIG,
+            "source",
+            "target",
+            min_confidence=0.9,
+            min_support=3,
+            sample_fraction=0.5,
+        )
+
+    @pytest.mark.parametrize(
+        ("failure", "header"),
+        [
+            pytest.param(ConfigError("bad rule"), "Configuration Error", id="config"),
+            pytest.param(ConnectorError("warehouse"), "ConnectorError", id="connector"),
+            pytest.param(RuntimeError("disk full"), "Unexpected System Error", id="unexpected"),
+        ],
+    )
+    def test_it_reports_failures_the_way_run_does(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        failure: Exception,
+        header: str,
+    ) -> None:
+        """Ensure a failure exits 1 with the same explanation `run` would give."""
+        propose.side_effect = failure
+
+        exit_code = crosswalk(crosswalk_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == 1
+        assert header in captured.err
+        assert str(failure) in captured.err
+        assert captured.out == ""
+
+    def test_it_parses_the_documented_defaults(self) -> None:
+        """Ensure a bare `crosswalk` uses the engine's thresholds and the default config."""
+        args = build_parser().parse_args(["crosswalk"])
+
+        assert (args.config, args.min_confidence, args.min_support, args.sample_fraction) == (
+            "veridelta.yaml",
+            0.95,
+            5,
+            1.0,
+        )
+
+    @pytest.mark.parametrize(
+        ("flag", "value", "message"),
+        [
+            pytest.param("--min-confidence", "0.5", "above 0.5", id="confidence-at-half"),
+            pytest.param("--min-confidence", "1.5", "at most 1", id="confidence-above-one"),
+            pytest.param("--min-confidence", "nan", "above 0.5", id="confidence-nan"),
+            pytest.param("--min-confidence", "most", "expected a number", id="confidence-text"),
+            pytest.param("--min-support", "0", "at least 1", id="support-zero"),
+            pytest.param("--min-support", "2.5", "whole number", id="support-fraction"),
+            pytest.param("--sample-fraction", "0", "above 0", id="fraction-zero"),
+            pytest.param("--sample-fraction", "1.5", "at most 1", id="fraction-above-one"),
+        ],
+    )
+    def test_it_rejects_unusable_thresholds(
+        self, capsys: pytest.CaptureFixture[str], flag: str, value: str, message: str
+    ) -> None:
+        """Ensure a bad threshold is a usage error before any data is read."""
+        with pytest.raises(SystemExit) as exc:
+            build_parser().parse_args(["crosswalk", flag, value])
+
+        assert exc.value.code == 2
+        assert message in capsys.readouterr().err
+
+    def test_main_dispatches_to_crosswalk(self, mocker: MockerFixture) -> None:
+        """Ensure the entry point routes the new subcommand and exits with its code."""
+        mock_crosswalk = mocker.patch("veridelta.cli.crosswalk", return_value=0)
+        mock_exit = mocker.patch("veridelta.cli.sys.exit")
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "crosswalk", "-c", "custom.yaml"])
+
+        main()
+
+        assert mock_crosswalk.call_args[0][0].config == "custom.yaml"
         mock_exit.assert_called_once_with(0)
