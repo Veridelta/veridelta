@@ -538,6 +538,22 @@ class TestCrosswalkCommand:
             1.0,
         )
 
+    def test_it_parses_thresholds_given_on_the_command_line(self) -> None:
+        """Ensure valid values pass through each parser, the bounds themselves included."""
+        args = build_parser().parse_args(
+            [
+                "crosswalk",
+                "--min-confidence",
+                "1",
+                "--min-support",
+                "1",
+                "--sample-fraction",
+                "0.25",
+            ]
+        )
+
+        assert (args.min_confidence, args.min_support, args.sample_fraction) == (1.0, 1, 0.25)
+
     @pytest.mark.parametrize(
         ("flag", "value", "message"),
         [
