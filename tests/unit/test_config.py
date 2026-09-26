@@ -84,6 +84,40 @@ class TestYAMLConfigurationParsing:
         assert "primary_keys" in error_msg
         assert "unsupported_field" in error_msg
 
+    @pytest.mark.parametrize(
+        "blocks",
+        [
+            pytest.param(
+                "source:\n  type: snowflake\n  table: SRC\n  user: u\n  warehouse: w\n"
+                "  database: d\n  schema_name: s\n  password: hunter2-do-not-print\n"
+                "target:\n  path: b.csv\n",
+                id="missing-field",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\n"
+                "target:\n  type: snowfake\n  password: hunter2-do-not-print\n",
+                id="unknown-type",
+            ),
+        ],
+    )
+    def test_it_keeps_connection_secrets_out_of_validation_errors(
+        self, tmp_path: Path, blocks: str
+    ) -> None:
+        """Ensure neither the message nor the chained Pydantic error repeats a credential.
+
+        The message lists only each error's summary, but the chained error
+        quoted the whole block, so a traceback or `logging.exception` printed
+        the password.
+        """
+        config = tmp_path / "leaky.yaml"
+        config.write_text(blocks + "primary_keys:\n  - id\n")
+
+        with pytest.raises(ConfigError) as exc_info:
+            load_config(config)
+
+        assert "hunter2-do-not-print" not in str(exc_info.value)
+        assert "hunter2-do-not-print" not in str(exc_info.value.__cause__)
+
     def test_it_accepts_both_string_and_path_objects_seamlessly(self, tmp_path: Path) -> None:
         """Ensure the parser natively handles raw strings since CLI arguments arrive as strings."""
         valid_yaml = tmp_path / "valid_string.yaml"

@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ConfigDict, TypeAdapter, ValidationError
 
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
@@ -32,7 +32,12 @@ __all__ = [
     "load_config",
 ]
 
-_SOURCE_REF_ADAPTER: TypeAdapter[SourceRef] = TypeAdapter(SourceRef)
+_SOURCE_REF_ADAPTER: TypeAdapter[SourceRef] = TypeAdapter(
+    SourceRef, config=ConfigDict(hide_input_in_errors=True)
+)
+"""Validator for `source` and `target` blocks. It hides the raw input in errors,
+because the blocks carry credentials and an unknown `type` fails before any
+model, and its own `hide_input_in_errors`, is chosen."""
 
 
 def _parse_source_ref(raw: Any, *, label: str) -> SourceRef:

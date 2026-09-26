@@ -5,7 +5,7 @@
 
 import polars as pl
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pytest_mock import MockerFixture
 
 from veridelta.engine import DiffEngine
@@ -46,6 +46,10 @@ class TestDiffRuleValidation:
         """Ensure negative values for absolute or relative tolerance are rejected."""
         with pytest.raises(ValidationError):
             DiffRule(column_names=["col"], absolute_tolerance=-1.0)
+
+
+_SECRET = "hunter2-do-not-print"
+"""Credential that must never appear in an error message."""
 
 
 def _snowflake_table(table: str) -> SnowflakeConfig:
@@ -243,6 +247,52 @@ class TestModelStrictness:
 
         with pytest.raises(ValidationError, match="Input should be"):
             SourceConfig(path="data.csv", format="xls")  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("model", "fields"),
+        [
+            pytest.param(
+                SnowflakeConfig,
+                {
+                    "table": "T",
+                    "user": "u",
+                    "warehouse": "w",
+                    "database": "d",
+                    "schema_name": "s",
+                    "password": _SECRET,
+                },
+                id="snowflake-password",
+            ),
+            pytest.param(
+                DatabricksConfig,
+                {"table": "t", "http_path": "/sql", "access_token": _SECRET},
+                id="databricks-token",
+            ),
+            pytest.param(
+                DeltaLakeConfig, {"storage_options": {"AWS_SECRET_ACCESS_KEY": _SECRET}}, id="delta"
+            ),
+            pytest.param(
+                IcebergConfig, {"storage_options": {"AWS_SECRET_ACCESS_KEY": _SECRET}}, id="iceberg"
+            ),
+            pytest.param(
+                SourceConfig,
+                {"options": {"storage_options": {"AWS_SECRET_ACCESS_KEY": _SECRET}}},
+                id="file-options",
+            ),
+        ],
+    )
+    def test_it_keeps_credentials_out_of_validation_errors(
+        self, model: type[BaseModel], fields: dict[str, object]
+    ) -> None:
+        """Ensure a rejected connection never repeats the credentials it was given.
+
+        Pydantic quotes the whole input in its error text, so a config missing
+        one required field used to print its password alongside the complaint.
+        """
+        with pytest.raises(ValidationError) as exc_info:
+            model(**fields)
+
+        assert _SECRET not in str(exc_info.value)
 
 
 @pytest.mark.unit
