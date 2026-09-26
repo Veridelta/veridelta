@@ -755,7 +755,8 @@ def _jaro_winkler_pushdown_error(column: str) -> ConfigError:
         f"Column '{column}' sets min_jaro_winkler_similarity, which warehouse pushdown "
         "cannot evaluate the way a local run does: Snowflake's JAROWINKLER_SIMILARITY "
         "ignores case and returns a whole number from 0 to 100, and Databricks has no "
-        "Jaro-Winkler function. Compare file or lakehouse copies of these tables locally."
+        "Jaro-Winkler function. Use max_levenshtein_distance, which compiles to SQL, or "
+        "compare file or lakehouse copies of these tables locally."
     )
 
 
@@ -768,6 +769,7 @@ def _pushdown_rule(
     absolute_tolerance: float | None = None,
     relative_tolerance: float | None = None,
     treat_null_as_equal: bool | None = None,
+    max_levenshtein_distance: int | None = None,
 ) -> DiffRule:
     """Re-materialize a folded rule as the fully specified `DiffRule` the compiler reads.
 
@@ -784,6 +786,7 @@ def _pushdown_rule(
         absolute_tolerance (float | None): Stage 8 absolute tolerance.
         relative_tolerance (float | None): Stage 8 relative tolerance.
         treat_null_as_equal (bool | None): Stage 9 null-safe equality.
+        max_levenshtein_distance (int | None): Stage 8 edit-distance limit.
 
     Returns:
         DiffRule: Rule naming the stored column, with a `rename_to` when the
@@ -805,6 +808,9 @@ def _pushdown_rule(
         datetime_format=effective["datetime_format"],
         timezone=effective["timezone"],
         cast_to=effective["cast_to"],
+        # No Jaro-Winkler counterpart: the resolver refuses that limit, since
+        # no warehouse can reproduce it.
+        max_levenshtein_distance=max_levenshtein_distance,
     )
 
 
@@ -874,8 +880,8 @@ def _resolve_pushdown_rules(
     Raises:
         ConfigError: If a column carries an explicit `null_values` rule whose
             sentinels none of its probed types can hold, a `timezone` rule the
-            probed types cannot satisfy, or a similarity limit on a column
-            compared as text.
+            probed types cannot satisfy, or a `min_jaro_winkler_similarity` on
+            a column compared as text.
     """
     target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
@@ -902,11 +908,6 @@ def _resolve_pushdown_rules(
         text = _compares_as_text(effective, source_schema.get(column))
         if text and effective["min_jaro_winkler_similarity"] is not None:
             raise _jaro_winkler_pushdown_error(aligned)
-        if text and effective["max_levenshtein_distance"] is not None:
-            raise ConfigError(
-                f"Column '{aligned}' sets max_levenshtein_distance, which warehouse "
-                "pushdown does not compile yet."
-            )
 
         resolved.append(
             _pushdown_rule(
@@ -917,6 +918,7 @@ def _resolve_pushdown_rules(
                 absolute_tolerance=effective["abs_tol"] if numeric else 0.0,
                 relative_tolerance=effective["rel_tol"] if numeric else 0.0,
                 treat_null_as_equal=effective["treat_null"],
+                max_levenshtein_distance=effective["max_levenshtein_distance"] if text else None,
             )
         )
     return resolved
@@ -1352,10 +1354,11 @@ def _collect_pushdown_summary(
 
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
-            primary key.
+            primary key, or a rule asks for what the warehouse cannot reproduce:
+            `min_jaro_winkler_similarity` on a column compared as text, or a
+            `datetime_format` directive with no SQL spelling.
         DataIntegrityError: If either relation repeats a normalized primary key.
-        ConnectorError: If a rule uses a field the compiler cannot express or the
-            warehouse returns a malformed aggregate.
+        ConnectorError: If the warehouse returns a malformed aggregate.
     """
     source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff

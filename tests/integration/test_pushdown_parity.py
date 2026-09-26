@@ -1447,6 +1447,153 @@ class TestSimilarityParity:
         with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
             run_pushdown(config, src, tgt)
 
+    @pytest.mark.parametrize(("treat_null", "changed"), [(True, 2), (False, 3)])
+    def test_it_agrees_on_typos_within_and_beyond_the_limit(
+        self, treat_null: bool, changed: int
+    ) -> None:
+        """Ensure one-letter slips match while other names and NULLs keep their verdicts.
+
+        The data is ASCII: DuckDB counts bytes where every warehouse counts
+        characters, which only differ once a character needs two bytes.
+        """
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame(
+            {"id": [1, 2, 3, 4, 5], "name": ["Jon", "Smith", "Jonathan", None, None]}
+        )
+        tgt = pl.DataFrame({"id": [1, 2, 3, 4, 5], "name": ["John", "Smyth", "John", "x", None]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["name"],
+                    max_levenshtein_distance=1,
+                    treat_null_as_equal=treat_null,
+                )
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == changed
+
+    @pytest.mark.parametrize(("case_insensitive", "changed"), [(False, 1), (True, 0)])
+    def test_it_folds_case_before_measuring_the_distance(
+        self, case_insensitive: bool, changed: int
+    ) -> None:
+        """Ensure stage 3 lowercases both sides before stage 8 counts edits."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1], "code": ["ABD"]})
+        tgt = pl.DataFrame({"id": [1], "code": ["abc"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["code"],
+                    max_levenshtein_distance=1,
+                    case_insensitive=case_insensitive,
+                )
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == changed
+
+    @pytest.mark.parametrize(
+        ("source", "target", "stages", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", ["Jon", "Ann"]),
+                pl.Series("val", ["John", "Bob"]),
+                {},
+                1,
+                id="text",
+            ),
+            pytest.param(pl.Series("val", [12, 20]), pl.Series("val", [13, 20]), {}, 1, id="int"),
+            pytest.param(
+                pl.Series("val", [True, False]),
+                pl.Series("val", [True, True]),
+                {},
+                1,
+                id="boolean",
+            ),
+            pytest.param(
+                pl.Series("val", [date(2024, 1, 2), date(2024, 1, 2)]),
+                pl.Series("val", [date(2024, 1, 2), date(2024, 1, 3)]),
+                {},
+                1,
+                id="date-a-day-apart",
+            ),
+            pytest.param(
+                pl.Series("val", [7, 42]),
+                pl.Series("val", [8, 42]),
+                {"pad_zeros": 5},
+                0,
+                id="padded-to-text",
+            ),
+            pytest.param(
+                pl.Series("val", ["2024-01-01 00:00:00", "2024-01-01 00:00:00"]),
+                pl.Series("val", [datetime(2024, 1, 1), datetime(2024, 1, 1, 0, 0, 1)]),
+                {"datetime_format": "%Y-%m-%d %H:%M:%S"},
+                1,
+                id="parsed-timestamp",
+            ),
+            pytest.param(
+                pl.Series("val", [12, 20]),
+                pl.Series("val", [13, 20]),
+                {"cast_to": "String"},
+                0,
+                id="cast-to-text",
+            ),
+            pytest.param(
+                pl.Series("val", ["12", "20"]),
+                pl.Series("val", ["13", "20"]),
+                {"cast_to": "Int64"},
+                1,
+                id="cast-to-integer",
+            ),
+        ],
+    )
+    def test_it_agrees_that_edit_distances_only_reach_text_columns(
+        self,
+        source: pl.Series,
+        target: pl.Series,
+        stages: dict[str, object],
+        expected_changed: int,
+    ) -> None:
+        """Ensure numbers, booleans, and dates one step apart still differ in both engines."""
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+        rule = DiffRule.model_validate(
+            {"column_names": ["val"], "max_levenshtein_distance": 1, **stages}
+        )
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"], rules=[rule]), src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+    def test_it_counts_bytes_on_the_duckdb_stand_in(self) -> None:
+        """Pin the harness's one known divergence, which no supported warehouse shares.
+
+        DuckDB's `levenshtein` counts UTF-8 bytes, so `café` and `cafe` are two
+        edits apart there and one apart locally, as in Snowflake and Databricks,
+        which count characters. That is why the parity data above is ASCII. If
+        this starts failing, DuckDB counts characters and the restriction can go.
+        """
+        pytest.importorskip("rapidfuzz")
+        src = pl.DataFrame({"id": [1], "name": ["café"]})
+        tgt = pl.DataFrame({"id": [1], "name": ["cafe"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], max_levenshtein_distance=1)],
+        )
+
+        pushdown, _ = run_pushdown(config, src, tgt)
+
+        assert run_local(config, src, tgt).summary.changed_count == 0
+        assert pushdown.summary.changed_count == 1
+
 
 @pytest.mark.integration
 @pytest.mark.slow

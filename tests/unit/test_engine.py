@@ -1533,20 +1533,49 @@ class TestPushdownRuleHelpers:
             compared, (pl.String, pl.Utf8)
         )
 
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [("min_jaro_winkler_similarity", 0.9), ("max_levenshtein_distance", 1)],
-    )
-    def test_it_refuses_a_similarity_limit_on_a_text_column(self, field: str, value: float) -> None:
-        """Ensure a limit the warehouse cannot evaluate fails before any query runs."""
+    def test_it_refuses_a_jaro_winkler_floor_on_a_text_column(self) -> None:
+        """Ensure a limit no warehouse can reproduce fails before any query runs."""
         schema = pl.Schema({"id": pl.Int64, "name": pl.String})
         config = DiffConfig(
             primary_keys=["id"],
-            rules=[DiffRule.model_validate({"column_names": ["name"], field: value})],
+            rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.9)],
         )
 
-        with pytest.raises(ConfigError, match=rf"Column 'name' sets {field}"):
+        with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
             _resolve_pushdown_rules(config, schema, schema)
+
+    def test_it_forwards_an_edit_distance_only_to_columns_compared_as_text(self) -> None:
+        """Ensure the warehouse loosens exactly the columns a local run measures as text."""
+        schema = pl.Schema(
+            {
+                "id": pl.Int64,
+                "name": pl.String,
+                "code": pl.Int64,
+                "padded": pl.Int64,
+                "parsed": pl.String,
+                "counted": pl.String,
+            }
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["name", "code"], max_levenshtein_distance=2),
+                DiffRule(column_names=["padded"], max_levenshtein_distance=2, pad_zeros=5),
+                DiffRule(
+                    column_names=["parsed"],
+                    max_levenshtein_distance=2,
+                    datetime_format="%Y-%m-%d",
+                ),
+                DiffRule(column_names=["counted"], max_levenshtein_distance=2, cast_to="Int64"),
+            ],
+        )
+
+        limits = {
+            rule.column_names[0]: rule.max_levenshtein_distance
+            for rule in _resolve_pushdown_rules(config, schema, schema)
+        }
+
+        assert limits == {"name": 2, "code": None, "padded": 2, "parsed": None, "counted": None}
 
     @pytest.mark.parametrize(
         ("field", "value"),

@@ -188,9 +188,10 @@ class DiffRule(BaseModel):
         stages never operate on placeholder text, and `cast_to` runs last so it
         casts already-sanitized values.
 
-        Warehouse pushdown implements every stage, and refuses the text
-        similarity limits rather than approximating them, so no rule silently
-        changes meaning by running in a warehouse. Two stages need explaining:
+        Warehouse pushdown implements every stage, and refuses the one setting
+        it cannot reproduce, `min_jaro_winkler_similarity`, rather than
+        approximating it, so no rule silently changes meaning by running in a
+        warehouse. Two stages need explaining:
 
         * `pad_zeros` is emitted as a sign-aware, non-truncating expression
           rather than a bare `LPAD`, which pads in front of a minus sign and
