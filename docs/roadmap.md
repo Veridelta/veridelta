@@ -9,7 +9,6 @@ Veridelta is currently in **v{{ config.extra.version }}**. The core execution en
 
 ## 2. Advanced Heuristics & ML
 * **Fuzzy Matching:** Implementation of Levenshtein and Jaro-Winkler distance thresholds to bypass non-deterministic typographical errors without explicit regex definition.
-* **Automated Crosswalks:** Statistical sampling heuristics to auto-generate `value_map` proposals (e.g., detecting a 99.9% correlation between legacy `M` and modern `Male`).
 
 ## 3. Developer Experience (DX) & Tooling
 A framework is only as effective as the developer's ability to interface with it safely and efficiently.

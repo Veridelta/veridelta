@@ -125,11 +125,15 @@ veridelta run -c veridelta.yaml
 veridelta run -c veridelta.yaml --json
 veridelta run -c veridelta.yaml --quiet
 veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
+veridelta crosswalk -c veridelta.yaml
+veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 ```
 
 `--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
 
 Exit codes are `0` for a match within `threshold`, `1` for drift or any failure while running, and `2` for invalid command-line arguments.
+
+`crosswalk` proposes `value_map` rules instead of comparing; see [Proposing a value map](#proposing-a-value-map). It exits `0` once the proposals are computed, whether or not it found any, `1` on failure, and `2` for invalid arguments.
 
 ```yaml
 source:
@@ -422,6 +426,43 @@ rules:
       "1": "ACTIVE"
       "2": "PENDING"
 ```
+
+#### Proposing a value map
+Veridelta can draft these entries from the data. `veridelta crosswalk` aligns, normalizes, and joins the configured datasets exactly as `run` does, then proposes each source value for the target value it lines up with:
+
+```bash
+veridelta crosswalk -c veridelta.yaml > proposed.yaml
+```
+
+The evidence goes to stderr and the rules to stdout, ready to paste into the configuration:
+
+```text
+gender: 2 new value_map entries
+  'M' -> 'Male': 599 of 600 rows (99.8%)
+  'F' -> 'Female': 400 of 400 rows (100.0%)
+```
+
+```yaml
+rules:
+- column_names:
+  - gender
+  value_map:
+    M: Male
+    F: Female
+```
+
+An entry needs two things:
+
+- **Confidence**, `--min-confidence` (default 0.95): the share of the source value's joined rows whose target is the proposed value. Every row with that source value counts, including rows that already match and rows whose target is NULL, so an entry that would break a matching row pays for it. The floor must be above 0.5, which leaves at most one candidate per source value.
+- **Support**, `--min-support` (default 5): how many rows agree, so a coincidence in a handful of rows is never proposed.
+
+Values are read as the `value_map` stage sees them, after null sentinels, `regex_replace`, whitespace, and case folding, so a `case_insensitive` column gets lowercase entries. Only compared text columns qualify, and only when nothing after stage 4 changes the mapped value: a column with `pad_zeros`, `datetime_format`, or a `cast_to` other than `String` is skipped, as are primary keys and ignored columns. A non-text target is read as the text it is compared as, so a `Y`/`N` source against a `1`/`0` target proposes `Y: '1'`, unless `strict_types` rules the pair out.
+
+An existing `value_map` is kept and extended. Rows it already translates are left out of the counts, so a raw value that equals one of its outputs cannot receive an entry. Only one rule governs a column, so when a rule already governs one, the command says so on stderr, even with `--quiet`, and the new entries belong in that rule's `value_map` rather than in a second rule. If that rule also governs other columns, by listing several names or by a `pattern`, the column needs a rule of its own first, since a map merged into a shared rule applies to every column it governs; the note says which case applies.
+
+`--sample-fraction` (default 1.0) reads that share of source rows, picked by a hash of the primary keys, so rerunning on the same data under one Polars version samples the same rows. `--json` prints each proposal with its evidence instead of YAML. Warehouse sources raise `ConnectorError`: proposals read rows locally, so export the tables, or a sample of them, to Parquet first.
+
+From Python, `DiffEngine(config, source, target).propose_value_maps()` returns `ValueMapProposal` objects, and `DiffEngine.propose_value_maps_from_configs(diff, source, target)` loads a YAML pair first. Each proposal's `to_rule()` returns the standalone rule.
 
 ### 6. Exclusion Routing
 Explicitly drop volatile or irrelevant columns (e.g., auto-generated timestamps) from the comparison matrix.
