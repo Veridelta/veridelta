@@ -131,7 +131,9 @@ class SourceConfig(BaseModel):
             directly to the underlying Polars reader (e.g., `{'separator': ';'}`).
     """
 
-    model_config = ConfigDict(extra="forbid")
+    # Reader options can carry object-store credentials, which Pydantic would
+    # otherwise quote in its errors.
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     type: Literal["file"] = Field("file", description="Discriminator for file-backed sources.")
     path: str = Field(..., description="File system path or URI to the data.")
@@ -761,7 +763,8 @@ class SnowflakeConfig(BaseModel):
         role (str | None): Optional role assumed after authentication.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Credentials pass through here, and Pydantic quotes raw input in its errors.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["snowflake"] = Field("snowflake", description="Discriminator for Snowflake.")
     table: str = Field(
@@ -795,7 +798,8 @@ class DatabricksConfig(BaseModel):
         schema_name (str | None): Optional default schema name.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Credentials pass through here, and Pydantic quotes raw input in its errors.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["databricks"] = Field("databricks", description="Discriminator for Databricks.")
     table: str = Field(
@@ -820,7 +824,8 @@ class DeltaLakeConfig(BaseModel):
         storage_options (dict[str, str]): Object-store credentials and options.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Credentials pass through here, and Pydantic quotes raw input in its errors.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["delta"] = Field("delta", description="Discriminator for Delta Lake.")
     table_uri: str = Field(..., description="Filesystem path or object-store URI of the table.")
@@ -846,7 +851,8 @@ class IcebergConfig(BaseModel):
         storage_options (dict[str, str]): Object-store credentials and options.
     """
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Credentials pass through here, and Pydantic quotes raw input in its errors.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["iceberg"] = Field("iceberg", description="Discriminator for Apache Iceberg.")
     table_uri: str = Field(..., description="Catalog identifier or filesystem URI of the table.")

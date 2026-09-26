@@ -51,7 +51,7 @@ uv add 'veridelta[iceberg]'
 uv add 'veridelta[all]'
 ```
 
-Do not commit `password` or `access_token` in YAML. The loader does not expand environment variables, so either render the file from your secret store at runtime, or build the connection in Python (for example `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`) and pass it to `DiffEngine.run_from_configs`.
+Do not commit `password` or `access_token` in YAML. Write `${NAME}` so the loader reads them from the environment (see [Environment variables](#environment-variables)), or build the connection in Python (for example `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`) and pass it to `DiffEngine.run_from_configs`.
 
 Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`.
 
@@ -208,6 +208,39 @@ Every connector block is selected by `type` and rejects keys it does not list.
 | `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
 
 `version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse and lakehouse blocks are frozen once loaded.
+
+### Environment variables
+
+Any string inside `source` or `target` can read an environment variable, so credentials and per-environment paths stay out of the file:
+
+```yaml
+source: &warehouse
+  type: snowflake
+  table: ANALYTICS.PUBLIC.LEGACY_EVENTS
+  account: xy12345
+  user: ${SNOWFLAKE_USER}
+  password: ${SNOWFLAKE_PASSWORD}
+  role: ${SNOWFLAKE_ROLE:-ANALYST}
+  warehouse: COMPUTE_WH
+  database: ANALYTICS
+  schema_name: PUBLIC
+
+target:
+  <<: *warehouse
+  table: ANALYTICS.PUBLIC.MODERN_EVENTS
+
+primary_keys: ["event_id"]
+```
+
+- `${NAME}` is replaced by the variable's value, and can sit inside longer text, as in `s3://${LAKE_BUCKET}/events`. A variable that is set but empty gives empty text.
+- `${NAME:-default}` uses `default` when the variable is unset or empty. The default is literal text, and cannot contain `}` or another reference.
+- `$${` writes a literal `${`, so a value that should contain `${` must be written this way.
+- Values read from the environment are never expanded again, so a secret containing `$` or `${` arrives intact.
+- Nested values such as `storage_options` and file `options` are expanded too, but keys, numbers, and booleans are not. Root settings and `rules` are read verbatim, so a `${1}` in a `regex_replace` replacement is left alone.
+
+A reference to an unset variable without a default, or a malformed one (`${1}`, `${NAME`, `${NAME-x}`, or a nested `${A:-${B}}`), raises `ConfigError` when the file loads. The error names the field, such as `source -> password`, and the variable when there is one, but never repeats a value; validation errors for `source` and `target` omit their input for the same reason.
+
+Expanded values are text. `version` and `snapshot_id` accept only YAML integers, so write those literally, and file `options` reach the reader as they are, so an expanded option arrives as a string.
 
 ### Connector logging
 
