@@ -1,0 +1,213 @@
+name: Veridelta
+description: Compare two datasets with Veridelta and report the verdict on the job summary and the pull request.
+author: The Veridelta Contributors
+branding:
+  icon: check-circle
+  color: green
+
+inputs:
+  config:
+    description: Path to the Veridelta YAML configuration, relative to working-directory.
+    default: veridelta.yaml
+  working-directory:
+    description: Directory the comparison runs in. Relative paths in the configuration resolve from here.
+    default: .
+  extras:
+    description: Comma-separated optional extras to install, such as "snowflake" or "database,fuzzy".
+    default: ""
+  version:
+    description: "Veridelta version to install from PyPI. Empty installs the version at this action's ref, so `uses: Veridelta/veridelta@v0.11.0` runs 0.11.0."
+    default: ""
+  python-version:
+    description: Python version to run Veridelta with.
+    default: "3.12"
+  html-max-rows:
+    description: Rows to embed per table in the HTML report.
+    default: "1000"
+  fail-on-mismatch:
+    description: Fail the step when the comparison finds drift. A configuration or runtime error always fails it.
+    default: "true"
+  comment:
+    description: "Keep one summary comment up to date on the pull request (pull_request and pull_request_target events only). Needs `pull-requests: write`."
+    default: "true"
+  github-token:
+    description: Token used to post the pull request comment.
+    default: ${{ github.token }}
+  upload-artifact:
+    description: Upload the JSON summary, Markdown summary, and HTML report as a workflow artifact.
+    default: "true"
+  artifact-name:
+    description: Name of the uploaded artifact. Defaults to one built from the job and the configuration path; set it when a matrix runs the same configuration more than once.
+    default: ""
+
+outputs:
+  status:
+    description: "`match`, `drift`, or `error`."
+    value: ${{ steps.run.outputs.status }}
+  is-match:
+    description: "`true` when the comparison matched within its threshold."
+    value: ${{ steps.run.outputs.is-match }}
+  exit-code:
+    description: Exit code of `veridelta run` (0 match, 1 drift or error).
+    value: ${{ steps.run.outputs.exit-code }}
+  summary-json:
+    description: Path to the JSON summary. Empty when the comparison did not finish.
+    value: ${{ steps.run.outputs.summary-json }}
+  summary-markdown:
+    description: Path to the Markdown summary. Empty when the comparison did not finish.
+    value: ${{ steps.run.outputs.summary-markdown }}
+  report-html:
+    description: Path to the HTML report. Empty when the comparison did not finish.
+    value: ${{ steps.run.outputs.report-html }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        enable-cache: false
+
+    # Inputs reach the script through `env` only, never by expression
+    # substitution inside `run`, so no input can inject shell syntax.
+    - name: Run Veridelta
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        VERIDELTA_CONFIG: ${{ inputs.config }}
+        VERIDELTA_EXTRAS: ${{ inputs.extras }}
+        VERIDELTA_VERSION: ${{ inputs.version }}
+        VERIDELTA_HTML_MAX_ROWS: ${{ inputs.html-max-rows }}
+        VERIDELTA_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        VERIDELTA_ACTION_PATH: ${{ github.action_path }}
+        VERIDELTA_OUT: ${{ runner.temp }}/veridelta
+      run: |
+        # GitHub runs bash with -e; a drift exit must be recorded, not abort the step.
+        set +e
+        out="$VERIDELTA_OUT"
+        mkdir -p "$out"
+        extras="${VERIDELTA_EXTRAS// /}"
+        if [ -n "$VERIDELTA_VERSION" ]; then
+          spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
+        else
+          source_url=$(uv run --no-project --quiet python -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$VERIDELTA_ACTION_PATH")
+          spec="veridelta${extras:+[$extras]} @ $source_url"
+        fi
+
+        uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" > "$out/summary.json"
+        code=$?
+
+        if [ "$code" -eq 0 ]; then
+          status=match
+        elif [ "$code" -eq 1 ] && grep -q '"is_match": false' "$out/summary.json"; then
+          status=drift
+        else
+          status=error
+        fi
+
+        if [ -s "$out/summary.md" ]; then
+          cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        else
+          printf '### Veridelta: ERROR\n\n`veridelta run` exited with code %s before writing a summary. The step log has the error.\n' "$code" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+        artifact="$VERIDELTA_ARTIFACT_NAME"
+        if [ -z "$artifact" ]; then
+          artifact="veridelta-$GITHUB_JOB-$(printf '%s' "$VERIDELTA_CONFIG" | tr -c 'A-Za-z0-9._-' '-')"
+        fi
+
+        {
+          echo "status=$status"
+          if [ "$status" = match ]; then echo "is-match=true"; else echo "is-match=false"; fi
+          echo "exit-code=$code"
+          echo "artifact-name=$artifact"
+          if [ "$status" = error ]; then
+            echo "summary-json="
+            echo "summary-markdown="
+            echo "report-html="
+          else
+            echo "summary-json=$out/summary.json"
+            echo "summary-markdown=$out/summary.md"
+            echo "report-html=$out/report.html"
+          fi
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Upload the Veridelta report
+      if: always() && inputs.upload-artifact == 'true' && steps.run.outputs.artifact-name != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ steps.run.outputs.artifact-name }}
+        path: ${{ runner.temp }}/veridelta/
+        if-no-files-found: ignore
+
+    - name: Comment on the pull request
+      if: always() && inputs.comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+      uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+      env:
+        VERIDELTA_CONFIG: ${{ inputs.config }}
+        VERIDELTA_SUMMARY: ${{ steps.run.outputs.summary-markdown }}
+        VERIDELTA_EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const marker = `<!-- veridelta:${encodeURIComponent(process.env.VERIDELTA_CONFIG)} -->`;
+          let summary;
+          try {
+            summary = fs.readFileSync(process.env.VERIDELTA_SUMMARY, 'utf8');
+          } catch {
+            summary = `### Veridelta: ERROR\n\n\`veridelta run\` exited with code ${process.env.VERIDELTA_EXIT_CODE || 'unknown'} before writing a summary. The workflow log has the error.\n`;
+          }
+          const body = `${marker}\n${summary}`;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          try {
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            // Only a bot's comment is updated, so a person quoting the marker
+            // cannot redirect the summary into their own comment.
+            const existing = comments.find(
+              (comment) => comment.user?.type === 'Bot' && comment.body?.startsWith(marker),
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+          } catch (error) {
+            if (error.status === 403 || error.status === 404) {
+              core.warning(
+                `Veridelta could not comment on the pull request (HTTP ${error.status}). ` +
+                'Grant the job `pull-requests: write`, or set `comment: false`. ' +
+                'Pull requests from forks get a read-only token.',
+              );
+            } else {
+              throw error;
+            }
+          }
+
+    - name: Apply the verdict
+      if: always()
+      shell: bash
+      env:
+        VERIDELTA_STATUS: ${{ steps.run.outputs.status }}
+        VERIDELTA_FAIL_ON_MISMATCH: ${{ inputs.fail-on-mismatch }}
+      run: |
+        case "$VERIDELTA_STATUS" in
+          match)
+            ;;
+          drift)
+            if [ "$VERIDELTA_FAIL_ON_MISMATCH" = "true" ]; then
+              echo "::error::Veridelta found drift. The job summary and the uploaded report have the details."
+              exit 1
+            fi
+            echo "::warning::Veridelta found drift, and fail-on-mismatch is off."
+            ;;
+          *)
+            echo "::error::Veridelta did not finish. The 'Run Veridelta' step log has the error."
+            exit 1
+            ;;
+        esac

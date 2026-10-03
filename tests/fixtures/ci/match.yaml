@@ -1,0 +1,6 @@
+# Used by the `action` CI job: a comparison that matches.
+primary_keys: [id]
+source:
+  path: tests/fixtures/ci/legacy.csv
+target:
+  path: tests/fixtures/ci/modern_match.csv
