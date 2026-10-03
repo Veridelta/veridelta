@@ -12,9 +12,10 @@ import polars as pl
 from veridelta.connectors.sql import SQLPushdownCompiler
 
 PushdownQueryType = Literal[
-    "mismatch", "added", "missing", "count", "duplicates", "columns", "schema"
+    "mismatch", "added", "missing", "count", "duplicates", "columns", "schema", "value_maps"
 ]
-"""Warehouse pushdown round-trip: comparison rows, tallies, totals, key checks, or probes."""
+"""Warehouse pushdown round-trip: comparison rows, tallies, totals, key checks,
+probes, or value map evidence."""
 
 _ConnectorT = TypeVar("_ConnectorT", bound="VerideltaConnector")
 
@@ -92,7 +93,8 @@ class VerideltaConnector(ABC):
         Args:
             statement (str): SQL (warehouse) or deferred predicate payload.
             query_type (PushdownQueryType): Which round-trip the SQL represents
-                (`mismatch`, `added`, `missing`, `count`, `columns`, or `schema`).
+                (`mismatch`, `added`, `missing`, `count`, `duplicates`,
+                `columns`, `schema`, or `value_maps`).
 
         Returns:
             pl.LazyFrame: Unevaluated result graph. Must not be collected here.

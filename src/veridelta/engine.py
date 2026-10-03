@@ -38,7 +38,17 @@ from veridelta.connectors import warehouse as warehouse_connectors
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
-from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_database_select
+from veridelta.connectors.sql import (
+    SAMPLE_BUCKETS,
+    VALUE_MAP_AGREEING_ALIAS,
+    VALUE_MAP_COLUMN_ALIAS,
+    VALUE_MAP_ROWS_ALIAS,
+    VALUE_MAP_SOURCE_ALIAS,
+    VALUE_MAP_TARGET_ALIAS,
+    SQLDialect,
+    SQLPushdownCompiler,
+    compile_database_select,
+)
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError, VerideltaError
 from veridelta.models import (
@@ -2301,10 +2311,6 @@ for noise in legacy data."""
 DEFAULT_MIN_SUPPORT: Final = 5
 """Agreeing rows a proposal needs, so a one-off coincidence is never offered."""
 
-_SAMPLE_BUCKETS: Final = 1_000_000
-"""Resolution of `sample_fraction`: a sample keeps rows whose key hash falls in
-the first `sample_fraction * _SAMPLE_BUCKETS` buckets."""
-
 
 def _is_real_number(value: object) -> TypeGuard[int | float]:
     """Return whether a value is an `int` or `float`, and not a `bool`.
@@ -2470,6 +2476,161 @@ def _value_map_proposal(
     )
 
 
+_VALUE_MAP_RESULT_COLUMNS: Final[dict[str, pl.DataType]] = {
+    VALUE_MAP_COLUMN_ALIAS: pl.Int64(),
+    VALUE_MAP_SOURCE_ALIAS: pl.String(),
+    VALUE_MAP_TARGET_ALIAS: pl.String(),
+    VALUE_MAP_ROWS_ALIAS: pl.Int64(),
+    VALUE_MAP_AGREEING_ALIAS: pl.Int64(),
+}
+"""Columns `compile_value_map_query` returns, and the type each is read as. A
+warehouse may deliver text as Categorical and counts as wide decimals."""
+
+_VALUE_MAP_FIELDS: Final[dict[str, str]] = {
+    VALUE_MAP_SOURCE_ALIAS: "source_value",
+    VALUE_MAP_TARGET_ALIAS: "target_value",
+    VALUE_MAP_ROWS_ALIAS: "rows",
+    VALUE_MAP_AGREEING_ALIAS: "agreeing_rows",
+}
+"""Result columns renamed to the `ValueMapEntry` fields they fill."""
+
+
+def _value_map_pushdown_rules(
+    diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
+) -> list[DiffRule]:
+    """Resolve one rule per column a warehouse can propose a `value_map` for.
+
+    A column qualifies when it is stored as text on both sides and nothing
+    after stage 4 changes what a map produces. A local run also proposes text
+    for a non-text target, read as the text it is compared as, but every
+    engine writes numbers and timestamps as text its own way, and a pasted
+    `Y: '1'` against an integer target fails the warehouse's comparison.
+
+    Args:
+        diff (DiffConfig): Master comparison rules, keys, and global defaults.
+        source_schema (pl.Schema): Schema probed from the source relation.
+        target_schema (pl.Schema): Schema probed from the target relation.
+
+    Returns:
+        list[DiffRule]: Normalizing rules for the candidate columns, in
+            source order.
+
+    Raises:
+        ConfigError: If a column fails a normalization precondition, as it
+            would in a run.
+    """
+    return [
+        _pushdown_rule(column, aligned, rule, effective)
+        for column, aligned, rule, effective in _pushdown_columns(
+            diff, source_schema, target_schema
+        )
+        if _compares_mapped_text(effective, source_schema[column])
+        and isinstance(target_schema[aligned], (pl.String, pl.Utf8))
+    ]
+
+
+def _value_map_pairs(result: pl.DataFrame) -> pl.DataFrame:
+    """Read the value map statement's result into typed, labeled pairs.
+
+    Args:
+        result (pl.DataFrame): Rows returned by `compile_value_map_query`.
+
+    Returns:
+        pl.DataFrame: The label column, then `source_value`, `target_value`,
+            `rows`, and `agreeing_rows`.
+
+    Raises:
+        ConnectorError: If a column is missing or holds values of the wrong kind.
+    """
+    missing = [name for name in _VALUE_MAP_RESULT_COLUMNS if name not in result.columns]
+    if missing:
+        raise ConnectorError(f"Value map query result is missing the columns {missing}.")
+    try:
+        typed = result.select(
+            pl.col(name).cast(dtype) for name, dtype in _VALUE_MAP_RESULT_COLUMNS.items()
+        )
+    except pl.exceptions.PolarsError as exc:
+        raise ConnectorError(f"Value map query returned values of the wrong type: {exc}") from exc
+    return typed.rename(_VALUE_MAP_FIELDS)
+
+
+def _collect_value_map_proposals(
+    connector: PushdownSession,
+    source_table: str,
+    target_table: str,
+    diff: DiffConfig,
+    *,
+    min_confidence: float,
+    min_support: int,
+    sample_fraction: float,
+) -> list[ValueMapProposal]:
+    """Propose `value_map` entries from warehouse tables, in one counting statement.
+
+    Mirrors a local proposal: the probes enforce `schema_mode`, both sides'
+    normalized keys must be unique, and then one statement counts how each
+    candidate's values line up. That statement keeps only pairs that can
+    qualify; the confidence floor and the order of entries are applied here,
+    by the same code a local run uses.
+
+    Args:
+        connector (PushdownSession): Connected warehouse session.
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+        diff (DiffConfig): Master comparison rules and keys.
+        min_confidence (float): Share of rows that must agree, above 0.5.
+        min_support (int): Agreeing rows a proposal needs.
+        sample_fraction (float): Share of source keys to read.
+
+    Returns:
+        list[ValueMapProposal]: One proposal per column with new entries, in
+            source column order.
+
+    Raises:
+        ConfigError: If the probed relations violate `schema_mode` or omit a
+            primary key, or a column fails a normalization precondition.
+        DataIntegrityError: If either relation repeats a normalized primary key.
+        ConnectorError: If the warehouse returns a malformed result.
+    """
+    source_schema, target_schema = _validate_pushdown_schema(
+        connector, source_table, target_table, diff
+    )
+    key_rules = _resolve_pushdown_keys(diff, source_schema, target_schema)
+    rules = _value_map_pushdown_rules(diff, source_schema, target_schema)
+    # As locally, repeated keys stop the run even when no column qualifies.
+    _reject_duplicate_pushdown_keys(
+        connector, source_table, diff, key_rules, types=source_schema, is_source=True
+    )
+    _reject_duplicate_pushdown_keys(
+        connector, target_table, diff, key_rules, types=target_schema, is_source=False
+    )
+    statement = connector.compiler.compile_value_map_query(
+        source_table,
+        target_table,
+        diff.primary_keys,
+        rules,
+        min_support=min_support,
+        sample_fraction=sample_fraction,
+        source_types=source_schema,
+        target_types=target_schema,
+        key_rules=key_rules,
+    )
+    if statement is None:
+        return []
+    pairs = _value_map_pairs(
+        connector.execute_pushdown(statement, query_type="value_maps").collect()
+    )
+    proposals: list[ValueMapProposal] = []
+    for label, rule in enumerate(rules):
+        column_pairs = pairs.filter(pl.col(VALUE_MAP_COLUMN_ALIAS) == label).drop(
+            VALUE_MAP_COLUMN_ALIAS
+        )
+        frame = _confident_pairs(column_pairs.lazy(), min_confidence).collect()
+        proposal = _value_map_proposal(diff, rule.rename_to or rule.column_names[0], frame)
+        if proposal is not None:
+            proposals.append(proposal)
+    return proposals
+
+
 class DataIngestor:
     """Coordinates the loading, renaming, and structural alignment of datasets.
 
@@ -2569,9 +2730,10 @@ class DiffEngine:
     - `DiffEngine.validate_rules(...)` to also resolve every rule and build
       each column's comparison, still on metadata alone.
     - `DiffEngine(config, source, target).propose_value_maps()`, or
-      `DiffEngine.propose_value_maps_from_configs(...)` for file, lakehouse,
-      and database `SourceRef` pairs, to suggest `value_map` entries from how
-      the two sides' values line up, without running the comparison.
+      `DiffEngine.propose_value_maps_from_configs(...)` for any `SourceRef`
+      pair, counted in the warehouse for same-warehouse pairs, to suggest
+      `value_map` entries from how the two sides' values line up, without
+      running the comparison.
 
     Attributes:
         config (DiffConfig): Primary keys, rules, defaults, and threshold.
@@ -2742,12 +2904,18 @@ class DiffEngine:
         min_support: int = DEFAULT_MIN_SUPPORT,
         sample_fraction: float = 1.0,
     ) -> list[ValueMapProposal]:
-        """Load a `SourceRef` pair and propose `value_map` entries for it.
+        """Propose `value_map` entries for a `SourceRef` pair, wherever it lives.
+
+        File, lakehouse, and database pairs are loaded and proposed locally. A
+        pair of tables on one warehouse connection is counted in the warehouse
+        instead, in one statement, for columns stored as text on both sides;
+        rows never leave it. A sampled warehouse run reads a different, though
+        equally repeatable, set of keys than a local one.
 
         Args:
             diff (DiffConfig): Master comparison rules and keys.
-            source (SourceRef): Source file, lakehouse, or database config.
-            target (SourceRef): Target file, lakehouse, or database config.
+            source (SourceRef): Source configuration.
+            target (SourceRef): Target configuration.
             min_confidence (float): Share of rows that must agree, above 0.5.
             min_support (int): Agreeing rows a proposal needs.
             sample_fraction (float): Share of source rows to read.
@@ -2756,16 +2924,27 @@ class DiffEngine:
             list[ValueMapProposal]: One proposal per column with new entries.
 
         Raises:
-            ConnectorError: If either side is a warehouse table.
+            ConnectorError: If only one side is a warehouse table, the sides use
+                different warehouses or connections, or a warehouse returns a
+                malformed result.
             ConfigError: If a threshold is out of range, or the configuration
                 fails as it would in a run.
             DataIntegrityError: If either dataset repeats a normalized primary key.
         """
-        if _is_warehouse(source) or _is_warehouse(target):
-            raise ConnectorError(
-                "Value map proposals read source and target rows locally, so both sides "
-                "must be file, lakehouse, or database sources. Export the warehouse tables, or a "
-                "sample of them, to Parquet and point the configuration at those files."
+        # Bad thresholds fail before a session opens or a file is read.
+        _check_value_map_thresholds(min_confidence, min_support, sample_fraction)
+        pair = _check_backend_pairing(source, target)
+        if pair is not None:
+            return pair.with_session(
+                lambda session, source_table, target_table: _collect_value_map_proposals(
+                    session,
+                    source_table,
+                    target_table,
+                    diff,
+                    min_confidence=min_confidence,
+                    min_support=min_support,
+                    sample_fraction=sample_fraction,
+                )
             )
         engine = cls(diff, LoaderFactory.load(source), LoaderFactory.load(target))
         return engine.propose_value_maps(
@@ -2884,8 +3063,8 @@ class DiffEngine:
             *keys, *(pl.col(column).alias(f"{column}_target") for column in columns)
         )
         if sample_fraction < 1:
-            cutoff = round(sample_fraction * _SAMPLE_BUCKETS)
-            source = source.filter(pl.struct(keys).hash(seed=0) % _SAMPLE_BUCKETS < cutoff)
+            cutoff = round(sample_fraction * SAMPLE_BUCKETS)
+            source = source.filter(pl.struct(keys).hash(seed=0) % SAMPLE_BUCKETS < cutoff)
         return source.join(target, on=keys, how="inner")
 
     def _get_effective_rule(self, col_name: str) -> EffectiveRule:
