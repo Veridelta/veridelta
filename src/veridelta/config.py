@@ -27,12 +27,14 @@ from veridelta.models import (
 )
 
 __all__ = [
+    "SCHEMA_URL",
     "DatabaseConfig",
     "DatabricksConfig",
     "DeltaLakeConfig",
     "IcebergConfig",
     "SnowflakeConfig",
     "SourceRef",
+    "config_json_schema",
     "load_config",
 ]
 
@@ -130,6 +132,87 @@ def _expand_env(value: Any, location: str, parents: tuple[int, ...] = ()) -> Any
     if isinstance(value, str):
         return _ENV_REFERENCE.sub(lambda match: _substitute(match, location), value)
     return value
+
+
+SCHEMA_URL = "https://veridelta.github.io/veridelta/schema/veridelta.schema.json"
+"""Where the docs site publishes the configuration schema for editors to fetch."""
+
+_ENV_REFERENCE_SCHEMA: dict[str, Any] = {"type": "string", "pattern": "\\$\\{"}
+"""Any string holding a `${NAME}` reference, which the loader expands before validating."""
+
+_ANNOTATIONS = ("title", "description", "default")
+"""Keys a wrapped property keeps on the outside, where editors read them."""
+
+
+class _RootConfig(DiffConfig):
+    """The whole file: root settings plus the `source` and `target` blocks."""
+
+    source: SourceRef
+    target: SourceRef
+
+
+def _is_constrained_string(prop: dict[str, Any]) -> bool:
+    """Return whether a property restricts its text by `pattern` or `enum`.
+
+    Args:
+        prop (dict[str, Any]): Property schema, possibly an `anyOf` of options.
+
+    Returns:
+        bool: True when the property or one of its options carries either.
+    """
+    options: list[dict[str, Any]] = prop.get("anyOf", [prop])
+    return any("pattern" in option or "enum" in option for option in options)
+
+
+def _accept_env_reference(prop: dict[str, Any]) -> dict[str, Any]:
+    """Let a constrained string field also hold a `${NAME}` reference.
+
+    Args:
+        prop (dict[str, Any]): Property schema with a `pattern` or `enum`.
+
+    Returns:
+        dict[str, Any]: The same constraint, or any string with a reference.
+    """
+    outer = {key: prop[key] for key in _ANNOTATIONS if key in prop}
+    inner = {key: value for key, value in prop.items() if key not in _ANNOTATIONS}
+    return {**outer, "anyOf": [inner, _ENV_REFERENCE_SCHEMA]}
+
+
+def config_json_schema() -> dict[str, Any]:
+    """Return a JSON Schema for configuration files, for editors and validators.
+
+    It is generated from the same models `load_config` validates with, then
+    adjusted where the loader does something before validating:
+
+    - `type` is required in every warehouse, lakehouse, and database block,
+      because the loader reads a block without one as a file source.
+    - Patterned and enumerated strings inside `source` and `target`, such as
+      `table`, also accept a `${NAME}` reference, which the loader expands.
+
+    The schema is stricter than the loader in one way: it does not model
+    Pydantic's lax coercion, so a quoted number such as `threshold: "0.1"` is
+    flagged even though it loads.
+
+    Returns:
+        dict[str, Any]: A Draft 2020-12 JSON Schema.
+    """
+    schema = _RootConfig.model_json_schema()
+    definitions: dict[str, dict[str, Any]] = schema["$defs"]
+    branches: dict[str, str] = schema["properties"]["source"]["discriminator"]["mapping"]
+    for tag, ref in branches.items():
+        branch = definitions[ref.rsplit("/", 1)[1]]
+        if tag != "file":
+            branch["required"] = [*branch.get("required", []), "type"]
+        for name, prop in branch["properties"].items():
+            if name != "type" and _is_constrained_string(prop):
+                branch["properties"][name] = _accept_env_reference(prop)
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": SCHEMA_URL,
+        **schema,
+        "title": "Veridelta configuration",
+        "description": "A Veridelta comparison: primary keys, rules, and the source and target.",
+    }
 
 
 def _parse_source_ref(raw: Any, *, label: str) -> SourceRef:
