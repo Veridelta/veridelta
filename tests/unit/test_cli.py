@@ -5,6 +5,7 @@
 
 import argparse
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,7 +26,12 @@ class TestCommandLineInterface:
     def default_args(self) -> argparse.Namespace:
         """Provide a default argparse namespace for testing the run function."""
         return argparse.Namespace(
-            config="dummy.yaml", json=False, quiet=False, html=None, html_max_rows=1000
+            config="dummy.yaml",
+            json=False,
+            quiet=False,
+            html=None,
+            html_max_rows=1000,
+            markdown=None,
         )
 
     def test_it_returns_exit_code_zero_when_datasets_match(
@@ -230,6 +236,37 @@ class TestCommandLineInterface:
         run(default_args)
 
         mock_write.assert_called_once_with(mock_result, "report.html", max_rows=1000)
+
+    def test_it_writes_a_markdown_summary_when_asked(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure `--markdown` writes the summary file and reports where, on stderr only."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_write = mocker.patch("veridelta.cli.write_markdown", return_value=Path("summary.md"))
+        mock_result = MagicMock(summary=MagicMock(is_match=True, report_summary="PASSED"))
+        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
+        mock_engine.run_from_configs.return_value = mock_result
+        default_args.markdown = "summary.md"
+
+        run(default_args)
+        captured = capsys.readouterr()
+
+        mock_write.assert_called_once_with(mock_result, "summary.md")
+        assert "Markdown summary saved to" in captured.err
+        assert "Markdown summary saved to" not in captured.out
+
+    def test_it_parses_the_markdown_flag(self) -> None:
+        """Ensure `--markdown` takes a path and defaults to writing nothing."""
+        parser = build_parser()
+
+        assert parser.parse_args(["run"]).markdown is None
+        assert (
+            parser.parse_args(["run", "--markdown", "out/summary.md"]).markdown == "out/summary.md"
+        )
 
     def test_it_stays_silent_when_asked(
         self,

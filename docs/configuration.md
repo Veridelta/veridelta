@@ -110,10 +110,13 @@ result.to_pandas()
 The same standalone HTML report the CLI writes with `--html` is available from Python. It embeds its own styles and script, so it opens offline, and `max_rows` caps every table the way `--html-max-rows` does:
 
 ```python
-from veridelta.report import write_html
+from veridelta.report import write_html, write_markdown
 
 write_html(result, "reports/nightly.html", max_rows=1000)
+write_markdown(result, "reports/summary.md")
 ```
+
+`write_markdown` (and `render_markdown`, which returns the text) produces the short form CI posts to a job summary or a pull request: the verdict, a table of counts, and the drifting columns, limited to `report_top_columns_limit`. Column names are written as code so a name from the data cannot break the table or the page it lands on.
 
 Warehouse pushdown compares in place and never projects values, so its frames hold primary keys alone and the result is flagged `keys_only`. `get_mismatches` there returns every changed key rather than one column's values, and still rejects a column that was not part of the comparison.
 
@@ -125,11 +128,12 @@ veridelta run -c veridelta.yaml
 veridelta run -c veridelta.yaml --json
 veridelta run -c veridelta.yaml --quiet
 veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
+veridelta run -c veridelta.yaml --markdown summary.md
 veridelta crosswalk -c veridelta.yaml
 veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 ```
 
-`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. Pushdown reports are labeled as primary-keys-only.
+`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. `--markdown` writes the Markdown summary described above. Pushdown reports and summaries are labeled as primary-keys-only.
 
 Exit codes are `0` for a match within `threshold`, `1` for drift or any failure while running, and `2` for invalid command-line arguments.
 

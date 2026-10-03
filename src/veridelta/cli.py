@@ -25,7 +25,7 @@ from veridelta import __version__
 from veridelta.config import load_config
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
-from veridelta.report import DEFAULT_MAX_ROWS, write_html
+from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 
 if TYPE_CHECKING:
     from veridelta.models import DiffConfig, DiffRule, SourceRef, ValueMapProposal
@@ -215,6 +215,10 @@ def run(args: argparse.Namespace) -> int:
             written = write_html(result, args.html, max_rows=args.html_max_rows)
             _progress(f"HTML report saved to: {written.absolute()}", quiet=quiet)
 
+        if args.markdown:
+            summary_file = write_markdown(result, args.markdown)
+            _progress(f"Markdown summary saved to: {summary_file.absolute()}", quiet=quiet)
+
         return EXIT_MATCH if summary.is_match else EXIT_MISMATCH
 
     except Exception as exc:
@@ -392,6 +396,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_ROWS,
         metavar="N",
         help=f"Rows to embed per HTML table before truncating (default: {DEFAULT_MAX_ROWS}).",
+    )
+    run_parser.add_argument(
+        "--markdown",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Also write a short Markdown summary to PATH, for CI job summaries and PR comments.",
     )
 
     crosswalk_parser = subparsers.add_parser(

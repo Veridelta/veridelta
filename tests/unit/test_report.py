@@ -13,7 +13,7 @@ import pytest
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, DiffResult, DiffSummary
-from veridelta.report import render_html, write_html
+from veridelta.report import render_html, render_markdown, write_html, write_markdown
 
 
 def _result() -> DiffResult:
@@ -245,3 +245,124 @@ class TestHTMLReport:
 
         assert written == destination
         assert destination.read_text(encoding="utf-8").startswith("<!DOCTYPE html>")
+
+
+def _summary(**overrides: object) -> DiffSummary:
+    """Build a summary with drift, overridable per field."""
+    fields: dict[str, object] = {
+        "total_rows_source": 1000,
+        "total_rows_target": 1001,
+        "added_count": 3,
+        "removed_count": 2,
+        "changed_count": 5,
+        "column_mismatches": {"amount": 4, "status": 1},
+        "is_match": False,
+    }
+    fields.update(overrides)
+    return DiffSummary.model_validate(fields)
+
+
+def _with_summary(summary: DiffSummary, *, keys_only: bool = False) -> DiffResult:
+    """Wrap a summary in a result with empty row frames."""
+    empty = pl.DataFrame({"id": pl.Series([], dtype=pl.Int64)})
+    return DiffResult(
+        summary=summary,
+        added=empty,
+        removed=empty,
+        changed=empty,
+        primary_keys=("id",),
+        compared_columns=tuple(summary.column_mismatches),
+        keys_only=keys_only,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestMarkdownSummary:
+    """Validate the Markdown summary CI posts to job summaries and pull requests."""
+
+    def test_it_reports_the_verdict_and_every_count(self) -> None:
+        """Ensure the summary carries what a reviewer needs without the HTML report."""
+        document = render_markdown(_with_summary(_summary()))
+
+        assert document.startswith("### Veridelta: FAILED\n")
+        for row in (
+            "| Match rate | 99.0% |",
+            "| Source rows | 1,000 |",
+            "| Target rows | 1,001 |",
+            "| Volume shift | +1 |",
+            "| Added | 3 |",
+            "| Removed | 2 |",
+            "| Changed | 5 |",
+        ):
+            assert row in document
+        assert document.index("| `amount` | 4 |") < document.index("| `status` | 1 |")
+        # Markdown setext underlines would turn the plain-text report into headings.
+        assert "===" not in document
+
+    def test_it_marks_a_perfect_match(self) -> None:
+        """Ensure a clean run reads as clean, with no drift table."""
+        summary = _summary(
+            added_count=0, removed_count=0, changed_count=0, column_mismatches={}, is_match=True
+        )
+
+        document = render_markdown(_with_summary(summary))
+
+        assert document.startswith("### Veridelta: PASSED (Perfect Match)\n")
+        assert "No column-level drift." in document
+
+    def test_it_caps_the_drift_table_at_the_report_limit(self) -> None:
+        """Ensure a wide drift lists the top columns and says how many it left out."""
+        mismatches = {f"col_{index}": index for index in range(1, 8)}
+        summary = _summary(column_mismatches=mismatches, report_limit=3)
+
+        document = render_markdown(_with_summary(summary))
+
+        assert "| `col_7` | 7 |" in document
+        assert "| `col_5` | 5 |" in document
+        assert "col_4" not in document
+        assert "Showing the top 3 of 7 columns with drift." in document
+
+    def test_it_leaves_out_the_drift_section_when_the_limit_is_zero(self) -> None:
+        """Ensure `report_top_columns_limit: 0` hides column names, as in the text report."""
+        document = render_markdown(_with_summary(_summary(report_limit=0)))
+
+        assert "amount" not in document
+        assert "drift" not in document.lower()
+
+    def test_it_says_when_artifacts_hold_primary_keys_only(self) -> None:
+        """Ensure a pushdown run is not mistaken for one that extracted rows."""
+        document = render_markdown(_with_summary(_summary(), keys_only=True))
+
+        assert "primary keys only" in document
+
+    @pytest.mark.parametrize(
+        ("column", "cell"),
+        [
+            pytest.param("a|b", r"`a\|b`", id="pipe"),
+            pytest.param("we`ird", "``we`ird``", id="backtick"),
+            pytest.param("`edge`", "`` `edge` ``", id="edge-backticks"),
+            pytest.param("<!-- veridelta:x -->", "`<!-- veridelta:x -->`", id="marker"),
+            pytest.param("__bold__", "`__bold__`", id="emphasis"),
+            pytest.param("line\nbreak", "`line break`", id="newline"),
+        ],
+    )
+    def test_it_keeps_column_names_from_breaking_the_markdown(self, column: str, cell: str) -> None:
+        """Ensure a column name renders as literal text inside its table cell.
+
+        Column names come from the data, and the summary is posted to pull
+        requests, so a name must never close the table, start a comment that
+        could spoof the sticky-comment marker, or turn into formatting.
+        """
+        document = render_markdown(_with_summary(_summary(column_mismatches={column: 2})))
+
+        assert f"| {cell} | 2 |" in document
+
+    def test_it_writes_the_file_and_creates_parent_directories(self, tmp_path: Path) -> None:
+        """Ensure a nested output path does not require pre-creating the tree."""
+        destination = tmp_path / "reports" / "summary.md"
+
+        written = write_markdown(_result(), destination)
+
+        assert written == destination
+        assert destination.read_text(encoding="utf-8") == render_markdown(_result())

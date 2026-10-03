@@ -14,7 +14,7 @@ Powered by [Polars](https://pola.rs/). **[Documentation](https://veridelta.githu
 - **Deterministic verdicts.** Nine fixed transform stages. The same rule produces the same result locally and in a warehouse, verified by a differential harness.
 - **Scale.** Lazy Polars scans. Warehouse pushdown compiles comparison SQL and never extracts full tables.
 - **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
-- **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report. Artifacts for added, removed, and changed rows.
+- **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report, `--markdown` a summary for pull requests. Artifacts for added, removed, and changed rows.
 - **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
 - **Connectors.** Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans. Optional extras.
 

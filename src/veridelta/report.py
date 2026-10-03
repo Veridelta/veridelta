@@ -1,17 +1,21 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Standalone HTML reporting for comparison results.
+"""Standalone HTML reports and Markdown summaries for comparison results.
 
 Renders a `DiffResult` into one self-contained file: no CDN reference, no
 build step, no runtime dependency. Veridelta runs in CI, and CI runners are
 often air-gapped, where a report that fetches a stylesheet from the internet
 renders as unstyled text at exactly the moment someone needs to read it.
+
+The Markdown summary is the short form CI posts to a job summary or a pull
+request comment: the verdict, the counts, and the columns that drifted.
 """
 
 import html
 import json
 import math
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, cast
@@ -329,4 +333,112 @@ def write_html(result: DiffResult, path: str | Path, *, max_rows: int = DEFAULT_
     return destination
 
 
-__all__: Final[list[str]] = ["DEFAULT_MAX_ROWS", "render_html", "write_html"]
+_BACKTICK_RUN = re.compile(r"`+")
+"""A run of backticks, whose length sets the fence of a Markdown code span."""
+
+
+def _markdown_code(name: str) -> str:
+    """Render a column name as literal text inside a Markdown table cell.
+
+    Column names come from the data, and the summary is posted where Markdown
+    is rendered, so the name goes in a code span: its content is never read
+    as formatting or HTML, which keeps a name from opening a comment that could
+    spoof the sticky-comment marker. The fence is one backtick longer than any
+    run in the name, line breaks become spaces, and `|` is escaped so it cannot
+    split the table cell.
+
+    Args:
+        name (str): Column name.
+
+    Returns:
+        str: A code span safe to place in a table cell.
+    """
+    flat = " ".join(name.splitlines())
+    longest = max((len(run) for run in _BACKTICK_RUN.findall(flat)), default=0)
+    fence = "`" * (longest + 1)
+    pad = " " if flat.startswith("`") or flat.endswith("`") else ""
+    return f"{fence}{pad}{flat}{pad}{fence}".replace("|", "\\|")
+
+
+def render_markdown(result: DiffResult) -> str:
+    """Render a comparison result as a short Markdown summary.
+
+    Args:
+        result (DiffResult): Completed comparison.
+
+    Returns:
+        str: The verdict, a table of counts, and the top drifting columns,
+            limited to the configured `report_top_columns_limit`.
+    """
+    summary = result.summary
+    verdict = "PASSED" if summary.is_match else "FAILED"
+    perfect = " (Perfect Match)" if summary.is_perfect_match else ""
+    lines = [
+        f"### Veridelta: {verdict}{perfect}",
+        "",
+        "| Metric | Value |",
+        "| :--- | ---: |",
+        f"| Match rate | {summary.match_rate_percentage}% |",
+        f"| Source rows | {summary.total_rows_source:,} |",
+        f"| Target rows | {summary.total_rows_target:,} |",
+        f"| Volume shift | {summary.volume_shift:+,} |",
+        f"| Added | {summary.added_count:,} |",
+        f"| Removed | {summary.removed_count:,} |",
+        f"| Changed | {summary.changed_count:,} |",
+    ]
+    if result.keys_only:
+        lines += [
+            "",
+            "> Warehouse pushdown compared these tables in place, so its artifacts list "
+            "primary keys only.",
+        ]
+    if summary.report_limit > 0:
+        lines += ["", "#### Column-level drift", ""]
+        lines += _drift_lines(summary.column_mismatches, summary.report_limit)
+    return "\n".join(lines) + "\n"
+
+
+def _drift_lines(mismatches: dict[str, int], limit: int) -> list[str]:
+    """Render the top drifting columns as a Markdown table.
+
+    Args:
+        mismatches (dict[str, int]): Mismatch count per column.
+        limit (int): Most columns to list.
+
+    Returns:
+        list[str]: Table lines, plus a note when columns were left out, or a
+            single line saying nothing drifted.
+    """
+    if not mismatches:
+        return ["No column-level drift."]
+    ranked = sorted(mismatches.items(), key=lambda item: -item[1])
+    lines = ["| Column | Mismatches |", "| :--- | ---: |"]
+    lines += [f"| {_markdown_code(column)} | {count:,} |" for column, count in ranked[:limit]]
+    if len(ranked) > limit:
+        lines += ["", f"_Showing the top {limit} of {len(ranked)} columns with drift._"]
+    return lines
+
+
+def write_markdown(result: DiffResult, path: str | Path) -> Path:
+    """Write the Markdown summary to disk.
+
+    Args:
+        result (DiffResult): Completed comparison.
+        path (str | Path): Destination file. Parent directories are created.
+
+    Returns:
+        Path: The file that was written.
+    """
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(render_markdown(result), encoding="utf-8")
+    return destination
+
+
+__all__: Final[list[str]] = [
+    "DEFAULT_MAX_ROWS",
+    "render_html",
+    "render_markdown",
+    "write_html",
+    "write_markdown",
+]
