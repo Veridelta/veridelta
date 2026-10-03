@@ -35,7 +35,7 @@ The custom exception hierarchy. Consumers of the Python API should handle these 
       show_source: true
 
 ## Connectors
-Warehouse SQL pushdown and lakehouse-native scanners. `VerideltaConnector` is the session contract; `SQLPushdownCompiler` emits dialect-specific comparison SQL.
+Warehouse SQL pushdown, lakehouse-native scanners, and the database reader. `VerideltaConnector` is the session contract; `SQLPushdownCompiler` emits dialect-specific comparison SQL.
 
 ::: veridelta.connectors
     options:

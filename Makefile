@@ -16,7 +16,7 @@ lint:
 
 test:
 	uv run pytest tests/ --cov=src/veridelta --cov-report=term-missing
-	uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py' --fail-under=100
+	uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py' --fail-under=100
 
 notebooks:
 	uv run pytest tests/notebooks --no-cov

@@ -2228,7 +2228,7 @@ class TestValueMapProposals:
             schema_name="PUBLIC",
         )
 
-        with pytest.raises(ConnectorError, match="file or lakehouse sources"):
+        with pytest.raises(ConnectorError, match="file, lakehouse, or database sources"):
             DiffEngine.propose_value_maps_from_configs(
                 DiffConfig(primary_keys=["id"]), warehouse, SourceConfig(path="target.csv")
             )

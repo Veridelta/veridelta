@@ -3,9 +3,12 @@
 
 """End-to-End integration tests for the Veridelta CLI."""
 
+import contextlib
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 import polars as pl
 import pytest
@@ -141,6 +144,37 @@ primary_keys: [id]
 
         assert result.returncode == 0
         assert "Total Issues:  0" in result.stdout
+
+    def test_e2e_database_source_reads_its_uri_from_the_environment(self, tmp_path: Path) -> None:
+        """Ensure a database source connects through a URI the environment supplies."""
+        database = tmp_path / "legacy.db"
+        with contextlib.closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("CREATE TABLE orders (id INTEGER, status TEXT)")
+            connection.executemany("INSERT INTO orders VALUES (?, ?)", [(1, "open"), (2, "closed")])
+        modern = tmp_path / "modern.csv"
+        pl.DataFrame({"id": [1, 2], "status": ["open", "shipped"]}).write_csv(modern)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  type: database
+  uri: ${{LEGACY_DB_URI}}
+  table: orders
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "LEGACY_DB_URI": "sqlite://" + quote(str(database))},
+        )
+
+        assert result.returncode == 1, result.stderr
+        assert "Changed:       1" in result.stdout
 
     def test_e2e_unset_environment_variable_is_a_configuration_error(self, tmp_path: Path) -> None:
         """Ensure a missing variable stops the run with a configuration error that names it."""

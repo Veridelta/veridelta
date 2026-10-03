@@ -11,11 +11,13 @@ import pytest
 from pytest_mock import MockerFixture
 
 from veridelta.config import load_config
+from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import COUNT_ALIAS
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
+    DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -154,6 +156,23 @@ class TestEngineConnectorRouting:
         loaded = LoaderFactory.load(IcebergConfig(table_uri="s3://lake/iceberg/events"))
 
         assert loaded.collect().equals(frame.collect())
+
+    def test_it_reads_a_database_config_through_its_connector_and_closes_it(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a database source is read once and its connector released after."""
+        frame = pl.DataFrame({"id": [4], "amount": [40.0]}).lazy()
+        connect = mocker.patch.object(DatabaseConnector, "connect")
+        mocker.patch.object(DatabaseConnector, "lazyframe", return_value=frame)
+        close = mocker.spy(DatabaseConnector, "close")
+
+        loaded = LoaderFactory.load(
+            DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="public.orders")
+        )
+
+        assert loaded.collect().equals(frame.collect())
+        connect.assert_called_once_with()
+        close.assert_called_once()
 
     def test_it_rejects_warehouse_configs_on_loader_factory(self) -> None:
         """Ensure Snowflake sources cannot be scanned as local LazyFrames."""
@@ -833,6 +852,14 @@ class TestEngineConnectorRouting:
         target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
 
         with pytest.raises(ConnectorError, match="Mixed file/lakehouse"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+    def test_it_raises_connector_error_for_mixed_database_and_warehouse_backends(self) -> None:
+        """Ensure a database read cannot be paired with a Snowflake relation, and says so."""
+        source = DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="orders")
+        target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
+
+        with pytest.raises(ConnectorError, match="Mixed file/lakehouse/database and warehouse"):
             DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 
     def test_it_rejects_a_claimed_warehouse_pair_that_is_neither_dialect(

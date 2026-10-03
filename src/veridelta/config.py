@@ -17,6 +17,7 @@ from pydantic import ConfigDict, TypeAdapter, ValidationError
 
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
+    DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -26,6 +27,7 @@ from veridelta.models import (
 )
 
 __all__ = [
+    "DatabaseConfig",
     "DatabricksConfig",
     "DeltaLakeConfig",
     "IcebergConfig",
