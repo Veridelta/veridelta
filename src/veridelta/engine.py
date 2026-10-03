@@ -12,10 +12,11 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from types import ModuleType
-from typing import ClassVar, Final, Literal, TypedDict
+from typing import Any, ClassVar, Final, Literal, Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
 
 import polars as pl
 
@@ -425,16 +426,20 @@ class LoaderFactory:
         )
 
 
-def _is_warehouse(config: SourceRef) -> bool:
-    """Return whether a source reference is a warehouse connection.
+_T = TypeVar("_T")
 
-    Args:
-        config (SourceRef): Parsed source or target configuration.
+_WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig
+"""Connection configs whose comparisons compile to SQL and run in place."""
 
-    Returns:
-        bool: True for Snowflake or Databricks configs.
-    """
-    return isinstance(config, (SnowflakeConfig, DatabricksConfig))
+
+class _WarehouseSession(PushdownSession, Protocol):
+    """A pushdown session the engine opens and closes around its work."""
+
+    def connect(self) -> None:
+        """Open the driver session."""
+
+    def close(self) -> None:
+        """Release the driver session."""
 
 
 def _snowflake_fingerprint(config: SnowflakeConfig) -> tuple[object, ...]:
@@ -473,6 +478,50 @@ def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
         config.catalog,
         config.schema_name,
     )
+
+
+@dataclass(frozen=True)
+class _Warehouse:
+    """How the engine identifies and opens one warehouse backend.
+
+    Attributes:
+        name (str): Vendor name used in error messages.
+        fingerprint (Callable[[Any], tuple[object, ...]]): Connection identity
+            without the compared table. Two sides share one session only when
+            their fingerprints are equal.
+        session (Callable[[Any], _WarehouseSession]): Builds an unconnected
+            session from one side's configuration.
+    """
+
+    name: str
+    fingerprint: Callable[[Any], tuple[object, ...]]
+    session: Callable[[Any], _WarehouseSession]
+
+
+_WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
+    # The lambdas look the connector class up when a session opens, so a test
+    # that patches `veridelta.engine.SnowflakeConnector` still intercepts it.
+    SnowflakeConfig: _Warehouse(
+        "Snowflake", _snowflake_fingerprint, lambda config: SnowflakeConnector(config)
+    ),
+    DatabricksConfig: _Warehouse(
+        "Databricks", _databricks_fingerprint, lambda config: DatabricksConnector(config)
+    ),
+}
+"""Every warehouse the engine pushes comparisons down to, keyed by config type.
+Adding a backend means one entry here and one member of `_WarehouseConfig`."""
+
+
+def _is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
+    """Return whether a source reference is a warehouse connection.
+
+    Args:
+        config (SourceRef): Parsed source or target configuration.
+
+    Returns:
+        bool: True for a config type in the warehouse registry.
+    """
+    return type(config) in _WAREHOUSES
 
 
 def _rename_pairs(rules: Sequence[DiffRule]) -> dict[str, str]:
@@ -1491,63 +1540,82 @@ def _reject_self_comparison(source_table: str, target_table: str) -> None:
         )
 
 
-def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
-    """Execute same-warehouse SQL pushdown or raise for unsupported pairings.
+_MIXED_BACKENDS: Final = "Mixed file/lakehouse/database and warehouse backends are unsupported."
+
+
+@dataclass(frozen=True)
+class _WarehousePair:
+    """Two warehouse tables cleared to share one pushdown session.
+
+    Attributes:
+        warehouse (_Warehouse): The backend both sides use.
+        source (_WarehouseConfig): Source connection and table.
+        target (_WarehouseConfig): Target connection and table.
+    """
+
+    warehouse: _Warehouse
+    source: _WarehouseConfig
+    target: _WarehouseConfig
+
+    def with_session(self, work: Callable[[PushdownSession, str, str], _T]) -> _T:
+        """Open one session, run `work` on it, and close it whatever happens.
+
+        Args:
+            work (Callable[[PushdownSession, str, str], _T]): Called with the
+                connected session and the source and target table names.
+
+        Returns:
+            _T: Whatever `work` returns.
+        """
+        session = self.warehouse.session(self.source)
+        session.connect()
+        try:
+            return work(session, self.source.table, self.target.table)
+        finally:
+            session.close()
+
+
+def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePair | None:
+    """Refuse a pair no engine can compare, without connecting to anything.
+
+    Two sides are read locally unless both are warehouse tables. A warehouse
+    pair must use one backend and one connection, compared by fingerprint, and
+    name two different tables.
 
     Args:
-        diff (DiffConfig): Master comparison rules and keys.
         source (SourceRef): Source configuration.
         target (SourceRef): Target configuration.
 
     Returns:
-        DiffResult: Mismatch and anti-join counts from the pushdown statements,
-            with the primary-key frames they were derived from.
+        _WarehousePair | None: The pair to push down, or None when both sides
+            are read locally.
 
     Raises:
-        ConfigError: If both sides name the same table, or the probed
-            relations violate `schema_mode`.
-        DataIntegrityError: If either relation repeats a normalized primary key.
-        ConnectorError: If backends are mixed, dialects differ, or connections
-            do not share a fingerprint.
+        ConnectorError: If only one side is a warehouse table, the sides use
+            different warehouses, or their connections differ.
+        ConfigError: If both sides name the same table on one connection.
     """
-    source_wh = _is_warehouse(source)
-    target_wh = _is_warehouse(target)
-    if source_wh != target_wh:
+    if not _is_warehouse(source):
+        if _is_warehouse(target):
+            raise ConnectorError(_MIXED_BACKENDS)
+        return None
+    if not _is_warehouse(target):
+        raise ConnectorError(_MIXED_BACKENDS)
+    warehouse = _WAREHOUSES[type(source)]
+    target_warehouse = _WAREHOUSES[type(target)]
+    if target_warehouse is not warehouse:
         raise ConnectorError(
-            "Mixed file/lakehouse/database and warehouse backends are unsupported."
+            "Cross-dialect warehouse pushdown is unsupported: the source is "
+            f"{warehouse.name} and the target is {target_warehouse.name}. Source and "
+            "target must use the same warehouse connection."
         )
-    if type(source) is not type(target):
+    if warehouse.fingerprint(source) != warehouse.fingerprint(target):
         raise ConnectorError(
-            "Cross-dialect warehouse pushdown is unsupported. "
-            "Source and target must use the same Snowflake or Databricks connection."
+            "Cross-account warehouse pushdown is unsupported. "
+            f"Source and target {warehouse.name} connections must match."
         )
-    if isinstance(source, SnowflakeConfig) and isinstance(target, SnowflakeConfig):
-        if _snowflake_fingerprint(source) != _snowflake_fingerprint(target):
-            raise ConnectorError(
-                "Cross-account warehouse pushdown is unsupported. "
-                "Source and target Snowflake connections must match."
-            )
-        _reject_self_comparison(source.table, target.table)
-        snowflake = SnowflakeConnector(source)
-        snowflake.connect()
-        try:
-            return _collect_pushdown_summary(snowflake, source.table, target.table, diff)
-        finally:
-            snowflake.close()
-    if isinstance(source, DatabricksConfig) and isinstance(target, DatabricksConfig):
-        if _databricks_fingerprint(source) != _databricks_fingerprint(target):
-            raise ConnectorError(
-                "Cross-account warehouse pushdown is unsupported. "
-                "Source and target Databricks connections must match."
-            )
-        _reject_self_comparison(source.table, target.table)
-        databricks = DatabricksConnector(source)
-        databricks.connect()
-        try:
-            return _collect_pushdown_summary(databricks, source.table, target.table, diff)
-        finally:
-            databricks.close()
-    raise ConnectorError("Mixed file/lakehouse/database and warehouse backends are unsupported.")
+    _reject_self_comparison(source.table, target.table)
+    return _WarehousePair(warehouse, source, target)
 
 
 DEFAULT_MIN_CONFIDENCE: Final = 0.95
@@ -1806,10 +1874,13 @@ class DiffEngine:
             DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
         """
-        source_is_warehouse = _is_warehouse(source)
-        target_is_warehouse = _is_warehouse(target)
-        if source_is_warehouse or target_is_warehouse:
-            return _run_warehouse_pushdown(diff, source, target)
+        pair = _check_backend_pairing(source, target)
+        if pair is not None:
+            return pair.with_session(
+                lambda session, source_table, target_table: _collect_pushdown_summary(
+                    session, source_table, target_table, diff
+                )
+            )
 
         # `run()` normalizes headers and applies renames exactly once. Loading
         # through `DataIngestor` would align first and have `run()` rename the
