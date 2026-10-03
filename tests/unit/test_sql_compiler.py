@@ -21,18 +21,28 @@ from veridelta.connectors.sql import (
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
 
-_BACKSLASH_ESCAPE_DIALECTS = frozenset({SQLDialect.SNOWFLAKE, SQLDialect.DATABRICKS})
+_BACKSLASH_ESCAPE_DIALECTS = frozenset(
+    {SQLDialect.SNOWFLAKE, SQLDialect.DATABRICKS, SQLDialect.BIGQUERY}
+)
 """Dialects whose single-quoted strings read backslash escape sequences."""
+
+_QUOTE_ENDS_LITERAL_DIALECTS = frozenset({SQLDialect.DATABRICKS, SQLDialect.BIGQUERY})
+"""Dialects where `''` is not an escaped quote but the end of the literal."""
+
+_BIGQUERY_ESCAPES = {"n": "\n", "r": "\r"}
+"""BigQuery escape sequences that decode to something other than the escaped character."""
 
 
 def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
-    """Lex one single-quoted literal off the front of `sql` the way `dialect` does.
+    r"""Lex one single-quoted literal off the front of `sql` the way `dialect` does.
 
     A reference model of the vendor rules the compiler has to satisfy, kept
     independent of the code under test. Snowflake and Databricks treat a
-    backslash inside quotes as an escape character. Snowflake and DuckDB read a
-    doubled quote as one quote; Databricks reads it as the end of one literal
-    and the start of the next, which it then concatenates, so the quote is lost.
+    backslash inside quotes as an escape character, and so does BigQuery, which
+    also decodes `\n` and `\r` and refuses a raw line break inside quotes.
+    Snowflake and DuckDB read a doubled quote as one quote; Databricks reads it
+    as the end of one literal and the start of the next, which it then
+    concatenates, so the quote is lost; BigQuery reads it as the end.
 
     Args:
         sql (str): SQL text starting with an opening quote.
@@ -47,10 +57,15 @@ def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
     while index < len(sql):
         char = sql[index]
         if char == "\\" and dialect in _BACKSLASH_ESCAPE_DIALECTS:
-            decoded.append(sql[index + 1])
+            escaped = sql[index + 1]
+            if dialect is SQLDialect.BIGQUERY:
+                escaped = _BIGQUERY_ESCAPES.get(escaped, escaped)
+            decoded.append(escaped)
             index += 2
+        elif char in "\r\n" and dialect is SQLDialect.BIGQUERY:
+            raise AssertionError(f"BigQuery refuses a line break inside a literal: {sql!r}")
         elif char == "'":
-            if dialect is not SQLDialect.DATABRICKS and sql[index + 1 : index + 2] == "'":
+            if dialect not in _QUOTE_ENDS_LITERAL_DIALECTS and sql[index + 1 : index + 2] == "'":
                 decoded.append("'")
                 index += 2
             else:
@@ -86,10 +101,12 @@ class TestSQLDialect:
         assert SQLDialect.SNOWFLAKE.value == "snowflake"
         assert SQLDialect.DATABRICKS.value == "databricks"
         assert SQLDialect.DUCKDB.value == "duckdb"
+        assert SQLDialect.BIGQUERY.value == "bigquery"
         assert {member.value for member in SQLDialect} == {
             "snowflake",
             "databricks",
             "duckdb",
+            "bigquery",
         }
 
 
@@ -164,6 +181,7 @@ class TestStringLiteralEscaping:
             pytest.param("\\d+\\.\\d{2}", id="regex-classes"),
             pytest.param("''", id="doubled-quotes"),
             pytest.param("\\\\server\\share", id="unc-path"),
+            pytest.param("line\nbreak\r", id="line-breaks"),
         ],
     )
     def test_it_round_trips_text_through_a_literal(self, dialect: SQLDialect, value: str) -> None:

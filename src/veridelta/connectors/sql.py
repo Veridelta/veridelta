@@ -3,7 +3,7 @@
 
 """Zero-dependency SQL pushdown compiler for warehouse dialects.
 
-Translates `DiffRule` models into Snowflake and Databricks SQL predicates and
+Translates `DiffRule` models into Snowflake, Databricks, and BigQuery SQL predicates and
 assembles inner-join mismatch queries, per-column mismatch tallies, anti-join
 queries for added and removed rows, row counts, and column probes without
 extracting source tables. It also compiles the one statement a database source
@@ -15,6 +15,7 @@ tables, and a missing entry fails loudly instead of inheriting some other
 dialect's syntax.
 """
 
+import re
 from collections.abc import Mapping, Sequence
 from enum import Enum
 from typing import Final
@@ -58,6 +59,7 @@ class SQLDialect(str, Enum):
     SNOWFLAKE = "snowflake"
     DATABRICKS = "databricks"
     DUCKDB = "duckdb"
+    BIGQUERY = "bigquery"
 
 
 _CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
@@ -85,6 +87,15 @@ _CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
         "Date": "DATE",
         "Datetime": "TIMESTAMP",
     },
+    # DATETIME has no zone, like Polars' `Datetime`; TIMESTAMP is an instant.
+    SQLDialect.BIGQUERY: {
+        "Int64": "INT64",
+        "Float64": "FLOAT64",
+        "String": "STRING",
+        "Boolean": "BOOL",
+        "Date": "DATE",
+        "Datetime": "DATETIME",
+    },
 }
 """`cast_to` value to the type keyword each dialect spells it with.
 
@@ -97,13 +108,16 @@ _IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: '"',
     SQLDialect.DATABRICKS: "`",
     SQLDialect.DUCKDB: '"',
+    SQLDialect.BIGQUERY: "`",
 }
-"""Character each dialect quotes identifiers with, doubled to escape itself."""
+"""Character each dialect quotes identifiers with. Names are allowlisted before
+they are quoted, so no identifier ever holds a quote character to escape."""
 
 _LITERAL_ESCAPES: Final[dict[SQLDialect, tuple[tuple[str, str], ...]]] = {
     SQLDialect.SNOWFLAKE: (("\\", "\\\\"), ("'", "''")),
     SQLDialect.DATABRICKS: (("\\", "\\\\"), ("'", "\\'")),
     SQLDialect.DUCKDB: (("'", "''"),),
+    SQLDialect.BIGQUERY: (("\\", "\\\\"), ("'", "\\'"), ("\n", "\\n"), ("\r", "\\r")),
 }
 """Replacements that keep text inside a single-quoted literal, applied in order.
 
@@ -114,7 +128,9 @@ backslash escapes its own closing quote, carrying configuration text out of the
 literal and into the statement. Both therefore double backslashes first, before
 anything else adds one. Databricks also reads `''` as two adjacent literals and
 concatenates them, dropping the apostrophe, so it escapes quotes with a
-backslash instead. DuckDB follows the SQL standard, where a backslash is
+backslash instead. BigQuery reads backslash escapes too, rejects any it does
+not know, and refuses a raw line break inside quotes, so line breaks become
+`\\n` and `\\r`. DuckDB follows the SQL standard, where a backslash is
 ordinary text and only the quote needs doubling.
 """
 
@@ -152,11 +168,23 @@ _STRPTIME_DIRECTIVES: Final[dict[SQLDialect, dict[str, str]]] = {
         "z": "%z",
         "%": "%%",
     },
+    # No `f`: BigQuery spells a fraction only as part of its seconds, `%E*S`.
+    # `%Ez` also reads `+05:30`, as Polars' `%z` does; BigQuery's `%z` does not.
+    SQLDialect.BIGQUERY: {
+        "Y": "%Y",
+        "m": "%m",
+        "d": "%d",
+        "H": "%H",
+        "M": "%M",
+        "S": "%S",
+        "z": "%Ez",
+        "%": "%%",
+    },
 }
 """Python `strptime` directive to its spelling in each dialect's format language.
 
-Three different languages: Snowflake's own, Java `DateTimeFormatter` for
-Databricks, and Python's own for DuckDB. Membership here is the allowlist, and
+Four different languages: Snowflake's own, Java `DateTimeFormatter` for
+Databricks, Python's own for DuckDB, and GoogleSQL's for BigQuery. Membership here is the allowlist, and
 anything absent is refused rather than passed through. A directive that survives
 translation unrecognized parses to NULL, which reads as a clean match rather
 than as an error.
@@ -166,10 +194,11 @@ _FORMAT_LITERAL_QUOTES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: '"',
     SQLDialect.DATABRICKS: "'",
     SQLDialect.DUCKDB: "",
+    SQLDialect.BIGQUERY: "",
 }
 """Character each dialect wraps a literal run of a format string in.
 
-DuckDB reads Python directives directly, so its literals need no wrapper.
+DuckDB and BigQuery mark directives with `%`, so their literals need no wrapper.
 """
 
 _FORMAT_LITERALS: Final[frozenset[str]] = frozenset(" -/:.,_T")
@@ -185,17 +214,24 @@ _PARSE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "TRY_TO_TIMESTAMP",
     SQLDialect.DATABRICKS: "try_to_timestamp",
     SQLDialect.DUCKDB: "try_strptime",
+    SQLDialect.BIGQUERY: "SAFE.PARSE_DATETIME",
 }
 """Each dialect's non-throwing parse, matching Polars `strptime(strict=False)`.
 
 The strict variants abort the whole statement on one unparseable row where the
-local engine yields a null and keeps going.
+local engine yields a null and keeps going. BigQuery takes the format first, and
+parses a format with an offset into a TIMESTAMP, `_BIGQUERY_OFFSET_PARSE`.
 """
+
+_BIGQUERY_OFFSET_PARSE: Final = "SAFE.PARSE_TIMESTAMP"
+"""BigQuery's non-throwing parse for a format that reads a UTC offset. The result
+is an instant, as Polars' is for a `%z` format; PARSE_DATETIME has no zone."""
 
 _INFINITY_LITERALS: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "'inf'::FLOAT",
     SQLDialect.DATABRICKS: "CAST('Infinity' AS DOUBLE)",
     SQLDialect.DUCKDB: "'inf'::DOUBLE",
+    SQLDialect.BIGQUERY: "CAST('inf' AS FLOAT64)",
 }
 """Each dialect's positive infinity, which bounds the finite values a tolerance
 may apply to. `ABS(x) < inf` is false for an infinity and for NaN, whether an
@@ -206,11 +242,12 @@ _EDIT_DISTANCE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "EDITDISTANCE",
     SQLDialect.DATABRICKS: "levenshtein",
     SQLDialect.DUCKDB: "levenshtein",
+    SQLDialect.BIGQUERY: "EDIT_DISTANCE",
 }
 """Each dialect's Levenshtein distance, always called with two arguments.
 Snowflake's optional third argument caps the result, and Databricks' returns -1
-above it and needs Runtime 13.3, so neither is portable. Snowflake and
-Databricks count characters, as the local engine does. DuckDB counts UTF-8
+above it and needs Runtime 13.3, so neither is portable. Snowflake,
+Databricks, and BigQuery count characters, as the local engine does. DuckDB counts UTF-8
 bytes, which is why the parity tests compare ASCII text.
 """
 
@@ -219,9 +256,10 @@ _REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "",
     SQLDialect.DATABRICKS: "",
     SQLDialect.DUCKDB: ", 'g'",
+    SQLDialect.BIGQUERY: "",
 }
 """Trailing `REGEXP_REPLACE` arguments that make it replace every match, as Polars'
-`replace_all` does. Snowflake and Databricks already replace every match; DuckDB
+`replace_all` does. Snowflake, Databricks, and BigQuery already replace every match; DuckDB
 replaces only the first unless given the `'g'` option."""
 
 
@@ -229,10 +267,24 @@ _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "NUMBER(38, 0)",
     SQLDialect.DATABRICKS: "DECIMAL(38, 0)",
     SQLDialect.DUCKDB: "DECIMAL(38, 0)",
+    # NUMERIC keeps 29 integer digits, more than any INT64 difference needs.
+    SQLDialect.BIGQUERY: "NUMERIC",
 }
 """An exact integer type wide enough to subtract any two stored integers in.
 Thirty-eight digits hold every difference of two 64-bit values, signed or not,
 and `ABS` of the smallest BIGINT, which overflows in the column's own type."""
+
+
+def _reads_offset(fmt: str) -> bool:
+    """Return whether a `strptime` format reads a UTC offset with `%z`.
+
+    Args:
+        fmt (str): Python `strptime` format.
+
+    Returns:
+        bool: True when a `%z` directive appears outside a `%%` escape.
+    """
+    return "%z" in re.findall(r"%.", fmt)
 
 
 _DATABASE_IDENTIFIER_QUOTES: Final[dict[str, tuple[str, str]]] = {
@@ -1357,6 +1409,14 @@ class SQLPushdownCompiler:
         if rule.pad_zeros is None and not self._is_text_side(dtype):
             return expr
         pattern = self._translate_datetime_format(rule.datetime_format)
+        if self.dialect is SQLDialect.BIGQUERY:
+            # BigQuery takes the format first, and only a TIMESTAMP holds an offset.
+            parse = (
+                _BIGQUERY_OFFSET_PARSE
+                if _reads_offset(rule.datetime_format)
+                else _PARSE_FUNCTIONS[self.dialect]
+            )
+            return f"{parse}({self._literal(pattern)}, {expr})"
         return f"{_PARSE_FUNCTIONS[self.dialect]}({expr}, {self._literal(pattern)})"
 
     def _translate_datetime_format(self, fmt: str) -> str:
@@ -1528,10 +1588,13 @@ class SQLPushdownCompiler:
             wide_type = _WIDE_INTEGER_TYPES[self.dialect]
             src = f"CAST({src_expr} AS {wide_type})"
             tgt = f"CAST({tgt_expr} AS {wide_type})"
-            return f"({src} = {tgt} OR ABS({tgt} - {src}) <= {abs_tol} + ({rel_tol} * ABS({src})))"
+            return (
+                f"({self._value_equality(src, tgt)} OR "
+                f"ABS({tgt} - {src}) <= {abs_tol} + ({rel_tol} * ABS({src})))"
+            )
         infinity = _INFINITY_LITERALS[self.dialect]
         return (
-            f"({src_expr} = {tgt_expr} OR (ABS({src_expr}) < {infinity} AND "
+            f"({self._value_equality(src_expr, tgt_expr)} OR (ABS({src_expr}) < {infinity} AND "
             f"ABS({tgt_expr} - {src_expr}) <= {abs_tol} + ({rel_tol} * ABS({src_expr}))))"
         )
 
@@ -1628,6 +1691,26 @@ class SQLPushdownCompiler:
                 return f"EQUAL_NULL({src_expr}, {tgt_expr})"
             if self.dialect is SQLDialect.DATABRICKS:
                 return f"{src_expr} <=> {tgt_expr}"
+            # DuckDB and BigQuery; BigQuery's also treats two NaNs as equal.
             return f"{src_expr} IS NOT DISTINCT FROM {tgt_expr}"
 
+        return self._value_equality(src_expr, tgt_expr)
+
+    def _value_equality(self, src_expr: str, tgt_expr: str) -> str:
+        """Build equality that, like Polars, treats two NaNs as equal.
+
+        Args:
+            src_expr (str): Fully transformed source expression.
+            tgt_expr (str): Fully transformed target expression.
+
+        Returns:
+            str: `src = tgt`, or on BigQuery, whose `=` follows IEEE 754 and
+                calls two NaNs different, `=` widened to two non-NULL values
+                that are not distinct. NULL still compares as unknown.
+        """
+        if self.dialect is SQLDialect.BIGQUERY:
+            return (
+                f"({src_expr} = {tgt_expr} OR "
+                f"({src_expr} IS NOT DISTINCT FROM {tgt_expr} AND {src_expr} IS NOT NULL))"
+            )
         return f"{src_expr} = {tgt_expr}"
