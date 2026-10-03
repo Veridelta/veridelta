@@ -38,6 +38,7 @@ SourceType = Literal[
     "json",
     "ndjson",
     "arrow",
+    "avro",
     "excel",
 ]
 """File formats Veridelta can ingest.

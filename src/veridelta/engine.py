@@ -198,7 +198,7 @@ class BaseLoader(ABC):
     Every file format Veridelta reads is a subclass registered in
     `LoaderFactory._loaders`, keyed by the `SourceType` literal. Implementations
     should prefer a Polars `scan_*` reader so the comparison graph stays lazy
-    end to end; the two eager loaders (`JSONLoader`, `ExcelLoader`) say why in
+    end to end; the eager loaders (`JSONLoader`, `AvroLoader`, `ExcelLoader`) say why in
     their own docstrings. `SourceConfig.options` are forwarded to the reader
     unchanged, so any keyword the underlying Polars function accepts is valid.
     """
@@ -297,6 +297,27 @@ class ArrowLoader(BaseLoader):
         return pl.scan_ipc(config.path, **config.options)
 
 
+class AvroLoader(BaseLoader):
+    """Loader for Avro object container files, read eagerly with `pl.read_avro`.
+
+    Polars has no lazy Avro reader, so the file is read whole and wrapped, like
+    JSON and Excel. Avro carries its schema, so the dtypes compared are the
+    writer's, with no inference. The reader takes a local path only.
+    """
+
+    def load(self, config: SourceConfig) -> pl.LazyFrame:
+        """Loads an Avro file into a Polars LazyFrame.
+
+        Args:
+            config (SourceConfig): The source configuration. Extra options
+                (`columns`, `n_rows`) are passed directly to `pl.read_avro`.
+
+        Returns:
+            pl.LazyFrame: A lazy wrapper over the fully materialized file.
+        """
+        return pl.read_avro(config.path, **config.options).lazy()
+
+
 class JSONLoader(BaseLoader):
     """Loader for a single JSON document holding an array of records.
 
@@ -382,6 +403,7 @@ class LoaderFactory:
         "json": JSONLoader(),
         "ndjson": NDJSONLoader(),
         "arrow": ArrowLoader(),
+        "avro": AvroLoader(),
         "excel": ExcelLoader(),
     }
 
