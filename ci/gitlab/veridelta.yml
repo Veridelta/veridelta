@@ -1,0 +1,120 @@
+# Veridelta for GitLab CI.
+#
+# Include it from a release tag, so the template and the package it installs
+# are the same version:
+#
+#   include:
+#     - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.11.0/ci/gitlab/veridelta.yml
+#       inputs:
+#         config: veridelta.yaml
+#
+# Set VERIDELTA_GITLAB_TOKEN (a project access token with the `api` scope) as a
+# masked CI/CD variable to keep one summary note up to date on merge requests.
+spec:
+  inputs:
+    config:
+      description: Path to the Veridelta YAML configuration.
+      default: veridelta.yaml
+    version:
+      description: Veridelta version to install from PyPI.
+      default: "0.10.0" # veridelta-version: bumped with each release
+    extras:
+      description: Comma-separated optional extras, such as "snowflake" or "database,fuzzy".
+      default: ""
+    stage:
+      description: Pipeline stage the job runs in.
+      default: test
+    job-name:
+      description: Name of the job.
+      default: veridelta
+    image:
+      description: Image with uv and Python.
+      default: ghcr.io/astral-sh/uv:python3.12-bookworm
+    html-max-rows:
+      description: Rows to embed per table in the HTML report.
+      type: number
+      default: 1000
+    fail-on-mismatch:
+      description: Fail the job when the comparison finds drift. An error always fails it.
+      type: boolean
+      default: true
+    comment:
+      description: Keep one summary note up to date on the merge request, when VERIDELTA_GITLAB_TOKEN is set.
+      type: boolean
+      default: true
+---
+"$[[ inputs.job-name ]]":
+  stage: $[[ inputs.stage ]]
+  image: $[[ inputs.image ]]
+  # Inputs reach the script as variables, never by interpolation into it.
+  variables:
+    VERIDELTA_CONFIG: "$[[ inputs.config ]]"
+    VERIDELTA_VERSION: "$[[ inputs.version ]]"
+    VERIDELTA_EXTRAS: "$[[ inputs.extras ]]"
+    VERIDELTA_HTML_MAX_ROWS: "$[[ inputs.html-max-rows ]]"
+    VERIDELTA_FAIL_ON_MISMATCH: "$[[ inputs.fail-on-mismatch ]]"
+    VERIDELTA_COMMENT: "$[[ inputs.comment ]]"
+  script:
+    - |
+      set +e
+      mkdir -p veridelta-report
+      extras=$(printf '%s' "$VERIDELTA_EXTRAS" | tr -d ' ')
+      spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
+      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md > veridelta-report/summary.json
+      code=$?
+      if [ "$code" -eq 0 ]; then
+        status=match
+      elif [ "$code" -eq 1 ] && grep -q '"is_match": false' veridelta-report/summary.json; then
+        status=drift
+      else
+        status=error
+      fi
+      echo "Veridelta: $status (exit code $code)"
+      if [ -s veridelta-report/summary.md ]; then cat veridelta-report/summary.md; fi
+      if [ "$VERIDELTA_COMMENT" = "true" ] && [ -n "${VERIDELTA_GITLAB_TOKEN:-}" ] && [ -n "${CI_MERGE_REQUEST_IID:-}" ]; then
+        python3 - <<'PY' || echo "Veridelta could not post the merge request note; check that VERIDELTA_GITLAB_TOKEN has the api scope."
+      import json
+      import os
+      import urllib.parse
+      import urllib.request
+
+      api = os.environ["CI_API_V4_URL"]
+      notes_url = (
+          f"{api}/projects/{os.environ['CI_PROJECT_ID']}"
+          f"/merge_requests/{os.environ['CI_MERGE_REQUEST_IID']}/notes"
+      )
+      headers = {"PRIVATE-TOKEN": os.environ["VERIDELTA_GITLAB_TOKEN"], "Content-Type": "application/json"}
+
+
+      def call(method, url, payload=None):
+          data = None if payload is None else json.dumps(payload).encode()
+          request = urllib.request.Request(url, data=data, headers=headers, method=method)
+          with urllib.request.urlopen(request) as response:
+              return json.load(response)
+
+
+      marker = "<!-- veridelta:" + urllib.parse.quote(os.environ["VERIDELTA_CONFIG"], safe="") + " -->"
+      try:
+          with open("veridelta-report/summary.md", encoding="utf-8") as handle:
+              summary = handle.read()
+      except OSError:
+          summary = "### Veridelta: ERROR\n\n`veridelta run` did not write a summary. The job log has the error.\n"
+      body = marker + "\n" + summary
+      me = call("GET", f"{api}/user")["id"]
+      notes = call("GET", f"{notes_url}?per_page=100&sort=desc")
+      # Only this token's own note is updated, so a quoted marker cannot redirect it.
+      mine = next((n for n in notes if n["author"]["id"] == me and n["body"].startswith(marker)), None)
+      if mine is None:
+          call("POST", notes_url, {"body": body})
+      else:
+          call("PUT", f"{notes_url}/{mine['id']}", {"body": body})
+      PY
+      fi
+      if [ "$status" = error ]; then exit 1; fi
+      if [ "$status" = drift ] && [ "$VERIDELTA_FAIL_ON_MISMATCH" = "true" ]; then exit 1; fi
+      exit 0
+  artifacts:
+    when: always
+    expose_as: Veridelta report
+    paths:
+      - veridelta-report/

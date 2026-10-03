@@ -17,10 +17,12 @@ from typing import Any
 import pytest
 import yaml
 
+from veridelta import __version__
 from veridelta.cli import build_parser
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ACTION = _ROOT / "action.yml"
+_GITLAB = _ROOT / "ci" / "gitlab" / "veridelta.yml"
 
 
 def _action() -> dict[str, Any]:
@@ -111,3 +113,62 @@ class TestGitHubAction:
         assert parsed.json is True
         assert parsed.html == "placeholder/report.html"
         assert parsed.markdown == "placeholder/summary.md"
+
+
+def _gitlab() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load the GitLab template's `spec` header and its job document."""
+    header, jobs = yaml.safe_load_all(_GITLAB.read_text(encoding="utf-8"))
+    return header, jobs
+
+
+def _gitlab_job() -> dict[str, Any]:
+    """Return the template's single job."""
+    _, jobs = _gitlab()
+    (job,) = jobs.values()
+    found: dict[str, Any] = job
+    return found
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestGitLabTemplate:
+    """Pin the GitLab CI template's contract."""
+
+    def test_it_declares_every_input_it_reads(self) -> None:
+        """Ensure each `$[[ inputs.x ]]` is declared, and each declared input is used."""
+        header, _ = _gitlab()
+        declared = set(header["spec"]["inputs"])
+        referenced = set(re.findall(r"\$\[\[\s*inputs\.([A-Za-z0-9_-]+)", _GITLAB.read_text()))
+
+        assert referenced == declared
+
+    def test_it_passes_inputs_to_the_script_as_variables(self) -> None:
+        """Ensure no input is interpolated into the shell script itself."""
+        for line in _gitlab_job()["script"]:
+            assert "$[[" not in line
+
+    def test_its_command_line_parses_with_the_cli(self) -> None:
+        """Ensure a renamed CLI flag breaks this test instead of every pipeline."""
+        arguments = _cli_arguments(_gitlab_job()["script"][0])
+
+        parsed = build_parser().parse_args(arguments)
+
+        assert parsed.json is True
+        assert parsed.markdown == "veridelta-report/summary.md"
+
+    def test_it_installs_the_release_it_ships_with(self) -> None:
+        """Ensure commitizen keeps the default version in step with the package.
+
+        `cz bump` rewrites the line marked `veridelta-version`, so a template
+        included from a release tag installs that same release.
+        """
+        header, _ = _gitlab()
+
+        assert header["spec"]["inputs"]["version"]["default"] == __version__
+
+    def test_its_merge_request_note_script_compiles(self) -> None:
+        """Ensure the embedded Python that posts the note is at least valid syntax."""
+        script = _gitlab_job()["script"][0]
+        body = script.split("<<'PY'", 1)[1].split("\nPY\n", 1)[0]
+
+        compile(body.split("\n", 1)[1], "note.py", "exec")

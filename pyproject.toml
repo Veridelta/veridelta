@@ -238,6 +238,7 @@ version_files = [
     "pyproject.toml:version",
     "src/veridelta/__init__.py:__version__",
     "mkdocs.yml:version",
+    "ci/gitlab/veridelta.yml:veridelta-version",
 ]
 update_changelog_on_bump = true
 major_version_zero = true
