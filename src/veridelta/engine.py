@@ -11,7 +11,7 @@ import importlib
 import re
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from importlib.util import find_spec
@@ -1043,6 +1043,49 @@ def _resolve_pushdown_keys(
     return resolved
 
 
+def _pushdown_columns(
+    diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
+) -> Iterator[tuple[str, str, DiffRule | None, EffectiveRule]]:
+    """Walk the probed source columns a warehouse statement compares.
+
+    Each probed source column is paired with its post-rename spelling and
+    resolved under that name, exactly as the local engine resolves its aligned
+    frames. Keys, columns the target lacks, and ignored columns are skipped,
+    and every column left is checked against the preconditions a local run
+    enforces while normalizing.
+
+    Args:
+        diff (DiffConfig): Master comparison rules, keys, and global defaults.
+        source_schema (pl.Schema): Schema probed from the source relation.
+        target_schema (pl.Schema): Schema probed from the target relation.
+
+    Yields:
+        tuple[str, str, DiffRule | None, EffectiveRule]: Stored source name,
+            post-rename name, the rule governing it if any, and that rule with
+            global defaults folded in.
+
+    Raises:
+        ConfigError: If a column carries an explicit `null_values` rule whose
+            sentinels none of its probed types can hold, or a `timezone` rule
+            the probed types cannot satisfy.
+    """
+    target_lookup = set(target_schema.names())
+    keys = set(diff.primary_keys)
+    pairs = _rename_pairs(diff.rules)
+    for column in source_schema.names():
+        aligned = pairs.get(column, column)
+        if aligned in keys or aligned not in target_lookup:
+            continue
+        rule = _match_rule(diff.rules, aligned)
+        if rule is not None and rule.ignore:
+            continue
+        effective = _fold_rule_defaults(rule, diff)
+        _enforce_pushdown_preconditions(
+            effective, ((column, source_schema), (aligned, target_schema))
+        )
+        yield column, aligned, rule, effective
+
+
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
@@ -1070,24 +1113,8 @@ def _resolve_pushdown_rules(
             probed types cannot satisfy, or a `min_jaro_winkler_similarity` on
             a column compared as text.
     """
-    target_lookup = set(target_schema.names())
-    keys = set(diff.primary_keys)
-    pairs = _rename_pairs(diff.rules)
-
     resolved: list[DiffRule] = []
-    for column in source_schema.names():
-        aligned = pairs.get(column, column)
-        if aligned in keys or aligned not in target_lookup:
-            continue
-
-        rule = _match_rule(diff.rules, aligned)
-        if rule is not None and rule.ignore:
-            continue
-
-        effective = _fold_rule_defaults(rule, diff)
-        _enforce_pushdown_preconditions(
-            effective, ((column, source_schema), (aligned, target_schema))
-        )
+    for column, aligned, rule, effective in _pushdown_columns(diff, source_schema, target_schema):
         # A global tolerance reaches every column, but only a numeric one may
         # compare within it; the rest compare exactly, as they do locally.
         numeric = _compares_numerically(effective, source_schema.get(column))
@@ -2367,12 +2394,55 @@ def _value_map_query(
         .agg(pl.len().alias("agreeing_rows"))
         .with_columns(agreeing.sum().over("source_value").alias("rows"))
         # A NULL target makes the inequality NULL, so it counts but is never proposed.
-        .filter(
-            (target != source)
-            & (agreeing >= min_support)
-            & (agreeing / pl.col("rows") >= min_confidence)
-        )
-        .sort(["agreeing_rows", "source_value"], descending=[True, False])
+        .filter((target != source) & (agreeing >= min_support))
+        .pipe(_confident_pairs, min_confidence)
+    )
+
+
+def _confident_pairs(pairs: pl.LazyFrame, min_confidence: float) -> pl.LazyFrame:
+    """Keep the counted pairs that meet `min_confidence`, most agreeing rows first.
+
+    Local and warehouse proposals both finish here, so the confidence each
+    entry must reach, and the order entries are listed in, cannot differ
+    between engines. Ties break on the source value's code points.
+
+    Args:
+        pairs (pl.LazyFrame): `source_value`, `target_value`, `agreeing_rows`,
+            and `rows` per counted pair.
+        min_confidence (float): Share of rows that must agree.
+
+    Returns:
+        pl.LazyFrame: The pairs that qualify, in proposal order.
+    """
+    return pairs.filter(pl.col("agreeing_rows") / pl.col("rows") >= min_confidence).sort(
+        ["agreeing_rows", "source_value"], descending=[True, False]
+    )
+
+
+def _value_map_proposal(
+    config: DiffConfig, column: str, frame: pl.DataFrame
+) -> ValueMapProposal | None:
+    """Turn one column's qualifying pairs into a proposal.
+
+    Args:
+        config (DiffConfig): Configuration whose rules may already map the column.
+        column (str): Candidate column, by its post-rename name.
+        frame (pl.DataFrame): `source_value`, `target_value`, `rows`, and
+            `agreeing_rows` per qualifying pair, in proposal order.
+
+    Returns:
+        ValueMapProposal | None: The proposal, or None without new entries.
+    """
+    if frame.is_empty():
+        return None
+    entries = tuple(ValueMapEntry(**row) for row in frame.iter_rows(named=True))
+    governing = _match_rule(config.rules, column)
+    existing = governing.value_map if governing is not None and governing.value_map else {}
+    return ValueMapProposal(
+        column=column,
+        value_map={**existing, **{entry.source_value: entry.target_value for entry in entries}},
+        entries=entries,
+        governing_rule_index=None if governing is None else config.rules.index(governing),
     )
 
 
@@ -2741,7 +2811,7 @@ class DiffEngine:
             for column in columns
         )
         proposals = (
-            prepared._value_map_proposal(column, frame)
+            _value_map_proposal(prepared.config, column, frame)
             for column, frame in zip(columns, frames, strict=True)
         )
         return [proposal for proposal in proposals if proposal is not None]
@@ -2793,28 +2863,6 @@ class DiffEngine:
             cutoff = round(sample_fraction * _SAMPLE_BUCKETS)
             source = source.filter(pl.struct(keys).hash(seed=0) % _SAMPLE_BUCKETS < cutoff)
         return source.join(target, on=keys, how="inner")
-
-    def _value_map_proposal(self, column: str, frame: pl.DataFrame) -> ValueMapProposal | None:
-        """Turn one column's counted pairs into a proposal.
-
-        Args:
-            column (str): Candidate column.
-            frame (pl.DataFrame): Output of `_value_map_query` for it.
-
-        Returns:
-            ValueMapProposal | None: The proposal, or None without new entries.
-        """
-        if frame.is_empty():
-            return None
-        entries = tuple(ValueMapEntry(**row) for row in frame.iter_rows(named=True))
-        governing = _match_rule(self.config.rules, column)
-        existing = governing.value_map if governing is not None and governing.value_map else {}
-        return ValueMapProposal(
-            column=column,
-            value_map={**existing, **{entry.source_value: entry.target_value for entry in entries}},
-            entries=entries,
-            governing_rule_index=None if governing is None else self.config.rules.index(governing),
-        )
 
     def _get_effective_rule(self, col_name: str) -> EffectiveRule:
         """Resolves all rules (Specific > Pattern > Global) into a unified dictionary.
