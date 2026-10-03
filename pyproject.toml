@@ -59,9 +59,17 @@ database = [
     "connectorx>=0.4.5",
     "pyarrow>=14.0.1",
 ]
+bigquery = [
+    # 3.11.0 is the first release with every API the connector uses:
+    # `RowIterator.to_arrow_iterable`, and `Client(location=...)` through
+    # `from_service_account_json`. pyarrow is only an extra of the client.
+    "google-cloud-bigquery>=3.11.0",
+    "pyarrow>=14.0.1",
+]
 all = [
     "veridelta[snowflake]",
     "veridelta[databricks]",
+    "veridelta[bigquery]",
     "veridelta[delta]",
     "veridelta[iceberg]",
     "veridelta[excel]",
