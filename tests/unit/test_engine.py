@@ -28,6 +28,7 @@ from veridelta.engine import (
     _fold_rule_defaults,
     _match_rule,
     _optional_module,
+    _polars_datetime_format,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
     _score_differing_pairs,
@@ -2323,3 +2324,44 @@ class TestIntegerToleranceWidth:
             )
             == changed
         )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestFractionalSeconds:
+    """Read `%f` in `datetime_format` as Python does: a fraction of a second."""
+
+    @pytest.mark.parametrize(
+        ("python", "polars"),
+        [
+            pytest.param("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S%.f", id="dot-fraction"),
+            pytest.param("%H%M%S%f", "%H%M%S%6f", id="bare-fraction"),
+            pytest.param("100%%f %Y", "100%%f %Y", id="escaped-percent"),
+            pytest.param("%%.%f", "%%%.f", id="escape-then-fraction"),
+            pytest.param("%Y-%m-%d", "%Y-%m-%d", id="no-fraction"),
+        ],
+    )
+    def test_it_spells_the_fraction_for_polars(self, python: str, polars: str) -> None:
+        """Ensure only a `%f` directive is rewritten, never an escaped `%%f`."""
+        assert _polars_datetime_format(python) == polars
+
+    def test_it_parses_one_to_six_digits_as_a_fraction(self) -> None:
+        """Ensure `.5` is half a second, not five nanoseconds."""
+        stamps = ["2026-01-02 01:02:03.5", "2026-01-02 01:02:03.123", "2026-01-02 01:02:03.123456"]
+        target = [
+            datetime(2026, 1, 2, 1, 2, 3, 500000),
+            datetime(2026, 1, 2, 1, 2, 3, 123000),
+            datetime(2026, 1, 2, 1, 2, 3, 123456),
+        ]
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f")],
+        )
+
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1, 2, 3], "ts": stamps}).lazy(),
+            pl.DataFrame({"id": [1, 2, 3], "ts": target}).lazy(),
+        ).run()
+
+        assert result.summary.changed_count == 0

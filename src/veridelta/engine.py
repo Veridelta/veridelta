@@ -753,6 +753,30 @@ def _compares_as_text(effective: EffectiveRule, dtype: pl.DataType | None) -> bo
     return effective["pad_zeros"] is not None or is_text
 
 
+_FRACTION_SPELLINGS: Final[dict[str, str]] = {"%%": "%%", ".%f": "%.f", "%f": "%6f"}
+"""Polars spellings of Python's fraction directive, plus the escape that hides one."""
+
+_FRACTION_DIRECTIVE: Final = re.compile(r"%%|\.%f|%f")
+"""A literal `%%`, which may precede an `f`, or `%f` with or without its dot."""
+
+
+def _polars_datetime_format(fmt: str) -> str:
+    """Spell a Python `strptime` format the way Polars reads it.
+
+    Python's `%f` is a fraction of a second, one to six digits. Polars' `%f`
+    counts nanoseconds, so `.5` would read as five of them. A dot and its
+    fraction become `%.f`, and a `%f` without a dot becomes `%6f`, exactly six
+    digits. `%%` is a literal percent sign, so `%%f` is left alone.
+
+    Args:
+        fmt (str): Format from a rule's `datetime_format`.
+
+    Returns:
+        str: The same format in Polars' directive language.
+    """
+    return _FRACTION_DIRECTIVE.sub(lambda match: _FRACTION_SPELLINGS[match[0]], fmt)
+
+
 def _tolerance_match(
     src: pl.Expr,
     tgt: pl.Expr,
@@ -2177,7 +2201,11 @@ class DiffEngine:
             is_text = True
 
         if rule["datetime_format"] and is_text:
-            expr = expr.str.strptime(pl.Datetime, format=rule["datetime_format"], strict=False)
+            expr = expr.str.strptime(
+                pl.Datetime,
+                format=_polars_datetime_format(rule["datetime_format"]),
+                strict=False,
+            )
             applied = True
 
         return expr.alias(column) if applied else None

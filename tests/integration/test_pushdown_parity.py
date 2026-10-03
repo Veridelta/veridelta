@@ -499,6 +499,40 @@ class TestDatetimeFormatParity:
 
         assert summary.is_perfect_match is True
 
+    def test_it_agrees_on_fractional_seconds(self) -> None:
+        """Ensure `%f` reads one to six digits as a fraction on both paths."""
+        src = pl.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "ts": [
+                    "2026-01-02 01:02:03.5",
+                    "2026-01-02 01:02:03.123",
+                    "2026-01-02 01:02:03.123456",
+                    "2026-01-02 01:02:03.25",
+                ],
+            }
+        )
+        tgt = pl.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "ts": [
+                    datetime(2026, 1, 2, 1, 2, 3, 500000),
+                    datetime(2026, 1, 2, 1, 2, 3, 123000),
+                    datetime(2026, 1, 2, 1, 2, 3, 123456),
+                    datetime(2026, 1, 2, 1, 2, 3, 520000),
+                ],
+            }
+        )
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f")],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
     def test_it_agrees_on_a_parsed_offset(self) -> None:
         """Ensure `%z` lands on the same instant on both paths."""
         src = pl.DataFrame({"id": [1], "ts": ["2026-01-02 15:30:45+0200"]})
