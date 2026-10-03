@@ -1824,6 +1824,8 @@ class DiffEngine:
       pushdown instead.
     - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
       key presence on metadata alone, before any rows are read.
+    - `DiffEngine.validate_rules(...)` to also resolve every rule and build
+      each column's comparison, still on metadata alone.
     - `DiffEngine(config, source, target).propose_value_maps()`, or
       `DiffEngine.propose_value_maps_from_configs(...)` for file, lakehouse,
       and database `SourceRef` pairs, to suggest `value_map` entries from how
@@ -1906,6 +1908,36 @@ class DiffEngine:
         engine = cls(config, source_df, target_df)
         engine._align_structure()
         engine._validate_schema()
+
+    @classmethod
+    def validate_rules(
+        cls, config: DiffConfig, source_df: pl.LazyFrame, target_df: pl.LazyFrame
+    ) -> list[str]:
+        """Check everything a run checks before it reads a row.
+
+        Goes past `validate_schemas`: every rule is resolved against the aligned
+        columns, both schemas are normalized, and each column's comparison is
+        built. A rule the run could not honor therefore fails here, such as a
+        null sentinel its column's type cannot hold, or a similarity limit
+        without the `fuzzy` extra. Operates on schema metadata only, so callers
+        may pass zero-row frames. Repeated keys and invalid regular expressions
+        surface only when rows are read.
+
+        Args:
+            config (DiffConfig): The master validation rules configuration.
+            source_df (pl.LazyFrame): Source frame or column probe.
+            target_df (pl.LazyFrame): Target frame or column probe.
+
+        Returns:
+            list[str]: The columns a run would compare, in source order, under
+                their target names.
+
+        Raises:
+            ConfigError: If primary keys are missing, schema constraints are
+                violated, or a rule cannot apply as configured.
+        """
+        compared, _ = cls(config, source_df, target_df)._plan()
+        return compared
 
     @classmethod
     def propose_value_maps_from_configs(
@@ -2489,15 +2521,7 @@ class DiffEngine:
                 extra, or the requested artifact export format has no writer.
             DataIntegrityError: If duplicate primary keys prevent deterministic joins.
         """
-        self._align_structure()
-        self._validate_schema()
-
-        self.source = self._normalize_frame(self.source, is_source=True)
-        self.target = self._normalize_frame(self.target, is_source=False)
-
-        # Built from schemas alone, before any rows are collected, so a rule
-        # the run cannot honor fails first, as it does in a warehouse.
-        compared_columns, match_expressions = self._match_expressions()
+        compared_columns, match_expressions = self._plan()
 
         # Runs after normalization: case folding or sentinel coercion on a key
         # column can collapse distinct rows into duplicates, and that must fail
@@ -2507,6 +2531,27 @@ class DiffEngine:
         added_df, removed_df = self._collect_key_discrepancies()
         changed_df = self._collect_changed_rows(compared_columns, match_expressions)
         return self._build_result(added_df, removed_df, changed_df, compared_columns)
+
+    def _plan(self) -> tuple[list[str], list[pl.Expr]]:
+        """Align, validate, and normalize both frames, then build the comparisons.
+
+        Reads schemas only, so a rule the run cannot honor fails here, before any
+        rows are collected, as it does in a warehouse.
+
+        Returns:
+            tuple[list[str], list[pl.Expr]]: Compared column names, in source
+                order, and their parallel match expressions.
+
+        Raises:
+            ConfigError: If schema constraints or primary keys are violated
+                post-alignment, a rule cannot apply to its column's type, or a
+                similarity limit needs the missing `fuzzy` extra.
+        """
+        self._align_structure()
+        self._validate_schema()
+        self.source = self._normalize_frame(self.source, is_source=True)
+        self.target = self._normalize_frame(self.target, is_source=False)
+        return self._match_expressions()
 
     def _collect_key_discrepancies(self) -> tuple[pl.DataFrame, pl.DataFrame]:
         """Materialize the rows present on only one side of the comparison.
