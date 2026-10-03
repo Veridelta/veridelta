@@ -1,0 +1,6 @@
+# Used by the `action` CI job: one changed, one added, and one removed row.
+primary_keys: [id]
+source:
+  path: tests/fixtures/ci/legacy.csv
+target:
+  path: tests/fixtures/ci/modern_drift.csv

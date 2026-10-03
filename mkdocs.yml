@@ -62,5 +62,6 @@ nav:
     - 3. Advanced Rules: examples/03_advanced_rules.ipynb
     - 4. HTML Reports: examples/04_html_reports.ipynb
   - Configuration: configuration.md
+  - CI Integrations: ci.md
   - API Reference: api.md
   - Roadmap: roadmap.md

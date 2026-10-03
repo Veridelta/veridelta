@@ -1,0 +1,6 @@
+# Used by the `action` CI job: a configuration that cannot run.
+primary_keys: [id]
+source:
+  path: tests/fixtures/ci/legacy.csv
+target:
+  path: tests/fixtures/ci/does_not_exist.csv
