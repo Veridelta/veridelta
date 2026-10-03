@@ -3,6 +3,7 @@
 
 """Unit tests for BigQuery: its connection model, SQL dialect, and connector."""
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -12,10 +13,12 @@ import pytest
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
+from veridelta.config import load_config
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, _reads_offset
 from veridelta.connectors.warehouse import BigQueryConnector
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError
-from veridelta.models import BigQueryConfig, DiffRule
+from veridelta.models import BigQueryConfig, DiffConfig, DiffRule, SnowflakeConfig
 
 _BASE: dict[str, Any] = {"project": "analytics-prod", "table": "sales.orders"}
 """The fields every BigQuery config needs."""
@@ -357,3 +360,111 @@ class TestBigQueryConnector:
         driver.Client.return_value.close.assert_called_once()
         with pytest.raises(ConnectorError, match="not connected"):
             connector.execute_pushdown("SELECT 1")
+
+
+def _pair(**overrides: Any) -> tuple[BigQueryConfig, BigQueryConfig]:
+    """Build a BigQuery source, and a target that differs by `overrides`."""
+    return (
+        BigQueryConfig(**{**_BASE, "table": "sales.src"}),
+        BigQueryConfig(**{**_BASE, "table": "sales.tgt", **overrides}),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestBigQueryRouting:
+    """Validate which BigQuery pairs share one pushdown session."""
+
+    def test_it_pushes_a_pair_down_to_bigquery(self, mocker: MockerFixture) -> None:
+        """Ensure two tables on one connection open one BigQuery session and close it."""
+        connector = mocker.patch("veridelta.engine.BigQueryConnector")
+        connector.return_value.execute_pushdown.side_effect = ConnectorError("stop here")
+        source, target = _pair()
+
+        with pytest.raises(ConnectorError, match="stop here"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        connector.assert_called_once_with(source)
+        connector.return_value.close.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({"project": "analytics-dev"}, id="project"),
+            pytest.param({"location": "EU"}, id="location"),
+            pytest.param({"credentials_path": "/secrets/other.json"}, id="credentials"),
+            pytest.param({"maximum_bytes_billed": 10}, id="cost-cap"),
+            pytest.param({"dataset": "archive"}, id="default-dataset"),
+        ],
+    )
+    def test_it_keeps_different_connections_apart(
+        self, mocker: MockerFixture, overrides: dict[str, Any]
+    ) -> None:
+        """Ensure every connection setting, but not the table, is part of the fingerprint."""
+        connector = mocker.patch("veridelta.engine.BigQueryConnector")
+        source, target = _pair(**overrides)
+
+        with pytest.raises(ConnectorError, match="BigQuery connections must match"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        connector.assert_not_called()
+
+    def test_it_refuses_a_table_compared_with_itself(self) -> None:
+        """Ensure one table on one connection is refused before connecting."""
+        source = BigQueryConfig(**_BASE)
+
+        with pytest.raises(ConfigError, match="same table"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, source)
+
+    def test_it_refuses_bigquery_against_another_warehouse(self) -> None:
+        """Ensure a cross-dialect pair names both vendors."""
+        snowflake = SnowflakeConfig(
+            account="xy12345",
+            user="analyst",
+            warehouse="COMPUTE_WH",
+            database="ANALYTICS",
+            schema_name="PUBLIC",
+            table="SRC",
+        )
+
+        with pytest.raises(ConnectorError, match="source is BigQuery and the target is Snowflake"):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"]), BigQueryConfig(**_BASE), snowflake
+            )
+
+    def test_validate_reports_a_missing_bigquery_extra(self, mocker: MockerFixture) -> None:
+        """Ensure `veridelta validate` finds the client by name, without importing it."""
+        find_spec = mocker.patch("veridelta.engine.find_spec", side_effect=ModuleNotFoundError)
+        source, target = _pair()
+
+        [finding] = DiffEngine.check_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        assert finding.message.startswith(
+            "Reading the source and target needs the optional 'bigquery'"
+        )
+        find_spec.assert_called_with("google.cloud.bigquery")
+
+    def test_validate_accepts_an_installed_bigquery_extra(self, mocker: MockerFixture) -> None:
+        """Ensure a findable client is enough for the offline check."""
+        mocker.patch("veridelta.engine.find_spec", return_value=object())
+        source, target = _pair()
+
+        assert DiffEngine.check_configs(DiffConfig(primary_keys=["id"]), source, target) == []
+
+    def test_it_loads_from_yaml_with_the_project_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a `type: bigquery` block loads, and a `${NAME}` project expands."""
+        monkeypatch.setenv("VD_BQ_PROJECT", "analytics-prod")
+        path = tmp_path / "veridelta.yaml"
+        path.write_text(
+            "source:\n  type: bigquery\n  project: ${VD_BQ_PROJECT}\n  table: sales.src\n"
+            "target:\n  type: bigquery\n  project: ${VD_BQ_PROJECT}\n  table: sales.tgt\n"
+            "primary_keys: [id]\n"
+        )
+
+        _, source, target = load_config(path)
+
+        assert isinstance(source, BigQueryConfig)
+        assert isinstance(target, BigQueryConfig)
+        assert (source.project, target.table) == ("analytics-prod", "sales.tgt")

@@ -1239,6 +1239,7 @@ SourceRef = Annotated[
     SourceConfig
     | SnowflakeConfig
     | DatabricksConfig
+    | BigQueryConfig
     | DeltaLakeConfig
     | IcebergConfig
     | DatabaseConfig,

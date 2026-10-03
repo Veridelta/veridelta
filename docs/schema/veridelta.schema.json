@@ -2,6 +2,116 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://veridelta.github.io/veridelta/schema/veridelta.schema.json",
   "$defs": {
+    "BigQueryConfig": {
+      "additionalProperties": false,
+      "description": "Immutable connection settings for BigQuery warehouse pushdown.\n\nAttributes:\n    type (Literal[\"bigquery\"]): Discriminator for YAML source routing.\n    table (str): Table to compare, as `dataset.table`, or `table` when\n        `dataset` names the default dataset.\n    project (str): Google Cloud project that runs the queries and holds\n        the data. It never appears in SQL.\n    dataset (str | None): Default dataset for a table named without one.\n    location (str | None): Location the queries run in, such as `US` or\n        `europe-west2`. BigQuery infers it when unset.\n    credentials_path (str | None): Service account key file. Application\n        Default Credentials are used when unset. Left out when the config\n        is printed, but kept by `model_dump()`, which the connector needs.\n    maximum_bytes_billed (int | None): Fail any statement that would bill\n        more bytes than this, instead of running it.",
+      "properties": {
+        "type": {
+          "const": "bigquery",
+          "default": "bigquery",
+          "description": "Discriminator for BigQuery.",
+          "title": "Type",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "description": "Table to compare, as dataset.table, or table with a default dataset.",
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)?$",
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "\\$\\{"
+            }
+          ]
+        },
+        "project": {
+          "title": "Project",
+          "description": "Google Cloud project that runs the queries and holds the data.",
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9-]{4,28}[a-z0-9]$",
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "pattern": "\\$\\{"
+            }
+          ]
+        },
+        "dataset": {
+          "title": "Dataset",
+          "description": "Default dataset for a table named without one.",
+          "default": null,
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "\\$\\{"
+            }
+          ]
+        },
+        "location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Location the queries run in, such as US or europe-west2.",
+          "title": "Location"
+        },
+        "credentials_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Service account key file; Application Default Credentials when unset.",
+          "title": "Credentials Path"
+        },
+        "maximum_bytes_billed": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fail any statement that would bill more bytes than this.",
+          "title": "Maximum Bytes Billed"
+        }
+      },
+      "required": [
+        "table",
+        "project",
+        "type"
+      ],
+      "title": "BigQueryConfig",
+      "type": "object"
+    },
     "DatabaseConfig": {
       "additionalProperties": false,
       "description": "Immutable settings for reading a database table or query into a local comparison.\n\nThe rows are read through ConnectorX into Polars and compared by the local\nengine, so a database pairs with files, lakehouse tables, or another\ndatabase. Requires the `database` extra (`uv add 'veridelta[database]'`).\n\nAttributes:\n    type (Literal[\"database\"]): Discriminator for YAML source routing.\n    uri (str): ConnectorX connection URI, such as\n        `postgresql://analyst@db.internal:5432/sales` or\n        `sqlite:///srv/data/legacy.db`. A password written inside it is\n        masked when the config is printed, but kept by `model_dump()`,\n        which the connector needs.\n    password (str | None): Optional password, percent-encoded into the\n        URI's user information when the connector reads. Left out when the\n        config is printed, but kept by `model_dump()`.\n    table (str | None): Table or view to read whole, as one to three\n        unquoted identifier segments.\n    query (str | None): SQL statement to run instead, sent to the database\n        exactly as written. Set exactly one of `table` and `query`.",
@@ -806,6 +916,7 @@
     "source": {
       "discriminator": {
         "mapping": {
+          "bigquery": "#/$defs/BigQueryConfig",
           "database": "#/$defs/DatabaseConfig",
           "databricks": "#/$defs/DatabricksConfig",
           "delta": "#/$defs/DeltaLakeConfig",
@@ -824,6 +935,9 @@
         },
         {
           "$ref": "#/$defs/DatabricksConfig"
+        },
+        {
+          "$ref": "#/$defs/BigQueryConfig"
         },
         {
           "$ref": "#/$defs/DeltaLakeConfig"
@@ -840,6 +954,7 @@
     "target": {
       "discriminator": {
         "mapping": {
+          "bigquery": "#/$defs/BigQueryConfig",
           "database": "#/$defs/DatabaseConfig",
           "databricks": "#/$defs/DatabricksConfig",
           "delta": "#/$defs/DeltaLakeConfig",
@@ -858,6 +973,9 @@
         },
         {
           "$ref": "#/$defs/DatabricksConfig"
+        },
+        {
+          "$ref": "#/$defs/BigQueryConfig"
         },
         {
           "$ref": "#/$defs/DeltaLakeConfig"

@@ -17,6 +17,7 @@ from veridelta.connectors.sql import COUNT_ALIAS
 from veridelta.engine import _WAREHOUSES, DiffEngine, LoaderFactory, _WarehouseConfig
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
+    BigQueryConfig,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -313,7 +314,7 @@ class TestEngineConnectorRouting:
         assert summary.total_rows_source == SOURCE_TOTAL
         assert summary.total_rows_target == TARGET_TOTAL
 
-    @pytest.mark.parametrize("backend", ["Snowflake", "Databricks"])
+    @pytest.mark.parametrize("backend", ["Snowflake", "Databricks", "BigQuery"])
     def test_it_closes_the_warehouse_session_after_a_completed_pushdown(
         self, mocker: MockerFixture, backend: str
     ) -> None:
@@ -321,12 +322,21 @@ class TestEngineConnectorRouting:
         connector_cls = mocker.patch(f"veridelta.engine.{backend}Connector")
         connector: Any = connector_cls.return_value
         _configure_warehouse_compiler(connector)
-        if backend == "Snowflake":
-            source: Any = _snowflake_config(table="ANALYTICS.PUBLIC.SRC")
-            target: Any = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
-        else:
-            source = _databricks_config(table="main.default.src")
-            target = _databricks_config(table="main.default.tgt")
+        pairs: dict[str, tuple[Any, Any]] = {
+            "Snowflake": (
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+            ),
+            "Databricks": (
+                _databricks_config(table="main.default.src"),
+                _databricks_config(table="main.default.tgt"),
+            ),
+            "BigQuery": (
+                BigQueryConfig(project="analytics-prod", table="sales.src"),
+                BigQueryConfig(project="analytics-prod", table="sales.tgt"),
+            ),
+        }
+        source, target = pairs[backend]
 
         DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 

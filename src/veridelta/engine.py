@@ -39,10 +39,15 @@ from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_database_select
-from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
+from veridelta.connectors.warehouse import (
+    BigQueryConnector,
+    DatabricksConnector,
+    SnowflakeConnector,
+)
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError, VerideltaError
 from veridelta.models import (
     ArtifactFormat,
+    BigQueryConfig,
     CastTarget,
     ConfigFinding,
     DatabaseConfig,
@@ -467,7 +472,7 @@ class LoaderFactory:
 
 _T = TypeVar("_T")
 
-_WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig
+_WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig | BigQueryConfig
 """Connection configs whose comparisons compile to SQL and run in place."""
 
 
@@ -519,6 +524,28 @@ def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
     )
 
 
+def _bigquery_fingerprint(config: BigQueryConfig) -> tuple[object, ...]:
+    """Return connection identity excluding the compared table name.
+
+    Every setting but the table shapes the job a statement runs as, so two
+    sides that differ in any of them cannot share one client.
+
+    Args:
+        config (BigQueryConfig): BigQuery source or target.
+
+    Returns:
+        tuple[object, ...]: Project, default dataset, location, key file, and
+            byte cap.
+    """
+    return (
+        config.project,
+        config.dataset,
+        config.location,
+        config.credentials_path,
+        config.maximum_bytes_billed,
+    )
+
+
 @dataclass(frozen=True)
 class _Warehouse:
     """How the engine identifies and opens one warehouse backend.
@@ -553,6 +580,12 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
         SQLDialect.DATABRICKS,
         _databricks_fingerprint,
         lambda config: DatabricksConnector(config),
+    ),
+    BigQueryConfig: _Warehouse(
+        "BigQuery",
+        SQLDialect.BIGQUERY,
+        _bigquery_fingerprint,
+        lambda config: BigQueryConnector(config),
     ),
 }
 """Every warehouse the engine pushes comparisons down to, keyed by config type.
@@ -1964,8 +1997,25 @@ _EXTRA_PROBES: Final[dict[type[object], tuple[str, Callable[[], bool]]]] = {
     DatabaseConfig: ("database", lambda: database_connectors.connectorx is not None),
     SnowflakeConfig: ("snowflake", lambda: warehouse_connectors.snowflake_connector is not None),
     DatabricksConfig: ("databricks", lambda: warehouse_connectors.databricks_sql is not None),
+    # The BigQuery client is imported only on connect, so it is found by name.
+    BigQueryConfig: ("bigquery", lambda: _findable("google.cloud.bigquery")),
 }
 """The optional extra each connection type reads through, and whether it is installed."""
+
+
+def _findable(module: str) -> bool:
+    """Return whether a dotted module could be imported, without importing it.
+
+    Args:
+        module (str): Dotted module name.
+
+    Returns:
+        bool: False when the module, or a package above it, is not installed.
+    """
+    try:
+        return find_spec(module) is not None
+    except ModuleNotFoundError:
+        return False
 
 
 def _required_extra(config: SourceRef) -> tuple[str, Callable[[], bool]] | None:
