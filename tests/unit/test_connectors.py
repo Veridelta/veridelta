@@ -677,3 +677,32 @@ class TestDatabaseConnector:
 
         with pytest.raises(ConnectorError, match="not connected"):
             connector.lazyframe()
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestDatabaseSchemaProbe:
+    """Validate `DatabaseConnector(..., probe=True)`, which reads a table's columns only."""
+
+    def test_it_reads_no_rows(self, mocker: MockerFixture) -> None:
+        """Ensure the probe sends the zero-row statement and keeps the schema."""
+        frame = pl.DataFrame(schema={"id": pl.Int64, "name": pl.String})
+        read = _read_database(mocker, return_value=frame)
+        uri = "postgresql://analyst@db.internal/sales"
+
+        with DatabaseConnector(DatabaseConfig(uri=uri, table="orders"), probe=True) as connector:
+            connector.connect()
+            schema = connector.fetch_schema()
+
+        read.assert_called_once_with('SELECT * FROM "orders" WHERE 1 = 0', uri)
+        assert schema == frame.schema
+
+    def test_it_refuses_to_probe_a_query(self, mocker: MockerFixture) -> None:
+        """Ensure a query is never run whole when only its columns were asked for."""
+        read = _read_database(mocker, return_value=pl.DataFrame())
+        config = DatabaseConfig(uri="sqlite:///srv/x.db", query="SELECT * FROM t")
+
+        with pytest.raises(ConfigError, match="probe reads a 'table'"):
+            DatabaseConnector(config, probe=True).connect()
+
+        read.assert_not_called()

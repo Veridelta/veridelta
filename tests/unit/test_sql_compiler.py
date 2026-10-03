@@ -15,6 +15,7 @@ from veridelta.connectors.sql import (
     _WIDE_INTEGER_TYPES,
     COUNT_ALIAS,
     SCHEMA_ALIAS,
+    compile_database_probe,
     compile_database_select,
 )
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -1521,3 +1522,26 @@ class TestStrictTypeDrift:
             assert predicate in sql
             assert 'ABS("tgt"."qty"' not in sql
             assert '"src"."name" = "tgt"."name"' in sql
+
+
+class TestDatabaseProbe:
+    """Validate the zero-row statement `veridelta validate --schemas` reads a table's schema with."""
+
+    @pytest.mark.parametrize(
+        ("scheme", "expected"),
+        [
+            pytest.param(
+                "postgresql", 'SELECT * FROM "sales"."orders" WHERE 1 = 0', id="postgresql"
+            ),
+            pytest.param("mysql", "SELECT * FROM `sales`.`orders` WHERE 1 = 0", id="mysql"),
+            pytest.param("mssql", "SELECT * FROM [sales].[orders] WHERE 1 = 0", id="mssql"),
+        ],
+    )
+    def test_it_selects_no_rows_from_the_quoted_table(self, scheme: str, expected: str) -> None:
+        """Ensure the probe is the table read with a filter no row passes."""
+        assert compile_database_probe(scheme, "sales.orders") == expected
+
+    def test_it_refuses_a_scheme_it_cannot_quote(self) -> None:
+        """Ensure the probe fails exactly as the read would."""
+        with pytest.raises(ConfigError, match="'trino' is not one"):
+            compile_database_probe("trino", "orders")

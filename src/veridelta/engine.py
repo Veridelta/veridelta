@@ -12,21 +12,39 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import partial
+from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
-from typing import ClassVar, Final, Literal, TypedDict
+from typing import (
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypeAlias,
+    TypedDict,
+    TypeGuard,
+    TypeVar,
+)
+from urllib.parse import urlsplit
 
 import polars as pl
 
+from veridelta.connectors import database as database_connectors
+from veridelta.connectors import warehouse as warehouse_connectors
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
+from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_database_select
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
-from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
+from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError, VerideltaError
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
+    ConfigFinding,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -425,16 +443,20 @@ class LoaderFactory:
         )
 
 
-def _is_warehouse(config: SourceRef) -> bool:
-    """Return whether a source reference is a warehouse connection.
+_T = TypeVar("_T")
 
-    Args:
-        config (SourceRef): Parsed source or target configuration.
+_WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig
+"""Connection configs whose comparisons compile to SQL and run in place."""
 
-    Returns:
-        bool: True for Snowflake or Databricks configs.
-    """
-    return isinstance(config, (SnowflakeConfig, DatabricksConfig))
+
+class _WarehouseSession(PushdownSession, Protocol):
+    """A pushdown session the engine opens and closes around its work."""
+
+    def connect(self) -> None:
+        """Open the driver session."""
+
+    def close(self) -> None:
+        """Release the driver session."""
 
 
 def _snowflake_fingerprint(config: SnowflakeConfig) -> tuple[object, ...]:
@@ -473,6 +495,58 @@ def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
         config.catalog,
         config.schema_name,
     )
+
+
+@dataclass(frozen=True)
+class _Warehouse:
+    """How the engine identifies and opens one warehouse backend.
+
+    Attributes:
+        name (str): Vendor name used in error messages.
+        dialect (SQLDialect): Dialect its connector compiles for.
+        fingerprint (Callable[[Any], tuple[object, ...]]): Connection identity
+            without the compared table. Two sides share one session only when
+            their fingerprints are equal.
+        session (Callable[[Any], _WarehouseSession]): Builds an unconnected
+            session from one side's configuration.
+    """
+
+    name: str
+    dialect: SQLDialect
+    fingerprint: Callable[[Any], tuple[object, ...]]
+    session: Callable[[Any], _WarehouseSession]
+
+
+_WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
+    # The lambdas look the connector class up when a session opens, so a test
+    # that patches `veridelta.engine.SnowflakeConnector` still intercepts it.
+    SnowflakeConfig: _Warehouse(
+        "Snowflake",
+        SQLDialect.SNOWFLAKE,
+        _snowflake_fingerprint,
+        lambda config: SnowflakeConnector(config),
+    ),
+    DatabricksConfig: _Warehouse(
+        "Databricks",
+        SQLDialect.DATABRICKS,
+        _databricks_fingerprint,
+        lambda config: DatabricksConnector(config),
+    ),
+}
+"""Every warehouse the engine pushes comparisons down to, keyed by config type.
+Adding a backend means one entry here and one member of `_WarehouseConfig`."""
+
+
+def _is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
+    """Return whether a source reference is a warehouse connection.
+
+    Args:
+        config (SourceRef): Parsed source or target configuration.
+
+    Returns:
+        bool: True for a config type in the warehouse registry.
+    """
+    return type(config) in _WAREHOUSES
 
 
 def _rename_pairs(rules: Sequence[DiffRule]) -> dict[str, str]:
@@ -1531,6 +1605,105 @@ def _validate_pushdown_schema(
     return source_schema, target_schema
 
 
+class _PushdownPlan(NamedTuple):
+    """What a warehouse run learns before it reads a row.
+
+    Attributes:
+        source_schema (pl.Schema): Probed source columns and types.
+        target_schema (pl.Schema): Probed target columns and types.
+        key_rules (list[DiffRule]): Normalization resolved for each key.
+        rules (list[DiffRule]): One resolved rule per compared column.
+    """
+
+    source_schema: pl.Schema
+    target_schema: pl.Schema
+    key_rules: list[DiffRule]
+    rules: list[DiffRule]
+
+
+def _plan_pushdown(
+    connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
+) -> _PushdownPlan:
+    """Probe both relations, then resolve the keys and rules against them.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+        diff (DiffConfig): Master comparison rules and keys.
+
+    Returns:
+        _PushdownPlan: The probed schemas and the resolved keys and rules.
+
+    Raises:
+        ConfigError: If the probed relations violate `schema_mode` or omit a
+            primary key, or a rule asks for what the warehouse cannot reproduce.
+    """
+    source_schema, target_schema = _validate_pushdown_schema(
+        connector, source_table, target_table, diff
+    )
+    return _PushdownPlan(
+        source_schema,
+        target_schema,
+        _resolve_pushdown_keys(diff, source_schema, target_schema),
+        _resolve_pushdown_rules(diff, source_schema, target_schema),
+    )
+
+
+def _check_pushdown_plan(
+    connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
+) -> None:
+    """Do what a warehouse run does before reading a row, and compile the rest.
+
+    The two schema probes are the only statements executed. Every statement a
+    run would execute after them is compiled against the probed types, so a
+    rule the warehouse cannot spell fails here.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+        diff (DiffConfig): Master comparison rules and keys.
+
+    Raises:
+        ConfigError: If the probed relations violate `schema_mode` or omit a
+            primary key, or a rule asks for what the warehouse cannot reproduce.
+    """
+    plan = _plan_pushdown(connector, source_table, target_table, diff)
+    compiler = connector.compiler
+    keys = diff.primary_keys
+    for table, schema, is_source in (
+        (source_table, plan.source_schema, True),
+        (target_table, plan.target_schema, False),
+    ):
+        compiler.compile_duplicate_key_query(
+            table, keys, is_source=is_source, key_rules=plan.key_rules, types=schema
+        )
+    wide_integers = _wide_integer_columns(diff, plan.rules, plan.source_schema, plan.target_schema)
+    type_drift = _type_drift_columns(diff, plan.rules, plan.source_schema, plan.target_schema)
+    for compile_rows in (compiler.compile_query, compiler.compile_column_mismatch_query):
+        compile_rows(
+            source_table,
+            target_table,
+            keys,
+            plan.rules,
+            source_types=plan.source_schema,
+            target_types=plan.target_schema,
+            key_rules=plan.key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
+    for compile_keys in (compiler.compile_added_query, compiler.compile_missing_query):
+        compile_keys(
+            source_table,
+            target_table,
+            keys,
+            source_types=plan.source_schema,
+            target_types=plan.target_schema,
+            key_rules=plan.key_rules,
+        )
+
+
 def _collect_pushdown_summary(
     connector: PushdownSession,
     source_table: str,
@@ -1560,11 +1733,9 @@ def _collect_pushdown_summary(
         DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If the warehouse returns a malformed aggregate.
     """
-    source_schema, target_schema = _validate_pushdown_schema(
+    source_schema, target_schema, key_rules, rules = _plan_pushdown(
         connector, source_table, target_table, diff
     )
-    key_rules = _resolve_pushdown_keys(diff, source_schema, target_schema)
-    rules = _resolve_pushdown_rules(diff, source_schema, target_schema)
     # As in a local run, a ConfigError from rule resolution wins over repeated
     # keys, and repeated keys stop the run before any count or join executes.
     _reject_duplicate_pushdown_keys(
@@ -1685,63 +1856,414 @@ def _reject_self_comparison(source_table: str, target_table: str) -> None:
         )
 
 
-def _run_warehouse_pushdown(diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
-    """Execute same-warehouse SQL pushdown or raise for unsupported pairings.
+_MIXED_BACKENDS: Final = "Mixed file/lakehouse/database and warehouse backends are unsupported."
+
+
+@dataclass(frozen=True)
+class _WarehousePair:
+    """Two warehouse tables cleared to share one pushdown session.
+
+    Attributes:
+        warehouse (_Warehouse): The backend both sides use.
+        source (_WarehouseConfig): Source connection and table.
+        target (_WarehouseConfig): Target connection and table.
+    """
+
+    warehouse: _Warehouse
+    source: _WarehouseConfig
+    target: _WarehouseConfig
+
+    def with_session(self, work: Callable[[PushdownSession, str, str], _T]) -> _T:
+        """Open one session, run `work` on it, and close it whatever happens.
+
+        Args:
+            work (Callable[[PushdownSession, str, str], _T]): Called with the
+                connected session and the source and target table names.
+
+        Returns:
+            _T: Whatever `work` returns.
+        """
+        session = self.warehouse.session(self.source)
+        session.connect()
+        try:
+            return work(session, self.source.table, self.target.table)
+        finally:
+            session.close()
+
+
+def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePair | None:
+    """Refuse a pair no engine can compare, without connecting to anything.
+
+    Two sides are read locally unless both are warehouse tables. A warehouse
+    pair must use one backend and one connection, compared by fingerprint, and
+    name two different tables.
 
     Args:
-        diff (DiffConfig): Master comparison rules and keys.
         source (SourceRef): Source configuration.
         target (SourceRef): Target configuration.
 
     Returns:
-        DiffResult: Mismatch and anti-join counts from the pushdown statements,
-            with the primary-key frames they were derived from.
+        _WarehousePair | None: The pair to push down, or None when both sides
+            are read locally.
 
     Raises:
-        ConfigError: If both sides name the same table, or the probed
-            relations violate `schema_mode`.
-        DataIntegrityError: If either relation repeats a normalized primary key.
-        ConnectorError: If backends are mixed, dialects differ, or connections
-            do not share a fingerprint.
+        ConnectorError: If only one side is a warehouse table, the sides use
+            different warehouses, or their connections differ.
+        ConfigError: If both sides name the same table on one connection.
     """
-    source_wh = _is_warehouse(source)
-    target_wh = _is_warehouse(target)
-    if source_wh != target_wh:
+    if not _is_warehouse(source):
+        if _is_warehouse(target):
+            raise ConnectorError(_MIXED_BACKENDS)
+        return None
+    if not _is_warehouse(target):
+        raise ConnectorError(_MIXED_BACKENDS)
+    warehouse = _WAREHOUSES[type(source)]
+    target_warehouse = _WAREHOUSES[type(target)]
+    if target_warehouse is not warehouse:
         raise ConnectorError(
-            "Mixed file/lakehouse/database and warehouse backends are unsupported."
+            "Cross-dialect warehouse pushdown is unsupported: the source is "
+            f"{warehouse.name} and the target is {target_warehouse.name}. Source and "
+            "target must use the same warehouse connection."
         )
-    if type(source) is not type(target):
+    if warehouse.fingerprint(source) != warehouse.fingerprint(target):
         raise ConnectorError(
-            "Cross-dialect warehouse pushdown is unsupported. "
-            "Source and target must use the same Snowflake or Databricks connection."
+            "Cross-account warehouse pushdown is unsupported. "
+            f"Source and target {warehouse.name} connections must match."
         )
-    if isinstance(source, SnowflakeConfig) and isinstance(target, SnowflakeConfig):
-        if _snowflake_fingerprint(source) != _snowflake_fingerprint(target):
-            raise ConnectorError(
-                "Cross-account warehouse pushdown is unsupported. "
-                "Source and target Snowflake connections must match."
+    _reject_self_comparison(source.table, target.table)
+    return _WarehousePair(warehouse, source, target)
+
+
+_EXTRA_PROBES: Final[dict[type[object], tuple[str, Callable[[], bool]]]] = {
+    # Each probe reads its module attribute when called, so tests can patch it,
+    # and a lakehouse reader is looked up by name rather than imported.
+    DeltaLakeConfig: ("delta", lambda: find_spec("deltalake") is not None),
+    IcebergConfig: ("iceberg", lambda: find_spec("pyiceberg") is not None),
+    DatabaseConfig: ("database", lambda: database_connectors.connectorx is not None),
+    SnowflakeConfig: ("snowflake", lambda: warehouse_connectors.snowflake_connector is not None),
+    DatabricksConfig: ("databricks", lambda: warehouse_connectors.databricks_sql is not None),
+}
+"""The optional extra each connection type reads through, and whether it is installed."""
+
+
+def _required_extra(config: SourceRef) -> tuple[str, Callable[[], bool]] | None:
+    """Name the optional extra one side reads through, with its probe.
+
+    Args:
+        config (SourceRef): Source or target configuration.
+
+    Returns:
+        tuple[str, Callable[[], bool]] | None: The extra and a probe that is
+            True when it is installed, or None when the core install suffices.
+    """
+    if isinstance(config, SourceConfig):
+        if config.format == "excel":
+            return "excel", lambda: fastexcel is not None
+        return None
+    return _EXTRA_PROBES[type(config)]
+
+
+def _error(message: str) -> ConfigFinding:
+    """Build a finding that would stop a run.
+
+    Args:
+        message (str): What is wrong and what to do about it.
+
+    Returns:
+        ConfigFinding: An `error` finding.
+    """
+    return ConfigFinding(severity="error", message=message)
+
+
+def _warning(message: str) -> ConfigFinding:
+    """Build a finding that stops a run only for some stored names or types.
+
+    Args:
+        message (str): What may go wrong and what to do about it.
+
+    Returns:
+        ConfigFinding: A `warning` finding.
+    """
+    return ConfigFinding(severity="warning", message=message)
+
+
+def _pairing_findings(
+    source: SourceRef, target: SourceRef
+) -> tuple[_WarehousePair | None, list[ConfigFinding]]:
+    """Run the backend pairing check and report its refusal as a finding.
+
+    Args:
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        tuple[_WarehousePair | None, list[ConfigFinding]]: The warehouse pair a
+            run would push down to, or None, and the refusal if there was one.
+    """
+    try:
+        return _check_backend_pairing(source, target), []
+    except (ConfigError, ConnectorError) as exc:
+        return None, [_error(str(exc))]
+
+
+def _missing_extra_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
+    """Report each optional extra a side reads through that is not installed.
+
+    Args:
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        list[ConfigFinding]: One error per missing extra, naming the sides.
+    """
+    sides: dict[str, list[str]] = {}
+    for label, config in (("source", source), ("target", target)):
+        required = _required_extra(config)
+        if required is not None and not required[1]():
+            sides.setdefault(required[0], []).append(label)
+    return [
+        _error(
+            f"Reading the {' and '.join(labels)} needs the optional '{extra}' extra, which "
+            f"is not installed. Install it with: uv add 'veridelta[{extra}]'"
+        )
+        for extra, labels in sides.items()
+    ]
+
+
+def _database_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
+    """Report a database `table` whose URI scheme Veridelta cannot quote for.
+
+    Args:
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        list[ConfigFinding]: One error per side that would fail to compile.
+    """
+    findings: list[ConfigFinding] = []
+    for label, config in (("source", source), ("target", target)):
+        if isinstance(config, DatabaseConfig) and config.table is not None:
+            try:
+                compile_database_select(urlsplit(config.uri).scheme.lower(), config.table)
+            except (ConfigError, ConnectorError) as exc:
+                findings.append(_error(f"{label}: {exc}"))
+    return findings
+
+
+def _polars_regex_error(pattern: str, replacement: str) -> str | None:
+    """Return why Polars' regular expression engine rejects a pattern, if it does.
+
+    Args:
+        pattern (str): `regex_replace` key.
+        replacement (str): Its replacement.
+
+    Returns:
+        str | None: The parser's own `error:` line, or the whole message when
+            there is none, or None when the pattern compiles.
+    """
+    try:
+        pl.select(pl.lit("").str.replace_all(pattern, replacement))
+    except pl.exceptions.PolarsError as exc:
+        detail = str(exc)
+        return next(
+            (
+                line.removeprefix("error: ")
+                for line in detail.splitlines()
+                if line.startswith("error: ")
+            ),
+            detail.strip(),
+        )
+    return None
+
+
+def _regex_findings(diff: DiffConfig, *, pushdown: bool) -> list[ConfigFinding]:
+    """Report `regex_replace` patterns that Polars' regular expression engine rejects.
+
+    The models compile each pattern with Python's `re`, which accepts
+    look-around and backreferences that Polars does not, so a local run would
+    otherwise fail only once it reached the rows.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        pushdown (bool): Whether the pair runs in a warehouse, whose own engine
+            may accept the pattern.
+
+    Returns:
+        list[ConfigFinding]: One finding per rejected pattern, an error for a
+            local run and a warning for a warehouse run.
+    """
+    findings: list[ConfigFinding] = []
+    for index, rule in enumerate(diff.rules):
+        for pattern, replacement in (rule.regex_replace or {}).items():
+            reason = _polars_regex_error(pattern, replacement)
+            if reason is None:
+                continue
+            message = (
+                f"rules[{index}] regex_replace pattern {pattern!r} does not compile in "
+                f"Polars ({reason})."
             )
-        _reject_self_comparison(source.table, target.table)
-        snowflake = SnowflakeConnector(source)
-        snowflake.connect()
-        try:
-            return _collect_pushdown_summary(snowflake, source.table, target.table, diff)
-        finally:
-            snowflake.close()
-    if isinstance(source, DatabricksConfig) and isinstance(target, DatabricksConfig):
-        if _databricks_fingerprint(source) != _databricks_fingerprint(target):
-            raise ConnectorError(
-                "Cross-account warehouse pushdown is unsupported. "
-                "Source and target Databricks connections must match."
+            if pushdown:
+                findings.append(
+                    _warning(
+                        f"{message} A warehouse run hands it to the warehouse's own regular "
+                        "expression engine, which may accept it, but a local run would fail."
+                    )
+                )
+            else:
+                findings.append(_error(message))
+    return findings
+
+
+def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
+    """Report similarity rules a local run cannot score without the `fuzzy` extra.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+
+    Returns:
+        list[ConfigFinding]: One error per rule with a similarity limit, when
+            the scorer is missing.
+    """
+    if rapidfuzz_distance is not None:
+        return []
+    return [
+        _error(
+            f"rules[{index}] sets a similarity limit, which a local run scores with the "
+            "optional 'fuzzy' extra, and it is not installed. Install it with: "
+            "uv add 'veridelta[fuzzy]'"
+        )
+        for index, rule in enumerate(diff.rules)
+        if rule.max_levenshtein_distance is not None or rule.min_jaro_winkler_similarity is not None
+    ]
+
+
+def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
+    """Report settings a warehouse run refuses for some stored names or types.
+
+    Each refusal depends on what the warehouse reports for the columns, which
+    only a live check can see, so these are warnings.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        pair (_WarehousePair): The warehouse both sides share.
+
+    Returns:
+        list[ConfigFinding]: Warnings, in the order a run would meet them.
+    """
+    name = pair.warehouse.name
+    compiler = SQLPushdownCompiler(pair.warehouse.dialect)
+    findings: list[ConfigFinding] = []
+    if diff.normalize_column_names:
+        findings.append(
+            _warning(
+                f"normalize_column_names is on. A {name} run refuses it if any stored column "
+                "name has uppercase letters or surrounding spaces, because pushdown quotes "
+                "names exactly as they are stored."
             )
-        _reject_self_comparison(source.table, target.table)
-        databricks = DatabricksConnector(source)
-        databricks.connect()
-        try:
-            return _collect_pushdown_summary(databricks, source.table, target.table, diff)
-        finally:
-            databricks.close()
-    raise ConnectorError("Mixed file/lakehouse/database and warehouse backends are unsupported.")
+        )
+    for index, rule in enumerate(diff.rules):
+        if rule.min_jaro_winkler_similarity is not None:
+            findings.append(
+                _warning(
+                    f"rules[{index}] sets min_jaro_winkler_similarity, which a {name} run "
+                    "refuses on any column it compares as text. Use max_levenshtein_distance, "
+                    "which compiles to SQL, or compare local copies of the tables."
+                )
+            )
+        if rule.datetime_format:
+            probe = DiffRule(column_names=["probe"], datetime_format=rule.datetime_format)
+            try:
+                compiler.compile_column_predicate(
+                    probe, "probe", source_dtype=pl.String(), target_dtype=pl.String()
+                )
+            except ConfigError as exc:
+                findings.append(
+                    _warning(
+                        f"rules[{index}] datetime_format has no {name} spelling, so a run "
+                        f"refuses it on any column stored as text: {exc}"
+                    )
+                )
+    return findings
+
+
+def _schema_frame(config: SourceRef) -> pl.LazyFrame:
+    """Read one local side's columns and types, as a frame with no rows.
+
+    A database `table` is read with a zero-row probe. Files and lakehouse
+    tables are opened as a run opens them; formats without a lazy reader,
+    such as JSON and Excel, are read whole.
+
+    Args:
+        config (SourceRef): File, lakehouse, or database configuration.
+
+    Returns:
+        pl.LazyFrame: An empty frame with the side's schema.
+
+    Raises:
+        VerideltaError: If the side cannot be opened or read.
+    """
+    if isinstance(config, DatabaseConfig):
+        with DatabaseConnector(config, probe=True) as database:
+            database.connect()
+            return database.lazyframe()
+    return pl.LazyFrame(schema=LoaderFactory.load(config).collect_schema())
+
+
+def _local_schema_findings(
+    diff: DiffConfig, source: SourceRef, target: SourceRef
+) -> list[ConfigFinding]:
+    """Check the rules against two local sides' stored columns.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        list[ConfigFinding]: An error if a side cannot be read or a rule does
+            not fit, or a warning per side that reads a query, which is not run.
+    """
+    queries = [
+        _warning(
+            f"The {label} reads a query, which validate does not run, so the rules were "
+            "not checked against stored columns."
+        )
+        for label, config in (("source", source), ("target", target))
+        if isinstance(config, DatabaseConfig) and config.query is not None
+    ]
+    if queries:
+        return queries
+    try:
+        source_frame, target_frame = _schema_frame(source), _schema_frame(target)
+    except (VerideltaError, OSError, pl.exceptions.PolarsError) as exc:
+        return [_error(f"Could not read the schemas: {exc}")]
+    try:
+        DiffEngine.validate_rules(diff, source_frame, target_frame)
+    except ConfigError as exc:
+        return [_error(str(exc))]
+    return []
+
+
+def _pushdown_schema_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
+    """Probe a warehouse pair and compile its statements without running them.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        pair (_WarehousePair): The warehouse both sides share.
+
+    Returns:
+        list[ConfigFinding]: An error if the session, the probes, or a rule
+            fails, else nothing.
+    """
+    try:
+        pair.with_session(
+            lambda session, source_table, target_table: _check_pushdown_plan(
+                session, source_table, target_table, diff
+            )
+        )
+    except VerideltaError as exc:
+        return [_error(str(exc))]
+    return []
 
 
 DEFAULT_MIN_CONFIDENCE: Final = 0.95
@@ -1950,6 +2472,8 @@ class DiffEngine:
       pushdown instead.
     - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
       key presence on metadata alone, before any rows are read.
+    - `DiffEngine.validate_rules(...)` to also resolve every rule and build
+      each column's comparison, still on metadata alone.
     - `DiffEngine(config, source, target).propose_value_maps()`, or
       `DiffEngine.propose_value_maps_from_configs(...)` for file, lakehouse,
       and database `SourceRef` pairs, to suggest `value_map` entries from how
@@ -2000,10 +2524,13 @@ class DiffEngine:
             DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
         """
-        source_is_warehouse = _is_warehouse(source)
-        target_is_warehouse = _is_warehouse(target)
-        if source_is_warehouse or target_is_warehouse:
-            return _run_warehouse_pushdown(diff, source, target)
+        pair = _check_backend_pairing(source, target)
+        if pair is not None:
+            return pair.with_session(
+                lambda session, source_table, target_table: _collect_pushdown_summary(
+                    session, source_table, target_table, diff
+                )
+            )
 
         # `run()` normalizes headers and applies renames exactly once. Loading
         # through `DataIngestor` would align first and have `run()` rename the
@@ -2029,6 +2556,86 @@ class DiffEngine:
         engine = cls(config, source_df, target_df)
         engine._align_structure()
         engine._validate_schema()
+
+    @classmethod
+    def validate_rules(
+        cls, config: DiffConfig, source_df: pl.LazyFrame, target_df: pl.LazyFrame
+    ) -> list[str]:
+        """Check everything a run checks before it reads a row.
+
+        Goes past `validate_schemas`: every rule is resolved against the aligned
+        columns, both schemas are normalized, and each column's comparison is
+        built. A rule the run could not honor therefore fails here, such as a
+        null sentinel its column's type cannot hold, or a similarity limit
+        without the `fuzzy` extra. Operates on schema metadata only, so callers
+        may pass zero-row frames. Repeated keys and invalid regular expressions
+        surface only when rows are read.
+
+        Args:
+            config (DiffConfig): The master validation rules configuration.
+            source_df (pl.LazyFrame): Source frame or column probe.
+            target_df (pl.LazyFrame): Target frame or column probe.
+
+        Returns:
+            list[str]: The columns a run would compare, in source order, under
+                their target names.
+
+        Raises:
+            ConfigError: If primary keys are missing, schema constraints are
+                violated, or a rule cannot apply as configured.
+        """
+        compared, _ = cls(config, source_df, target_df)._plan()
+        return compared
+
+    @staticmethod
+    def check_configs(
+        diff: DiffConfig, source: SourceRef, target: SourceRef, *, schemas: bool = False
+    ) -> list[ConfigFinding]:
+        """Check a loaded configuration for what would stop a run.
+
+        By default nothing connects and no rows are read, so the checks need
+        only the configuration and the installed extras:
+
+        - the pair is one an engine can compare: both local, or two tables on
+          one warehouse connection;
+        - every extra a side reads through, or a local run scores with, is
+          installed;
+        - a database `table` uses a URI scheme Veridelta can quote for;
+        - each `regex_replace` pattern compiles in Polars;
+        - on a warehouse pair, settings the warehouse refuses for some stored
+          names or types, reported as warnings.
+
+        With `schemas`, and no errors so far, each side's columns are read too,
+        but never its rows. Local sides are checked with `validate_rules`; a
+        database `table` is read with a zero-row probe, and a `query` is not
+        run at all. A warehouse pair runs its two schema probes, then compiles
+        every comparison statement without executing it, which settles the
+        warnings above one way or the other.
+
+        Args:
+            diff (DiffConfig): Comparison settings and rules.
+            source (SourceRef): Source configuration.
+            target (SourceRef): Target configuration.
+            schemas (bool): Also connect and check the rules against the
+                stored columns.
+
+        Returns:
+            list[ConfigFinding]: Errors and warnings, empty when nothing is
+                wrong. A configuration with no errors is expected to start.
+        """
+        pair, findings = _pairing_findings(source, target)
+        findings += _missing_extra_findings(source, target)
+        findings += _database_findings(source, target)
+        findings += _regex_findings(diff, pushdown=pair is not None)
+        if pair is None:
+            findings += _fuzzy_extra_findings(diff)
+        if not schemas:
+            return findings if pair is None else findings + _pushdown_findings(diff, pair)
+        if any(finding.severity == "error" for finding in findings):
+            return [*findings, _warning("Schemas were not checked, because of the errors above.")]
+        if pair is None:
+            return findings + _local_schema_findings(diff, source, target)
+        return findings + _pushdown_schema_findings(diff, pair)
 
     @classmethod
     def propose_value_maps_from_configs(
@@ -2609,15 +3216,7 @@ class DiffEngine:
                 extra, or the requested artifact export format has no writer.
             DataIntegrityError: If duplicate primary keys prevent deterministic joins.
         """
-        self._align_structure()
-        self._validate_schema()
-
-        self.source = self._normalize_frame(self.source, is_source=True)
-        self.target = self._normalize_frame(self.target, is_source=False)
-
-        # Built from schemas alone, before any rows are collected, so a rule
-        # the run cannot honor fails first, as it does in a warehouse.
-        compared_columns, match_expressions = self._match_expressions()
+        compared_columns, match_expressions = self._plan()
 
         # Runs after normalization: case folding or sentinel coercion on a key
         # column can collapse distinct rows into duplicates, and that must fail
@@ -2627,6 +3226,27 @@ class DiffEngine:
         added_df, removed_df = self._collect_key_discrepancies()
         changed_df = self._collect_changed_rows(compared_columns, match_expressions)
         return self._build_result(added_df, removed_df, changed_df, compared_columns)
+
+    def _plan(self) -> tuple[list[str], list[pl.Expr]]:
+        """Align, validate, and normalize both frames, then build the comparisons.
+
+        Reads schemas only, so a rule the run cannot honor fails here, before any
+        rows are collected, as it does in a warehouse.
+
+        Returns:
+            tuple[list[str], list[pl.Expr]]: Compared column names, in source
+                order, and their parallel match expressions.
+
+        Raises:
+            ConfigError: If schema constraints or primary keys are violated
+                post-alignment, a rule cannot apply to its column's type, or a
+                similarity limit needs the missing `fuzzy` extra.
+        """
+        self._align_structure()
+        self._validate_schema()
+        self.source = self._normalize_frame(self.source, is_source=True)
+        self.target = self._normalize_frame(self.target, is_source=False)
+        return self._match_expressions()
 
     def _collect_key_discrepancies(self) -> tuple[pl.DataFrame, pl.DataFrame]:
         """Materialize the rows present on only one side of the comparison.

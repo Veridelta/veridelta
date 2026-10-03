@@ -901,6 +901,26 @@ class ValueMapProposal(BaseModel):
         return DiffRule(column_names=[self.column], value_map=self.value_map)
 
 
+FindingSeverity = Literal["error", "warning"]
+"""How sure a configuration check is: an `error` stops the run, and a `warning`
+stops it only if the tables hold what the setting cannot handle."""
+
+
+class ConfigFinding(BaseModel):
+    """One problem found by checking a configuration without running it.
+
+    Attributes:
+        severity (FindingSeverity): `error` when the run would fail, `warning`
+            when it depends on stored column names or types.
+        message (str): What is wrong and what to do about it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    severity: FindingSeverity = Field(..., description="error or warning.")
+    message: str = Field(..., description="What is wrong and what to do about it.")
+
+
 class SnowflakeConfig(BaseModel):
     """Immutable connection settings for Snowflake warehouse pushdown.
 

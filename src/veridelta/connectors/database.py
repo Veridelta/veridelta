@@ -25,8 +25,8 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import polars as pl
 
 from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
-from veridelta.connectors.sql import compile_database_select
-from veridelta.exceptions import ConnectorError
+from veridelta.connectors.sql import compile_database_probe, compile_database_select
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DatabaseConfig
 
 logger = logging.getLogger(__name__)
@@ -61,13 +61,16 @@ class DatabaseConnector(VerideltaConnector):
     always raises: the comparison runs in Polars, never in the database.
     """
 
-    def __init__(self, config: DatabaseConfig) -> None:
+    def __init__(self, config: DatabaseConfig, *, probe: bool = False) -> None:
         """Initialize the connector with validated database settings.
 
         Args:
             config (DatabaseConfig): Frozen URI, credentials, and table or query.
+            probe (bool): Read the table's columns and no rows, for a schema
+                check. Only a `table` can be probed.
         """
         self._config = config
+        self._probe = probe
         self._frame: pl.LazyFrame | None = None
 
     def connect(self) -> None:
@@ -76,7 +79,8 @@ class DatabaseConnector(VerideltaConnector):
         Raises:
             ConnectorError: If the `database` extra is missing, a SQLite file
                 does not exist, or the read fails.
-            ConfigError: If `table` names a database Veridelta cannot quote for.
+            ConfigError: If `table` names a database Veridelta cannot quote for,
+                or a probe was asked of a `query`.
         """
         if connectorx is None:
             raise ConnectorError(_DATABASE_EXTRA)
@@ -169,10 +173,19 @@ class DatabaseConnector(VerideltaConnector):
             str: Statement for the driver.
 
         Raises:
-            ConfigError: If `table` names a database Veridelta cannot quote for.
+            ConfigError: If `table` names a database Veridelta cannot quote for,
+                or a probe was asked of a `query`.
         """
+        if self._config.table is not None and self._probe:
+            return compile_database_probe(scheme, self._config.table)
         if self._config.table is not None:
             return compile_database_select(scheme, self._config.table)
+        if self._probe:
+            # Wrapping a statement is not portable: Oracle refuses `AS` on a
+            # derived table, and SQL Server refuses `ORDER BY` inside one.
+            raise ConfigError(
+                "A schema probe reads a 'table'; a 'query' would have to run in full."
+            )
         # DatabaseConfig requires exactly one of `table` and `query`.
         return cast("str", self._config.query)
 

@@ -12,7 +12,8 @@ import pytest
 import yaml
 from pytest_mock import MockerFixture
 
-from veridelta.cli import build_parser, crosswalk, main, run
+from veridelta.cli import build_parser, crosswalk, main, run, validate
+from veridelta.config import config_json_schema
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffConfig, DiffRule, ValueMapEntry, ValueMapProposal
 
@@ -623,4 +624,230 @@ class TestCrosswalkCommand:
         main()
 
         assert mock_crosswalk.call_args[0][0].config == "custom.yaml"
+        mock_exit.assert_called_once_with(0)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestSchemaCommand:
+    """Validate `veridelta schema`."""
+
+    def test_main_dispatches_to_schema(
+        self, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `veridelta schema` prints the JSON Schema on stdout and exits 0."""
+        mock_exit = mocker.patch("veridelta.cli.sys.exit")
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "schema"])
+
+        main()
+
+        assert json.loads(capsys.readouterr().out) == config_json_schema()
+        mock_exit.assert_called_once_with(0)
+
+
+_SNOWFLAKE_SIDE = (
+    "  type: snowflake\n  account: xy12345\n  user: analyst\n  warehouse: COMPUTE_WH\n"
+    "  database: ANALYTICS\n  schema_name: PUBLIC\n"
+)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestValidateCommand:
+    """Validate `veridelta validate`, which checks a configuration without reading data."""
+
+    @staticmethod
+    def _args(path: Path, **overrides: object) -> argparse.Namespace:
+        """Build the namespace `validate` receives, with every default."""
+        fields: dict[str, object] = {
+            "config": str(path),
+            "schemas": False,
+            "allow_missing_env": False,
+            "json": False,
+            "quiet": False,
+            **overrides,
+        }
+        return argparse.Namespace(**fields)
+
+    @staticmethod
+    def _write(tmp_path: Path, text: str) -> Path:
+        """Write a configuration file."""
+        path = tmp_path / "veridelta.yaml"
+        path.write_text(text)
+        return path
+
+    def test_it_passes_a_configuration_that_will_run(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a clean file exits 0, prints no findings, and says so on stderr."""
+        path = self._write(
+            tmp_path, "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
+        )
+
+        exit_code = validate(self._args(path))
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert captured.out == ""
+        assert captured.err == f"{path}: valid.\n"
+
+    def test_it_fails_a_configuration_that_does_not_load(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a load failure is one error finding on stdout, and exit 1."""
+        path = self._write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
+            "rules:\n  - column_names: [amount]\n    absolute_tolerence: 0.1\n",
+        )
+
+        exit_code = validate(self._args(path))
+        captured = capsys.readouterr()
+
+        assert exit_code == 1
+        assert captured.out.startswith("error: Configuration Validation Failed:")
+        assert "absolute_tolerence" in captured.out
+        assert captured.err == f"{path}: 1 error, 0 warnings.\n"
+
+    def test_it_reports_findings_as_json(
+        self, tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `--json` prints one object a CI step can read."""
+        mocker.patch("veridelta.connectors.warehouse.snowflake_connector", object())
+        path = self._write(
+            tmp_path,
+            "source:\n" + _SNOWFLAKE_SIDE + "  table: SRC\ntarget:\n  path: b.csv\n"
+            "primary_keys: [id]\n",
+        )
+
+        exit_code = validate(self._args(path, json=True, quiet=True))
+        captured = capsys.readouterr()
+
+        assert exit_code == 1
+        assert json.loads(captured.out) == {
+            "config": str(path),
+            "valid": False,
+            "errors": ["Mixed file/lakehouse/database and warehouse backends are unsupported."],
+            "warnings": [],
+        }
+        assert captured.err == ""
+
+    def test_it_passes_with_warnings(
+        self, tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure warnings print but do not fail the check."""
+        mocker.patch("veridelta.connectors.warehouse.snowflake_connector", object())
+        path = self._write(
+            tmp_path,
+            "source:\n" + _SNOWFLAKE_SIDE + "  table: SRC\n"
+            "target:\n" + _SNOWFLAKE_SIDE + "  table: TGT\n"
+            "primary_keys: [ID]\nnormalize_column_names: true\n",
+        )
+
+        exit_code = validate(self._args(path))
+        captured = capsys.readouterr()
+
+        assert exit_code == 0
+        assert captured.out.startswith("warning: normalize_column_names is on.")
+        assert captured.err == f"{path}: valid, with 1 warning.\n"
+
+    def test_it_needs_every_variable_unless_told_otherwise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure an unset variable fails by default, and is a warning with the flag."""
+        monkeypatch.delenv("VD_VALIDATE_TABLE", raising=False)
+        path = self._write(
+            tmp_path,
+            "source:\n  path: ${VD_VALIDATE_TABLE}.csv\ntarget:\n  path: b.csv\n"
+            "primary_keys: [id]\n",
+        )
+
+        strict = validate(self._args(path))
+        strict_out = capsys.readouterr().out
+        lenient = validate(self._args(path, allow_missing_env=True))
+        lenient_out = capsys.readouterr().out
+
+        assert strict == 1
+        assert "Environment variable 'VD_VALIDATE_TABLE' is not set" in strict_out
+        assert lenient == 0
+        assert lenient_out == (
+            "warning: Environment variable 'VD_VALIDATE_TABLE' is not set, so its "
+            "references were checked as the text 'VD_VALIDATE_TABLE'.\n"
+        )
+
+    def test_it_checks_rules_against_stored_columns_with_schemas(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `--schemas` reads the files' columns, so a rule that cannot fit fails."""
+        (tmp_path / "a.csv").write_text("id,amount\n1,10\n")
+        (tmp_path / "b.csv").write_text("id,amount\n1,10\n")
+        path = self._write(
+            tmp_path,
+            f"source:\n  path: {tmp_path / 'a.csv'}\ntarget:\n  path: {tmp_path / 'b.csv'}\n"
+            "primary_keys: [id]\nrules:\n  - column_names: [amount]\n    null_values: ['N/A']\n",
+        )
+
+        offline = validate(self._args(path))
+        capsys.readouterr()
+        live = validate(self._args(path, schemas=True))
+
+        assert offline == 0
+        assert live == 1
+        assert "Column 'amount' has type Int64, which cannot hold" in capsys.readouterr().out
+
+    def test_quiet_keeps_the_findings(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `-q` silences only the verdict line on stderr."""
+        path = self._write(tmp_path, "source: {}\n")
+
+        exit_code = validate(self._args(path, quiet=True))
+        captured = capsys.readouterr()
+
+        assert exit_code == 1
+        assert captured.out.startswith("error: Configuration must contain both")
+        assert captured.err == ""
+
+    def test_it_reports_an_unexpected_failure(
+        self, tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a bug in a check exits 1 with the usual report, not a traceback."""
+        mocker.patch("veridelta.cli.DiffEngine.check_configs", side_effect=RuntimeError("boom"))
+        path = self._write(
+            tmp_path, "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
+        )
+
+        exit_code = validate(self._args(path))
+
+        assert exit_code == 1
+        assert "Unexpected System Error\nRuntimeError: boom" in capsys.readouterr().err
+
+    def test_main_dispatches_to_validate(self, mocker: MockerFixture) -> None:
+        """Ensure the subcommand and its flags reach the handler."""
+        handler = mocker.patch("veridelta.cli.validate", return_value=0)
+        mock_exit = mocker.patch("veridelta.cli.sys.exit")
+        mocker.patch(
+            "veridelta.cli.sys.argv",
+            [
+                "veridelta",
+                "validate",
+                "-c",
+                "x.yaml",
+                "--schemas",
+                "--allow-missing-env",
+                "--json",
+                "-q",
+            ],
+        )
+
+        main()
+
+        (args,) = handler.call_args.args
+        assert (args.config, args.schemas, args.allow_missing_env, args.json, args.quiet) == (
+            "x.yaml",
+            True,
+            True,
+            True,
+            True,
+        )
         mock_exit.assert_called_once_with(0)

@@ -2522,3 +2522,65 @@ class TestTypeDriftColumns:
         rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
 
         assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestRuleDryRun:
+    """Validate `DiffEngine.validate_rules`, the schema-only half of a run."""
+
+    def test_it_returns_the_columns_a_run_would_compare(self) -> None:
+        """Ensure keys, ignored columns, and one-sided columns are left out, renames applied."""
+        src = pl.DataFrame(
+            schema={"id": pl.Int64, "amt": pl.Float64, "note": pl.String, "legacy": pl.String}
+        ).lazy()
+        tgt = pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Float64, "note": pl.String}).lazy()
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["amt"], rename_to="amount"),
+                DiffRule(column_names=["note"], ignore=True),
+            ],
+        )
+
+        assert DiffEngine.validate_rules(config, src, tgt) == ["amount"]
+
+    def test_it_reads_no_rows(self) -> None:
+        """Ensure repeated keys pass: they are found by reading rows, which a dry run never does."""
+        frame = pl.DataFrame({"id": [1, 1], "amount": [1.0, 2.0]}).lazy()
+        config = DiffConfig(primary_keys=["id"])
+
+        assert DiffEngine.validate_rules(config, frame, frame) == ["amount"]
+        with pytest.raises(DataIntegrityError):
+            DiffEngine(config, frame, frame).run()
+
+    def test_it_refuses_a_rule_the_run_cannot_honor(self) -> None:
+        """Ensure an unusable sentinel fails here exactly as it fails a run."""
+        frame = pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Int64}).lazy()
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["amount"], null_values=["N/A"])],
+        )
+
+        with pytest.raises(ConfigError, match="cannot hold any of the null_values"):
+            DiffEngine.validate_rules(config, frame, frame)
+
+    def test_it_needs_the_fuzzy_extra_for_a_similarity_rule(self, mocker: MockerFixture) -> None:
+        """Ensure a similarity limit without its extra fails before any data moves."""
+        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        frame = pl.DataFrame(schema={"id": pl.Int64, "name": pl.String}).lazy()
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], max_levenshtein_distance=1)],
+        )
+
+        with pytest.raises(ConfigError, match=r"veridelta\[fuzzy\]"):
+            DiffEngine.validate_rules(config, frame, frame)
+
+    def test_it_enforces_the_schema_contract_first(self) -> None:
+        """Ensure a missing primary key fails as it does in `validate_schemas`."""
+        src = pl.DataFrame(schema={"id": pl.Int64}).lazy()
+        tgt = pl.DataFrame(schema={"key": pl.Int64}).lazy()
+
+        with pytest.raises(ConfigError, match="Primary keys missing in TARGET"):
+            DiffEngine.validate_rules(DiffConfig(primary_keys=["id"]), src, tgt)
