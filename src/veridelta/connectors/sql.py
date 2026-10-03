@@ -419,6 +419,7 @@ class SQLPushdownCompiler:
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
         wide_integers: frozenset[str] = frozenset(),
+        type_drift: frozenset[str] = frozenset(),
     ) -> str:
         """Assemble a changed-row inner-join query from tables, keys, and rules.
 
@@ -444,6 +445,10 @@ class SQLPushdownCompiler:
                 that hold integers on both sides after normalization. Their
                 tolerance is measured in `_WIDE_INTEGER_TYPES`, so a difference
                 wider than the stored type neither wraps nor overflows.
+            type_drift (frozenset[str]): Compared columns, by target name, that
+                `strict_types` fails because the two sides hold different
+                types after normalization. No value of theirs ever matches, and
+                two NULLs meet only under `treat_null_as_equal`.
 
         Returns:
             str: `SELECT ... FROM src INNER JOIN tgt ON ... WHERE NOT (...)` statement
@@ -483,6 +488,7 @@ class SQLPushdownCompiler:
                 self._qualify(target_alias, target_column),
                 rule,
                 wide=target_column in wide_integers,
+                drift=target_column in type_drift,
             )
             for _source_column, target_column, rule in compared
         ]
@@ -600,6 +606,7 @@ class SQLPushdownCompiler:
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
         wide_integers: frozenset[str] = frozenset(),
+        type_drift: frozenset[str] = frozenset(),
     ) -> str | None:
         """Assemble a per-column mismatch tally over the joined rows.
 
@@ -625,6 +632,8 @@ class SQLPushdownCompiler:
                 `compile_query`.
             wide_integers (frozenset[str]): Integer columns to measure in a wide
                 type, as for `compile_query`.
+            type_drift (frozenset[str]): Columns `strict_types` fails, as for
+                `compile_query`.
 
         Returns:
             str | None: Single-row aggregate statement, or None when no rule
@@ -659,6 +668,7 @@ class SQLPushdownCompiler:
                 self._qualify(target_alias, target_column),
                 rule,
                 wide=target_column in wide_integers,
+                drift=target_column in type_drift,
             )
             alias = self._quote_ident(target_column)
             terms.append(
@@ -1560,7 +1570,15 @@ class SQLPushdownCompiler:
             return self._edit_distance_predicate(src_expr, tgt_expr, rule.max_levenshtein_distance)
         return None
 
-    def _compare(self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False) -> str:
+    def _compare(
+        self,
+        src_expr: str,
+        tgt_expr: str,
+        rule: DiffRule,
+        *,
+        wide: bool = False,
+        drift: bool = False,
+    ) -> str:
         """Build the final match predicate, including null-safe equality.
 
         Args:
@@ -1568,6 +1586,9 @@ class SQLPushdownCompiler:
             tgt_expr (str): Fully transformed target expression.
             rule (DiffRule): Rule providing comparison and null semantics.
             wide (bool): Measure a tolerance in the wide integer type.
+            drift (bool): The sides hold different types under `strict_types`,
+                so no value matches. The values are never compared, which also
+                keeps the warehouse from casting one type to the other.
 
         Returns:
             str: Boolean SQL expression.
@@ -1575,6 +1596,10 @@ class SQLPushdownCompiler:
         Raises:
             ConfigError: If the rule sets `min_jaro_winkler_similarity`.
         """
+        if drift:
+            if rule.treat_null_as_equal:
+                return f"({src_expr} IS NULL AND {tgt_expr} IS NULL)"
+            return "FALSE"
         loosened = self._loosened_predicate(src_expr, tgt_expr, rule, wide=wide)
         if loosened is not None:
             if rule.treat_null_as_equal:

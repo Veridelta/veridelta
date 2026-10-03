@@ -1095,6 +1095,35 @@ def _wide_integer_columns(
     return frozenset(wide)
 
 
+def _type_drift_columns(
+    diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
+) -> frozenset[str]:
+    """Name the columns `strict_types` fails because their two sides differ in type.
+
+    A local run compares the dtypes the two sides hold after normalization and
+    fails every row of a column where they differ. A warehouse reports its own
+    types through its driver, so the same comparison runs on those.
+
+    Args:
+        diff (DiffConfig): Comparison settings the rules were resolved under.
+        rules (Sequence[DiffRule]): Rules from `_resolve_pushdown_rules`.
+        source_schema (pl.Schema): Probed source schema.
+        target_schema (pl.Schema): Probed target schema.
+
+    Returns:
+        frozenset[str]: Target names of the drifting columns, empty unless
+            `strict_types` is on.
+    """
+    if not diff.strict_types:
+        return frozenset()
+    drift: set[str] = set()
+    for rule in rules:
+        source, target = _compared_dtypes(diff, rule, source_schema, target_schema)
+        if source is not None and target is not None and source != target:
+            drift.add(rule.rename_to or rule.column_names[0])
+    return frozenset(drift)
+
+
 def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
     """Reduce the single-row mismatch tally to positive per-column counts.
 
@@ -1550,6 +1579,7 @@ def _collect_pushdown_summary(
     # Every join reads normalized keys, so a key the rules transform matches
     # across the two relations exactly where a local run would match it.
     wide_integers = _wide_integer_columns(diff, rules, source_schema, target_schema)
+    type_drift = _type_drift_columns(diff, rules, source_schema, target_schema)
     mismatch_sql = connector.compiler.compile_query(
         source_table,
         target_table,
@@ -1559,6 +1589,7 @@ def _collect_pushdown_summary(
         target_types=target_schema,
         key_rules=key_rules,
         wide_integers=wide_integers,
+        type_drift=type_drift,
     )
     added_sql = connector.compiler.compile_added_query(
         source_table,
@@ -1590,6 +1621,7 @@ def _collect_pushdown_summary(
         target_types=target_schema,
         key_rules=key_rules,
         wide_integers=wide_integers,
+        type_drift=type_drift,
     )
     if columns_sql is not None:
         tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()

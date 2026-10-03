@@ -1485,3 +1485,39 @@ class TestWideIntegerTolerances:
         sql = _duckdb().compile_query("s", "t", ["id"], [rule])
 
         assert "DECIMAL(38, 0)" not in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestStrictTypeDrift:
+    """Validate that a column whose types differ under `strict_types` never matches."""
+
+    @pytest.mark.parametrize(
+        ("treat_null", "predicate"),
+        [
+            pytest.param(None, "COALESCE(FALSE, FALSE)", id="mismatch"),
+            pytest.param(
+                True,
+                'COALESCE(("src"."qty" IS NULL AND "tgt"."qty" IS NULL), FALSE)',
+                id="nulls-still-meet",
+            ),
+        ],
+    )
+    def test_it_replaces_the_comparison_in_both_statements(
+        self, treat_null: bool | None, predicate: str
+    ) -> None:
+        """Ensure no value comparison, and so no cross-type cast, reaches the warehouse."""
+        rules = [
+            DiffRule(column_names=["qty"], absolute_tolerance=1.0, treat_null_as_equal=treat_null),
+            DiffRule(column_names=["name"]),
+        ]
+        drift = frozenset({"qty"})
+
+        query = _duckdb().compile_query("s", "t", ["id"], rules, type_drift=drift)
+        tally = _duckdb().compile_column_mismatch_query("s", "t", ["id"], rules, type_drift=drift)
+
+        for sql in (query, tally):
+            assert sql is not None
+            assert predicate in sql
+            assert 'ABS("tgt"."qty"' not in sql
+            assert '"src"."name" = "tgt"."name"' in sql

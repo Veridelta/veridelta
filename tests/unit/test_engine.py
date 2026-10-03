@@ -34,6 +34,7 @@ from veridelta.engine import (
     _resolve_pushdown_rules,
     _score_differing_pairs,
     _similarity_test,
+    _type_drift_columns,
     _wide_integer_columns,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
@@ -2473,3 +2474,51 @@ class TestWideIntegerColumns:
         rules = _resolve_pushdown_rules(config, source, target)
 
         assert _wide_integer_columns(config, rules, source, target) == {"qty", "units", "code"}
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestTypeDriftColumns:
+    """Validate which pushdown columns `strict_types` fails outright."""
+
+    _SOURCE = pl.Schema(
+        {
+            "id": pl.Int64(),
+            "ratio": pl.Float64(),
+            "qty": pl.Int64(),
+            "code": pl.String(),
+            "price": pl.Decimal(10, 2),
+            "seen": pl.String(),
+        }
+    )
+    _TARGET = pl.Schema(
+        {
+            "id": pl.Int64(),
+            "ratio": pl.Int64(),
+            "qty": pl.Int64(),
+            "code": pl.Int64(),
+            "price": pl.Decimal(12, 4),
+            "seen": pl.Datetime("us"),
+        }
+    )
+    _RULES = (
+        DiffRule(column_names=["code"], cast_to="Int64"),
+        DiffRule(column_names=["seen"], datetime_format="%Y-%m-%d"),
+    )
+
+    def test_it_names_columns_whose_normalized_types_differ(self) -> None:
+        """Ensure types are compared after normalization, as a local run compares them."""
+        config = DiffConfig(primary_keys=["id"], strict_types=True, rules=list(self._RULES))
+        rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
+
+        assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == {
+            "ratio",
+            "price",
+        }
+
+    def test_it_names_nothing_unless_strict(self) -> None:
+        """Ensure the default comparison by value is left alone."""
+        config = DiffConfig(primary_keys=["id"], rules=list(self._RULES))
+        rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
+
+        assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()

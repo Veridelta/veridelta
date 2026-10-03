@@ -564,6 +564,72 @@ class TestDatetimeFormatParity:
 
 @pytest.mark.integration
 @pytest.mark.slow
+class TestStrictTypesParity:
+    """Validate that `strict_types` fails a type mismatch on both paths."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "treat_null", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", [10.0, None]),
+                pl.Series("val", [10, None]),
+                False,
+                2,
+                id="float-vs-int",
+            ),
+            pytest.param(
+                pl.Series("val", [10, 11]),
+                pl.Series("val", ["10", "11"]),
+                False,
+                2,
+                id="int-vs-text",
+            ),
+            pytest.param(
+                pl.Series("val", [Decimal("1.50"), Decimal("2.00")], dtype=pl.Decimal(10, 2)),
+                pl.Series("val", [Decimal("1.5000"), Decimal("2.0000")], dtype=pl.Decimal(12, 4)),
+                False,
+                2,
+                id="decimal-scales",
+            ),
+            pytest.param(
+                pl.Series("val", ["abc", "10"]),
+                pl.Series("val", [10, 10]),
+                False,
+                2,
+                id="unparseable-text-vs-int",
+            ),
+            pytest.param(
+                pl.Series("val", [None, 1.0]),
+                pl.Series("val", [None, 1]),
+                True,
+                1,
+                id="nulls-still-meet",
+            ),
+        ],
+    )
+    def test_it_agrees_that_differing_types_never_match(
+        self, source: pl.Series, target: pl.Series, treat_null: bool, expected_changed: int
+    ) -> None:
+        """Ensure a warehouse no longer compares across types it was told to keep apart.
+
+        Before, the warehouse compared `10.0` with `10` by value, and DuckDB
+        failed the whole statement casting `'abc'` to an integer.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+        config = DiffConfig(
+            primary_keys=["id"],
+            strict_types=True,
+            rules=[DiffRule(column_names=["val"], treat_null_as_equal=treat_null)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 class TestTimezoneParity:
     """Validate stage 6b, where the local conversion is metadata-only."""
 

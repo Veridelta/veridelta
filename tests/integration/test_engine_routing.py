@@ -205,6 +205,7 @@ class TestEngineConnectorRouting:
             target_types=PROBE_SCHEMA,
             key_rules=[_synthesized_id_key_rule()],
             wide_integers=frozenset(),
+            type_drift=frozenset(),
         )
         connector.compiler.compile_added_query.assert_called_once_with(
             "ANALYTICS.PUBLIC.SRC",
@@ -284,6 +285,7 @@ class TestEngineConnectorRouting:
             target_types=PROBE_SCHEMA,
             key_rules=[_synthesized_id_key_rule()],
             wide_integers=frozenset(),
+            type_drift=frozenset(),
         )
         connector.compiler.compile_added_query.assert_called_once_with(
             "main.default.src",
@@ -553,6 +555,7 @@ class TestEngineConnectorRouting:
             target_types=wide_schema,
             key_rules=[_synthesized_id_key_rule()],
             wide_integers=frozenset(),
+            type_drift=frozenset(),
         )
 
     def test_it_rejects_a_pushdown_rule_the_probed_type_cannot_match(
