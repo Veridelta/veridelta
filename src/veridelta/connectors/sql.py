@@ -290,6 +290,23 @@ def compile_database_select(scheme: str, table: str) -> str:
     return f"SELECT * FROM {quoted}"
 
 
+def compile_database_probe(scheme: str, table: str) -> str:
+    """Compile a statement that returns a database table's columns and no rows.
+
+    Args:
+        scheme (str): Lowercase URI scheme, such as `postgresql`.
+        table (str): One to three dotted identifier segments.
+
+    Returns:
+        str: The table read, filtered by a condition no row satisfies.
+
+    Raises:
+        ConfigError: If Veridelta has no quoting for the scheme.
+        ConnectorError: If the table name falls outside the identifier allowlist.
+    """
+    return f"{compile_database_select(scheme, table)} WHERE 1 = 0"
+
+
 class SQLPushdownCompiler:
     """Compile `DiffRule` semantics into dialect-specific SQL strings.
 

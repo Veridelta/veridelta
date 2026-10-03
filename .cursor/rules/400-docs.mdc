@@ -18,6 +18,7 @@ alwaysApply: false
   - Tutorials: existing notebooks under `docs/examples/`
 - Roadmap lists unimplemented work only. When a feature ships, move the how-to to `docs/configuration.md` (or a README one-liner) and delete the roadmap bullet.
 - New fields on `DiffConfig`, `DiffRule`, `SourceConfig`, or the warehouse, lakehouse, and database connection models (`SnowflakeConfig`, `DatabricksConfig`, `DeltaLakeConfig`, `IcebergConfig`, `DatabaseConfig`) must appear in `docs/configuration.md`; `tests/unit/test_docs_coverage.py` fails otherwise.
+- After changing any of those models, run `make schema` to regenerate `docs/schema/veridelta.schema.json`, the JSON Schema editors read; `tests/unit/test_config_schema.py` fails while it is stale.
 - Do not add documentation solely to restate obvious implementation details.
 - Configuration examples must use valid configuration and supported values.
 - Document optional dependencies where users need them to enable a feature.

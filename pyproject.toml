@@ -74,6 +74,7 @@ dev = [
     "commitizen>=4.13.10",
     "duckdb>=1.5.0",
     "ipykernel>=7.2.0",
+    "jsonschema>=4.26.0",
     "mkdocs>=1.6.1",
     "mkdocs-jupyter>=0.26.3",
     "mkdocs-macros-plugin>=1.5.0",
@@ -128,6 +129,8 @@ module = [
     "nbformat.*",
     "nbclient",
     "nbclient.*",
+    "jsonschema",
+    "jsonschema.*",
 ]
 ignore_missing_imports = true
 

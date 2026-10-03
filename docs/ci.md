@@ -96,6 +96,17 @@ The template defines one job, named `veridelta` by default, which:
 
 **Credentials.** Set them as masked CI/CD variables; the configuration reads them as `${NAME}`.
 
+## Checking configurations in review
+
+`veridelta validate` catches a configuration that cannot run before the comparison job does, and needs no credentials:
+
+```yaml
+- uses: astral-sh/setup-uv@v7
+- run: uvx veridelta@0.11.0 validate -c veridelta.yaml --allow-missing-env
+```
+
+`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.11.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](configuration.md#checking-a-configuration).
+
 ## Exit codes and statuses
 
 Both integrations read `veridelta run`'s exit code together with its JSON summary:

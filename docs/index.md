@@ -86,6 +86,7 @@ rules:
 ```
 
 ```bash
+veridelta validate -c veridelta.yaml   # what would stop a run, without reading any rows
 veridelta run -c veridelta.yaml
 ```
 

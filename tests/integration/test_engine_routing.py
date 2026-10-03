@@ -4,7 +4,7 @@
 """Integration tests for source-union routing, lakehouse loads, and warehouse pushdown."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import polars as pl
 import pytest
@@ -14,7 +14,7 @@ from veridelta.config import load_config
 from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import COUNT_ALIAS
-from veridelta.engine import DiffEngine, LoaderFactory
+from veridelta.engine import _WAREHOUSES, DiffEngine, LoaderFactory, _WarehouseConfig
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     DatabaseConfig,
@@ -763,7 +763,9 @@ class TestEngineConnectorRouting:
         target = _databricks_config(table="main.default.tgt")
         diff = DiffConfig(primary_keys=["id"])
 
-        with pytest.raises(ConnectorError, match="Cross-dialect"):
+        with pytest.raises(
+            ConnectorError, match="the source is Snowflake and the target is Databricks"
+        ):
             DiffEngine.run_from_configs(diff, source, target)
 
     def test_it_raises_connector_error_for_mismatched_snowflake_fingerprints(self) -> None:
@@ -862,16 +864,14 @@ class TestEngineConnectorRouting:
         with pytest.raises(ConnectorError, match="Mixed file/lakehouse/database and warehouse"):
             DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 
-    def test_it_rejects_a_claimed_warehouse_pair_that_is_neither_dialect(
-        self, mocker: MockerFixture
-    ) -> None:
-        """Ensure the final guard fires when both sides are marked warehouse but are not."""
-        mocker.patch("veridelta.engine._is_warehouse", return_value=True)
-        source = SourceConfig(path="src.csv", format="csv")
-        target = SourceConfig(path="tgt.csv", format="csv")
+    def test_it_registers_every_warehouse_config_type(self) -> None:
+        """Ensure the registry and the warehouse config union name the same backends.
 
-        with pytest.raises(ConnectorError, match="Mixed file/lakehouse"):
-            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+        Routing looks a config's type up in the registry, so a backend added to
+        one and not the other would either be read as a local source or fail
+        its type narrowing.
+        """
+        assert set(_WAREHOUSES) == set(get_args(_WarehouseConfig))
 
     def test_it_raises_connector_error_for_mixed_warehouse_and_file_backends(self) -> None:
         """Ensure a warehouse cannot be compared directly to a local file."""

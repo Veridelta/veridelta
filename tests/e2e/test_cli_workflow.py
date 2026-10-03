@@ -235,3 +235,48 @@ primary_keys: [id]
         assert "'M' -> 'Male': 6 of 6 rows (100.0%)" in proposed.stderr
         assert result.returncode == 0
         assert "Total Issues:  0" in result.stdout
+
+    def test_e2e_validate_checks_a_configuration_without_its_secrets(self, tmp_path: Path) -> None:
+        """Ensure `validate` exits 0 for a sound file, and 1 once a rule cannot run."""
+        config_file = tmp_path / "config.yaml"
+        config = (
+            "source:\n  path: ${VERIDELTA_E2E_UNSET}/source.csv\n"
+            "target:\n  path: target.csv\n"
+            "primary_keys: [id]\n"
+        )
+        config_file.write_text(config)
+        env = {key: value for key, value in os.environ.items() if key != "VERIDELTA_E2E_UNSET"}
+
+        strict = subprocess.run(
+            ["veridelta", "validate", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        lenient = subprocess.run(
+            ["veridelta", "validate", "-c", str(config_file), "--allow-missing-env"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        config_file.write_text(
+            config + "rules:\n  - column_names: [name]\n    regex_replace: {'(?<=Mr)\\.': ''}\n"
+        )
+        broken = subprocess.run(
+            ["veridelta", "validate", "-c", str(config_file), "--allow-missing-env", "-q"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert strict.returncode == 1
+        assert "error: Environment variable 'VERIDELTA_E2E_UNSET' is not set" in strict.stdout
+        assert lenient.returncode == 0
+        assert lenient.stdout.startswith("warning: Environment variable 'VERIDELTA_E2E_UNSET'")
+        assert lenient.stderr.endswith("valid, with 1 warning.\n")
+        assert broken.returncode == 1
+        assert "error: rules[0] regex_replace pattern" in broken.stdout
+        assert broken.stderr == ""

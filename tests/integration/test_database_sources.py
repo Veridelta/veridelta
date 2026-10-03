@@ -19,7 +19,7 @@ import pytest
 from veridelta.connectors import DatabaseConnector
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConnectorError
-from veridelta.models import DatabaseConfig, DiffConfig, SourceConfig
+from veridelta.models import DatabaseConfig, DiffConfig, DiffRule, SourceConfig
 
 
 def _sqlite(
@@ -195,3 +195,25 @@ class TestDatabaseSources:
             LoaderFactory.load(DatabaseConfig(uri="sqlite://" + quote(str(missing)), table="t"))
 
         assert not missing.exists()
+
+    def test_it_checks_rules_against_a_zero_row_probe(self, tmp_path: Path) -> None:
+        """Ensure `validate --schemas` reads a real table's columns and types, no rows.
+
+        The probe reports NUMERIC as text on SQLite, unlike a full read, so the
+        rule here sits on an INTEGER column, whose type both reads agree on.
+        """
+        uri = _orders(tmp_path / "legacy.db")
+        side = DatabaseConfig(uri=uri, table="orders")
+        sound = DiffConfig(primary_keys=["id"])
+        broken = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["paid"], null_values=["N/A"])]
+        )
+
+        assert DiffEngine.check_configs(sound, side, side, schemas=True) == []
+        [finding] = DiffEngine.check_configs(broken, side, side, schemas=True)
+        with DatabaseConnector(side, probe=True) as probe:
+            probe.connect()
+            assert probe.lazyframe().collect().height == 0
+
+        assert finding.severity == "error"
+        assert "Column 'paid' has type Boolean, which cannot hold" in finding.message

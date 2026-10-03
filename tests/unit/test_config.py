@@ -438,3 +438,75 @@ class TestEnvironmentExpansion:
 
         assert "hunter2-do-not-print" not in str(exc_info.value)
         assert "hunter2-do-not-print" not in str(exc_info.value.__cause__)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestUnsetEnvironmentTolerance:
+    """Validate `load_config(..., unset_env=[])`, which `veridelta validate` relies on."""
+
+    def test_it_reads_an_unset_variable_as_its_name_and_records_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a check without secrets still loads, and says which values it guessed."""
+        monkeypatch.delenv("VD_UNSET_TABLE", raising=False)
+        monkeypatch.delenv("VD_UNSET_PASSWORD", raising=False)
+        monkeypatch.setenv("VD_SET_USER", "analyst")
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "source:\n  type: snowflake\n  table: ${VD_UNSET_TABLE}\n  account: xy12345\n"
+            "  user: ${VD_SET_USER}\n  warehouse: ${VD_UNSET_WH:-COMPUTE_WH}\n"
+            "  database: ANALYTICS\n  schema_name: PUBLIC\n  password: ${VD_UNSET_PASSWORD}\n"
+            "target:\n  path: ${VD_UNSET_TABLE}.csv\nprimary_keys: [id]\n"
+        )
+        unset: list[str] = []
+
+        _, source, target = load_config(path, unset_env=unset)
+
+        assert isinstance(source, SnowflakeConfig)
+        assert isinstance(target, SourceConfig)
+        assert source.table == "VD_UNSET_TABLE"
+        assert source.user == "analyst"
+        assert source.warehouse == "COMPUTE_WH"
+        assert target.path == "VD_UNSET_TABLE.csv"
+        assert unset == ["VD_UNSET_TABLE", "VD_UNSET_PASSWORD"]
+
+    def test_it_names_the_unset_variables_when_their_block_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a failure a guessed value may have caused says so, in that block only."""
+        monkeypatch.delenv("VD_UNSET_URI", raising=False)
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "source:\n  type: database\n  uri: ${VD_UNSET_URI}\n  table: orders\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n"
+        )
+
+        with pytest.raises(ConfigError, match="needs a scheme") as exc_info:
+            load_config(path, unset_env=[])
+
+        assert "unset environment variables: VD_UNSET_URI" in str(exc_info.value)
+
+    def test_it_leaves_other_blocks_failures_unannotated(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a block that guessed nothing fails exactly as it does without the option."""
+        monkeypatch.delenv("VD_UNSET_PATH", raising=False)
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            "source:\n  path: ${VD_UNSET_PATH}\n"
+            "target:\n  type: snowflake\n  table: TGT\nprimary_keys: [id]\n"
+        )
+
+        with pytest.raises(ConfigError, match="Field required") as exc_info:
+            load_config(path, unset_env=[])
+
+        assert "unset environment variables" not in str(exc_info.value)
+
+    def test_it_still_refuses_a_malformed_reference(self, tmp_path: Path) -> None:
+        """Ensure only unset variables are tolerated, never broken syntax."""
+        path = tmp_path / "config.yaml"
+        path.write_text("source:\n  path: ${1}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n")
+
+        with pytest.raises(ConfigError, match="Malformed environment reference"):
+            load_config(path, unset_env=[])

@@ -34,7 +34,7 @@ We strictly follow Trunk-Based Development. **Never commit directly to `main`.**
    ```bash
    make all  # Runs formatting, linting, strict type-checking, and tests
    ```
-   The tests include the tutorial notebooks in `docs/examples/`: each one is executed, and every `# Output:` comment must match what its cell prints. Run `make notebooks` to check just those after editing a tutorial.
+   The tests include the tutorial notebooks in `docs/examples/`: each one is executed, and every `# Output:` comment must match what its cell prints. Run `make notebooks` to check just those after editing a tutorial. After changing a configuration model, run `make schema` to regenerate the JSON Schema that editors read, `docs/schema/veridelta.schema.json`; a test fails while it is stale.
 
 ## 3. Commit Standards
 
