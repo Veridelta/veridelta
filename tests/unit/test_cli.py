@@ -13,6 +13,7 @@ import yaml
 from pytest_mock import MockerFixture
 
 from veridelta.cli import build_parser, crosswalk, main, run
+from veridelta.config import config_json_schema
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffConfig, DiffRule, ValueMapEntry, ValueMapProposal
 
@@ -623,4 +624,22 @@ class TestCrosswalkCommand:
         main()
 
         assert mock_crosswalk.call_args[0][0].config == "custom.yaml"
+        mock_exit.assert_called_once_with(0)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestSchemaCommand:
+    """Validate `veridelta schema`."""
+
+    def test_main_dispatches_to_schema(
+        self, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `veridelta schema` prints the JSON Schema on stdout and exits 0."""
+        mock_exit = mocker.patch("veridelta.cli.sys.exit")
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "schema"])
+
+        main()
+
+        assert json.loads(capsys.readouterr().out) == config_json_schema()
         mock_exit.assert_called_once_with(0)

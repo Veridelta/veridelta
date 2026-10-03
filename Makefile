@@ -1,4 +1,4 @@
-.PHONY: install format lint test notebooks docs docs-serve all clean
+.PHONY: install format lint test notebooks docs docs-serve schema all clean
 
 install:
 	uv sync --all-extras
@@ -20,6 +20,9 @@ test:
 
 notebooks:
 	uv run pytest tests/notebooks --no-cov
+
+schema:
+	uv run veridelta schema > docs/schema/veridelta.schema.json
 
 docs:
 	uv run mkdocs build --strict

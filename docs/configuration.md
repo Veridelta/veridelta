@@ -39,6 +39,32 @@ uv add 'veridelta[excel]'
 
 Discrepancy artifacts write to `csv`, `parquet`, `json`, `ndjson`, or `arrow` via `output_format`. Excel is deliberately absent: writing a workbook needs a second dependency that a discrepancy dump does not justify.
 
+### Editor support
+
+Veridelta publishes a JSON Schema for configuration files. Editors that use the YAML language server, such as VS Code with the Red Hat YAML extension, then complete keys, show each field's description, and flag a typo such as `primary_key` or `absolute_tolerence` as you type. Point a file at the schema with a comment on its first line:
+
+```yaml
+# yaml-language-server: $schema=https://veridelta.github.io/veridelta/schema/veridelta.schema.json
+source:
+  path: "legacy_system.csv"
+
+target:
+  path: "modern_system.parquet"
+  format: "parquet"
+
+primary_keys: ["user_id"]
+```
+
+A `$schema:` key does not work: the loader rejects keys it does not know.
+
+The site's copy follows the main branch. To pin the schema to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.11.0/docs/schema/veridelta.schema.json`, or print the installed version's schema and point at the file:
+
+```bash
+veridelta schema > veridelta.schema.json
+```
+
+The schema is a little stricter than the loader. The loader converts `threshold: "0.1"` to a number, while the schema flags the quotes. In `source` and `target`, every text field accepts a `${NAME}` reference (see [Environment variables](#environment-variables)).
+
 ## Warehouse, lakehouse, and database sources
 
 Set `type` on `source` and `target` to select a connector. Warehouse, lakehouse, and database drivers are optional extras:
@@ -132,6 +158,7 @@ veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
 veridelta run -c veridelta.yaml --markdown summary.md
 veridelta crosswalk -c veridelta.yaml
 veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
+veridelta schema > veridelta.schema.json
 ```
 
 `--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. `--markdown` writes the Markdown summary described above, which the [CI integrations](ci.md) post. Pushdown reports and summaries are labeled as primary-keys-only.
@@ -139,6 +166,8 @@ veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 Exit codes are `0` for a match within `threshold`, `1` for drift or any failure while running, and `2` for invalid command-line arguments.
 
 `crosswalk` proposes `value_map` rules instead of comparing; see [Proposing a value map](#proposing-a-value-map). It exits `0` once the proposals are computed, whether or not it found any, `1` on failure, and `2` for invalid arguments.
+
+`schema` prints the configuration file's JSON Schema; see [Editor support](#editor-support).
 
 ```yaml
 source:

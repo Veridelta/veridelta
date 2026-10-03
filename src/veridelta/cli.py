@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from veridelta import __version__
-from veridelta.config import load_config
+from veridelta.config import config_json_schema, load_config
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
@@ -345,6 +345,20 @@ def crosswalk(args: argparse.Namespace) -> int:
     return EXIT_MATCH
 
 
+def schema(args: argparse.Namespace) -> int:
+    """Print the JSON Schema for configuration files on stdout.
+
+    Args:
+        args (argparse.Namespace): Parsed arguments; the command takes none.
+
+    Returns:
+        int: `EXIT_MATCH`.
+    """
+    _ = args
+    print(json.dumps(config_json_schema(), indent=2))
+    return EXIT_MATCH
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser.
 
@@ -451,6 +465,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress progress and evidence on stderr.",
     )
+    subparsers.add_parser(
+        "schema",
+        help="Print the JSON Schema for configuration files, for editors and validators.",
+    )
     return parser
 
 
@@ -467,6 +485,7 @@ def main() -> None:
     commands: dict[str, Callable[[argparse.Namespace], int]] = {
         "run": run,
         "crosswalk": crosswalk,
+        "schema": schema,
     }
     sys.exit(commands[args.command](args))
 

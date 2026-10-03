@@ -3,6 +3,7 @@
 
 """Unit tests for the JSON Schema that editors validate configuration files with."""
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -160,3 +161,13 @@ class TestConfigJsonSchema:
 
         assert list(_validator().iter_errors(document)) == []
         assert _loader_accepts(tmp_path, text)
+
+    def test_the_published_schema_is_current(self) -> None:
+        """Ensure the file the docs site serves to editors matches the models."""
+        published = json.loads(
+            (_ROOT / "docs" / "schema" / "veridelta.schema.json").read_text(encoding="utf-8")
+        )
+
+        assert published == config_json_schema(), (
+            "docs/schema/veridelta.schema.json is stale. Regenerate it with `make schema`."
+        )
