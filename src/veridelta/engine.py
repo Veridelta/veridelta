@@ -14,20 +14,26 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
 from typing import Any, ClassVar, Final, Literal, Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
+from urllib.parse import urlsplit
 
 import polars as pl
 
+from veridelta.connectors import database as database_connectors
+from veridelta.connectors import warehouse as warehouse_connectors
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
+from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_database_select
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
+    ConfigFinding,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -486,6 +492,7 @@ class _Warehouse:
 
     Attributes:
         name (str): Vendor name used in error messages.
+        dialect (SQLDialect): Dialect its connector compiles for.
         fingerprint (Callable[[Any], tuple[object, ...]]): Connection identity
             without the compared table. Two sides share one session only when
             their fingerprints are equal.
@@ -494,6 +501,7 @@ class _Warehouse:
     """
 
     name: str
+    dialect: SQLDialect
     fingerprint: Callable[[Any], tuple[object, ...]]
     session: Callable[[Any], _WarehouseSession]
 
@@ -502,10 +510,16 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
     # The lambdas look the connector class up when a session opens, so a test
     # that patches `veridelta.engine.SnowflakeConnector` still intercepts it.
     SnowflakeConfig: _Warehouse(
-        "Snowflake", _snowflake_fingerprint, lambda config: SnowflakeConnector(config)
+        "Snowflake",
+        SQLDialect.SNOWFLAKE,
+        _snowflake_fingerprint,
+        lambda config: SnowflakeConnector(config),
     ),
     DatabricksConfig: _Warehouse(
-        "Databricks", _databricks_fingerprint, lambda config: DatabricksConnector(config)
+        "Databricks",
+        SQLDialect.DATABRICKS,
+        _databricks_fingerprint,
+        lambda config: DatabricksConnector(config),
     ),
 }
 """Every warehouse the engine pushes comparisons down to, keyed by config type.
@@ -1618,6 +1632,258 @@ def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePa
     return _WarehousePair(warehouse, source, target)
 
 
+_EXTRA_PROBES: Final[dict[type[object], tuple[str, Callable[[], bool]]]] = {
+    # Each probe reads its module attribute when called, so tests can patch it,
+    # and a lakehouse reader is looked up by name rather than imported.
+    DeltaLakeConfig: ("delta", lambda: find_spec("deltalake") is not None),
+    IcebergConfig: ("iceberg", lambda: find_spec("pyiceberg") is not None),
+    DatabaseConfig: ("database", lambda: database_connectors.connectorx is not None),
+    SnowflakeConfig: ("snowflake", lambda: warehouse_connectors.snowflake_connector is not None),
+    DatabricksConfig: ("databricks", lambda: warehouse_connectors.databricks_sql is not None),
+}
+"""The optional extra each connection type reads through, and whether it is installed."""
+
+
+def _required_extra(config: SourceRef) -> tuple[str, Callable[[], bool]] | None:
+    """Name the optional extra one side reads through, with its probe.
+
+    Args:
+        config (SourceRef): Source or target configuration.
+
+    Returns:
+        tuple[str, Callable[[], bool]] | None: The extra and a probe that is
+            True when it is installed, or None when the core install suffices.
+    """
+    if isinstance(config, SourceConfig):
+        if config.format == "excel":
+            return "excel", lambda: fastexcel is not None
+        return None
+    return _EXTRA_PROBES[type(config)]
+
+
+def _error(message: str) -> ConfigFinding:
+    """Build a finding that would stop a run.
+
+    Args:
+        message (str): What is wrong and what to do about it.
+
+    Returns:
+        ConfigFinding: An `error` finding.
+    """
+    return ConfigFinding(severity="error", message=message)
+
+
+def _warning(message: str) -> ConfigFinding:
+    """Build a finding that stops a run only for some stored names or types.
+
+    Args:
+        message (str): What may go wrong and what to do about it.
+
+    Returns:
+        ConfigFinding: A `warning` finding.
+    """
+    return ConfigFinding(severity="warning", message=message)
+
+
+def _pairing_findings(
+    source: SourceRef, target: SourceRef
+) -> tuple[_WarehousePair | None, list[ConfigFinding]]:
+    """Run the backend pairing check and report its refusal as a finding.
+
+    Args:
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        tuple[_WarehousePair | None, list[ConfigFinding]]: The warehouse pair a
+            run would push down to, or None, and the refusal if there was one.
+    """
+    try:
+        return _check_backend_pairing(source, target), []
+    except (ConfigError, ConnectorError) as exc:
+        return None, [_error(str(exc))]
+
+
+def _missing_extra_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
+    """Report each optional extra a side reads through that is not installed.
+
+    Args:
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        list[ConfigFinding]: One error per missing extra, naming the sides.
+    """
+    sides: dict[str, list[str]] = {}
+    for label, config in (("source", source), ("target", target)):
+        required = _required_extra(config)
+        if required is not None and not required[1]():
+            sides.setdefault(required[0], []).append(label)
+    return [
+        _error(
+            f"Reading the {' and '.join(labels)} needs the optional '{extra}' extra, which "
+            f"is not installed. Install it with: uv add 'veridelta[{extra}]'"
+        )
+        for extra, labels in sides.items()
+    ]
+
+
+def _database_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
+    """Report a database `table` whose URI scheme Veridelta cannot quote for.
+
+    Args:
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        list[ConfigFinding]: One error per side that would fail to compile.
+    """
+    findings: list[ConfigFinding] = []
+    for label, config in (("source", source), ("target", target)):
+        if isinstance(config, DatabaseConfig) and config.table is not None:
+            try:
+                compile_database_select(urlsplit(config.uri).scheme.lower(), config.table)
+            except (ConfigError, ConnectorError) as exc:
+                findings.append(_error(f"{label}: {exc}"))
+    return findings
+
+
+def _polars_regex_error(pattern: str, replacement: str) -> str | None:
+    """Return why Polars' regular expression engine rejects a pattern, if it does.
+
+    Args:
+        pattern (str): `regex_replace` key.
+        replacement (str): Its replacement.
+
+    Returns:
+        str | None: The parser's own `error:` line, or the whole message when
+            there is none, or None when the pattern compiles.
+    """
+    try:
+        pl.select(pl.lit("").str.replace_all(pattern, replacement))
+    except pl.exceptions.PolarsError as exc:
+        detail = str(exc)
+        return next(
+            (
+                line.removeprefix("error: ")
+                for line in detail.splitlines()
+                if line.startswith("error: ")
+            ),
+            detail.strip(),
+        )
+    return None
+
+
+def _regex_findings(diff: DiffConfig, *, pushdown: bool) -> list[ConfigFinding]:
+    """Report `regex_replace` patterns that Polars' regular expression engine rejects.
+
+    The models compile each pattern with Python's `re`, which accepts
+    look-around and backreferences that Polars does not, so a local run would
+    otherwise fail only once it reached the rows.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        pushdown (bool): Whether the pair runs in a warehouse, whose own engine
+            may accept the pattern.
+
+    Returns:
+        list[ConfigFinding]: One finding per rejected pattern, an error for a
+            local run and a warning for a warehouse run.
+    """
+    findings: list[ConfigFinding] = []
+    for index, rule in enumerate(diff.rules):
+        for pattern, replacement in (rule.regex_replace or {}).items():
+            reason = _polars_regex_error(pattern, replacement)
+            if reason is None:
+                continue
+            message = (
+                f"rules[{index}] regex_replace pattern {pattern!r} does not compile in "
+                f"Polars ({reason})."
+            )
+            if pushdown:
+                findings.append(
+                    _warning(
+                        f"{message} A warehouse run hands it to the warehouse's own regular "
+                        "expression engine, which may accept it, but a local run would fail."
+                    )
+                )
+            else:
+                findings.append(_error(message))
+    return findings
+
+
+def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
+    """Report similarity rules a local run cannot score without the `fuzzy` extra.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+
+    Returns:
+        list[ConfigFinding]: One error per rule with a similarity limit, when
+            the scorer is missing.
+    """
+    if rapidfuzz_distance is not None:
+        return []
+    return [
+        _error(
+            f"rules[{index}] sets a similarity limit, which a local run scores with the "
+            "optional 'fuzzy' extra, and it is not installed. Install it with: "
+            "uv add 'veridelta[fuzzy]'"
+        )
+        for index, rule in enumerate(diff.rules)
+        if rule.max_levenshtein_distance is not None or rule.min_jaro_winkler_similarity is not None
+    ]
+
+
+def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
+    """Report settings a warehouse run refuses for some stored names or types.
+
+    Each refusal depends on what the warehouse reports for the columns, which
+    only a live check can see, so these are warnings.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        pair (_WarehousePair): The warehouse both sides share.
+
+    Returns:
+        list[ConfigFinding]: Warnings, in the order a run would meet them.
+    """
+    name = pair.warehouse.name
+    compiler = SQLPushdownCompiler(pair.warehouse.dialect)
+    findings: list[ConfigFinding] = []
+    if diff.normalize_column_names:
+        findings.append(
+            _warning(
+                f"normalize_column_names is on. A {name} run refuses it if any stored column "
+                "name has uppercase letters or surrounding spaces, because pushdown quotes "
+                "names exactly as they are stored."
+            )
+        )
+    for index, rule in enumerate(diff.rules):
+        if rule.min_jaro_winkler_similarity is not None:
+            findings.append(
+                _warning(
+                    f"rules[{index}] sets min_jaro_winkler_similarity, which a {name} run "
+                    "refuses on any column it compares as text. Use max_levenshtein_distance, "
+                    "which compiles to SQL, or compare local copies of the tables."
+                )
+            )
+        if rule.datetime_format:
+            probe = DiffRule(column_names=["probe"], datetime_format=rule.datetime_format)
+            try:
+                compiler.compile_column_predicate(
+                    probe, "probe", source_dtype=pl.String(), target_dtype=pl.String()
+                )
+            except ConfigError as exc:
+                findings.append(
+                    _warning(
+                        f"rules[{index}] datetime_format has no {name} spelling, so a run "
+                        f"refuses it on any column stored as text: {exc}"
+                    )
+                )
+    return findings
+
+
 DEFAULT_MIN_CONFIDENCE: Final = 0.95
 """Share of a source value's rows that must agree on one target value before it
 is proposed. Above one half, at most one target can qualify, and 5% leaves room
@@ -1938,6 +2204,43 @@ class DiffEngine:
         """
         compared, _ = cls(config, source_df, target_df)._plan()
         return compared
+
+    @staticmethod
+    def check_configs(
+        diff: DiffConfig, source: SourceRef, target: SourceRef
+    ) -> list[ConfigFinding]:
+        """Check a loaded configuration for what would stop a run, offline.
+
+        Nothing connects and no rows are read, so the checks need only the
+        configuration and the installed extras:
+
+        - the pair is one an engine can compare: both local, or two tables on
+          one warehouse connection;
+        - every extra a side reads through, or a local run scores with, is
+          installed;
+        - a database `table` uses a URI scheme Veridelta can quote for;
+        - each `regex_replace` pattern compiles in Polars;
+        - on a warehouse pair, settings the warehouse refuses for some stored
+          names or types, reported as warnings.
+
+        Args:
+            diff (DiffConfig): Comparison settings and rules.
+            source (SourceRef): Source configuration.
+            target (SourceRef): Target configuration.
+
+        Returns:
+            list[ConfigFinding]: Errors and warnings, empty when nothing is
+                wrong. A configuration with no errors is expected to start.
+        """
+        pair, findings = _pairing_findings(source, target)
+        findings += _missing_extra_findings(source, target)
+        findings += _database_findings(source, target)
+        findings += _regex_findings(diff, pushdown=pair is not None)
+        if pair is None:
+            findings += _fuzzy_extra_findings(diff)
+        else:
+            findings += _pushdown_findings(diff, pair)
+        return findings
 
     @classmethod
     def propose_value_maps_from_configs(

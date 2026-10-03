@@ -9,6 +9,7 @@ and the strict Pydantic models required by the execution engine.
 
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -56,7 +57,7 @@ _ENV_REFERENCE = re.compile(
 reference is reported as malformed rather than half-expanded."""
 
 
-def _substitute(match: re.Match[str], location: str) -> str:
+def _substitute(match: re.Match[str], location: str, unset: list[str] | None) -> str:
     """Resolve one `_ENV_REFERENCE` match.
 
     Errors name the variable and where it is used, never the surrounding text,
@@ -65,13 +66,16 @@ def _substitute(match: re.Match[str], location: str) -> str:
     Args:
         match (re.Match[str]): Match inside a string of a `source` or `target` block.
         location (str): Path to that string, used in error messages.
+        unset (list[str] | None): When a list, an unset variable without a
+            default reads as its own name and is recorded here once.
 
     Returns:
-        str: A literal `${`, the variable's value, or the reference's default.
+        str: A literal `${`, the variable's value, the reference's default, or
+            the variable's name.
 
     Raises:
         ConfigError: If the reference is malformed, or names an unset variable
-            and has no default.
+            with no default while `unset` is None.
     """
     if match["escape"]:
         return "${"
@@ -85,6 +89,10 @@ def _substitute(match: re.Match[str], location: str) -> str:
     default = match["default"]
     if default is not None and not value:
         return default
+    if value is None and unset is not None:
+        if name not in unset:
+            unset.append(name)
+        return name
     if value is None:
         raise ConfigError(
             f"Environment variable '{name}' is not set, but {location} references it. "
@@ -93,7 +101,9 @@ def _substitute(match: re.Match[str], location: str) -> str:
     return value
 
 
-def _expand_env(value: Any, location: str, parents: tuple[int, ...] = ()) -> Any:
+def _expand_env(
+    value: Any, location: str, parents: tuple[int, ...] = (), unset: list[str] | None = None
+) -> Any:
     """Expand environment references in the strings of a `source` or `target` block.
 
     Mapping keys and non-string values are returned as they are, and substituted
@@ -105,6 +115,8 @@ def _expand_env(value: Any, location: str, parents: tuple[int, ...] = ()) -> Any
         value (Any): Parsed YAML value.
         location (str): Path to `value`, such as `source -> password`.
         parents (tuple[int, ...]): Ids of the containers enclosing `value`.
+        unset (list[str] | None): Collects unset variables read as their names,
+            instead of raising for them.
 
     Returns:
         Any: `value` with every reference replaced.
@@ -121,16 +133,18 @@ def _expand_env(value: Any, location: str, parents: tuple[int, ...] = ()) -> Any
         mapping = cast("dict[object, object]", value)
         inner = (*parents, id(mapping))
         return {
-            key: _expand_env(item, f"{location} -> {key}", inner) for key, item in mapping.items()
+            key: _expand_env(item, f"{location} -> {key}", inner, unset)
+            for key, item in mapping.items()
         }
     if isinstance(value, list):
         items = cast("list[object]", value)
         inner = (*parents, id(items))
         return [
-            _expand_env(item, f"{location} -> {index}", inner) for index, item in enumerate(items)
+            _expand_env(item, f"{location} -> {index}", inner, unset)
+            for index, item in enumerate(items)
         ]
     if isinstance(value, str):
-        return _ENV_REFERENCE.sub(lambda match: _substitute(match, location), value)
+        return _ENV_REFERENCE.sub(lambda match: _substitute(match, location, unset), value)
     return value
 
 
@@ -215,7 +229,31 @@ def config_json_schema() -> dict[str, Any]:
     }
 
 
-def _parse_source_ref(raw: Any, *, label: str) -> SourceRef:
+def _validation_failure(error: ValidationError, unset: Sequence[str] = ()) -> ConfigError:
+    """Format a Pydantic failure as the loader's `ConfigError`.
+
+    Args:
+        error (ValidationError): Failure from one block or the root settings.
+        unset (Sequence[str]): Unset variables the failing block read as their
+            names, which may themselves be the cause.
+
+    Returns:
+        ConfigError: One line per failure, plus a note naming `unset`.
+    """
+    message = "Configuration Validation Failed:\n"
+    for validation_error in error.errors():
+        location = " -> ".join(str(loc) for loc in validation_error["loc"])
+        message += f"  - [{location}]: {validation_error['msg']}\n"
+    if unset:
+        message += (
+            "  Values in this block came from unset environment variables: "
+            f"{', '.join(unset)}. Each was read as its own name, which may be what "
+            "failed; set them to check the block as it will run.\n"
+        )
+    return ConfigError(message)
+
+
+def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -> SourceRef:
     """Validate a YAML source/target block as a discriminated `SourceRef`.
 
     Environment references in the block's strings are expanded first.
@@ -223,24 +261,33 @@ def _parse_source_ref(raw: Any, *, label: str) -> SourceRef:
     Args:
         raw (Any): Parsed YAML mapping for the block.
         label (str): `source` or `target`, used in error messages.
+        unset (list[str] | None): Collects unset variables read as their names,
+            instead of raising for them.
 
     Returns:
         SourceRef: File, warehouse, or lakehouse configuration.
 
     Raises:
-        ConfigError: If the block is not a mapping, or an environment reference
-            in it is malformed or names an unset variable.
-        ValidationError: If the block fails schema validation.
+        ConfigError: If the block is not a mapping, an environment reference in
+            it is malformed or names an unset variable, or it fails validation.
     """
     if not isinstance(raw, dict):
         raise ConfigError(f"The '{label}' block must be a mapping.")
-    payload: dict[str, Any] = _expand_env(raw, label)
+    guessed: list[str] | None = None if unset is None else []
+    payload: dict[str, Any] = _expand_env(raw, label, unset=guessed)
+    if unset is not None and guessed:
+        unset.extend(name for name in guessed if name not in unset)
     if "type" not in payload:
         payload["type"] = "file"
-    return _SOURCE_REF_ADAPTER.validate_python(payload)
+    try:
+        return _SOURCE_REF_ADAPTER.validate_python(payload)
+    except ValidationError as e:
+        raise _validation_failure(e, guessed or ()) from e
 
 
-def load_config(path: str | Path) -> tuple[DiffConfig, SourceRef, SourceRef]:
+def load_config(
+    path: str | Path, *, unset_env: list[str] | None = None
+) -> tuple[DiffConfig, SourceRef, SourceRef]:
     """Loads and validates a Veridelta configuration from a YAML file.
 
     The parser extracts the explicit `source` and `target` definition blocks,
@@ -253,8 +300,15 @@ def load_config(path: str | Path) -> tuple[DiffConfig, SourceRef, SourceRef]:
     literal `${`. Root settings and rules are read verbatim, which keeps a
     `${1}` in a regex replacement intact.
 
+    Passing a list as `unset_env` checks a file without its secrets: an unset
+    variable with no default then reads as its own name, so `${TABLE}` becomes
+    `TABLE`, and its name is appended to the list once. A block that fails
+    validation after such a guess says which variables it guessed.
+
     Args:
         path (str | Path): The file system path to the YAML configuration.
+        unset_env (list[str] | None): Collects unset variables instead of
+            raising for them. None, the default, raises.
 
     Returns:
         tuple[DiffConfig, SourceRef, SourceRef]: Master configuration plus
@@ -284,19 +338,10 @@ def load_config(path: str | Path) -> tuple[DiffConfig, SourceRef, SourceRef]:
     if "source" not in raw_config or "target" not in raw_config:
         raise ConfigError("Configuration must contain both 'source' and 'target' blocks.")
 
+    source_cfg = _parse_source_ref(raw_config.pop("source"), label="source", unset=unset_env)
+    target_cfg = _parse_source_ref(raw_config.pop("target"), label="target", unset=unset_env)
     try:
-        raw_source = raw_config.pop("source")
-        raw_target = raw_config.pop("target")
-
-        source_cfg = _parse_source_ref(raw_source, label="source")
-        target_cfg = _parse_source_ref(raw_target, label="target")
         diff_cfg = DiffConfig.model_validate(raw_config)
-
-        return diff_cfg, source_cfg, target_cfg
-
     except ValidationError as e:
-        error_msg = "Configuration Validation Failed:\n"
-        for validation_error in e.errors():
-            location = " -> ".join(str(loc) for loc in validation_error["loc"])
-            error_msg += f"  - [{location}]: {validation_error['msg']}\n"
-        raise ConfigError(error_msg) from e
+        raise _validation_failure(e) from e
+    return diff_cfg, source_cfg, target_cfg

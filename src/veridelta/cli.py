@@ -25,6 +25,7 @@ from veridelta import __version__
 from veridelta.config import config_json_schema, load_config
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
+from veridelta.models import ConfigFinding
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 
 if TYPE_CHECKING:
@@ -359,6 +360,88 @@ def schema(args: argparse.Namespace) -> int:
     return EXIT_MATCH
 
 
+def _unset_findings(names: Sequence[str]) -> list[ConfigFinding]:
+    """Warn about each unset variable `--allow-missing-env` read as its name.
+
+    Args:
+        names (Sequence[str]): Unset variables, in the order they were met.
+
+    Returns:
+        list[ConfigFinding]: One warning per variable.
+    """
+    return [
+        ConfigFinding(
+            severity="warning",
+            message=(
+                f"Environment variable '{name}' is not set, so its references were checked "
+                f"as the text '{name}'."
+            ),
+        )
+        for name in names
+    ]
+
+
+def _plural(count: int, noun: str) -> str:
+    """Write a count with its noun, such as `1 error` or `2 warnings`.
+
+    Args:
+        count (int): How many.
+        noun (str): Singular noun.
+
+    Returns:
+        str: The count and the noun, plural unless the count is one.
+    """
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def validate(args: argparse.Namespace) -> int:
+    """Check a configuration for what would stop a run, without reading any data.
+
+    Findings go to stdout, one `error:` or `warning:` line each, or as one JSON
+    object with `--json`. The verdict goes to stderr.
+
+    Args:
+        args (argparse.Namespace): Parsed arguments carrying the config path,
+            `allow_missing_env`, `json`, and `quiet`.
+
+    Returns:
+        int: `EXIT_MATCH` when there are no errors, warnings or not;
+            `EXIT_MISMATCH` otherwise.
+    """
+    unset: list[str] | None = [] if args.allow_missing_env else None
+    try:
+        diff_config, source_config, target_config = load_config(args.config, unset_env=unset)
+        findings = DiffEngine.check_configs(diff_config, source_config, target_config)
+    except ConfigError as exc:
+        findings = [ConfigFinding(severity="error", message=str(exc).strip())]
+    except Exception as exc:
+        return _report_failure(exc)
+    findings = [*_unset_findings(unset or []), *findings]
+
+    errors = [finding.message for finding in findings if finding.severity == "error"]
+    warnings = [finding.message for finding in findings if finding.severity == "warning"]
+    if args.json:
+        report = {
+            "config": args.config,
+            "valid": not errors,
+            "errors": errors,
+            "warnings": warnings,
+        }
+        print(json.dumps(report, indent=2))
+    else:
+        for finding in findings:
+            print(f"{finding.severity}: {finding.message}")
+
+    if errors:
+        verdict = f"{_plural(len(errors), 'error')}, {_plural(len(warnings), 'warning')}."
+    elif warnings:
+        verdict = f"valid, with {_plural(len(warnings), 'warning')}."
+    else:
+        verdict = "valid."
+    _progress(f"{args.config}: {verdict}", quiet=bool(args.quiet))
+    return EXIT_MISMATCH if errors else EXIT_MATCH
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser.
 
@@ -465,6 +548,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress progress and evidence on stderr.",
     )
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Check a configuration for what would stop a run, without reading any data.",
+    )
+    validate_parser.add_argument(
+        "-c",
+        "--config",
+        type=str,
+        default="veridelta.yaml",
+        help="Path to the YAML configuration file (default: veridelta.yaml)",
+    )
+    validate_parser.add_argument(
+        "--allow-missing-env",
+        action="store_true",
+        help=(
+            "Read an unset ${NAME} as the text NAME and warn, instead of failing, so a "
+            "file can be checked without its secrets."
+        ),
+    )
+    validate_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the findings as one JSON object on stdout.",
+    )
+    validate_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress the verdict line on stderr.",
+    )
     subparsers.add_parser(
         "schema",
         help="Print the JSON Schema for configuration files, for editors and validators.",
@@ -485,6 +598,7 @@ def main() -> None:
     commands: dict[str, Callable[[argparse.Namespace], int]] = {
         "run": run,
         "crosswalk": crosswalk,
+        "validate": validate,
         "schema": schema,
     }
     sys.exit(commands[args.command](args))
