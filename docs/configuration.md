@@ -133,7 +133,7 @@ veridelta crosswalk -c veridelta.yaml
 veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 ```
 
-`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. `--markdown` writes the Markdown summary described above. Pushdown reports and summaries are labeled as primary-keys-only.
+`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. `--markdown` writes the Markdown summary described above, which the [CI integrations](ci.md) post. Pushdown reports and summaries are labeled as primary-keys-only.
 
 Exit codes are `0` for a match within `threshold`, `1` for drift or any failure while running, and `2` for invalid command-line arguments.
 

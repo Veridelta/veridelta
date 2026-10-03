@@ -12,6 +12,7 @@ alwaysApply: false
 - Link to the canonical page rather than duplicating the same explanation:
   - Install, extras, and a 30-second usage example: `README.md`
   - Config fields, formats, extras, CLI flags, warehouse and lakehouse routing: `docs/configuration.md`
+  - GitHub Action and GitLab CI template usage: `docs/ci.md` (macros are off on that page, so `${{ }}` renders literally)
   - Public Python surface: `docs/api.md` (generated; do not hand-copy signatures)
   - What is not built: `docs/roadmap.md` only
   - Tutorials: existing notebooks under `docs/examples/`

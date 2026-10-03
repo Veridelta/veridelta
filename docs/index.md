@@ -95,6 +95,7 @@ Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_fo
 - [**2. YAML and CLI**](examples/02_yaml_and_cli.ipynb): pipeline automation, `--json`, artifacts.
 - [**3. Advanced Rules**](examples/03_advanced_rules.ipynb): drift resolution on real data.
 - [**4. HTML Reports**](examples/04_html_reports.ipynb): audit and compliance hand-off.
+- [**CI Integrations**](ci.md): GitHub Action and GitLab CI template that comment on pull requests.
 - [**Configuration Guide**](configuration.md): fields, formats, extras, CLI flags, warehouse and lakehouse routing.
 - [**API Reference**](api.md): public Python surface.
 - [**Roadmap**](roadmap.md): work that is not built yet.
