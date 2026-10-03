@@ -702,14 +702,61 @@ def _enforce_pushdown_preconditions(
                 _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
 
+_OFFSET_DIRECTIVE: Final = re.compile(r"%%|%[:#]*z")
+"""A literal `%%`, or a `%z` offset directive in any of its chrono spellings."""
+
+
+def _parses_offset(fmt: str) -> bool:
+    """Return whether a `datetime_format` reads a UTC offset, making the result aware.
+
+    Args:
+        fmt (str): Format from a rule's `datetime_format`.
+
+    Returns:
+        bool: True when a `%z` directive appears outside a `%%` escape.
+    """
+    return any(token != "%%" for token in _OFFSET_DIRECTIVE.findall(fmt))
+
+
+def _normalized_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
+    """Predict a column's dtype after stages 1 through 7, from its stored dtype.
+
+    Pushdown never materializes the normalized column, so every decision that
+    depends on what a local run compares follows these stage gates, which
+    mirror `_normalize_value_expr` and `_normalize_temporal_expr`:
+
+    - stages 1 through 4 keep the type;
+    - `pad_zeros` stringifies;
+    - `datetime_format` parses text into microsecond timestamps, aware in UTC
+      when the format reads an offset;
+    - `timezone` relabels a timestamp's zone and keeps its unit;
+    - `cast_to` decides the final type outright.
+
+    Args:
+        effective (EffectiveRule): Rule with global defaults folded in.
+        dtype (pl.DataType | None): Stored dtype, or None when unknown.
+
+    Returns:
+        pl.DataType | None: The compared dtype, or None when it depends on the
+            unknown stored type.
+    """
+    if effective["cast_to"] is not None:
+        return _CAST_TARGETS[effective["cast_to"]]
+    if effective["pad_zeros"] is not None:
+        dtype = pl.String()
+    fmt = effective["datetime_format"]
+    if fmt and isinstance(dtype, (pl.String, pl.Utf8)):
+        dtype = pl.Datetime("us", "UTC" if _parses_offset(fmt) else None)
+    if effective["timezone"] and isinstance(dtype, pl.Datetime):
+        dtype = pl.Datetime(dtype.time_unit, effective["timezone"])
+    return dtype
+
+
 def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
     """Predict whether the local engine compares a source column as a number.
 
     `_build_match_expr` applies tolerances only when the normalized source
-    column is numeric and compares everything else exactly. Pushdown never
-    materializes the normalized column, so the answer is predicted from the
-    probed dtype by following the same stage gates as `_normalize_value_expr`
-    and `_normalize_temporal_expr`.
+    column is numeric and compares everything else exactly.
 
     Args:
         effective (EffectiveRule): Rule with global defaults folded in.
@@ -719,38 +766,29 @@ def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -
     Returns:
         bool: True when a tolerance should reach the warehouse predicate.
     """
-    if effective["cast_to"] is not None:
-        return _CAST_TARGETS[effective["cast_to"]].is_numeric()
-    if effective["pad_zeros"] is not None:
-        # Stage 5 stringifies, and a datetime_format then parses the text.
-        return False
-    if effective["datetime_format"] and isinstance(dtype, (pl.String, pl.Utf8)):
-        return False
-    return dtype is None or dtype.is_numeric()
+    normalized = _normalized_dtype(effective, dtype)
+    return normalized is None or normalized.is_numeric()
 
 
 def _compares_as_text(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
     """Predict whether the local engine compares a source column as text.
 
     `_build_match_expr` applies a similarity limit only when the normalized
-    source column is a string, so pushdown follows the same stage gates as
-    `_compares_numerically` to decide which columns a limit may reach.
+    source column is a string.
 
     Args:
         effective (EffectiveRule): Rule with global defaults folded in.
         dtype (pl.DataType | None): Probed source dtype, or None when the
-            probe did not report one, in which case the limit is kept.
+            probe did not report one, in which case the limit is kept unless
+            a `datetime_format` would parse the text.
 
     Returns:
         bool: True when a similarity limit should reach the warehouse predicate.
     """
-    if effective["cast_to"] is not None:
-        return effective["cast_to"] == "String"
-    is_text = dtype is None or isinstance(dtype, (pl.String, pl.Utf8))
-    if effective["datetime_format"] and (effective["pad_zeros"] is not None or is_text):
-        # A format parses text into a datetime, including text stage 5 padded.
-        return False
-    return effective["pad_zeros"] is not None or is_text
+    normalized = _normalized_dtype(effective, dtype)
+    if normalized is None:
+        return not effective["datetime_format"]
+    return isinstance(normalized, (pl.String, pl.Utf8))
 
 
 _FRACTION_SPELLINGS: Final[dict[str, str]] = {"%%": "%%", ".%f": "%.f", "%f": "%6f"}

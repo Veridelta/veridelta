@@ -27,6 +27,7 @@ from veridelta.engine import (
     _compares_numerically,
     _fold_rule_defaults,
     _match_rule,
+    _normalized_dtype,
     _optional_module,
     _polars_datetime_format,
     _resolve_pushdown_keys,
@@ -1401,6 +1402,35 @@ _NORMALIZER_CASES = [
     pytest.param(
         [7], pl.Int64, DiffRule(column_names=["val"], cast_to="String"), id="cast-to-text"
     ),
+    pytest.param(
+        ["2024-01-02 03:04:05+0200"],
+        pl.String,
+        DiffRule(column_names=["val"], datetime_format="%Y-%m-%d %H:%M:%S%z"),
+        id="parsed-offset",
+    ),
+    pytest.param(
+        ["2024-01-02 03:04:05+0200"],
+        pl.String,
+        DiffRule(
+            column_names=["val"],
+            datetime_format="%Y-%m-%d %H:%M:%S%z",
+            timezone="Europe/Paris",
+        ),
+        id="parsed-then-converted",
+    ),
+    pytest.param(
+        [datetime(2024, 1, 2, 3, 4, 5)],
+        pl.Datetime("ns", "UTC"),
+        DiffRule(column_names=["val"], timezone="Asia/Tokyo"),
+        id="converted-keeps-its-unit",
+    ),
+    pytest.param(
+        [datetime(2024, 1, 2, 3, 4, 5)],
+        pl.Datetime("ms", "UTC"),
+        DiffRule(column_names=["val"], timezone="Asia/Tokyo", cast_to="String"),
+        id="converted-then-cast",
+    ),
+    pytest.param([True], pl.Boolean, DiffRule(column_names=["val"], pad_zeros=3), id="padded-flag"),
 ]
 """Probed dtypes and rules paired with what the local normalizer turns them into.
 
@@ -1508,6 +1538,39 @@ class TestPushdownRuleHelpers:
             "raw": (0.5, 0.1),
             "stamp": (0.0, 0.0),
         }
+
+    @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
+    def test_it_predicts_the_normalized_dtype(
+        self, values: list[object], dtype: pl.DataType, rule: DiffRule
+    ) -> None:
+        """Ensure the one dtype prediction matches what the local normalizer produces."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+        frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
+        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+
+        compared = _normalized(config, frame).schema["val"]
+
+        assert _normalized_dtype(effective, frame.schema["val"]) == compared
+
+    @pytest.mark.parametrize(
+        ("rule", "expected"),
+        [
+            pytest.param(DiffRule(column_names=["val"]), None, id="nothing"),
+            pytest.param(
+                DiffRule(column_names=["val"], datetime_format="%Y"), None, id="format-alone"
+            ),
+            pytest.param(DiffRule(column_names=["val"], pad_zeros=3), pl.String(), id="padded"),
+            pytest.param(DiffRule(column_names=["val"], cast_to="Int64"), pl.Int64(), id="cast"),
+        ],
+    )
+    def test_it_predicts_nothing_it_cannot_know_for_an_unprobed_column(
+        self, rule: DiffRule, expected: pl.DataType | None
+    ) -> None:
+        """Ensure an unknown dtype stays unknown unless a stage fixes the result."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+
+        assert _normalized_dtype(effective, None) == expected
 
     @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
     def test_it_predicts_what_the_local_normalizer_compares(
