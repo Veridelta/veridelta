@@ -2306,19 +2306,43 @@ _SAMPLE_BUCKETS: Final = 1_000_000
 the first `sample_fraction * _SAMPLE_BUCKETS` buckets."""
 
 
+def _is_real_number(value: object) -> TypeGuard[int | float]:
+    """Return whether a value is an `int` or `float`, and not a `bool`.
+
+    Args:
+        value (object): Threshold as the caller passed it.
+
+    Returns:
+        bool: True for a real number Python did not derive from `bool`.
+    """
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _check_value_map_thresholds(
-    min_confidence: float, min_support: int, sample_fraction: float
+    min_confidence: object, min_support: object, sample_fraction: object
 ) -> None:
     """Reject proposal thresholds that cannot produce a meaningful answer.
 
+    The parameters are typed `object` because callers pass whatever they were
+    given; each is narrowed here before it is compared.
+
     Args:
-        min_confidence (float): Share of rows that must agree.
-        min_support (int): Agreeing rows a proposal needs.
-        sample_fraction (float): Share of source rows to read.
+        min_confidence (object): Share of rows that must agree.
+        min_support (object): Agreeing rows a proposal needs.
+        sample_fraction (object): Share of source rows to read.
 
     Raises:
-        ConfigError: If a threshold is out of range, NaN included.
+        ConfigError: If a threshold is not a real number, `min_support` is not
+            a whole number, or a threshold is out of range, NaN included.
+            Booleans are refused although Python counts them as integers, and
+            so are Decimals: `min_support` reaches warehouse SQL as written.
     """
+    if not _is_real_number(min_confidence):
+        raise ConfigError(f"min_confidence must be a number, got {min_confidence!r}.")
+    if not _is_real_number(sample_fraction):
+        raise ConfigError(f"sample_fraction must be a number, got {sample_fraction!r}.")
+    if not _is_real_number(min_support) or not isinstance(min_support, int):
+        raise ConfigError(f"min_support must be a whole number, got {min_support!r}.")
     if not 0.5 < min_confidence <= 1:
         raise ConfigError(
             f"min_confidence must be above 0.5 and at most 1, got {min_confidence}. "
