@@ -2234,3 +2234,92 @@ class TestValueMapProposals:
             )
 
         connector.assert_not_called()
+
+
+def _tolerance_changes(
+    source: pl.Series, target: pl.Series, *, absolute: float = 0.0, relative: float = 0.0
+) -> int:
+    """Compare one value column under a tolerance and count the changed rows."""
+    ids = pl.Series("id", range(len(source)))
+    config = DiffConfig(
+        primary_keys=["id"],
+        rules=[
+            DiffRule(
+                column_names=["value"], absolute_tolerance=absolute, relative_tolerance=relative
+            )
+        ],
+    )
+    result = DiffEngine(
+        config,
+        pl.DataFrame([ids, source.alias("value")]).lazy(),
+        pl.DataFrame([ids, target.alias("value")]).lazy(),
+    ).run()
+    return result.summary.changed_count
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestIntegerToleranceWidth:
+    """Keep integer tolerances from wrapping around the column's type."""
+
+    def test_a_difference_wider_than_the_type_is_not_forgiven(self) -> None:
+        """Ensure Int8 100 and -100 differ by 200, not by the wrapped -56."""
+        changed = _tolerance_changes(
+            pl.Series([100], dtype=pl.Int8), pl.Series([-100], dtype=pl.Int8), absolute=1.0
+        )
+
+        assert changed == 1
+
+    def test_the_extremes_of_int64_differ(self) -> None:
+        """Ensure the widest signed difference is measured exactly."""
+        changed = _tolerance_changes(
+            pl.Series([-(2**63)], dtype=pl.Int64),
+            pl.Series([2**63 - 1], dtype=pl.Int64),
+            absolute=1.0,
+        )
+
+        assert changed == 1
+
+    def test_a_relative_allowance_uses_the_true_magnitude(self) -> None:
+        """Ensure `abs(-128)` on Int8 is 128, so -127 is within half of it."""
+        changed = _tolerance_changes(
+            pl.Series([-128], dtype=pl.Int8), pl.Series([-127], dtype=pl.Int8), relative=0.5
+        )
+
+        assert changed == 0
+
+    def test_unsigned_extremes_differ(self) -> None:
+        """Ensure 0 and the UInt64 maximum are never within a small allowance."""
+        changed = _tolerance_changes(
+            pl.Series([0], dtype=pl.UInt64), pl.Series([2**64 - 1], dtype=pl.UInt64), absolute=1.0
+        )
+
+        assert changed == 1
+
+    def test_text_cast_to_a_narrow_integer_is_widened_too(self) -> None:
+        """Ensure a target soft-cast to the source's Int8 is measured without wrapping."""
+        changed = _tolerance_changes(
+            pl.Series([100], dtype=pl.Int8), pl.Series(["-100"]), absolute=1.0
+        )
+
+        assert changed == 1
+
+    @pytest.mark.parametrize(
+        ("source", "target", "changed"),
+        [
+            pytest.param([5, 7], [7, 5], 0, id="within"),
+            pytest.param([5, 7], [9, 2], 2, id="beyond"),
+        ],
+    )
+    def test_mixed_integer_widths_still_compare_by_value(
+        self, source: list[int], target: list[int], changed: int
+    ) -> None:
+        """Ensure Int8 against Int64 keeps its ordinary verdicts."""
+        assert (
+            _tolerance_changes(
+                pl.Series(source, dtype=pl.Int8),
+                pl.Series(target, dtype=pl.Int64),
+                absolute=2.0,
+            )
+            == changed
+        )

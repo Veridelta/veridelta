@@ -753,6 +753,45 @@ def _compares_as_text(effective: EffectiveRule, dtype: pl.DataType | None) -> bo
     return effective["pad_zeros"] is not None or is_text
 
 
+def _tolerance_match(
+    src: pl.Expr,
+    tgt: pl.Expr,
+    rule: EffectiveRule,
+    dtype: pl.DataType,
+    tgt_dtype: pl.DataType | None,
+) -> pl.Expr:
+    """Match two numeric values within a rule's absolute and relative tolerance.
+
+    Equal values match outright, so NaN meets NaN and an infinity meets itself.
+    Integer pairs are widened to Int128 first, so neither the difference nor the
+    source's magnitude can wrap around the column's type: Int8 `100` and `-100`
+    differ by 200, and `abs(-128)` is 128.
+
+    Args:
+        src (pl.Expr): Normalized source values.
+        tgt (pl.Expr): Normalized target values, after any soft cast.
+        rule (EffectiveRule): Rule carrying `abs_tol` and `rel_tol`.
+        dtype (pl.DataType): Source dtype, which is numeric.
+        tgt_dtype (pl.DataType | None): Type the target is compared as.
+
+    Returns:
+        pl.Expr: True where the pair is equal or within the allowance.
+    """
+    if dtype.is_integer() and tgt_dtype is not None and tgt_dtype.is_integer():
+        src = src.cast(pl.Int128)
+        tgt = tgt.cast(pl.Int128)
+    # Subtract the smaller value from the larger: `tgt - src` on unsigned
+    # columns wraps below zero instead of going negative.
+    abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
+    threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
+    within = abs_diff <= threshold
+    if dtype.is_float():
+        # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
+        # non-finite source must never reach the allowance.
+        within = within & src.is_finite()
+    return (src == tgt) | within
+
+
 def _jaro_winkler_pushdown_error(column: str) -> ConfigError:
     """Build the refusal for a Jaro-Winkler limit on a warehouse comparison.
 
@@ -2285,6 +2324,8 @@ class DiffEngine:
         tgt = pl.col(f"{col_name}_target")
 
         tgt_dtype = self.target.collect_schema().get(col_name)
+        # The type the target is compared as, once any soft cast below applies.
+        compared_tgt_dtype = tgt_dtype
 
         if dtype != tgt_dtype:
             if self.config.strict_types:
@@ -2295,20 +2336,11 @@ class DiffEngine:
                 return val_match
             elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
+                compared_tgt_dtype = dtype
 
         similar = _similarity_test(rule) if isinstance(dtype, (pl.String, pl.Utf8)) else None
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
-            # Subtract the smaller value from the larger: `tgt - src` on unsigned
-            # columns wraps below zero instead of going negative.
-            abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
-            threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
-            within = abs_diff <= threshold
-            if dtype.is_float():
-                # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
-                # non-finite source must never reach the allowance.
-                within = within & src.is_finite()
-            # Equal values match outright: NaN meets NaN, and an infinity itself.
-            val_match = (src == tgt) | within
+            val_match = _tolerance_match(src, tgt, rule, dtype, compared_tgt_dtype)
         elif similar is not None:
             # Equal text matches outright, so only a differing pair is scored.
             val_match = (src == tgt) | _similarity_expr(src, tgt, similar)
