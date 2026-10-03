@@ -215,6 +215,16 @@ bytes, which is why the parity tests compare ASCII text.
 """
 
 
+_REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: "",
+    SQLDialect.DATABRICKS: "",
+    SQLDialect.DUCKDB: ", 'g'",
+}
+"""Trailing `REGEXP_REPLACE` arguments that make it replace every match, as Polars'
+`replace_all` does. Snowflake and Databricks already replace every match; DuckDB
+replaces only the first unless given the `'g'` option."""
+
+
 _DATABASE_IDENTIFIER_QUOTES: Final[dict[str, tuple[str, str]]] = {
     "clickhouse": ("`", "`"),
     "mssql": ("[", "]"),
@@ -1143,7 +1153,7 @@ class SQLPushdownCompiler:
         return usable_sentinels(rule.null_values, dtype)
 
     def _apply_regex_replace(self, expr: str, rule: DiffRule) -> str:
-        """Apply `REGEXP_REPLACE` for each pattern/replacement pair.
+        """Apply `REGEXP_REPLACE` for each pattern/replacement pair, to every match.
 
         Args:
             expr (str): SQL expression to sanitize.
@@ -1155,9 +1165,11 @@ class SQLPushdownCompiler:
         if not rule.regex_replace:
             return expr
         wrapped = expr
+        flags = _REGEX_REPLACE_FLAGS[self.dialect]
         for pattern, replacement in rule.regex_replace.items():
             wrapped = (
-                f"REGEXP_REPLACE({wrapped}, {self._literal(pattern)}, {self._literal(replacement)})"
+                f"REGEXP_REPLACE({wrapped}, {self._literal(pattern)}, "
+                f"{self._literal(replacement)}{flags})"
             )
         return wrapped
 

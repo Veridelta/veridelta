@@ -136,6 +136,20 @@ class TestShippedStageParity:
 
         assert summary.changed_count == 1
 
+    def test_it_agrees_that_regex_replace_replaces_every_match(self) -> None:
+        """Ensure a pattern that matches twice is replaced twice on both paths."""
+        src = pl.DataFrame({"id": [1, 2], "phone": ["1-800-555", "1-800-556"]})
+        tgt = pl.DataFrame({"id": [1, 2], "phone": ["1800555", "1800555"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["phone"], regex_replace={"-": ""})],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
     def test_it_agrees_on_regex_replace(self) -> None:
         """Ensure `REGEXP_REPLACE` strips the same characters Polars does."""
         src = pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$20.50"]})

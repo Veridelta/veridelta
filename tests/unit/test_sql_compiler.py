@@ -11,6 +11,7 @@ from veridelta.connectors.sql import (
     _DATABASE_IDENTIFIER_QUOTES,
     _EDIT_DISTANCE_FUNCTIONS,
     _LITERAL_ESCAPES,
+    _REGEX_REPLACE_FLAGS,
     COUNT_ALIAS,
     SCHEMA_ALIAS,
     compile_database_select,
@@ -1400,3 +1401,37 @@ class TestDatabaseSelect:
         """Ensure a table name reaching the compiler directly can never carry SQL."""
         with pytest.raises(ConnectorError, match=message):
             compile_database_select("postgresql", table)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestRegexReplaceEveryMatch:
+    """Validate that `regex_replace` replaces every match in every dialect, as Polars does."""
+
+    def test_the_flag_table_covers_every_dialect(self) -> None:
+        """Ensure a new dialect cannot be added without deciding its flags."""
+        assert set(_REGEX_REPLACE_FLAGS) == set(SQLDialect)
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            pytest.param(
+                SQLDialect.SNOWFLAKE, "REGEXP_REPLACE(\"src\".\"phone\", '-', '')", id="snowflake"
+            ),
+            pytest.param(
+                SQLDialect.DATABRICKS, "REGEXP_REPLACE(`src`.`phone`, '-', '')", id="databricks"
+            ),
+            pytest.param(
+                SQLDialect.DUCKDB, "REGEXP_REPLACE(\"src\".\"phone\", '-', '', 'g')", id="duckdb"
+            ),
+        ],
+    )
+    def test_it_asks_for_a_global_replace_where_the_default_is_first_only(
+        self, dialect: SQLDialect, expected: str
+    ) -> None:
+        """Ensure DuckDB gets `'g'`, and the dialects that already replace all get nothing."""
+        rule = DiffRule(column_names=["phone"], regex_replace={"-": ""})
+
+        sql = SQLPushdownCompiler(dialect).compile_column_predicate(rule, "phone")
+
+        assert expected in sql
