@@ -11,14 +11,14 @@ Powered by [Polars](https://pola.rs/).
 - **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
 - **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report, `--markdown` a summary for pull requests. Artifacts for added, removed, and changed rows.
 - **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
-- **Connectors.** Snowflake and Databricks SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
+- **Connectors.** Snowflake, Databricks, and BigQuery SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
 
 ## Install
 
 ```bash
 uv add veridelta
 # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, delta, iceberg, database, excel, fuzzy, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, excel, fuzzy, all
 ```
 
 ## Architecture
@@ -29,7 +29,7 @@ flowchart LR
     files[Files]
     lakehouse[Delta Iceberg]
     databases[Postgres MySQL SQLite]
-    warehouse[Snowflake Databricks]
+    warehouse[Snowflake Databricks BigQuery]
   end
   files --> loader[LoaderFactory]
   lakehouse --> loader
