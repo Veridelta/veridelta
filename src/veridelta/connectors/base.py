@@ -49,7 +49,7 @@ class PushdownSession(Protocol):
 class VerideltaConnector(ABC):
     """Session and compute contract for remote or table-format data sources.
 
-    Two families implement it, and they divide the work differently:
+    Three families implement it, and they divide the work differently:
 
     - Warehouse connectors (`SnowflakeConnector`, `DatabricksConnector`) hold
       a driver session plus a `compiler`. The engine compiles comparison SQL
@@ -58,6 +58,9 @@ class VerideltaConnector(ABC):
     - Lakehouse connectors (`DeltaLakeConnector`, `IcebergConnector`) open a
       Polars `scan_*` handle and expose it through `lazyframe()`. The diff then
       runs in the local engine; their `execute_pushdown` always raises.
+    - The database connector (`DatabaseConnector`) reads one table or query
+      through ConnectorX when it connects and exposes the rows through
+      `lazyframe()`. The diff runs in the local engine, as for a lakehouse.
 
     Call `connect()` before anything else and `close()` when finished; the
     connector is also a context manager whose exit calls `close()`. After
@@ -66,8 +69,8 @@ class VerideltaConnector(ABC):
 
     `fetch_schema()` reads column metadata without collecting rows, but what
     it describes depends on the family: the scanned table for lakehouse
-    connectors, and the result of the most recent `execute_pushdown` statement
-    for warehouse connectors. The engine itself probes warehouse columns
+    connectors, the rows read for the database connector, and the result of the
+    most recent `execute_pushdown` statement for warehouse connectors. The engine itself probes warehouse columns
     through `SQLPushdownCompiler.compile_schema_probe_query` rather than this
     method.
     """

@@ -10,6 +10,7 @@ import pytest
 from veridelta.config import load_config
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
+    DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -211,6 +212,24 @@ class TestEnvironmentExpansion:
         assert isinstance(target, DatabricksConfig)
         assert source.password == "s3cr3t"
         assert target.access_token == "dapi-123"
+
+    def test_it_loads_a_database_block_with_an_environment_password(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a database source takes its password from the environment and hides it."""
+        monkeypatch.setenv("VD_PG_PASSWORD", "p@ss:word")
+
+        _, source, _ = _load_yaml(
+            tmp_path,
+            "source:\n  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+            "  password: ${VD_PG_PASSWORD}\n  table: public.orders\n"
+            "target:\n  path: target.csv\nprimary_keys: [id]\n",
+        )
+
+        assert isinstance(source, DatabaseConfig)
+        assert source.password == "p@ss:word"
+        assert source.table == "public.orders"
+        assert "p@ss:word" not in repr(source)
 
     def test_it_expands_references_inside_text_and_nested_values(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

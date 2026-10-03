@@ -8,10 +8,12 @@ import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
 from veridelta.connectors.sql import (
+    _DATABASE_IDENTIFIER_QUOTES,
     _EDIT_DISTANCE_FUNCTIONS,
     _LITERAL_ESCAPES,
     COUNT_ALIAS,
     SCHEMA_ALIAS,
+    compile_database_select,
 )
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
@@ -1322,3 +1324,79 @@ class TestEditDistanceCompilation:
 
         with pytest.raises(ConfigError, match="min_jaro_winkler_similarity has no SQL"):
             _databricks().compile_column_predicate(rule, "name")
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestDatabaseSelect:
+    """Validate the statement a database source's `table` is read with."""
+
+    @pytest.mark.parametrize(
+        ("scheme", "table", "expected"),
+        [
+            pytest.param("postgresql", "orders", 'SELECT * FROM "orders"', id="postgresql"),
+            pytest.param(
+                "postgres", "public.orders", 'SELECT * FROM "public"."orders"', id="postgres"
+            ),
+            pytest.param(
+                "redshift",
+                "analytics.public.orders",
+                'SELECT * FROM "analytics"."public"."orders"',
+                id="redshift-three-segments",
+            ),
+            pytest.param("sqlite", "orders", 'SELECT * FROM "orders"', id="sqlite"),
+            pytest.param("oracle", "HR.EMPLOYEES", 'SELECT * FROM "HR"."EMPLOYEES"', id="oracle"),
+            pytest.param("mysql", "sales.orders", "SELECT * FROM `sales`.`orders`", id="mysql"),
+            pytest.param("clickhouse", "events", "SELECT * FROM `events`", id="clickhouse"),
+            pytest.param("mssql", "dbo.orders", "SELECT * FROM [dbo].[orders]", id="mssql"),
+        ],
+    )
+    def test_it_quotes_each_segment_the_way_the_database_does(
+        self, scheme: str, table: str, expected: str
+    ) -> None:
+        """Ensure a table name keeps its stored case and may be a reserved word."""
+        assert compile_database_select(scheme, table) == expected
+
+    def test_it_knows_the_quoting_of_every_documented_scheme(self) -> None:
+        """Ensure the quote table covers exactly the schemes the guide lists for `table`."""
+        assert set(_DATABASE_IDENTIFIER_QUOTES) == {
+            "clickhouse",
+            "mssql",
+            "mysql",
+            "oracle",
+            "postgres",
+            "postgresql",
+            "redshift",
+            "sqlite",
+        }
+
+    @pytest.mark.parametrize("scheme", ["bigquery", "duckdb", "trino"])
+    def test_it_refuses_a_table_for_a_scheme_it_cannot_quote(self, scheme: str) -> None:
+        """Ensure an unknown database never borrows another database's quotes."""
+        with pytest.raises(ConfigError) as exc_info:
+            compile_database_select(scheme, "orders")
+
+        message = str(exc_info.value)
+        assert f"'{scheme}' is not one" in message
+        assert (
+            "(clickhouse, mssql, mysql, oracle, postgres, postgresql, redshift, sqlite)" in message
+        )
+        assert "Write the statement in 'query' instead." in message
+
+    @pytest.mark.parametrize(
+        ("table", "message"),
+        [
+            pytest.param(
+                "orders; DROP TABLE orders", "not a valid unquoted identifier", id="statement"
+            ),
+            pytest.param('"orders"', "not a valid unquoted identifier", id="quoted"),
+            pytest.param("a.b.c.d", "at most three dotted segments", id="four-segments"),
+            pytest.param("  ", "non-empty", id="blank"),
+        ],
+    )
+    def test_it_fails_closed_on_a_table_outside_the_allowlist(
+        self, table: str, message: str
+    ) -> None:
+        """Ensure a table name reaching the compiler directly can never carry SQL."""
+        with pytest.raises(ConnectorError, match=message):
+            compile_database_select("postgresql", table)

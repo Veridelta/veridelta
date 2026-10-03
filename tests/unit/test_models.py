@@ -11,6 +11,7 @@ from pytest_mock import MockerFixture
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
+    DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -341,6 +342,16 @@ class TestModelStrictness:
                 {"options": {"storage_options": {"AWS_SECRET_ACCESS_KEY": _SECRET}}},
                 id="file-options",
             ),
+            pytest.param(
+                DatabaseConfig,
+                {"uri": f"postgresql://analyst:{_SECRET}@db.internal/sales"},
+                id="database-uri",
+            ),
+            pytest.param(
+                DatabaseConfig,
+                {"uri": "postgresql://analyst@db.internal/sales", "password": _SECRET},
+                id="database-password",
+            ),
         ],
     )
     def test_it_keeps_credentials_out_of_validation_errors(
@@ -403,6 +414,15 @@ class TestModelStrictness:
                 {"AWS_SECRET_ACCESS_KEY": "another-secret"},
                 id="iceberg-storage-options",
             ),
+            pytest.param(
+                DatabaseConfig(
+                    uri="postgresql://analyst@db.internal/sales", password=_SECRET, table="orders"
+                ),
+                "password",
+                _SECRET,
+                "another-secret",
+                id="database-password",
+            ),
         ],
     )
     def test_it_keeps_credentials_out_of_printed_configs(
@@ -452,6 +472,120 @@ class TestModelStrictness:
             "SourceConfig(type='file', path='data.csv', format='csv', "
             "options={'separator': ';', 'has_header': False})"
         )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestDatabaseConfig:
+    """Validate the settings a database source reads a table or query with."""
+
+    def test_it_reads_a_table_or_runs_a_query(self) -> None:
+        """Ensure either way of naming the rows is accepted on its own."""
+        by_table = DatabaseConfig(
+            uri="postgresql://analyst@db.internal/sales", table="public.orders"
+        )
+        by_query = DatabaseConfig(uri="sqlite:///srv/legacy.db", query="SELECT * FROM orders")
+
+        assert by_table.type == "database"
+        assert (by_table.table, by_table.query) == ("public.orders", None)
+        assert (by_query.table, by_query.query) == (None, "SELECT * FROM orders")
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            pytest.param({}, id="neither"),
+            pytest.param({"table": "orders", "query": "SELECT 1"}, id="both"),
+        ],
+    )
+    def test_it_requires_exactly_one_of_table_or_query(self, fields: dict[str, str]) -> None:
+        """Ensure a source never leaves open which rows it reads."""
+        with pytest.raises(ValidationError, match="set exactly one"):
+            DatabaseConfig.model_validate({"uri": "sqlite:///srv/legacy.db", **fields})
+
+    def test_it_rejects_an_empty_query(self) -> None:
+        """Ensure an empty statement fails at load time rather than in the driver."""
+        with pytest.raises(ValidationError, match="at least 1 character"):
+            DatabaseConfig(uri="sqlite:///srv/legacy.db", query="")
+
+    @pytest.mark.parametrize(
+        "table",
+        [
+            pytest.param("orders; DROP TABLE orders", id="statement"),
+            pytest.param("a.b.c.d", id="four-segments"),
+            pytest.param('"orders"', id="quoted"),
+        ],
+    )
+    def test_it_rejects_a_table_outside_the_allowlist(self, table: str) -> None:
+        """Ensure a table name can never carry SQL of its own."""
+        with pytest.raises(ValidationError, match="should match pattern"):
+            DatabaseConfig(uri="sqlite:///srv/legacy.db", table=table)
+
+    def test_it_requires_a_scheme(self) -> None:
+        """Ensure a bare path fails with a hint rather than inside the driver."""
+        with pytest.raises(ValidationError, match="needs a scheme"):
+            DatabaseConfig(uri="/srv/legacy.db", table="orders")
+
+    def test_it_rejects_a_password_in_both_places(self) -> None:
+        """Ensure there is never a question which of two passwords is used."""
+        with pytest.raises(ValidationError, match="not both"):
+            DatabaseConfig(
+                uri="postgresql://analyst:first@db.internal/sales", password="second", table="t"
+            )
+
+    def test_it_requires_a_user_for_the_password(self) -> None:
+        """Ensure a password is never sent without a user to go with it."""
+        with pytest.raises(ValidationError, match="needs a user name"):
+            DatabaseConfig(uri="postgresql://db.internal/sales", password=_SECRET, table="t")
+
+    def test_it_reports_an_unparseable_uri_without_repeating_it(self) -> None:
+        """Ensure a malformed URI names the problem but never echoes its secret."""
+        with pytest.raises(ValidationError, match="Invalid IPv6 URL") as exc_info:
+            DatabaseConfig(uri=f"postgresql://analyst:{_SECRET}@[::1/sales", table="t")
+
+        assert _SECRET not in str(exc_info.value)
+
+    def test_it_is_frozen_and_forbids_unknown_fields(self) -> None:
+        """Ensure a typo fails at load time and a loaded source cannot change."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            DatabaseConfig(uri="sqlite:///srv/legacy.db", table="t", tabel="t")  # type: ignore[call-arg]
+
+        config = DatabaseConfig(uri="sqlite:///srv/legacy.db", table="t")
+        with pytest.raises(ValidationError, match="frozen"):
+            config.table = "other"  # type: ignore[misc]
+
+    def test_it_masks_the_password_inside_a_printed_uri(self) -> None:
+        """Ensure a password written into the URI is hidden while the rest stays readable.
+
+        The URI is the part worth seeing when a connection fails, so only its
+        password is replaced. The connector still needs the real one, which
+        stays in the attribute and in `model_dump()`.
+        """
+        uri = f"postgresql://analyst:{_SECRET}@db.internal:5432/sales?sslmode=require"
+        config = DatabaseConfig(uri=uri, table="orders")
+        masked = "postgresql://analyst:***@db.internal:5432/sales?sslmode=require"
+
+        assert config.redacted_uri == masked
+        assert _SECRET not in repr(config)
+        assert _SECRET not in str(config)
+        # Rich displays are built from the same arguments.
+        assert _SECRET not in str(list(config.__repr_args__()))
+        assert f"uri='{masked}'" in repr(config)
+        assert config.uri == uri
+        assert config.model_dump()["uri"] == uri
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param("postgresql://analyst@db.internal/sales", id="user-only"),
+            pytest.param("sqlite:///srv/legacy.db", id="sqlite"),
+        ],
+    )
+    def test_it_prints_a_uri_without_a_password_unchanged(self, uri: str) -> None:
+        """Ensure masking only ever replaces a password that is there."""
+        config = DatabaseConfig(uri=uri, table="orders")
+
+        assert config.redacted_uri == uri
+        assert f"uri='{uri}'" in repr(config)
 
 
 @pytest.mark.unit
