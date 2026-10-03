@@ -4,12 +4,17 @@
 """Unit tests for BigQuery: its connection model, SQL dialect, and connector."""
 
 from typing import Any
+from unittest.mock import MagicMock
 
+import polars as pl
+import pyarrow as pa
 import pytest
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, _reads_offset
-from veridelta.exceptions import ConfigError
+from veridelta.connectors.warehouse import BigQueryConnector
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import BigQueryConfig, DiffRule
 
 _BASE: dict[str, Any] = {"project": "analytics-prod", "table": "sales.orders"}
@@ -191,3 +196,164 @@ class TestBigQueryDialect:
 
         assert "'a\\nb'" in predicate
         assert "\n" not in predicate
+
+
+def _driver(mocker: MockerFixture, batches: list[pa.RecordBatch] | None = None) -> MagicMock:
+    """Install a stand-in `google.cloud.bigquery` whose queries return `batches`."""
+    driver = MagicMock()
+    client = driver.Client.return_value
+    client.query.return_value.result.return_value.to_arrow_iterable.return_value = iter(
+        batches if batches is not None else [pa.record_batch({"n": [1, 2]})]
+    )
+    driver.Client.from_service_account_json.return_value = client
+    mocker.patch("veridelta.connectors.warehouse.bigquery", driver)
+    return driver
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestBigQueryConnector:
+    """Validate the BigQuery connector against a stand-in client."""
+
+    def test_it_connects_with_application_default_credentials(self, mocker: MockerFixture) -> None:
+        """Ensure the client runs in the configured project, with GoogleSQL and the cost cap."""
+        driver = _driver(mocker)
+        config = BigQueryConfig(
+            project="analytics-prod",
+            table="orders",
+            dataset="sales",
+            location="EU",
+            maximum_bytes_billed=10**9,
+        )
+
+        BigQueryConnector(config).connect()
+
+        driver.Client.assert_called_once_with(project="analytics-prod", location="EU")
+        driver.QueryJobConfig.assert_called_once_with(
+            use_legacy_sql=False,
+            default_dataset="analytics-prod.sales",
+            maximum_bytes_billed=10**9,
+        )
+
+    def test_it_connects_with_a_service_account_key(self, mocker: MockerFixture) -> None:
+        """Ensure a key file is loaded by the client's own loader, not a deprecated option."""
+        driver = _driver(mocker)
+        config = BigQueryConfig(**_BASE, credentials_path="/secrets/bq.json")
+
+        BigQueryConnector(config).connect()
+
+        driver.Client.from_service_account_json.assert_called_once_with(
+            "/secrets/bq.json", project="analytics-prod", location=None
+        )
+        driver.Client.assert_not_called()
+        driver.QueryJobConfig.assert_called_once_with(use_legacy_sql=False)
+
+    def test_it_reports_a_failed_connection(self, mocker: MockerFixture) -> None:
+        """Ensure an authentication failure is a connector error naming BigQuery."""
+        driver = _driver(mocker)
+        driver.Client.side_effect = RuntimeError("no default credentials")
+
+        with pytest.raises(ConnectorError, match="Failed to connect to BigQuery"):
+            BigQueryConnector(BigQueryConfig(**_BASE)).connect()
+
+    def test_it_imports_the_client_only_when_connecting(self, mocker: MockerFixture) -> None:
+        """Ensure the driver loads on first use, so importing Veridelta never imports it."""
+        mocker.patch("veridelta.connectors.warehouse.bigquery", None)
+        driver = MagicMock()
+        importer = mocker.patch(
+            "veridelta.connectors.warehouse.importlib.import_module", return_value=driver
+        )
+
+        BigQueryConnector(BigQueryConfig(**_BASE)).connect()
+
+        importer.assert_called_once_with("google.cloud.bigquery")
+        driver.Client.assert_called_once()
+
+    def test_it_explains_a_missing_extra(self, mocker: MockerFixture) -> None:
+        """Ensure a missing client reads as the install hint, not an import trace."""
+        mocker.patch("veridelta.connectors.warehouse.bigquery", None)
+        mocker.patch(
+            "veridelta.connectors.warehouse.importlib.import_module",
+            side_effect=ModuleNotFoundError("No module named 'google'"),
+        )
+
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[bigquery\]'") as info:
+            BigQueryConnector(BigQueryConfig(**_BASE)).connect()
+
+        assert info.value.__cause__ is None
+
+    def test_it_runs_statements_with_the_job_settings(self, mocker: MockerFixture) -> None:
+        """Ensure each statement runs under the job config and comes back as Arrow."""
+        driver = _driver(mocker)
+        connector = BigQueryConnector(BigQueryConfig(**_BASE))
+        connector.connect()
+
+        frame = connector.execute_pushdown("SELECT 1", query_type="count").collect()
+
+        client = driver.Client.return_value
+        client.query.assert_called_once_with(
+            "SELECT 1", job_config=driver.QueryJobConfig.return_value
+        )
+        assert frame.to_dict(as_series=False) == {"n": [1, 2]}
+
+    def test_it_keeps_the_columns_of_an_empty_result(self, mocker: MockerFixture) -> None:
+        """Ensure a zero-row probe still reports its columns."""
+        _driver(mocker, [pa.record_batch({"n": pa.array([], pa.int64())})])
+        connector = BigQueryConnector(BigQueryConfig(**_BASE))
+        connector.connect()
+
+        schema = connector.execute_pushdown("SELECT 1", query_type="schema").collect_schema()
+
+        assert schema == pl.Schema({"n": pl.Int64})
+
+    def test_it_refuses_a_result_with_no_batches(self, mocker: MockerFixture) -> None:
+        """Ensure no batches is an error, not a table that seems to have no columns."""
+        _driver(mocker, [])
+        connector = BigQueryConnector(BigQueryConfig(**_BASE))
+        connector.connect()
+
+        with pytest.raises(ConnectorError, match="no Arrow batches"):
+            connector.execute_pushdown("SELECT 1", query_type="schema")
+
+    def test_it_reports_a_failed_statement(self, mocker: MockerFixture) -> None:
+        """Ensure a query error is a connector error carrying BigQuery's message."""
+        driver = _driver(mocker)
+        driver.Client.return_value.query.side_effect = RuntimeError("Not found: Table orders")
+        connector = BigQueryConnector(BigQueryConfig(**_BASE))
+        connector.connect()
+
+        with pytest.raises(ConnectorError, match="Not found: Table orders"):
+            connector.execute_pushdown("SELECT 1")
+
+    def test_it_describes_the_last_result_without_reading_it(self, mocker: MockerFixture) -> None:
+        """Ensure the schema comes from a zero-row wrapper around the last statement."""
+        driver = _driver(mocker)
+        connector = BigQueryConnector(BigQueryConfig(**_BASE))
+        connector.connect()
+
+        with pytest.raises(ConnectorError, match="execute_pushdown before fetch_schema"):
+            connector.fetch_schema()
+        connector.execute_pushdown("SELECT n FROM t")
+        client = driver.Client.return_value
+        client.query.return_value.result.return_value.to_arrow_iterable.return_value = iter(
+            [pa.record_batch({"n": pa.array([], pa.int64())})]
+        )
+        schema = connector.fetch_schema()
+
+        assert schema == pl.Schema({"n": pl.Int64})
+        assert client.query.call_args.args[0].endswith("LIMIT 0")
+
+    def test_it_closes_once_and_then_refuses_work(self, mocker: MockerFixture) -> None:
+        """Ensure close is idempotent and a closed connector says so."""
+        driver = _driver(mocker)
+        connector = BigQueryConnector(BigQueryConfig(**_BASE))
+        with pytest.raises(ConnectorError, match="not connected"):
+            connector.execute_pushdown("SELECT 1")
+        connector.connect()
+
+        connector.close()
+        connector.close()
+
+        driver.Client.return_value.close.assert_called_once()
+        with pytest.raises(ConnectorError, match="not connected"):
+            connector.execute_pushdown("SELECT 1")

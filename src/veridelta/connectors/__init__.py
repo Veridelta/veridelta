@@ -7,9 +7,14 @@ from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
-from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
+from veridelta.connectors.warehouse import (
+    BigQueryConnector,
+    DatabricksConnector,
+    SnowflakeConnector,
+)
 
 __all__ = [
+    "BigQueryConnector",
     "DatabaseConnector",
     "DatabricksConnector",
     "DeltaLakeConnector",

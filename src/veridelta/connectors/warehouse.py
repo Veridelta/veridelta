@@ -1,7 +1,7 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Warehouse pushdown connectors for Snowflake and Databricks.
+"""Warehouse pushdown connectors for Snowflake, Databricks, and BigQuery.
 
 Drivers are optional extras. Missing packages raise `ConnectorError` with an
 install hint. Query results are fetched as Arrow tables and wrapped in a
@@ -12,6 +12,7 @@ warehouse` logger. Log lines carry the backend, the pushdown round-trip kind,
 and timings, never SQL text or credentials.
 """
 
+import importlib
 import logging
 import time
 from collections.abc import Mapping
@@ -22,7 +23,7 @@ import polars as pl
 from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.exceptions import ConnectorError
-from veridelta.models import DatabricksConfig, SnowflakeConfig
+from veridelta.models import BigQueryConfig, DatabricksConfig, SnowflakeConfig
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -52,6 +53,14 @@ _SNOWFLAKE_EXTRA = (
 _DATABRICKS_EXTRA = (
     "Databricks extra is not installed. Install it with: uv add 'veridelta[databricks]'"
 )
+bigquery: Any = None
+"""`google.cloud.bigquery`, imported by the first BigQuery `connect()` rather than
+here: google-api-core warns at import time on Python versions near their end of
+life, which would fail `import veridelta` wherever warnings are errors. Tests
+patch this attribute."""
+
+_BIGQUERY_EXTRA = "BigQuery extra is not installed. Install it with: uv add 'veridelta[bigquery]'"
+_NO_ARROW_BATCHES = "BigQuery returned no Arrow batches, so the result has no columns."
 _UNCONNECTED = "Warehouse connector is not connected. Call connect() first."
 _NO_STATEMENT = "Call execute_pushdown before fetch_schema."
 _NON_TABULAR = "Warehouse cursor did not return a tabular Arrow result."
@@ -164,6 +173,60 @@ def _run_arrow_query(
         closer = getattr(cursor, "close", None)
         if callable(closer):
             closer()
+
+
+def _import_bigquery() -> Any:
+    """Import the BigQuery client library on first use.
+
+    Returns:
+        Any: The `google.cloud.bigquery` module.
+
+    Raises:
+        ConnectorError: If the `bigquery` extra is not installed.
+    """
+    try:
+        return importlib.import_module("google.cloud.bigquery")
+    except ImportError:
+        raise ConnectorError(_BIGQUERY_EXTRA) from None
+
+
+def _run_bigquery_query(client: Any, statement: str, job_config: Any, *, query_type: str) -> Any:
+    """Run SQL as a BigQuery job and fetch its result as Arrow record batches.
+
+    BigQuery has no Arrow cursor, so this mirrors `_run_arrow_query` around the
+    client's job API. `to_arrow_iterable` is the Arrow path that neither warns
+    nor needs the storage extra; it yields one batch per page, and a zero-row
+    result still yields one batch carrying the schema.
+
+    Args:
+        client (Any): Open `bigquery.Client`.
+        statement (str): SQL to execute.
+        job_config (Any): `QueryJobConfig` every statement runs under.
+        query_type (str): Pushdown round-trip this statement represents.
+
+    Returns:
+        Any: The result's Arrow record batches.
+
+    Raises:
+        ConnectorError: If the job fails, or returns no batches at all, which
+            would read as a table without columns.
+    """
+    started = time.perf_counter()
+    try:
+        rows = client.query(statement, job_config=job_config).result()
+        batches = list(rows.to_arrow_iterable())
+    except Exception as exc:
+        # The statement stays out of the log, as for the other warehouses.
+        logger.warning(
+            "BigQuery %s statement failed after %.3fs", query_type, time.perf_counter() - started
+        )
+        raise ConnectorError(f"Warehouse statement failed: {exc}") from exc
+    logger.debug(
+        "BigQuery %s statement completed in %.3fs", query_type, time.perf_counter() - started
+    )
+    if not batches:
+        raise ConnectorError(_NO_ARROW_BATCHES)
+    return batches
 
 
 def _close_session(session: Any, backend: str) -> None:
@@ -442,4 +505,130 @@ class DatabricksConnector(VerideltaConnector):
         if databricks_sql is None:
             raise ConnectorError(_DATABRICKS_EXTRA)
         if self._session is None:
+            raise ConnectorError(_UNCONNECTED)
+
+
+class BigQueryConnector(VerideltaConnector):
+    """BigQuery warehouse connector backed by the optional BigQuery extra.
+
+    `connect()` builds a `bigquery.Client` for the configured project, from a
+    service account key file when `credentials_path` is set and from
+    Application Default Credentials otherwise. Every statement runs as a
+    GoogleSQL job under one `QueryJobConfig`, which names the default dataset
+    and the `maximum_bytes_billed` cap. Install the client with
+    `uv add 'veridelta[bigquery]'`; it is imported on first connect.
+
+    Attributes:
+        compiler (SQLPushdownCompiler): BigQuery-dialect compiler (backtick
+            quoting, GoogleSQL type names) the engine uses for every statement.
+    """
+
+    def __init__(self, config: BigQueryConfig) -> None:
+        """Initialize the connector with validated BigQuery settings.
+
+        Args:
+            config (BigQueryConfig): Frozen project, table, and job settings.
+        """
+        self._config = config
+        self.compiler = SQLPushdownCompiler(SQLDialect.BIGQUERY)
+        self._client: Any = None
+        self._job_config: Any = None
+        self._last_statement: str | None = None
+
+    def connect(self) -> None:
+        """Create the BigQuery client and the job settings every statement uses.
+
+        Raises:
+            ConnectorError: If the BigQuery extra is missing or the client
+                cannot be created, such as when no credentials are found.
+        """
+        driver = bigquery if bigquery is not None else _import_bigquery()
+        project, location = self._config.project, self._config.location
+        # Legacy SQL rejects backtick quoting, so GoogleSQL is set explicitly
+        # rather than trusted to stay the client's default.
+        settings: dict[str, Any] = {"use_legacy_sql": False}
+        if self._config.dataset is not None:
+            settings["default_dataset"] = f"{project}.{self._config.dataset}"
+        if self._config.maximum_bytes_billed is not None:
+            settings["maximum_bytes_billed"] = self._config.maximum_bytes_billed
+        try:
+            if self._config.credentials_path is None:
+                client = driver.Client(project=project, location=location)
+            else:
+                client = driver.Client.from_service_account_json(
+                    self._config.credentials_path, project=project, location=location
+                )
+            job_config = driver.QueryJobConfig(**settings)
+        except Exception as exc:
+            logger.warning("BigQuery connection to project %s failed", project)
+            raise ConnectorError(f"Failed to connect to BigQuery: {exc}") from exc
+        self._client, self._job_config = client, job_config
+        logger.info("Connected to BigQuery project %s", project)
+
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
+        """Execute compiler SQL as a BigQuery job and return a LazyFrame.
+
+        Args:
+            statement (str): SQL produced by `SQLPushdownCompiler`.
+            query_type (PushdownQueryType): Which comparison round-trip this
+                statement represents; recorded in the log line for the call.
+
+        Returns:
+            pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
+
+        Raises:
+            ConnectorError: If the connector is not connected, the job fails,
+                or it returns no Arrow batches.
+        """
+        self._require_client()
+        batches = _run_bigquery_query(
+            self._client, statement, self._job_config, query_type=query_type
+        )
+        self._last_statement = statement
+        return _lazy_from_arrow(batches)
+
+    def fetch_schema(self) -> pl.Schema:
+        """Describe the last pushdown result via a `LIMIT 0` query.
+
+        Returns:
+            pl.Schema: Column names and dtypes from the empty Arrow result.
+
+        Raises:
+            ConnectorError: If the connector is not connected or no statement
+                has run.
+        """
+        self._require_client()
+        if self._last_statement is None:
+            raise ConnectorError(_NO_STATEMENT)
+        schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
+        batches = _run_bigquery_query(
+            self._client, schema_sql, self._job_config, query_type="schema"
+        )
+        return _lazy_from_arrow(batches).collect_schema()
+
+    def close(self) -> None:
+        """Close the BigQuery client, if one is open.
+
+        Idempotent. Afterwards `execute_pushdown` and `fetch_schema` raise
+        `ConnectorError` until `connect()` is called again.
+        """
+        if self._client is None:
+            return
+        client, self._client, self._job_config, self._last_statement = (
+            self._client,
+            None,
+            None,
+            None,
+        )
+        _close_session(client, "BigQuery")
+
+    def _require_client(self) -> None:
+        """Ensure `connect()` has created a client.
+
+        Raises:
+            ConnectorError: If `connect()` was not called, or the client closed.
+        """
+        if self._client is None:
             raise ConnectorError(_UNCONNECTED)
