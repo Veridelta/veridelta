@@ -1368,6 +1368,51 @@ class TestNumericComparisonParity:
     """Validate that both paths compare numbers by value, whatever their storage."""
 
     @pytest.mark.parametrize(
+        ("source", "target", "tolerance", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", [5, 3], dtype=pl.UInt32),
+                pl.Series("val", [3, 3], dtype=pl.UInt32),
+                1.0,
+                1,
+                id="unsigned-below-zero",
+            ),
+            pytest.param(
+                pl.Series("val", [100, 1], dtype=pl.Int8),
+                pl.Series("val", [-100, 1], dtype=pl.Int8),
+                1.0,
+                1,
+                id="int8-wider-than-its-type",
+            ),
+            pytest.param(
+                pl.Series("val", [-(2**63), 0], dtype=pl.Int64),
+                pl.Series("val", [2**63 - 1, 0], dtype=pl.Int64),
+                1.0,
+                1,
+                id="int64-extremes",
+            ),
+        ],
+    )
+    def test_it_agrees_on_integer_differences_wider_than_their_type(
+        self, source: pl.Series, target: pl.Series, tolerance: float, expected_changed: int
+    ) -> None:
+        """Ensure a tolerance measures an integer difference exactly on both paths.
+
+        Without widening, DuckDB raises an out-of-range error on each of these,
+        and Databricks overflows `ABS` of the smallest BIGINT.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["val"], absolute_tolerance=tolerance)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+    @pytest.mark.parametrize(
         ("source", "target", "expected_changed"),
         [
             pytest.param(

@@ -34,6 +34,7 @@ from veridelta.engine import (
     _resolve_pushdown_rules,
     _score_differing_pairs,
     _similarity_test,
+    _wide_integer_columns,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
@@ -2428,3 +2429,47 @@ class TestFractionalSeconds:
         ).run()
 
         assert result.summary.changed_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestWideIntegerColumns:
+    """Validate which pushdown columns subtract in a wider integer type."""
+
+    def test_it_names_integer_pairs_under_a_tolerance(self) -> None:
+        """Ensure only tolerance columns that compare as integers on both sides are named."""
+        source = pl.Schema(
+            {
+                "id": pl.Int64,
+                "qty": pl.Int8,
+                "legacy_units": pl.UInt32,
+                "price": pl.Int64,
+                "code": pl.String,
+                "exact": pl.Int64,
+                "padded": pl.Int64,
+            }
+        )
+        target = pl.Schema(
+            {
+                "id": pl.Int64,
+                "qty": pl.Int64,
+                "units": pl.UInt32,
+                "price": pl.Float64,
+                "code": pl.Int64,
+                "exact": pl.Int64,
+                "padded": pl.Int64,
+            }
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            default_absolute_tolerance=1.0,
+            rules=[
+                DiffRule(column_names=["legacy_units"], rename_to="units"),
+                DiffRule(column_names=["code"], cast_to="Int64"),
+                DiffRule(column_names=["exact"], absolute_tolerance=0.0),
+                DiffRule(column_names=["padded"], pad_zeros=5),
+            ],
+        )
+        rules = _resolve_pushdown_rules(config, source, target)
+
+        assert _wide_integer_columns(config, rules, source, target) == {"qty", "units", "code"}

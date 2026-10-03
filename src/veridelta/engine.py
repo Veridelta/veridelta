@@ -1037,6 +1037,64 @@ def _resolve_pushdown_rules(
     return resolved
 
 
+def _compared_dtypes(
+    diff: DiffConfig, rule: DiffRule, source_schema: pl.Schema, target_schema: pl.Schema
+) -> tuple[pl.DataType | None, pl.DataType | None]:
+    """Predict the dtypes a local run would compare one pushdown column as.
+
+    Args:
+        diff (DiffConfig): Comparison settings the rule was resolved under.
+        rule (DiffRule): A rule from `_resolve_pushdown_rules`, naming the
+            stored source column and, when renamed, the target's name.
+        source_schema (pl.Schema): Probed source schema.
+        target_schema (pl.Schema): Probed target schema.
+
+    Returns:
+        tuple[pl.DataType | None, pl.DataType | None]: The normalized source and
+            target dtypes, each None when its probe did not report one.
+    """
+    effective = _fold_rule_defaults(rule, diff)
+    stored = rule.column_names[0]
+    return (
+        _normalized_dtype(effective, source_schema.get(stored)),
+        _normalized_dtype(effective, target_schema.get(rule.rename_to or stored)),
+    )
+
+
+def _wide_integer_columns(
+    diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
+) -> frozenset[str]:
+    """Name the tolerance columns a warehouse must subtract in a wider integer type.
+
+    A local run widens integer pairs to Int128 before measuring a tolerance.
+    In SQL the stored type wraps or overflows instead: DuckDB raises on an
+    unsigned difference below zero, and `ABS` of the smallest BIGINT overflows.
+
+    Args:
+        diff (DiffConfig): Comparison settings the rules were resolved under.
+        rules (Sequence[DiffRule]): Rules from `_resolve_pushdown_rules`.
+        source_schema (pl.Schema): Probed source schema.
+        target_schema (pl.Schema): Probed target schema.
+
+    Returns:
+        frozenset[str]: Target names of the columns that carry a tolerance and
+            compare as integers on both sides.
+    """
+    wide: set[str] = set()
+    for rule in rules:
+        if not (rule.absolute_tolerance or rule.relative_tolerance):
+            continue
+        source, target = _compared_dtypes(diff, rule, source_schema, target_schema)
+        if (
+            source is not None
+            and target is not None
+            and source.is_integer()
+            and target.is_integer()
+        ):
+            wide.add(rule.rename_to or rule.column_names[0])
+    return frozenset(wide)
+
+
 def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
     """Reduce the single-row mismatch tally to positive per-column counts.
 
@@ -1491,6 +1549,7 @@ def _collect_pushdown_summary(
     target_total = _pushdown_row_count(connector, target_table)
     # Every join reads normalized keys, so a key the rules transform matches
     # across the two relations exactly where a local run would match it.
+    wide_integers = _wide_integer_columns(diff, rules, source_schema, target_schema)
     mismatch_sql = connector.compiler.compile_query(
         source_table,
         target_table,
@@ -1499,6 +1558,7 @@ def _collect_pushdown_summary(
         source_types=source_schema,
         target_types=target_schema,
         key_rules=key_rules,
+        wide_integers=wide_integers,
     )
     added_sql = connector.compiler.compile_added_query(
         source_table,
@@ -1529,6 +1589,7 @@ def _collect_pushdown_summary(
         source_types=source_schema,
         target_types=target_schema,
         key_rules=key_rules,
+        wide_integers=wide_integers,
     )
     if columns_sql is not None:
         tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
