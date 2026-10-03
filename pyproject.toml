@@ -73,6 +73,7 @@ all = [
 dev = [
     "commitizen>=4.13.10",
     "duckdb>=1.5.0",
+    "hypothesis>=6.140.0",
     "ipykernel>=7.2.0",
     "mkdocs>=1.6.1",
     "mkdocs-jupyter>=0.26.3",
@@ -124,6 +125,8 @@ module = [
     "pytest_mock.*",
     "duckdb",
     "duckdb.*",
+    "hypothesis",
+    "hypothesis.*",
     "nbformat",
     "nbformat.*",
     "nbclient",
@@ -224,6 +227,7 @@ markers = [
     "smoke: Critical-path tests run post-deployment to ensure basic sanity.",
     "fast: CPU-bound tests that execute in milliseconds.",
     "slow: I/O bound or large-dataset tests.",
+    "property: Hypothesis property tests that draw their own cases.",
 ]
 
 [tool.coverage.run]

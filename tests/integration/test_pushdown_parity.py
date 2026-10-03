@@ -547,6 +547,25 @@ class TestDatetimeFormatParity:
 
         assert summary.changed_count == 1
 
+    def test_it_differs_on_fractions_longer_than_six_digits(self) -> None:
+        """Pin the documented difference: only a local run reads seven to nine digits.
+
+        Polars' `%.f` keeps the microseconds of a longer fraction, while DuckDB's
+        `%f`, like Python's, reads at most six digits and yields NULL.
+        """
+        src = pl.DataFrame({"id": [1], "ts": ["2026-01-02 01:02:03.1234567"]})
+        tgt = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 1, 2, 3, 123456)]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f")],
+        )
+
+        local = run_local(config, src, tgt).summary
+        pushdown, _ = run_pushdown(config, src, tgt)
+
+        assert local.changed_count == 0
+        assert pushdown.summary.changed_count == 1
+
     def test_it_agrees_on_a_parsed_offset(self) -> None:
         """Ensure `%z` lands on the same instant on both paths."""
         src = pl.DataFrame({"id": [1], "ts": ["2026-01-02 15:30:45+0200"]})
