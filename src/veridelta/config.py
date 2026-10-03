@@ -18,6 +18,7 @@ from pydantic import ConfigDict, TypeAdapter, ValidationError
 
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
+    BigQueryConfig,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -29,6 +30,7 @@ from veridelta.models import (
 
 __all__ = [
     "SCHEMA_URL",
+    "BigQueryConfig",
     "DatabaseConfig",
     "DatabricksConfig",
     "DeltaLakeConfig",

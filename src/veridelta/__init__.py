@@ -15,6 +15,7 @@ from veridelta.exceptions import (
 )
 from veridelta.models import (
     ArtifactFormat,
+    BigQueryConfig,
     CastTarget,
     ConfigFinding,
     DatabaseConfig,
@@ -40,6 +41,7 @@ __version__ = "0.10.0"
 
 __all__ = [
     "ArtifactFormat",
+    "BigQueryConfig",
     "CastTarget",
     "ConfigError",
     "ConfigFinding",
