@@ -558,7 +558,12 @@ Values are read as the `value_map` stage sees them, after null sentinels, `regex
 
 An existing `value_map` is kept and extended. Rows it already translates are left out of the counts, so a raw value that equals one of its outputs cannot receive an entry. Only one rule governs a column, so when a rule already governs one, the command says so on stderr, even with `--quiet`, and the new entries belong in that rule's `value_map` rather than in a second rule. If that rule also governs other columns, by listing several names or by a `pattern`, the column needs a rule of its own first, since a map merged into a shared rule applies to every column it governs; the note says which case applies.
 
-`--sample-fraction` (default 1.0) reads that share of source rows, picked by a hash of the primary keys, so rerunning on the same data under one Polars version samples the same rows. `--json` prints each proposal with its evidence instead of YAML. Warehouse sources raise `ConnectorError`: proposals read rows locally, so export the tables, or a sample of them, to Parquet first.
+`--sample-fraction` (default 1.0) reads that share of source rows, picked by a hash of the primary keys, so rerunning on the same data under one Polars version samples the same rows. `--json` prints each proposal with its evidence instead of YAML.
+
+Two tables on one warehouse connection are counted in the warehouse, and no row leaves it. The connection requirements are those of a warehouse run: both sides use one backend, one connection, and two different tables, and a warehouse paired with a file or a database is refused. After the column probes and the duplicate-key checks, one statement counts every candidate column, and Veridelta applies the confidence floor itself, so a warehouse proposes exactly what a local run would from the same rows. Two differences remain:
+
+- Only columns stored as text on both sides qualify. A local run also proposes text for a non-text target, such as `Y: '1'`, but each engine writes numbers and timestamps as text its own way, and the warehouse compares such an entry against the integer column rather than its text.
+- A sample hashes the normalized keys with the warehouse's own hash function. Rerunning against the same tables samples the same rows, but not the rows a local run of the same fraction would.
 
 From Python, `DiffEngine(config, source, target).propose_value_maps()` returns `ValueMapProposal` objects, and `DiffEngine.propose_value_maps_from_configs(diff, source, target)` loads a YAML pair first. Each proposal's `to_rule()` returns the standalone rule.
 
