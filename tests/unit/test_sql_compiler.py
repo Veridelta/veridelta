@@ -11,6 +11,8 @@ from veridelta.connectors.sql import (
     _DATABASE_IDENTIFIER_QUOTES,
     _EDIT_DISTANCE_FUNCTIONS,
     _LITERAL_ESCAPES,
+    _REGEX_REPLACE_FLAGS,
+    _WIDE_INTEGER_TYPES,
     COUNT_ALIAS,
     SCHEMA_ALIAS,
     compile_database_probe,
@@ -1405,6 +1407,123 @@ class TestDatabaseSelect:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestRegexReplaceEveryMatch:
+    """Validate that `regex_replace` replaces every match in every dialect, as Polars does."""
+
+    def test_the_flag_table_covers_every_dialect(self) -> None:
+        """Ensure a new dialect cannot be added without deciding its flags."""
+        assert set(_REGEX_REPLACE_FLAGS) == set(SQLDialect)
+
+    @pytest.mark.parametrize(
+        ("dialect", "expected"),
+        [
+            pytest.param(
+                SQLDialect.SNOWFLAKE, "REGEXP_REPLACE(\"src\".\"phone\", '-', '')", id="snowflake"
+            ),
+            pytest.param(
+                SQLDialect.DATABRICKS, "REGEXP_REPLACE(`src`.`phone`, '-', '')", id="databricks"
+            ),
+            pytest.param(
+                SQLDialect.DUCKDB, "REGEXP_REPLACE(\"src\".\"phone\", '-', '', 'g')", id="duckdb"
+            ),
+        ],
+    )
+    def test_it_asks_for_a_global_replace_where_the_default_is_first_only(
+        self, dialect: SQLDialect, expected: str
+    ) -> None:
+        """Ensure DuckDB gets `'g'`, and the dialects that already replace all get nothing."""
+        rule = DiffRule(column_names=["phone"], regex_replace={"-": ""})
+
+        sql = SQLPushdownCompiler(dialect).compile_column_predicate(rule, "phone")
+
+        assert expected in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestWideIntegerTolerances:
+    """Validate that integer tolerance operands are widened before they are subtracted."""
+
+    def test_the_wide_type_table_covers_every_dialect(self) -> None:
+        """Ensure a new dialect cannot be added without a type wide enough to subtract in."""
+        assert set(_WIDE_INTEGER_TYPES) == set(SQLDialect)
+
+    @pytest.mark.parametrize(
+        ("dialect", "cast"),
+        [
+            pytest.param(
+                SQLDialect.SNOWFLAKE, 'CAST("src"."qty" AS NUMBER(38, 0))', id="snowflake"
+            ),
+            pytest.param(
+                SQLDialect.DATABRICKS, "CAST(`src`.`qty` AS DECIMAL(38, 0))", id="databricks"
+            ),
+            pytest.param(SQLDialect.DUCKDB, 'CAST("src"."qty" AS DECIMAL(38, 0))', id="duckdb"),
+        ],
+    )
+    def test_it_widens_the_named_columns_in_both_statements(
+        self, dialect: SQLDialect, cast: str
+    ) -> None:
+        """Ensure the join query and the tally both measure in the wide type, with no guard."""
+        compiler = SQLPushdownCompiler(dialect)
+        rules = [
+            DiffRule(column_names=["qty"], absolute_tolerance=1.0),
+            DiffRule(column_names=["price"], absolute_tolerance=1.0),
+        ]
+        wide = frozenset({"qty"})
+
+        query = compiler.compile_query("s", "t", ["id"], rules, wide_integers=wide)
+        tally = compiler.compile_column_mismatch_query("s", "t", ["id"], rules, wide_integers=wide)
+
+        for sql in (query, tally):
+            assert sql is not None
+            assert f"ABS({cast.replace('src', 'tgt')} - {cast})" in sql
+            assert sql.count("ABS(") == 5
+
+    def test_it_leaves_unnamed_columns_alone(self) -> None:
+        """Ensure no cast appears unless the engine asked for one."""
+        rule = DiffRule(column_names=["qty"], absolute_tolerance=1.0)
+
+        sql = _duckdb().compile_query("s", "t", ["id"], [rule])
+
+        assert "DECIMAL(38, 0)" not in sql
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestStrictTypeDrift:
+    """Validate that a column whose types differ under `strict_types` never matches."""
+
+    @pytest.mark.parametrize(
+        ("treat_null", "predicate"),
+        [
+            pytest.param(None, "COALESCE(FALSE, FALSE)", id="mismatch"),
+            pytest.param(
+                True,
+                'COALESCE(("src"."qty" IS NULL AND "tgt"."qty" IS NULL), FALSE)',
+                id="nulls-still-meet",
+            ),
+        ],
+    )
+    def test_it_replaces_the_comparison_in_both_statements(
+        self, treat_null: bool | None, predicate: str
+    ) -> None:
+        """Ensure no value comparison, and so no cross-type cast, reaches the warehouse."""
+        rules = [
+            DiffRule(column_names=["qty"], absolute_tolerance=1.0, treat_null_as_equal=treat_null),
+            DiffRule(column_names=["name"]),
+        ]
+        drift = frozenset({"qty"})
+
+        query = _duckdb().compile_query("s", "t", ["id"], rules, type_drift=drift)
+        tally = _duckdb().compile_column_mismatch_query("s", "t", ["id"], rules, type_drift=drift)
+
+        for sql in (query, tally):
+            assert sql is not None
+            assert predicate in sql
+            assert 'ABS("tgt"."qty"' not in sql
+            assert '"src"."name" = "tgt"."name"' in sql
+
+
 class TestDatabaseProbe:
     """Validate the zero-row statement `veridelta validate --schemas` reads a table's schema with."""
 

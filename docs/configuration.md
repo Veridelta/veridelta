@@ -93,9 +93,9 @@ The column probes enforce `schema_mode` and primary-key existence before any com
 All nine transform stages compile for compared columns, and stages 1 through 7 for primary keys, so a rule means the same thing in a warehouse as it does locally. The exception is `min_jaro_winkler_similarity`, which pushdown refuses with `ConfigError` before any comparison query runs rather than approximating it; see [Fuzzy Text Matching](#8-fuzzy-text-matching). These behaviors still differ from the local path that files, lakehouse tables, and databases take:
 
 - Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
-- `strict_types` applies to local runs only. When the two relations store a column as different types, the warehouse compares them under its own coercion rules.
+- `strict_types` compares the types the warehouse driver reports for each side, after normalization, and fails every row of a column whose two types differ, as a local run does. Those are the driver's types, not the declared ones: Snowflake's `NUMBER(38,0)`, for one, arrives as a decimal, so it meets a `NUMBER(38,0)` column but not a `FLOAT`.
 
-Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead. DuckDB's `levenshtein` counts bytes rather than characters, so edit-distance parity is checked on ASCII text, where the two agree.
+Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead. DuckDB's `levenshtein` counts bytes rather than characters, so edit-distance parity is checked on ASCII text, where the two agree. A property test also draws random configurations and data, from integers at the edges of their types to NULLs, NaN, and text timestamps, and requires both engines to reach the same counts on each.
 
 Write `regex_replace` patterns, `value_map` entries, and text `null_values` exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in `\d` or `\N` and an apostrophe in `O'Brien` arrive intact; do not double them yourself. Escaping preserves the text, but each warehouse still runs its own regex engine: keep replacements free of capture-group references, which Polars and Databricks write as `$1` and Snowflake as `\1`. Likewise `whitespace_mode` trims only spaces in a warehouse, where Polars also strips tabs and line breaks.
 
@@ -356,7 +356,7 @@ Global directives control the strictness of the underlying Polars evaluation eng
 | Directive | Description |
 | :--- | :--- |
 | `schema_mode` | Enforces column structure constraints. Options: `intersection` (default, compares common columns only), `exact`, `allow_additions`, `allow_removals`. |
-| `strict_types` | If `false` (default), a column stored as different types on the two sides is still compared. Two numeric types compare by value, so an integer `10` and a float `10.7` differ, and a `Float32` `0.1` differs slightly from a `Float64` `0.1`; add a tolerance to forgive precision gaps. Any other pair soft-casts the target to the source type, so text `"10"` matches an integer `10`. If `true`, type mismatches automatically fail the row. |
+| `strict_types` | If `false` (default), a column stored as different types on the two sides is still compared. Two numeric types compare by value, so an integer `10` and a float `10.7` differ, and a `Float32` `0.1` differs slightly from a `Float64` `0.1`; add a tolerance to forgive precision gaps. Any other pair soft-casts the target to the source type, so text `"10"` matches an integer `10`. If `true`, a column whose two sides hold different types after normalization fails every row, so a `cast_to` or `datetime_format` that brings both sides to one type keeps the column comparable. Under `treat_null_as_equal`, two NULLs still match. |
 | `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment, on every entry point including `DiffEngine(...).run()` and `validate_schemas`. Configured `primary_keys`, `column_names`, and `rename_to` are normalized the same way; a `pattern` is not, so write it against the lowercase names. Headers that collide once normalized raise `ConfigError`. |
 | `threshold` | The allowable mismatch ratio (0.0 to 1.0) before the pipeline exits with a failure code. |
 | `default_absolute_tolerance` | Global absolute numeric tolerance. A column without its own `absolute_tolerance` inherits this. Columns that are not numeric after normalization are compared exactly. |
@@ -452,7 +452,7 @@ rules:
     relative_tolerance: 0.005
 ```
 
-A tolerance only loosens the comparison of finite values. `NaN` matches only `NaN`, and an infinity matches only the same infinity, however wide the tolerance.
+A tolerance only loosens the comparison of finite values. `NaN` matches only `NaN`, and an infinity matches only the same infinity, however wide the tolerance. Integer differences are measured exactly, never wrapped around the column's type, so Int8 `100` and `-100` differ by 200.
 
 ### 2. Null Sentinels
 Declare the placeholder values a system writes instead of NULL. Sentinels are not limited to text: a list can mix strings, numbers, and booleans.
@@ -496,6 +496,8 @@ Reconcile identifiers and timestamps that two systems store in different shapes.
 `pad_zeros` left-pads to a fixed width. The value is stringified first, so a numeric `123` in one system matches a text `"00123"` in the other. The width must be a real integer: `pad_zeros: "5"` is rejected rather than quietly coerced.
 
 `datetime_format` parses text into timestamps using a [strptime](https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes) pattern, so the column is compared as a timestamp instead of as text. Values that do not fit the pattern become NULL, which counts as a mismatch unless `treat_null_as_equal` is set. Warehouse pushdown supports `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, `%z`, and `%%`, separated by spaces or any of `-` `/` `:` `.` `,` `_` `T`. Anything else raises `ConfigError`.
+
+`%f` is a fraction of a second, as in Python, so `.5` is half a second, and both engines read one to six digits. A local run also reads seven to nine digits, keeping microseconds, and parses a value with no fraction at all when the format writes `.%f`; a warehouse may read either as NULL.
 
 `timezone` converts timestamps to a common zone before comparison. It requires timezone-aware data. Naive timestamps raise `ConfigError`, because assuming an origin zone would shift every value by a real offset without telling you. To normalize text timestamps that carry an offset, parse them first with a format containing `%z`.
 

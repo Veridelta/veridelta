@@ -136,6 +136,20 @@ class TestShippedStageParity:
 
         assert summary.changed_count == 1
 
+    def test_it_agrees_that_regex_replace_replaces_every_match(self) -> None:
+        """Ensure a pattern that matches twice is replaced twice on both paths."""
+        src = pl.DataFrame({"id": [1, 2], "phone": ["1-800-555", "1-800-556"]})
+        tgt = pl.DataFrame({"id": [1, 2], "phone": ["1800555", "1800555"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["phone"], regex_replace={"-": ""})],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
     def test_it_agrees_on_regex_replace(self) -> None:
         """Ensure `REGEXP_REPLACE` strips the same characters Polars does."""
         src = pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$20.50"]})
@@ -499,6 +513,59 @@ class TestDatetimeFormatParity:
 
         assert summary.is_perfect_match is True
 
+    def test_it_agrees_on_fractional_seconds(self) -> None:
+        """Ensure `%f` reads one to six digits as a fraction on both paths."""
+        src = pl.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "ts": [
+                    "2026-01-02 01:02:03.5",
+                    "2026-01-02 01:02:03.123",
+                    "2026-01-02 01:02:03.123456",
+                    "2026-01-02 01:02:03.25",
+                ],
+            }
+        )
+        tgt = pl.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "ts": [
+                    datetime(2026, 1, 2, 1, 2, 3, 500000),
+                    datetime(2026, 1, 2, 1, 2, 3, 123000),
+                    datetime(2026, 1, 2, 1, 2, 3, 123456),
+                    datetime(2026, 1, 2, 1, 2, 3, 520000),
+                ],
+            }
+        )
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f")],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
+    def test_it_differs_on_fractions_longer_than_six_digits(self) -> None:
+        """Pin the documented difference: only a local run reads seven to nine digits.
+
+        Polars' `%.f` keeps the microseconds of a longer fraction, while DuckDB's
+        `%f`, like Python's, reads at most six digits and yields NULL.
+        """
+        src = pl.DataFrame({"id": [1], "ts": ["2026-01-02 01:02:03.1234567"]})
+        tgt = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 1, 2, 3, 123456)]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f")],
+        )
+
+        local = run_local(config, src, tgt).summary
+        pushdown, _ = run_pushdown(config, src, tgt)
+
+        assert local.changed_count == 0
+        assert pushdown.summary.changed_count == 1
+
     def test_it_agrees_on_a_parsed_offset(self) -> None:
         """Ensure `%z` lands on the same instant on both paths."""
         src = pl.DataFrame({"id": [1], "ts": ["2026-01-02 15:30:45+0200"]})
@@ -512,6 +579,72 @@ class TestDatetimeFormatParity:
         summary = assert_parity(config, src, tgt)
 
         assert summary.is_perfect_match is True
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestStrictTypesParity:
+    """Validate that `strict_types` fails a type mismatch on both paths."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "treat_null", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", [10.0, None]),
+                pl.Series("val", [10, None]),
+                False,
+                2,
+                id="float-vs-int",
+            ),
+            pytest.param(
+                pl.Series("val", [10, 11]),
+                pl.Series("val", ["10", "11"]),
+                False,
+                2,
+                id="int-vs-text",
+            ),
+            pytest.param(
+                pl.Series("val", [Decimal("1.50"), Decimal("2.00")], dtype=pl.Decimal(10, 2)),
+                pl.Series("val", [Decimal("1.5000"), Decimal("2.0000")], dtype=pl.Decimal(12, 4)),
+                False,
+                2,
+                id="decimal-scales",
+            ),
+            pytest.param(
+                pl.Series("val", ["abc", "10"]),
+                pl.Series("val", [10, 10]),
+                False,
+                2,
+                id="unparseable-text-vs-int",
+            ),
+            pytest.param(
+                pl.Series("val", [None, 1.0]),
+                pl.Series("val", [None, 1]),
+                True,
+                1,
+                id="nulls-still-meet",
+            ),
+        ],
+    )
+    def test_it_agrees_that_differing_types_never_match(
+        self, source: pl.Series, target: pl.Series, treat_null: bool, expected_changed: int
+    ) -> None:
+        """Ensure a warehouse no longer compares across types it was told to keep apart.
+
+        Before, the warehouse compared `10.0` with `10` by value, and DuckDB
+        failed the whole statement casting `'abc'` to an integer.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+        config = DiffConfig(
+            primary_keys=["id"],
+            strict_types=True,
+            rules=[DiffRule(column_names=["val"], treat_null_as_equal=treat_null)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
 
 
 @pytest.mark.integration
@@ -1318,6 +1451,51 @@ class TestToleranceScopeParity:
 @pytest.mark.slow
 class TestNumericComparisonParity:
     """Validate that both paths compare numbers by value, whatever their storage."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "tolerance", "expected_changed"),
+        [
+            pytest.param(
+                pl.Series("val", [5, 3], dtype=pl.UInt32),
+                pl.Series("val", [3, 3], dtype=pl.UInt32),
+                1.0,
+                1,
+                id="unsigned-below-zero",
+            ),
+            pytest.param(
+                pl.Series("val", [100, 1], dtype=pl.Int8),
+                pl.Series("val", [-100, 1], dtype=pl.Int8),
+                1.0,
+                1,
+                id="int8-wider-than-its-type",
+            ),
+            pytest.param(
+                pl.Series("val", [-(2**63), 0], dtype=pl.Int64),
+                pl.Series("val", [2**63 - 1, 0], dtype=pl.Int64),
+                1.0,
+                1,
+                id="int64-extremes",
+            ),
+        ],
+    )
+    def test_it_agrees_on_integer_differences_wider_than_their_type(
+        self, source: pl.Series, target: pl.Series, tolerance: float, expected_changed: int
+    ) -> None:
+        """Ensure a tolerance measures an integer difference exactly on both paths.
+
+        Without widening, DuckDB raises an out-of-range error on each of these,
+        and Databricks overflows `ABS` of the smallest BIGINT.
+        """
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["val"], absolute_tolerance=tolerance)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
 
     @pytest.mark.parametrize(
         ("source", "target", "expected_changed"),

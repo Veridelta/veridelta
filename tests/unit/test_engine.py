@@ -27,11 +27,15 @@ from veridelta.engine import (
     _compares_numerically,
     _fold_rule_defaults,
     _match_rule,
+    _normalized_dtype,
     _optional_module,
+    _polars_datetime_format,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
     _score_differing_pairs,
     _similarity_test,
+    _type_drift_columns,
+    _wide_integer_columns,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
@@ -1400,6 +1404,35 @@ _NORMALIZER_CASES = [
     pytest.param(
         [7], pl.Int64, DiffRule(column_names=["val"], cast_to="String"), id="cast-to-text"
     ),
+    pytest.param(
+        ["2024-01-02 03:04:05+0200"],
+        pl.String,
+        DiffRule(column_names=["val"], datetime_format="%Y-%m-%d %H:%M:%S%z"),
+        id="parsed-offset",
+    ),
+    pytest.param(
+        ["2024-01-02 03:04:05+0200"],
+        pl.String,
+        DiffRule(
+            column_names=["val"],
+            datetime_format="%Y-%m-%d %H:%M:%S%z",
+            timezone="Europe/Paris",
+        ),
+        id="parsed-then-converted",
+    ),
+    pytest.param(
+        [datetime(2024, 1, 2, 3, 4, 5)],
+        pl.Datetime("ns", "UTC"),
+        DiffRule(column_names=["val"], timezone="Asia/Tokyo"),
+        id="converted-keeps-its-unit",
+    ),
+    pytest.param(
+        [datetime(2024, 1, 2, 3, 4, 5)],
+        pl.Datetime("ms", "UTC"),
+        DiffRule(column_names=["val"], timezone="Asia/Tokyo", cast_to="String"),
+        id="converted-then-cast",
+    ),
+    pytest.param([True], pl.Boolean, DiffRule(column_names=["val"], pad_zeros=3), id="padded-flag"),
 ]
 """Probed dtypes and rules paired with what the local normalizer turns them into.
 
@@ -1507,6 +1540,39 @@ class TestPushdownRuleHelpers:
             "raw": (0.5, 0.1),
             "stamp": (0.0, 0.0),
         }
+
+    @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
+    def test_it_predicts_the_normalized_dtype(
+        self, values: list[object], dtype: pl.DataType, rule: DiffRule
+    ) -> None:
+        """Ensure the one dtype prediction matches what the local normalizer produces."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+        frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
+        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+
+        compared = _normalized(config, frame).schema["val"]
+
+        assert _normalized_dtype(effective, frame.schema["val"]) == compared
+
+    @pytest.mark.parametrize(
+        ("rule", "expected"),
+        [
+            pytest.param(DiffRule(column_names=["val"]), None, id="nothing"),
+            pytest.param(
+                DiffRule(column_names=["val"], datetime_format="%Y"), None, id="format-alone"
+            ),
+            pytest.param(DiffRule(column_names=["val"], pad_zeros=3), pl.String(), id="padded"),
+            pytest.param(DiffRule(column_names=["val"], cast_to="Int64"), pl.Int64(), id="cast"),
+        ],
+    )
+    def test_it_predicts_nothing_it_cannot_know_for_an_unprobed_column(
+        self, rule: DiffRule, expected: pl.DataType | None
+    ) -> None:
+        """Ensure an unknown dtype stays unknown unless a stage fixes the result."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+
+        assert _normalized_dtype(effective, None) == expected
 
     @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
     def test_it_predicts_what_the_local_normalizer_compares(
@@ -2234,6 +2300,228 @@ class TestValueMapProposals:
             )
 
         connector.assert_not_called()
+
+
+def _tolerance_changes(
+    source: pl.Series, target: pl.Series, *, absolute: float = 0.0, relative: float = 0.0
+) -> int:
+    """Compare one value column under a tolerance and count the changed rows."""
+    ids = pl.Series("id", range(len(source)))
+    config = DiffConfig(
+        primary_keys=["id"],
+        rules=[
+            DiffRule(
+                column_names=["value"], absolute_tolerance=absolute, relative_tolerance=relative
+            )
+        ],
+    )
+    result = DiffEngine(
+        config,
+        pl.DataFrame([ids, source.alias("value")]).lazy(),
+        pl.DataFrame([ids, target.alias("value")]).lazy(),
+    ).run()
+    return result.summary.changed_count
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestIntegerToleranceWidth:
+    """Keep integer tolerances from wrapping around the column's type."""
+
+    def test_a_difference_wider_than_the_type_is_not_forgiven(self) -> None:
+        """Ensure Int8 100 and -100 differ by 200, not by the wrapped -56."""
+        changed = _tolerance_changes(
+            pl.Series([100], dtype=pl.Int8), pl.Series([-100], dtype=pl.Int8), absolute=1.0
+        )
+
+        assert changed == 1
+
+    def test_the_extremes_of_int64_differ(self) -> None:
+        """Ensure the widest signed difference is measured exactly."""
+        changed = _tolerance_changes(
+            pl.Series([-(2**63)], dtype=pl.Int64),
+            pl.Series([2**63 - 1], dtype=pl.Int64),
+            absolute=1.0,
+        )
+
+        assert changed == 1
+
+    def test_a_relative_allowance_uses_the_true_magnitude(self) -> None:
+        """Ensure `abs(-128)` on Int8 is 128, so -127 is within half of it."""
+        changed = _tolerance_changes(
+            pl.Series([-128], dtype=pl.Int8), pl.Series([-127], dtype=pl.Int8), relative=0.5
+        )
+
+        assert changed == 0
+
+    def test_unsigned_extremes_differ(self) -> None:
+        """Ensure 0 and the UInt64 maximum are never within a small allowance."""
+        changed = _tolerance_changes(
+            pl.Series([0], dtype=pl.UInt64), pl.Series([2**64 - 1], dtype=pl.UInt64), absolute=1.0
+        )
+
+        assert changed == 1
+
+    def test_text_cast_to_a_narrow_integer_is_widened_too(self) -> None:
+        """Ensure a target soft-cast to the source's Int8 is measured without wrapping."""
+        changed = _tolerance_changes(
+            pl.Series([100], dtype=pl.Int8), pl.Series(["-100"]), absolute=1.0
+        )
+
+        assert changed == 1
+
+    @pytest.mark.parametrize(
+        ("source", "target", "changed"),
+        [
+            pytest.param([5, 7], [7, 5], 0, id="within"),
+            pytest.param([5, 7], [9, 2], 2, id="beyond"),
+        ],
+    )
+    def test_mixed_integer_widths_still_compare_by_value(
+        self, source: list[int], target: list[int], changed: int
+    ) -> None:
+        """Ensure Int8 against Int64 keeps its ordinary verdicts."""
+        assert (
+            _tolerance_changes(
+                pl.Series(source, dtype=pl.Int8),
+                pl.Series(target, dtype=pl.Int64),
+                absolute=2.0,
+            )
+            == changed
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestFractionalSeconds:
+    """Read `%f` in `datetime_format` as Python does: a fraction of a second."""
+
+    @pytest.mark.parametrize(
+        ("python", "polars"),
+        [
+            pytest.param("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S%.f", id="dot-fraction"),
+            pytest.param("%H%M%S%f", "%H%M%S%6f", id="bare-fraction"),
+            pytest.param("100%%f %Y", "100%%f %Y", id="escaped-percent"),
+            pytest.param("%%.%f", "%%%.f", id="escape-then-fraction"),
+            pytest.param("%Y-%m-%d", "%Y-%m-%d", id="no-fraction"),
+        ],
+    )
+    def test_it_spells_the_fraction_for_polars(self, python: str, polars: str) -> None:
+        """Ensure only a `%f` directive is rewritten, never an escaped `%%f`."""
+        assert _polars_datetime_format(python) == polars
+
+    def test_it_parses_one_to_six_digits_as_a_fraction(self) -> None:
+        """Ensure `.5` is half a second, not five nanoseconds."""
+        stamps = ["2026-01-02 01:02:03.5", "2026-01-02 01:02:03.123", "2026-01-02 01:02:03.123456"]
+        target = [
+            datetime(2026, 1, 2, 1, 2, 3, 500000),
+            datetime(2026, 1, 2, 1, 2, 3, 123000),
+            datetime(2026, 1, 2, 1, 2, 3, 123456),
+        ]
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f")],
+        )
+
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1, 2, 3], "ts": stamps}).lazy(),
+            pl.DataFrame({"id": [1, 2, 3], "ts": target}).lazy(),
+        ).run()
+
+        assert result.summary.changed_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestWideIntegerColumns:
+    """Validate which pushdown columns subtract in a wider integer type."""
+
+    def test_it_names_integer_pairs_under_a_tolerance(self) -> None:
+        """Ensure only tolerance columns that compare as integers on both sides are named."""
+        source = pl.Schema(
+            {
+                "id": pl.Int64,
+                "qty": pl.Int8,
+                "legacy_units": pl.UInt32,
+                "price": pl.Int64,
+                "code": pl.String,
+                "exact": pl.Int64,
+                "padded": pl.Int64,
+            }
+        )
+        target = pl.Schema(
+            {
+                "id": pl.Int64,
+                "qty": pl.Int64,
+                "units": pl.UInt32,
+                "price": pl.Float64,
+                "code": pl.Int64,
+                "exact": pl.Int64,
+                "padded": pl.Int64,
+            }
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            default_absolute_tolerance=1.0,
+            rules=[
+                DiffRule(column_names=["legacy_units"], rename_to="units"),
+                DiffRule(column_names=["code"], cast_to="Int64"),
+                DiffRule(column_names=["exact"], absolute_tolerance=0.0),
+                DiffRule(column_names=["padded"], pad_zeros=5),
+            ],
+        )
+        rules = _resolve_pushdown_rules(config, source, target)
+
+        assert _wide_integer_columns(config, rules, source, target) == {"qty", "units", "code"}
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestTypeDriftColumns:
+    """Validate which pushdown columns `strict_types` fails outright."""
+
+    _SOURCE = pl.Schema(
+        {
+            "id": pl.Int64(),
+            "ratio": pl.Float64(),
+            "qty": pl.Int64(),
+            "code": pl.String(),
+            "price": pl.Decimal(10, 2),
+            "seen": pl.String(),
+        }
+    )
+    _TARGET = pl.Schema(
+        {
+            "id": pl.Int64(),
+            "ratio": pl.Int64(),
+            "qty": pl.Int64(),
+            "code": pl.Int64(),
+            "price": pl.Decimal(12, 4),
+            "seen": pl.Datetime("us"),
+        }
+    )
+    _RULES = (
+        DiffRule(column_names=["code"], cast_to="Int64"),
+        DiffRule(column_names=["seen"], datetime_format="%Y-%m-%d"),
+    )
+
+    def test_it_names_columns_whose_normalized_types_differ(self) -> None:
+        """Ensure types are compared after normalization, as a local run compares them."""
+        config = DiffConfig(primary_keys=["id"], strict_types=True, rules=list(self._RULES))
+        rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
+
+        assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == {
+            "ratio",
+            "price",
+        }
+
+    def test_it_names_nothing_unless_strict(self) -> None:
+        """Ensure the default comparison by value is left alone."""
+        config = DiffConfig(primary_keys=["id"], rules=list(self._RULES))
+        rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
+
+        assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()
 
 
 @pytest.mark.unit

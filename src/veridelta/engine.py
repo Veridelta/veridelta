@@ -776,14 +776,61 @@ def _enforce_pushdown_preconditions(
                 _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
 
+_OFFSET_DIRECTIVE: Final = re.compile(r"%%|%[:#]*z")
+"""A literal `%%`, or a `%z` offset directive in any of its chrono spellings."""
+
+
+def _parses_offset(fmt: str) -> bool:
+    """Return whether a `datetime_format` reads a UTC offset, making the result aware.
+
+    Args:
+        fmt (str): Format from a rule's `datetime_format`.
+
+    Returns:
+        bool: True when a `%z` directive appears outside a `%%` escape.
+    """
+    return any(token != "%%" for token in _OFFSET_DIRECTIVE.findall(fmt))
+
+
+def _normalized_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
+    """Predict a column's dtype after stages 1 through 7, from its stored dtype.
+
+    Pushdown never materializes the normalized column, so every decision that
+    depends on what a local run compares follows these stage gates, which
+    mirror `_normalize_value_expr` and `_normalize_temporal_expr`:
+
+    - stages 1 through 4 keep the type;
+    - `pad_zeros` stringifies;
+    - `datetime_format` parses text into microsecond timestamps, aware in UTC
+      when the format reads an offset;
+    - `timezone` relabels a timestamp's zone and keeps its unit;
+    - `cast_to` decides the final type outright.
+
+    Args:
+        effective (EffectiveRule): Rule with global defaults folded in.
+        dtype (pl.DataType | None): Stored dtype, or None when unknown.
+
+    Returns:
+        pl.DataType | None: The compared dtype, or None when it depends on the
+            unknown stored type.
+    """
+    if effective["cast_to"] is not None:
+        return _CAST_TARGETS[effective["cast_to"]]
+    if effective["pad_zeros"] is not None:
+        dtype = pl.String()
+    fmt = effective["datetime_format"]
+    if fmt and isinstance(dtype, (pl.String, pl.Utf8)):
+        dtype = pl.Datetime("us", "UTC" if _parses_offset(fmt) else None)
+    if effective["timezone"] and isinstance(dtype, pl.Datetime):
+        dtype = pl.Datetime(dtype.time_unit, effective["timezone"])
+    return dtype
+
+
 def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
     """Predict whether the local engine compares a source column as a number.
 
     `_build_match_expr` applies tolerances only when the normalized source
-    column is numeric and compares everything else exactly. Pushdown never
-    materializes the normalized column, so the answer is predicted from the
-    probed dtype by following the same stage gates as `_normalize_value_expr`
-    and `_normalize_temporal_expr`.
+    column is numeric and compares everything else exactly.
 
     Args:
         effective (EffectiveRule): Rule with global defaults folded in.
@@ -793,38 +840,92 @@ def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -
     Returns:
         bool: True when a tolerance should reach the warehouse predicate.
     """
-    if effective["cast_to"] is not None:
-        return _CAST_TARGETS[effective["cast_to"]].is_numeric()
-    if effective["pad_zeros"] is not None:
-        # Stage 5 stringifies, and a datetime_format then parses the text.
-        return False
-    if effective["datetime_format"] and isinstance(dtype, (pl.String, pl.Utf8)):
-        return False
-    return dtype is None or dtype.is_numeric()
+    normalized = _normalized_dtype(effective, dtype)
+    return normalized is None or normalized.is_numeric()
 
 
 def _compares_as_text(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
     """Predict whether the local engine compares a source column as text.
 
     `_build_match_expr` applies a similarity limit only when the normalized
-    source column is a string, so pushdown follows the same stage gates as
-    `_compares_numerically` to decide which columns a limit may reach.
+    source column is a string.
 
     Args:
         effective (EffectiveRule): Rule with global defaults folded in.
         dtype (pl.DataType | None): Probed source dtype, or None when the
-            probe did not report one, in which case the limit is kept.
+            probe did not report one, in which case the limit is kept unless
+            a `datetime_format` would parse the text.
 
     Returns:
         bool: True when a similarity limit should reach the warehouse predicate.
     """
-    if effective["cast_to"] is not None:
-        return effective["cast_to"] == "String"
-    is_text = dtype is None or isinstance(dtype, (pl.String, pl.Utf8))
-    if effective["datetime_format"] and (effective["pad_zeros"] is not None or is_text):
-        # A format parses text into a datetime, including text stage 5 padded.
-        return False
-    return effective["pad_zeros"] is not None or is_text
+    normalized = _normalized_dtype(effective, dtype)
+    if normalized is None:
+        return not effective["datetime_format"]
+    return isinstance(normalized, (pl.String, pl.Utf8))
+
+
+_FRACTION_SPELLINGS: Final[dict[str, str]] = {"%%": "%%", ".%f": "%.f", "%f": "%6f"}
+"""Polars spellings of Python's fraction directive, plus the escape that hides one."""
+
+_FRACTION_DIRECTIVE: Final = re.compile(r"%%|\.%f|%f")
+"""A literal `%%`, which may precede an `f`, or `%f` with or without its dot."""
+
+
+def _polars_datetime_format(fmt: str) -> str:
+    """Spell a Python `strptime` format the way Polars reads it.
+
+    Python's `%f` is a fraction of a second, one to six digits. Polars' `%f`
+    counts nanoseconds, so `.5` would read as five of them. A dot and its
+    fraction become `%.f`, and a `%f` without a dot becomes `%6f`, exactly six
+    digits. `%%` is a literal percent sign, so `%%f` is left alone.
+
+    Args:
+        fmt (str): Format from a rule's `datetime_format`.
+
+    Returns:
+        str: The same format in Polars' directive language.
+    """
+    return _FRACTION_DIRECTIVE.sub(lambda match: _FRACTION_SPELLINGS[match[0]], fmt)
+
+
+def _tolerance_match(
+    src: pl.Expr,
+    tgt: pl.Expr,
+    rule: EffectiveRule,
+    dtype: pl.DataType,
+    tgt_dtype: pl.DataType | None,
+) -> pl.Expr:
+    """Match two numeric values within a rule's absolute and relative tolerance.
+
+    Equal values match outright, so NaN meets NaN and an infinity meets itself.
+    Integer pairs are widened to Int128 first, so neither the difference nor the
+    source's magnitude can wrap around the column's type: Int8 `100` and `-100`
+    differ by 200, and `abs(-128)` is 128.
+
+    Args:
+        src (pl.Expr): Normalized source values.
+        tgt (pl.Expr): Normalized target values, after any soft cast.
+        rule (EffectiveRule): Rule carrying `abs_tol` and `rel_tol`.
+        dtype (pl.DataType): Source dtype, which is numeric.
+        tgt_dtype (pl.DataType | None): Type the target is compared as.
+
+    Returns:
+        pl.Expr: True where the pair is equal or within the allowance.
+    """
+    if dtype.is_integer() and tgt_dtype is not None and tgt_dtype.is_integer():
+        src = src.cast(pl.Int128)
+        tgt = tgt.cast(pl.Int128)
+    # Subtract the smaller value from the larger: `tgt - src` on unsigned
+    # columns wraps below zero instead of going negative.
+    abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
+    threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
+    within = abs_diff <= threshold
+    if dtype.is_float():
+        # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
+        # non-finite source must never reach the allowance.
+        within = within & src.is_finite()
+    return (src == tgt) | within
 
 
 def _jaro_winkler_pushdown_error(column: str) -> ConfigError:
@@ -1008,6 +1109,93 @@ def _resolve_pushdown_rules(
             )
         )
     return resolved
+
+
+def _compared_dtypes(
+    diff: DiffConfig, rule: DiffRule, source_schema: pl.Schema, target_schema: pl.Schema
+) -> tuple[pl.DataType | None, pl.DataType | None]:
+    """Predict the dtypes a local run would compare one pushdown column as.
+
+    Args:
+        diff (DiffConfig): Comparison settings the rule was resolved under.
+        rule (DiffRule): A rule from `_resolve_pushdown_rules`, naming the
+            stored source column and, when renamed, the target's name.
+        source_schema (pl.Schema): Probed source schema.
+        target_schema (pl.Schema): Probed target schema.
+
+    Returns:
+        tuple[pl.DataType | None, pl.DataType | None]: The normalized source and
+            target dtypes, each None when its probe did not report one.
+    """
+    effective = _fold_rule_defaults(rule, diff)
+    stored = rule.column_names[0]
+    return (
+        _normalized_dtype(effective, source_schema.get(stored)),
+        _normalized_dtype(effective, target_schema.get(rule.rename_to or stored)),
+    )
+
+
+def _wide_integer_columns(
+    diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
+) -> frozenset[str]:
+    """Name the tolerance columns a warehouse must subtract in a wider integer type.
+
+    A local run widens integer pairs to Int128 before measuring a tolerance.
+    In SQL the stored type wraps or overflows instead: DuckDB raises on an
+    unsigned difference below zero, and `ABS` of the smallest BIGINT overflows.
+
+    Args:
+        diff (DiffConfig): Comparison settings the rules were resolved under.
+        rules (Sequence[DiffRule]): Rules from `_resolve_pushdown_rules`.
+        source_schema (pl.Schema): Probed source schema.
+        target_schema (pl.Schema): Probed target schema.
+
+    Returns:
+        frozenset[str]: Target names of the columns that carry a tolerance and
+            compare as integers on both sides.
+    """
+    wide: set[str] = set()
+    for rule in rules:
+        if not (rule.absolute_tolerance or rule.relative_tolerance):
+            continue
+        source, target = _compared_dtypes(diff, rule, source_schema, target_schema)
+        if (
+            source is not None
+            and target is not None
+            and source.is_integer()
+            and target.is_integer()
+        ):
+            wide.add(rule.rename_to or rule.column_names[0])
+    return frozenset(wide)
+
+
+def _type_drift_columns(
+    diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
+) -> frozenset[str]:
+    """Name the columns `strict_types` fails because their two sides differ in type.
+
+    A local run compares the dtypes the two sides hold after normalization and
+    fails every row of a column where they differ. A warehouse reports its own
+    types through its driver, so the same comparison runs on those.
+
+    Args:
+        diff (DiffConfig): Comparison settings the rules were resolved under.
+        rules (Sequence[DiffRule]): Rules from `_resolve_pushdown_rules`.
+        source_schema (pl.Schema): Probed source schema.
+        target_schema (pl.Schema): Probed target schema.
+
+    Returns:
+        frozenset[str]: Target names of the drifting columns, empty unless
+            `strict_types` is on.
+    """
+    if not diff.strict_types:
+        return frozenset()
+    drift: set[str] = set()
+    for rule in rules:
+        source, target = _compared_dtypes(diff, rule, source_schema, target_schema)
+        if source is not None and target is not None and source != target:
+            drift.add(rule.rename_to or rule.column_names[0])
+    return frozenset(drift)
 
 
 def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
@@ -1491,6 +1679,8 @@ def _check_pushdown_plan(
         compiler.compile_duplicate_key_query(
             table, keys, is_source=is_source, key_rules=plan.key_rules, types=schema
         )
+    wide_integers = _wide_integer_columns(diff, plan.rules, plan.source_schema, plan.target_schema)
+    type_drift = _type_drift_columns(diff, plan.rules, plan.source_schema, plan.target_schema)
     for compile_rows in (compiler.compile_query, compiler.compile_column_mismatch_query):
         compile_rows(
             source_table,
@@ -1500,6 +1690,8 @@ def _check_pushdown_plan(
             source_types=plan.source_schema,
             target_types=plan.target_schema,
             key_rules=plan.key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
         )
     for compile_keys in (compiler.compile_added_query, compiler.compile_missing_query):
         compile_keys(
@@ -1557,6 +1749,8 @@ def _collect_pushdown_summary(
     target_total = _pushdown_row_count(connector, target_table)
     # Every join reads normalized keys, so a key the rules transform matches
     # across the two relations exactly where a local run would match it.
+    wide_integers = _wide_integer_columns(diff, rules, source_schema, target_schema)
+    type_drift = _type_drift_columns(diff, rules, source_schema, target_schema)
     mismatch_sql = connector.compiler.compile_query(
         source_table,
         target_table,
@@ -1565,6 +1759,8 @@ def _collect_pushdown_summary(
         source_types=source_schema,
         target_types=target_schema,
         key_rules=key_rules,
+        wide_integers=wide_integers,
+        type_drift=type_drift,
     )
     added_sql = connector.compiler.compile_added_query(
         source_table,
@@ -1595,6 +1791,8 @@ def _collect_pushdown_summary(
         source_types=source_schema,
         target_types=target_schema,
         key_rules=key_rules,
+        wide_integers=wide_integers,
+        type_drift=type_drift,
     )
     if columns_sql is not None:
         tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
@@ -2741,7 +2939,11 @@ class DiffEngine:
             is_text = True
 
         if rule["datetime_format"] and is_text:
-            expr = expr.str.strptime(pl.Datetime, format=rule["datetime_format"], strict=False)
+            expr = expr.str.strptime(
+                pl.Datetime,
+                format=_polars_datetime_format(rule["datetime_format"]),
+                strict=False,
+            )
             applied = True
 
         return expr.alias(column) if applied else None
@@ -2888,6 +3090,8 @@ class DiffEngine:
         tgt = pl.col(f"{col_name}_target")
 
         tgt_dtype = self.target.collect_schema().get(col_name)
+        # The type the target is compared as, once any soft cast below applies.
+        compared_tgt_dtype = tgt_dtype
 
         if dtype != tgt_dtype:
             if self.config.strict_types:
@@ -2898,20 +3102,11 @@ class DiffEngine:
                 return val_match
             elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
+                compared_tgt_dtype = dtype
 
         similar = _similarity_test(rule) if isinstance(dtype, (pl.String, pl.Utf8)) else None
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
-            # Subtract the smaller value from the larger: `tgt - src` on unsigned
-            # columns wraps below zero instead of going negative.
-            abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
-            threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
-            within = abs_diff <= threshold
-            if dtype.is_float():
-                # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
-                # non-finite source must never reach the allowance.
-                within = within & src.is_finite()
-            # Equal values match outright: NaN meets NaN, and an infinity itself.
-            val_match = (src == tgt) | within
+            val_match = _tolerance_match(src, tgt, rule, dtype, compared_tgt_dtype)
         elif similar is not None:
             # Equal text matches outright, so only a differing pair is scored.
             val_match = (src == tgt) | _similarity_expr(src, tgt, similar)

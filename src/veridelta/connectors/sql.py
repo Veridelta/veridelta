@@ -215,6 +215,26 @@ bytes, which is why the parity tests compare ASCII text.
 """
 
 
+_REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: "",
+    SQLDialect.DATABRICKS: "",
+    SQLDialect.DUCKDB: ", 'g'",
+}
+"""Trailing `REGEXP_REPLACE` arguments that make it replace every match, as Polars'
+`replace_all` does. Snowflake and Databricks already replace every match; DuckDB
+replaces only the first unless given the `'g'` option."""
+
+
+_WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: "NUMBER(38, 0)",
+    SQLDialect.DATABRICKS: "DECIMAL(38, 0)",
+    SQLDialect.DUCKDB: "DECIMAL(38, 0)",
+}
+"""An exact integer type wide enough to subtract any two stored integers in.
+Thirty-eight digits hold every difference of two 64-bit values, signed or not,
+and `ABS` of the smallest BIGINT, which overflows in the column's own type."""
+
+
 _DATABASE_IDENTIFIER_QUOTES: Final[dict[str, tuple[str, str]]] = {
     "clickhouse": ("`", "`"),
     "mssql": ("[", "]"),
@@ -415,6 +435,8 @@ class SQLPushdownCompiler:
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
+        wide_integers: frozenset[str] = frozenset(),
+        type_drift: frozenset[str] = frozenset(),
     ) -> str:
         """Assemble a changed-row inner-join query from tables, keys, and rules.
 
@@ -436,6 +458,14 @@ class SQLPushdownCompiler:
             key_rules (Sequence[DiffRule] | None): One rule per key that needs
                 normalizing, naming the stored source column and, for a renamed
                 key, its `rename_to`. Keys without one are joined as stored.
+            wide_integers (frozenset[str]): Compared columns, by target name,
+                that hold integers on both sides after normalization. Their
+                tolerance is measured in `_WIDE_INTEGER_TYPES`, so a difference
+                wider than the stored type neither wraps nor overflows.
+            type_drift (frozenset[str]): Compared columns, by target name, that
+                `strict_types` fails because the two sides hold different
+                types after normalization. No value of theirs ever matches, and
+                two NULLs meet only under `treat_null_as_equal`.
 
         Returns:
             str: `SELECT ... FROM src INNER JOIN tgt ON ... WHERE NOT (...)` statement
@@ -474,6 +504,8 @@ class SQLPushdownCompiler:
                 self._qualify(source_alias, target_column),
                 self._qualify(target_alias, target_column),
                 rule,
+                wide=target_column in wide_integers,
+                drift=target_column in type_drift,
             )
             for _source_column, target_column, rule in compared
         ]
@@ -590,6 +622,8 @@ class SQLPushdownCompiler:
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
+        wide_integers: frozenset[str] = frozenset(),
+        type_drift: frozenset[str] = frozenset(),
     ) -> str | None:
         """Assemble a per-column mismatch tally over the joined rows.
 
@@ -612,6 +646,10 @@ class SQLPushdownCompiler:
                 emitted unfiltered.
             target_types (ColumnTypes | None): Probed target dtypes.
             key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
+            wide_integers (frozenset[str]): Integer columns to measure in a wide
+                type, as for `compile_query`.
+            type_drift (frozenset[str]): Columns `strict_types` fails, as for
                 `compile_query`.
 
         Returns:
@@ -646,6 +684,8 @@ class SQLPushdownCompiler:
                 self._qualify(source_alias, target_column),
                 self._qualify(target_alias, target_column),
                 rule,
+                wide=target_column in wide_integers,
+                drift=target_column in type_drift,
             )
             alias = self._quote_ident(target_column)
             terms.append(
@@ -1160,7 +1200,7 @@ class SQLPushdownCompiler:
         return usable_sentinels(rule.null_values, dtype)
 
     def _apply_regex_replace(self, expr: str, rule: DiffRule) -> str:
-        """Apply `REGEXP_REPLACE` for each pattern/replacement pair.
+        """Apply `REGEXP_REPLACE` for each pattern/replacement pair, to every match.
 
         Args:
             expr (str): SQL expression to sanitize.
@@ -1172,9 +1212,11 @@ class SQLPushdownCompiler:
         if not rule.regex_replace:
             return expr
         wrapped = expr
+        flags = _REGEX_REPLACE_FLAGS[self.dialect]
         for pattern, replacement in rule.regex_replace.items():
             wrapped = (
-                f"REGEXP_REPLACE({wrapped}, {self._literal(pattern)}, {self._literal(replacement)})"
+                f"REGEXP_REPLACE({wrapped}, {self._literal(pattern)}, "
+                f"{self._literal(replacement)}{flags})"
             )
         return wrapped
 
@@ -1457,24 +1499,36 @@ class SQLPushdownCompiler:
         rel_tol = rule.relative_tolerance or 0.0
         return abs_tol != 0.0 or rel_tol != 0.0
 
-    def _numeric_predicate(self, src_expr: str, tgt_expr: str, rule: DiffRule) -> str:
+    def _numeric_predicate(
+        self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
+    ) -> str:
         """Build the engine-equivalent absolute/relative tolerance predicate.
 
         Equal values match outright, so NaN meets NaN and an infinity meets
         itself. The allowance applies only to a finite source: `0 * ABS(inf)` is
         NaN, and every supported engine sorts NaN above all numbers, so an
-        unguarded `ABS(diff) <= NaN` would accept any target.
+        unguarded `ABS(diff) <= NaN` would accept any target. Integers are
+        always finite, so a widened pair needs no guard.
 
         Args:
             src_expr (str): Transformed source expression.
             tgt_expr (str): Transformed target expression.
             rule (DiffRule): Rule providing tolerances.
+            wide (bool): Both sides are integers; cast them to
+                `_WIDE_INTEGER_TYPES` before subtracting, as the local engine
+                widens them to Int128.
 
         Returns:
-            str: `(src = tgt OR (ABS(src) < inf AND ABS(tgt - src) <= abs + (rel * ABS(src))))`.
+            str: `(src = tgt OR (ABS(src) < inf AND ABS(tgt - src) <= abs + (rel * ABS(src))))`,
+                or, widened, `(src = tgt OR ABS(tgt - src) <= abs + (rel * ABS(src)))`.
         """
         abs_tol = self._number(rule.absolute_tolerance or 0.0)
         rel_tol = self._number(rule.relative_tolerance or 0.0)
+        if wide:
+            wide_type = _WIDE_INTEGER_TYPES[self.dialect]
+            src = f"CAST({src_expr} AS {wide_type})"
+            tgt = f"CAST({tgt_expr} AS {wide_type})"
+            return f"({src} = {tgt} OR ABS({tgt} - {src}) <= {abs_tol} + ({rel_tol} * ABS({src})))"
         infinity = _INFINITY_LITERALS[self.dialect]
         return (
             f"({src_expr} = {tgt_expr} OR (ABS({src_expr}) < {infinity} AND "
@@ -1502,13 +1556,16 @@ class SQLPushdownCompiler:
             f"{distance}({src_expr}, {tgt_expr}) <= {self._number(limit)})"
         )
 
-    def _loosened_predicate(self, src_expr: str, tgt_expr: str, rule: DiffRule) -> str | None:
+    def _loosened_predicate(
+        self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
+    ) -> str | None:
         """Build the stage 8 predicate for a rule that loosens equality.
 
         Args:
             src_expr (str): Transformed source expression.
             tgt_expr (str): Transformed target expression.
             rule (DiffRule): Rule providing a tolerance or a similarity limit.
+            wide (bool): Measure a tolerance in the wide integer type.
 
         Returns:
             str | None: The tolerance or edit-distance predicate, or None when
@@ -1525,18 +1582,30 @@ class SQLPushdownCompiler:
                 "max_levenshtein_distance, or compare the tables locally."
             )
         if self._has_tolerance(rule):
-            return self._numeric_predicate(src_expr, tgt_expr, rule)
+            return self._numeric_predicate(src_expr, tgt_expr, rule, wide=wide)
         if rule.max_levenshtein_distance is not None:
             return self._edit_distance_predicate(src_expr, tgt_expr, rule.max_levenshtein_distance)
         return None
 
-    def _compare(self, src_expr: str, tgt_expr: str, rule: DiffRule) -> str:
+    def _compare(
+        self,
+        src_expr: str,
+        tgt_expr: str,
+        rule: DiffRule,
+        *,
+        wide: bool = False,
+        drift: bool = False,
+    ) -> str:
         """Build the final match predicate, including null-safe equality.
 
         Args:
             src_expr (str): Fully transformed source expression.
             tgt_expr (str): Fully transformed target expression.
             rule (DiffRule): Rule providing comparison and null semantics.
+            wide (bool): Measure a tolerance in the wide integer type.
+            drift (bool): The sides hold different types under `strict_types`,
+                so no value matches. The values are never compared, which also
+                keeps the warehouse from casting one type to the other.
 
         Returns:
             str: Boolean SQL expression.
@@ -1544,7 +1613,11 @@ class SQLPushdownCompiler:
         Raises:
             ConfigError: If the rule sets `min_jaro_winkler_similarity`.
         """
-        loosened = self._loosened_predicate(src_expr, tgt_expr, rule)
+        if drift:
+            if rule.treat_null_as_equal:
+                return f"({src_expr} IS NULL AND {tgt_expr} IS NULL)"
+            return "FALSE"
+        loosened = self._loosened_predicate(src_expr, tgt_expr, rule, wide=wide)
         if loosened is not None:
             if rule.treat_null_as_equal:
                 return f"({src_expr} IS NULL AND {tgt_expr} IS NULL) OR ({loosened})"
