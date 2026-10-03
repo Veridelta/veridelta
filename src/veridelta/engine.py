@@ -17,7 +17,18 @@ from functools import partial
 from importlib.util import find_spec
 from pathlib import Path
 from types import ModuleType
-from typing import Any, ClassVar, Final, Literal, Protocol, TypeAlias, TypedDict, TypeGuard, TypeVar
+from typing import (
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    NamedTuple,
+    Protocol,
+    TypeAlias,
+    TypedDict,
+    TypeGuard,
+    TypeVar,
+)
 from urllib.parse import urlsplit
 
 import polars as pl
@@ -29,7 +40,7 @@ from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_database_select
 from veridelta.connectors.warehouse import DatabricksConnector, SnowflakeConnector
-from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
+from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError, VerideltaError
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
@@ -1406,6 +1417,101 @@ def _validate_pushdown_schema(
     return source_schema, target_schema
 
 
+class _PushdownPlan(NamedTuple):
+    """What a warehouse run learns before it reads a row.
+
+    Attributes:
+        source_schema (pl.Schema): Probed source columns and types.
+        target_schema (pl.Schema): Probed target columns and types.
+        key_rules (list[DiffRule]): Normalization resolved for each key.
+        rules (list[DiffRule]): One resolved rule per compared column.
+    """
+
+    source_schema: pl.Schema
+    target_schema: pl.Schema
+    key_rules: list[DiffRule]
+    rules: list[DiffRule]
+
+
+def _plan_pushdown(
+    connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
+) -> _PushdownPlan:
+    """Probe both relations, then resolve the keys and rules against them.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+        diff (DiffConfig): Master comparison rules and keys.
+
+    Returns:
+        _PushdownPlan: The probed schemas and the resolved keys and rules.
+
+    Raises:
+        ConfigError: If the probed relations violate `schema_mode` or omit a
+            primary key, or a rule asks for what the warehouse cannot reproduce.
+    """
+    source_schema, target_schema = _validate_pushdown_schema(
+        connector, source_table, target_table, diff
+    )
+    return _PushdownPlan(
+        source_schema,
+        target_schema,
+        _resolve_pushdown_keys(diff, source_schema, target_schema),
+        _resolve_pushdown_rules(diff, source_schema, target_schema),
+    )
+
+
+def _check_pushdown_plan(
+    connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
+) -> None:
+    """Do what a warehouse run does before reading a row, and compile the rest.
+
+    The two schema probes are the only statements executed. Every statement a
+    run would execute after them is compiled against the probed types, so a
+    rule the warehouse cannot spell fails here.
+
+    Args:
+        connector (PushdownSession): Connected session with a matching compiler.
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+        diff (DiffConfig): Master comparison rules and keys.
+
+    Raises:
+        ConfigError: If the probed relations violate `schema_mode` or omit a
+            primary key, or a rule asks for what the warehouse cannot reproduce.
+    """
+    plan = _plan_pushdown(connector, source_table, target_table, diff)
+    compiler = connector.compiler
+    keys = diff.primary_keys
+    for table, schema, is_source in (
+        (source_table, plan.source_schema, True),
+        (target_table, plan.target_schema, False),
+    ):
+        compiler.compile_duplicate_key_query(
+            table, keys, is_source=is_source, key_rules=plan.key_rules, types=schema
+        )
+    for compile_rows in (compiler.compile_query, compiler.compile_column_mismatch_query):
+        compile_rows(
+            source_table,
+            target_table,
+            keys,
+            plan.rules,
+            source_types=plan.source_schema,
+            target_types=plan.target_schema,
+            key_rules=plan.key_rules,
+        )
+    for compile_keys in (compiler.compile_added_query, compiler.compile_missing_query):
+        compile_keys(
+            source_table,
+            target_table,
+            keys,
+            source_types=plan.source_schema,
+            target_types=plan.target_schema,
+            key_rules=plan.key_rules,
+        )
+
+
 def _collect_pushdown_summary(
     connector: PushdownSession,
     source_table: str,
@@ -1435,11 +1541,9 @@ def _collect_pushdown_summary(
         DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If the warehouse returns a malformed aggregate.
     """
-    source_schema, target_schema = _validate_pushdown_schema(
+    source_schema, target_schema, key_rules, rules = _plan_pushdown(
         connector, source_table, target_table, diff
     )
-    key_rules = _resolve_pushdown_keys(diff, source_schema, target_schema)
-    rules = _resolve_pushdown_rules(diff, source_schema, target_schema)
     # As in a local run, a ConfigError from rule resolution wins over repeated
     # keys, and repeated keys stop the run before any count or join executes.
     _reject_duplicate_pushdown_keys(
@@ -1884,6 +1988,86 @@ def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFin
     return findings
 
 
+def _schema_frame(config: SourceRef) -> pl.LazyFrame:
+    """Read one local side's columns and types, as a frame with no rows.
+
+    A database `table` is read with a zero-row probe. Files and lakehouse
+    tables are opened as a run opens them; formats without a lazy reader,
+    such as JSON and Excel, are read whole.
+
+    Args:
+        config (SourceRef): File, lakehouse, or database configuration.
+
+    Returns:
+        pl.LazyFrame: An empty frame with the side's schema.
+
+    Raises:
+        VerideltaError: If the side cannot be opened or read.
+    """
+    if isinstance(config, DatabaseConfig):
+        with DatabaseConnector(config, probe=True) as database:
+            database.connect()
+            return database.lazyframe()
+    return pl.LazyFrame(schema=LoaderFactory.load(config).collect_schema())
+
+
+def _local_schema_findings(
+    diff: DiffConfig, source: SourceRef, target: SourceRef
+) -> list[ConfigFinding]:
+    """Check the rules against two local sides' stored columns.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        source (SourceRef): Source configuration.
+        target (SourceRef): Target configuration.
+
+    Returns:
+        list[ConfigFinding]: An error if a side cannot be read or a rule does
+            not fit, or a warning per side that reads a query, which is not run.
+    """
+    queries = [
+        _warning(
+            f"The {label} reads a query, which validate does not run, so the rules were "
+            "not checked against stored columns."
+        )
+        for label, config in (("source", source), ("target", target))
+        if isinstance(config, DatabaseConfig) and config.query is not None
+    ]
+    if queries:
+        return queries
+    try:
+        source_frame, target_frame = _schema_frame(source), _schema_frame(target)
+    except (VerideltaError, OSError, pl.exceptions.PolarsError) as exc:
+        return [_error(f"Could not read the schemas: {exc}")]
+    try:
+        DiffEngine.validate_rules(diff, source_frame, target_frame)
+    except ConfigError as exc:
+        return [_error(str(exc))]
+    return []
+
+
+def _pushdown_schema_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
+    """Probe a warehouse pair and compile its statements without running them.
+
+    Args:
+        diff (DiffConfig): Comparison settings and rules.
+        pair (_WarehousePair): The warehouse both sides share.
+
+    Returns:
+        list[ConfigFinding]: An error if the session, the probes, or a rule
+            fails, else nothing.
+    """
+    try:
+        pair.with_session(
+            lambda session, source_table, target_table: _check_pushdown_plan(
+                session, source_table, target_table, diff
+            )
+        )
+    except VerideltaError as exc:
+        return [_error(str(exc))]
+    return []
+
+
 DEFAULT_MIN_CONFIDENCE: Final = 0.95
 """Share of a source value's rows that must agree on one target value before it
 is proposed. Above one half, at most one target can qualify, and 5% leaves room
@@ -2207,12 +2391,12 @@ class DiffEngine:
 
     @staticmethod
     def check_configs(
-        diff: DiffConfig, source: SourceRef, target: SourceRef
+        diff: DiffConfig, source: SourceRef, target: SourceRef, *, schemas: bool = False
     ) -> list[ConfigFinding]:
-        """Check a loaded configuration for what would stop a run, offline.
+        """Check a loaded configuration for what would stop a run.
 
-        Nothing connects and no rows are read, so the checks need only the
-        configuration and the installed extras:
+        By default nothing connects and no rows are read, so the checks need
+        only the configuration and the installed extras:
 
         - the pair is one an engine can compare: both local, or two tables on
           one warehouse connection;
@@ -2223,10 +2407,19 @@ class DiffEngine:
         - on a warehouse pair, settings the warehouse refuses for some stored
           names or types, reported as warnings.
 
+        With `schemas`, and no errors so far, each side's columns are read too,
+        but never its rows. Local sides are checked with `validate_rules`; a
+        database `table` is read with a zero-row probe, and a `query` is not
+        run at all. A warehouse pair runs its two schema probes, then compiles
+        every comparison statement without executing it, which settles the
+        warnings above one way or the other.
+
         Args:
             diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source configuration.
             target (SourceRef): Target configuration.
+            schemas (bool): Also connect and check the rules against the
+                stored columns.
 
         Returns:
             list[ConfigFinding]: Errors and warnings, empty when nothing is
@@ -2238,9 +2431,13 @@ class DiffEngine:
         findings += _regex_findings(diff, pushdown=pair is not None)
         if pair is None:
             findings += _fuzzy_extra_findings(diff)
-        else:
-            findings += _pushdown_findings(diff, pair)
-        return findings
+        if not schemas:
+            return findings if pair is None else findings + _pushdown_findings(diff, pair)
+        if any(finding.severity == "error" for finding in findings):
+            return [*findings, _warning("Schemas were not checked, because of the errors above.")]
+        if pair is None:
+            return findings + _local_schema_findings(diff, source, target)
+        return findings + _pushdown_schema_findings(diff, pair)
 
     @classmethod
     def propose_value_maps_from_configs(

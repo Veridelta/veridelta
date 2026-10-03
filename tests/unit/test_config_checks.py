@@ -3,11 +3,15 @@
 
 """Unit tests for `DiffEngine.check_configs`, the offline half of `veridelta validate`."""
 
+from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
+import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
+from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.engine import DiffEngine
 from veridelta.models import (
     ConfigFinding,
@@ -52,12 +56,14 @@ _CSV = SourceConfig(path="a.csv")
 _PARQUET = SourceConfig(path="b.parquet", format="parquet")
 
 
-def _check(source: SourceRef, target: SourceRef, **diff: Any) -> list[tuple[str, str]]:
+def _check(
+    source: SourceRef, target: SourceRef, *, schemas: bool = False, **diff: Any
+) -> list[tuple[str, str]]:
     """Run the checks and flatten each finding to (severity, message)."""
-    config = DiffConfig(primary_keys=["id"], **diff)
+    config = DiffConfig(**{"primary_keys": ["id"], **diff})
     return [
         (finding.severity, finding.message)
-        for finding in DiffEngine.check_configs(config, source, target)
+        for finding in DiffEngine.check_configs(config, source, target, schemas=schemas)
     ]
 
 
@@ -283,3 +289,158 @@ class TestConfigChecks:
             "severity": "error",
             "message": "Mixed file/lakehouse/database and warehouse backends are unsupported.",
         }
+
+
+def _parquet_pair(
+    tmp_path: Path, target: pl.DataFrame | None = None
+) -> tuple[SourceRef, SourceRef]:
+    """Write a source and target Parquet file, returning their configs."""
+    source_frame = pl.DataFrame({"id": [1, 2], "amount": [10, 20], "name": ["a", "b"]})
+    source_frame.write_parquet(tmp_path / "source.parquet")
+    (source_frame if target is None else target).write_parquet(tmp_path / "target.parquet")
+    return (
+        SourceConfig(path=str(tmp_path / "source.parquet"), format="parquet"),
+        SourceConfig(path=str(tmp_path / "target.parquet"), format="parquet"),
+    )
+
+
+_WAREHOUSE_SCHEMA = {"ID": pl.Int64(), "NAME": pl.String(), "SEEN_AT": pl.String()}
+
+
+def _warehouse_session(mocker: MockerFixture) -> MagicMock:
+    """Patch the Snowflake connector with a session that answers schema probes only."""
+    connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+    session: MagicMock = connector_cls.return_value
+    session.compiler = SQLPushdownCompiler(SQLDialect.SNOWFLAKE)
+    session.execute_pushdown.return_value = pl.LazyFrame(schema=_WAREHOUSE_SCHEMA)
+    return session
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+@pytest.mark.usefixtures("drivers")
+class TestLiveSchemaChecks:
+    """Validate `check_configs(..., schemas=True)`, which reads schemas but never rows."""
+
+    def test_it_passes_rules_that_fit_the_files(self, tmp_path: Path) -> None:
+        """Ensure a sound pair still reports nothing once its columns are read."""
+        source, target = _parquet_pair(tmp_path)
+
+        assert _check(source, target, schemas=True) == []
+
+    def test_it_checks_rules_against_the_stored_types(self, tmp_path: Path) -> None:
+        """Ensure a rule the stored type cannot honor fails, as it would in a run."""
+        source, target = _parquet_pair(tmp_path)
+        rules = [DiffRule(column_names=["amount"], null_values=["N/A"])]
+
+        [(severity, message)] = _check(source, target, schemas=True, rules=rules)
+
+        assert severity == "error"
+        assert "Column 'amount' has type Int64, which cannot hold" in message
+
+    def test_it_enforces_the_schema_contract(self, tmp_path: Path) -> None:
+        """Ensure `schema_mode` is checked against the real columns."""
+        drifted = pl.DataFrame({"id": [1], "amount": [10], "name": ["a"], "extra": [1]})
+        source, target = _parquet_pair(tmp_path, drifted)
+
+        [(severity, message)] = _check(source, target, schemas=True, schema_mode="exact")
+
+        assert severity == "error"
+        assert "EXACT schema match failed" in message
+
+    def test_it_reports_a_file_it_cannot_open(self, tmp_path: Path) -> None:
+        """Ensure a missing file is one finding rather than a crash."""
+        source, _ = _parquet_pair(tmp_path)
+        missing = SourceConfig(path=str(tmp_path / "missing.parquet"), format="parquet")
+
+        [(severity, message)] = _check(source, missing, schemas=True)
+
+        assert severity == "error"
+        assert message.startswith("Could not read the schemas:")
+
+    def test_it_skips_the_live_check_after_an_offline_error(self, mocker: MockerFixture) -> None:
+        """Ensure nothing is opened for a configuration that cannot run anyway."""
+        connector = mocker.patch("veridelta.engine.SnowflakeConnector")
+
+        findings = _check(_snowflake("SRC"), SourceConfig(path="missing.csv"), schemas=True)
+
+        assert [severity for severity, _ in findings] == ["error", "warning"]
+        assert findings[1][1] == "Schemas were not checked, because of the errors above."
+        connector.assert_not_called()
+
+    def test_it_probes_a_database_table_for_its_columns_only(self, mocker: MockerFixture) -> None:
+        """Ensure a database side is read with the zero-row probe, and its types used."""
+        read = mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            return_value=pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Int64}),
+        )
+        uri = "postgresql://analyst@db.internal/sales"
+        source = DatabaseConfig(uri=uri, table="orders")
+        rules = [DiffRule(column_names=["amount"], null_values=["N/A"])]
+
+        [(severity, message)] = _check(source, source, schemas=True, rules=rules)
+
+        assert severity == "error"
+        assert "cannot hold" in message
+        read.assert_called_with('SELECT * FROM "orders" WHERE 1 = 0', uri)
+        assert read.call_count == 2
+
+    def test_it_does_not_run_a_database_query(self, mocker: MockerFixture) -> None:
+        """Ensure a query side is skipped with a warning, never executed."""
+        read = mocker.patch("veridelta.connectors.database.pl.read_database_uri")
+        query = DatabaseConfig(uri="sqlite:///srv/x.db", query="SELECT * FROM t")
+
+        assert _check(query, _CSV, schemas=True) == [
+            (
+                "warning",
+                "The source reads a query, which validate does not run, so the rules were "
+                "not checked against stored columns.",
+            )
+        ]
+        read.assert_not_called()
+
+    def test_it_probes_a_warehouse_pair_and_compiles_without_executing(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure only schema probes run, and the session is closed."""
+        session = _warehouse_session(mocker)
+        rules = [DiffRule(column_names=["SEEN_AT"], datetime_format="%Y-%m-%d")]
+
+        findings = _check(
+            _snowflake("SRC"), _snowflake("TGT"), schemas=True, primary_keys=["ID"], rules=rules
+        )
+
+        assert findings == []
+        assert [call.kwargs["query_type"] for call in session.execute_pushdown.call_args_list] == [
+            "schema",
+            "schema",
+        ]
+        session.close.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("rule", "expected"),
+        [
+            pytest.param(
+                DiffRule(column_names=["SEEN_AT"], datetime_format="%d %b %Y"),
+                "%b",
+                id="datetime-format",
+            ),
+            pytest.param(
+                DiffRule(column_names=["NAME"], min_jaro_winkler_similarity=0.9),
+                "Column 'NAME' sets min_jaro_winkler_similarity",
+                id="jaro-winkler",
+            ),
+        ],
+    )
+    def test_it_turns_a_warehouse_warning_into_an_error_once_types_are_known(
+        self, mocker: MockerFixture, rule: DiffRule, expected: str
+    ) -> None:
+        """Ensure a refusal that depends on stored types is certain after the probes."""
+        _warehouse_session(mocker)
+
+        [(severity, message)] = _check(
+            _snowflake("SRC"), _snowflake("TGT"), schemas=True, primary_keys=["ID"], rules=[rule]
+        )
+
+        assert severity == "error"
+        assert expected in message

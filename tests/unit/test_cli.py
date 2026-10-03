@@ -661,6 +661,7 @@ class TestValidateCommand:
         """Build the namespace `validate` receives, with every default."""
         fields: dict[str, object] = {
             "config": str(path),
+            "schemas": False,
             "allow_missing_env": False,
             "json": False,
             "quiet": False,
@@ -774,6 +775,26 @@ class TestValidateCommand:
             "references were checked as the text 'VD_VALIDATE_TABLE'.\n"
         )
 
+    def test_it_checks_rules_against_stored_columns_with_schemas(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `--schemas` reads the files' columns, so a rule that cannot fit fails."""
+        (tmp_path / "a.csv").write_text("id,amount\n1,10\n")
+        (tmp_path / "b.csv").write_text("id,amount\n1,10\n")
+        path = self._write(
+            tmp_path,
+            f"source:\n  path: {tmp_path / 'a.csv'}\ntarget:\n  path: {tmp_path / 'b.csv'}\n"
+            "primary_keys: [id]\nrules:\n  - column_names: [amount]\n    null_values: ['N/A']\n",
+        )
+
+        offline = validate(self._args(path))
+        capsys.readouterr()
+        live = validate(self._args(path, schemas=True))
+
+        assert offline == 0
+        assert live == 1
+        assert "Column 'amount' has type Int64, which cannot hold" in capsys.readouterr().out
+
     def test_quiet_keeps_the_findings(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -807,14 +828,24 @@ class TestValidateCommand:
         mock_exit = mocker.patch("veridelta.cli.sys.exit")
         mocker.patch(
             "veridelta.cli.sys.argv",
-            ["veridelta", "validate", "-c", "x.yaml", "--allow-missing-env", "--json", "-q"],
+            [
+                "veridelta",
+                "validate",
+                "-c",
+                "x.yaml",
+                "--schemas",
+                "--allow-missing-env",
+                "--json",
+                "-q",
+            ],
         )
 
         main()
 
         (args,) = handler.call_args.args
-        assert (args.config, args.allow_missing_env, args.json, args.quiet) == (
+        assert (args.config, args.schemas, args.allow_missing_env, args.json, args.quiet) == (
             "x.yaml",
+            True,
             True,
             True,
             True,

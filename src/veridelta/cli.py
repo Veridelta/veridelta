@@ -395,14 +395,15 @@ def _plural(count: int, noun: str) -> str:
 
 
 def validate(args: argparse.Namespace) -> int:
-    """Check a configuration for what would stop a run, without reading any data.
+    """Check a configuration for what would stop a run, without reading any rows.
 
-    Findings go to stdout, one `error:` or `warning:` line each, or as one JSON
+    Offline by default. With `--schemas`, it also connects and checks the rules
+    against each side's stored columns. Findings go to stdout, one `error:` or `warning:` line each, or as one JSON
     object with `--json`. The verdict goes to stderr.
 
     Args:
         args (argparse.Namespace): Parsed arguments carrying the config path,
-            `allow_missing_env`, `json`, and `quiet`.
+            `schemas`, `allow_missing_env`, `json`, and `quiet`.
 
     Returns:
         int: `EXIT_MATCH` when there are no errors, warnings or not;
@@ -411,7 +412,9 @@ def validate(args: argparse.Namespace) -> int:
     unset: list[str] | None = [] if args.allow_missing_env else None
     try:
         diff_config, source_config, target_config = load_config(args.config, unset_env=unset)
-        findings = DiffEngine.check_configs(diff_config, source_config, target_config)
+        findings = DiffEngine.check_configs(
+            diff_config, source_config, target_config, schemas=bool(args.schemas)
+        )
     except ConfigError as exc:
         findings = [ConfigFinding(severity="error", message=str(exc).strip())]
     except Exception as exc:
@@ -550,7 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_parser = subparsers.add_parser(
         "validate",
-        help="Check a configuration for what would stop a run, without reading any data.",
+        help="Check a configuration for what would stop a run, without reading any rows.",
     )
     validate_parser.add_argument(
         "-c",
@@ -558,6 +561,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default="veridelta.yaml",
         help="Path to the YAML configuration file (default: veridelta.yaml)",
+    )
+    validate_parser.add_argument(
+        "--schemas",
+        action="store_true",
+        help=(
+            "Also connect, read each side's columns (never its rows), and check the rules "
+            "against them."
+        ),
     )
     validate_parser.add_argument(
         "--allow-missing-env",
