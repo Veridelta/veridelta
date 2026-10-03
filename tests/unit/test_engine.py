@@ -4,7 +4,7 @@
 """Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
 
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import get_args
@@ -56,7 +56,7 @@ class TestDataIngestorAndLoaders:
 
     def test_it_raises_config_error_for_unsupported_source_types(self) -> None:
         """Ensure an unloadable format fails as configuration, naming what works."""
-        with pytest.raises(ConfigError, match="arrow, csv, excel"):
+        with pytest.raises(ConfigError, match="arrow, avro, csv, excel"):
             LoaderFactory.get_loader("netcdf")
 
     def test_it_implements_a_loader_for_every_declared_source_type(self) -> None:
@@ -2584,3 +2584,71 @@ class TestRuleDryRun:
 
         with pytest.raises(ConfigError, match="Primary keys missing in TARGET"):
             DiffEngine.validate_rules(DiffConfig(primary_keys=["id"]), src, tgt)
+
+
+_AVRO_COLUMNS = {
+    "int64": pl.Series([1, None], dtype=pl.Int64),
+    "int32": pl.Series([2, None], dtype=pl.Int32),
+    "float64": pl.Series([1.5, None], dtype=pl.Float64),
+    "float32": pl.Series([2.5, None], dtype=pl.Float32),
+    "text": pl.Series(["a", None], dtype=pl.String),
+    "flag": pl.Series([True, None], dtype=pl.Boolean),
+    "day": pl.Series([date(2024, 1, 2), None], dtype=pl.Date),
+    "stamp_us": pl.Series([datetime(2024, 1, 2, 3, 4, 5, 6), None], dtype=pl.Datetime("us")),
+    "stamp_ms": pl.Series([datetime(2024, 1, 2, 3, 4, 5), None], dtype=pl.Datetime("ms")),
+    "amount": pl.Series([Decimal("1.50"), None], dtype=pl.Decimal(10, 2)),
+    "blob": pl.Series([b"x", None], dtype=pl.Binary),
+}
+"""One column per dtype the Polars Avro writer supports, each holding a NULL."""
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestAvroLoader:
+    """Validate reading Avro object container files."""
+
+    def test_it_round_trips_every_writable_dtype_with_nulls(self, tmp_path: Path) -> None:
+        """Ensure the types and NULLs an Avro writer stores are the ones compared."""
+        frame = pl.DataFrame({"id": [1, 2], **_AVRO_COLUMNS})
+        path = tmp_path / "events.avro"
+        frame.write_avro(path)
+
+        loaded = LoaderFactory.load(SourceConfig(path=str(path), format="avro")).collect()
+
+        assert loaded.schema == frame.schema
+        assert loaded.equals(frame)
+
+    def test_it_passes_reader_options_through(self, tmp_path: Path) -> None:
+        """Ensure `columns` and `n_rows` reach `pl.read_avro`."""
+        path = tmp_path / "events.avro"
+        pl.DataFrame({"id": [1, 2, 3], "name": ["a", "b", "c"]}).write_avro(path)
+        config = SourceConfig(
+            path=str(path), format="avro", options={"columns": ["name"], "n_rows": 2}
+        )
+
+        loaded = LoaderFactory.load(config).collect()
+
+        assert loaded.to_dict(as_series=False) == {"name": ["a", "b"]}
+
+    def test_an_empty_file_keeps_its_schema(self, tmp_path: Path) -> None:
+        """Ensure zero rows still carry the columns and types a schema check reads."""
+        path = tmp_path / "empty.avro"
+        pl.DataFrame(schema={"id": pl.Int64, "name": pl.String}).write_avro(path)
+
+        loaded = LoaderFactory.load(SourceConfig(path=str(path), format="avro"))
+
+        assert loaded.collect_schema() == pl.Schema({"id": pl.Int64, "name": pl.String})
+
+    def test_it_compares_against_parquet(self, tmp_path: Path) -> None:
+        """Ensure an Avro export and a Parquet copy compare like any two files."""
+        avro, parquet = tmp_path / "legacy.avro", tmp_path / "modern.parquet"
+        pl.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]}).write_avro(avro)
+        pl.DataFrame({"id": [1, 2, 4], "amount": [10.0, 20.5, 40.0]}).write_parquet(parquet)
+
+        summary = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]),
+            SourceConfig(path=str(avro), format="avro"),
+            SourceConfig(path=str(parquet), format="parquet"),
+        ).summary
+
+        assert (summary.changed_count, summary.added_count, summary.removed_count) == (1, 1, 1)

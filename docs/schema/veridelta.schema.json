@@ -640,6 +640,7 @@
                 "json",
                 "ndjson",
                 "arrow",
+                "avro",
                 "excel"
               ],
               "type": "string"

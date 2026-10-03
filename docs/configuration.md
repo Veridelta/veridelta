@@ -25,11 +25,13 @@ File sources may omit `type` (it defaults to `file`) and continue to use `path`,
 
 ### File formats
 
-`format` accepts `csv`, `parquet`, `json`, `ndjson`, `arrow`, and `excel`. Anything else is rejected when the config loads, rather than partway through a run.
+`format` accepts `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, and `excel`. Anything else is rejected when the config loads, rather than partway through a run.
 
 `options` are handed straight to the matching Polars reader, so `{"separator": ";"}` reaches `scan_csv` and `{"sheet_name": "Q3"}` reaches `read_excel`.
 
-Most formats stream. Two do not, because Polars has no lazy reader for them: a `json` document is one array that cannot be parsed incrementally, and a spreadsheet is a random-access container. Both are read whole into memory. Prefer `ndjson` over `json` for anything large.
+Most formats stream. Three do not, because Polars has no lazy reader for them: a `json` document is one array that cannot be parsed incrementally, a spreadsheet is a random-access container, and Polars reads Avro eagerly. All three are read whole into memory. Prefer `ndjson` over `json` for anything large.
+
+Avro files carry their schema, so columns arrive as the writer typed them. `options` takes `columns` and `n_rows`. The reader takes a local path: an object-store URL such as `s3://` is not supported, so copy the file down first.
 
 Excel needs an optional extra:
 
@@ -37,7 +39,7 @@ Excel needs an optional extra:
 uv add 'veridelta[excel]'
 ```
 
-Discrepancy artifacts write to `csv`, `parquet`, `json`, `ndjson`, or `arrow` via `output_format`. Excel is deliberately absent: writing a workbook needs a second dependency that a discrepancy dump does not justify.
+Discrepancy artifacts write to `csv`, `parquet`, `json`, `ndjson`, or `arrow` via `output_format`. Excel is deliberately absent: writing a workbook needs a second dependency that a discrepancy dump does not justify. So is Avro: the Polars writer cannot store several types a discrepancy frame can hold, such as `Int8`, unsigned integers, nanosecond or timezone-aware timestamps, and all-NULL columns.
 
 ### Editor support
 
