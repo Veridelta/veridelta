@@ -44,6 +44,25 @@ KEYS_ALIAS = "_veridelta_keys"
 DUPLICATES_ALIAS = "_veridelta_duplicates"
 """Derived-table alias for the key groups that occur more than once."""
 
+VALUE_MAP_COLUMN_ALIAS = "_veridelta_column"
+"""Integer label of the candidate column a `compile_value_map_query` row counts."""
+
+VALUE_MAP_SOURCE_ALIAS = "_veridelta_source_value"
+"""Source value, as the `value_map` stage sees it, in a value map evidence row."""
+
+VALUE_MAP_TARGET_ALIAS = "_veridelta_target_value"
+"""Target value that source value lines up with."""
+
+VALUE_MAP_ROWS_ALIAS = "_veridelta_value_rows"
+"""Joined rows holding the source value, whatever their target."""
+
+VALUE_MAP_AGREEING_ALIAS = "_veridelta_agreeing_rows"
+"""Those rows whose target is the target value."""
+
+SAMPLE_BUCKETS: Final = 1_000_000
+"""Resolution of a value map sample: rows whose key hash falls in the first
+`sample_fraction * SAMPLE_BUCKETS` buckets are kept, locally and in SQL."""
+
 _Projection = tuple[str, str, DiffRule | None]
 """Stored source name, projected name, and the rule normalizing it, if any."""
 
@@ -275,6 +294,20 @@ Thirty-eight digits hold every difference of two 64-bit values, signed or not,
 and `ABS` of the smallest BIGINT, which overflows in the column's own type."""
 
 
+_SAMPLE_HASH_FUNCTIONS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.SNOWFLAKE: "HASH",
+    SQLDialect.DATABRICKS: "xxhash64",
+    SQLDialect.DUCKDB: "hash",
+    SQLDialect.BIGQUERY: "FARM_FINGERPRINT",
+}
+"""Each dialect's hash of several values, used to sample value map evidence by
+key. Snowflake's `HASH` and Databricks' `xxhash64` return signed 64-bit
+integers, so their buckets fold negatives back into range; DuckDB's `hash` is
+unsigned. BigQuery's `FARM_FINGERPRINT` is signed and takes one string, so the
+keys are hashed as one JSON value. No engine hashes the way Polars does, so a warehouse sample is a
+different, though equally repeatable, set of rows from a local one."""
+
+
 def _reads_offset(fmt: str) -> bool:
     """Return whether a `strptime` format reads a UTC offset with `%z`.
 
@@ -392,6 +425,8 @@ class SQLPushdownCompiler:
     4. `compile_query` for inner-join rows where a compared column differs.
     5. `compile_added_query` and `compile_missing_query` for the anti-joins.
     6. `compile_column_mismatch_query` for the per-column tally.
+
+    A value map proposal runs steps 1 and 2, then `compile_value_map_query`.
 
     Every join reads keys through the same stages 1-7 as compared columns,
     driven by `key_rules`, so rows match on the keys the local engine sees.
@@ -747,6 +782,215 @@ class SQLPushdownCompiler:
             "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
         )
         return f"{with_clause} SELECT {', '.join(terms)} {join}"
+
+    def compile_value_map_query(
+        self,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        rules: list[DiffRule],
+        *,
+        min_support: int,
+        sample_fraction: float = 1.0,
+        source_alias: str = "src",
+        target_alias: str = "tgt",
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
+        key_rules: Sequence[DiffRule] | None = None,
+    ) -> str | None:
+        """Assemble one statement that counts how source and target values line up.
+
+        Keys and candidate columns are normalized in the usual CTE pair and
+        joined once. Each column then contributes one `UNION ALL` branch,
+        labeled by its position in `rules` rather than by name, so no column
+        name becomes a string literal. A branch leaves out NULL sources and
+        values the column's existing map produced, as the local engine does.
+
+        Only exact predicates run here: the target differs from the source, at
+        least `min_support` rows agree, and the agreeing rows are more than
+        half of the source value's rows. Every confidence floor is above one
+        half, so this keeps a superset of what qualifies, and the engine
+        applies the floor itself, in floating point exactly as locally.
+
+        Args:
+            source_table (str): Source relation (optionally dotted catalog path).
+            target_table (str): Target relation (optionally dotted catalog path).
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
+            rules (list[DiffRule]): One rule per candidate column, naming its
+                stored source column and, when renamed, the target's name.
+            min_support (int): Agreeing rows a pair needs.
+            sample_fraction (float): Share of source keys to read, chosen by a
+                hash of the normalized keys. 1 reads every row.
+            source_alias (str): Alias assigned to the source relation.
+            target_alias (str): Alias assigned to the target relation.
+            source_types (ColumnTypes | None): Probed source dtypes.
+            target_types (ColumnTypes | None): Probed target dtypes.
+            key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
+
+        Returns:
+            str | None: A statement returning `VALUE_MAP_COLUMN_ALIAS`,
+            `VALUE_MAP_SOURCE_ALIAS`, `VALUE_MAP_TARGET_ALIAS`,
+            `VALUE_MAP_ROWS_ALIAS`, and `VALUE_MAP_AGREEING_ALIAS` per pair, or
+            None when there is no candidate column.
+
+        Raises:
+            ConnectorError: If tables or keys are empty, a rule is pattern-only,
+                a key rule does not name exactly one primary key, or
+                `min_support` is not an integer.
+        """
+        keys = self._key_columns(primary_keys, key_rules)
+        compared = self._compared_columns(rules)
+        if not compared:
+            return None
+        with_clause = self._normalized_with_clause(
+            source_table,
+            target_table,
+            [*keys, *compared],
+            source_alias=source_alias,
+            target_alias=target_alias,
+            source_types=source_types,
+            target_types=target_types,
+        )
+        joined = self._value_map_joined(
+            [target for _source, target, _rule in compared],
+            primary_keys,
+            sample_fraction,
+            source_alias=source_alias,
+            target_alias=target_alias,
+        )
+        branches = " UNION ALL ".join(
+            self._value_map_branch(label, rule)
+            for label, (_source, _target, rule) in enumerate(compared)
+        )
+        return f"{with_clause}, {joined} {self._value_map_tally(branches, min_support)}"
+
+    def _value_map_joined(
+        self,
+        columns: list[str],
+        primary_keys: list[str],
+        sample_fraction: float,
+        *,
+        source_alias: str,
+        target_alias: str,
+    ) -> str:
+        """Build the CTE pairing each candidate's normalized values on the keys.
+
+        Args:
+            columns (list[str]): Candidate columns, by their target names.
+            primary_keys (list[str]): Join keys.
+            sample_fraction (float): Share of source keys to keep.
+            source_alias (str): Alias for the source CTE.
+            target_alias (str): Alias for the target CTE.
+
+        Returns:
+            str: `"_veridelta_joined" AS (SELECT ...)`, with a sample filter
+                when the fraction is below 1.
+        """
+        projections = ", ".join(
+            f"{self._qualify(source_alias, column)} AS {self._quote_ident(f'_veridelta_source_{label}')}, "
+            f"{self._qualify(target_alias, column)} AS {self._quote_ident(f'_veridelta_target_{label}')}"
+            for label, column in enumerate(columns)
+        )
+        join = self._normalized_join(
+            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
+        )
+        sample = ""
+        if sample_fraction < 1:
+            keys = [self._qualify(source_alias, key) for key in primary_keys]
+            cutoff = self._integer(round(sample_fraction * SAMPLE_BUCKETS))
+            sample = f" WHERE {self._sample_bucket(keys)} < {cutoff}"
+        return f"{self._quote_ident('_veridelta_joined')} AS (SELECT {projections} {join}{sample})"
+
+    def _sample_bucket(self, keys: list[str]) -> str:
+        """Hash qualified keys into one of `SAMPLE_BUCKETS` buckets.
+
+        Args:
+            keys (list[str]): Qualified, normalized key expressions.
+
+        Returns:
+            str: An expression from 0 to `SAMPLE_BUCKETS - 1`.
+        """
+        hashed = f"{_SAMPLE_HASH_FUNCTIONS[self.dialect]}({', '.join(keys)})"
+        buckets = self._integer(SAMPLE_BUCKETS)
+        if self.dialect is SQLDialect.BIGQUERY:
+            # FARM_FINGERPRINT is signed, takes one string, and MOD keeps the sign.
+            hashed = (
+                f"{_SAMPLE_HASH_FUNCTIONS[self.dialect]}(TO_JSON_STRING(STRUCT({', '.join(keys)})))"
+            )
+            return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
+        if self.dialect is SQLDialect.SNOWFLAKE:
+            # HASH is signed, and MOD keeps the dividend's sign.
+            return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
+        if self.dialect is SQLDialect.DATABRICKS:
+            # pmod is always non-negative.
+            return f"pmod({hashed}, {buckets})"
+        return f"{hashed} % {buckets}"
+
+    def _value_map_branch(self, label: int, rule: DiffRule) -> str:
+        """Select one candidate's pairs, labeled, without NULL or already mapped sources.
+
+        Args:
+            label (int): The candidate's position among the compared columns.
+            rule (DiffRule): Its rule, whose existing map outputs are left out.
+
+        Returns:
+            str: One `SELECT` of the `UNION ALL`.
+        """
+        source = self._quote_ident(f"_veridelta_source_{label}")
+        target = self._quote_ident(f"_veridelta_target_{label}")
+        conditions = [f"{source} IS NOT NULL"]
+        if rule.value_map:
+            outputs = ", ".join(
+                self._literal(value) for value in dict.fromkeys(rule.value_map.values())
+            )
+            conditions.append(f"{source} NOT IN ({outputs})")
+        return (
+            f"SELECT {self._integer(label)} AS {self._quote_ident(VALUE_MAP_COLUMN_ALIAS)}, "
+            f"{source} AS {self._quote_ident(VALUE_MAP_SOURCE_ALIAS)}, "
+            f"{target} AS {self._quote_ident(VALUE_MAP_TARGET_ALIAS)} "
+            f"FROM {self._quote_ident('_veridelta_joined')} WHERE {' AND '.join(conditions)}"
+        )
+
+    def _value_map_tally(self, branches: str, min_support: int) -> str:
+        """Count the labeled pairs and keep the ones that can qualify.
+
+        The pair count runs in a subquery and the per-value total in the query
+        around it, the form every supported dialect accepts. A NULL target is
+        a group of its own, so it counts toward the total, and `<>` then
+        drops it along with every identity pair.
+
+        Args:
+            branches (str): The `UNION ALL` of labeled pairs.
+            min_support (int): Agreeing rows a pair needs.
+
+        Returns:
+            str: The statement's `SELECT`, after its `WITH` clause.
+        """
+        column = self._quote_ident(VALUE_MAP_COLUMN_ALIAS)
+        source = self._quote_ident(VALUE_MAP_SOURCE_ALIAS)
+        target = self._quote_ident(VALUE_MAP_TARGET_ALIAS)
+        rows = self._quote_ident(VALUE_MAP_ROWS_ALIAS)
+        agreeing = self._quote_ident(VALUE_MAP_AGREEING_ALIAS)
+        count_type = self._cast_keyword("Int64")
+        grouped = (
+            f"SELECT {column}, {source}, {target}, COUNT(*) AS {agreeing} "
+            f"FROM ({branches}) AS {self._quote_ident('_veridelta_pairs')} "
+            f"GROUP BY {column}, {source}, {target}"
+        )
+        counted = (
+            f"SELECT {column}, {source}, {target}, {agreeing}, "
+            f"SUM({agreeing}) OVER (PARTITION BY {column}, {source}) AS {rows} "
+            f"FROM ({grouped}) AS {self._quote_ident('_veridelta_groups')}"
+        )
+        return (
+            f"SELECT {column}, {source}, {target}, "
+            f"CAST({rows} AS {count_type}) AS {rows}, "
+            f"CAST({agreeing} AS {count_type}) AS {agreeing} "
+            f"FROM ({counted}) AS {self._quote_ident('_veridelta_counts')} "
+            f"WHERE {target} <> {source} AND {agreeing} >= {self._integer(min_support)} "
+            f"AND 2 * {agreeing} > {rows}"
+        )
 
     def compile_count_query(self, table: str) -> str:
         """Assemble a total row count query for one relation.
@@ -1181,6 +1425,26 @@ class SQLPushdownCompiler:
         for raw, replacement in _LITERAL_ESCAPES[self.dialect]:
             escaped = escaped.replace(raw, replacement)
         return f"'{escaped}'"
+
+    def _integer(self, value: object) -> str:
+        """Render an integer SQL operand, refusing anything that is not an `int`.
+
+        `_number` renders whatever `repr` gives, so `True` or a NumPy scalar
+        would reach SQL as written. A count or label must be a real integer;
+        the parameter is `object` because this is where that is checked.
+
+        Args:
+            value (object): Integer to render.
+
+        Returns:
+            str: Its decimal digits.
+
+        Raises:
+            ConnectorError: If `value` is not an `int`, or is a `bool`.
+        """
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConnectorError(f"SQL integer operands must be int, got {value!r}.")
+        return str(value)
 
     def _number(self, value: float) -> str:
         """Render a numeric SQL literal.

@@ -12,9 +12,16 @@ from veridelta.connectors.sql import (
     _EDIT_DISTANCE_FUNCTIONS,
     _LITERAL_ESCAPES,
     _REGEX_REPLACE_FLAGS,
+    _SAMPLE_HASH_FUNCTIONS,
     _WIDE_INTEGER_TYPES,
     COUNT_ALIAS,
+    SAMPLE_BUCKETS,
     SCHEMA_ALIAS,
+    VALUE_MAP_AGREEING_ALIAS,
+    VALUE_MAP_COLUMN_ALIAS,
+    VALUE_MAP_ROWS_ALIAS,
+    VALUE_MAP_SOURCE_ALIAS,
+    VALUE_MAP_TARGET_ALIAS,
     compile_database_probe,
     compile_database_select,
 )
@@ -1563,3 +1570,132 @@ class TestDatabaseProbe:
         """Ensure the probe fails exactly as the read would."""
         with pytest.raises(ConfigError, match="'trino' is not one"):
             compile_database_probe("trino", "orders")
+
+
+_VALUE_MAP_RULES = [
+    DiffRule(column_names=["gender"]),
+    DiffRule(column_names=["legacy_status"], rename_to="status", value_map={"A": "O'Brien"}),
+]
+"""Two candidate columns: one plain, one renamed with a map whose output needs escaping."""
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestValueMapQuery:
+    """Validate the single statement that counts value map evidence in a warehouse."""
+
+    def test_it_counts_every_candidate_in_one_statement(self) -> None:
+        """Ensure one joined CTE feeds an integer-labeled branch per column."""
+        sql = _duckdb().compile_value_map_query("s", "t", ["id"], _VALUE_MAP_RULES, min_support=5)
+
+        assert sql is not None
+        assert sql.count("UNION ALL") == 1
+        assert '"_veridelta_joined" AS (SELECT' in sql
+        assert 'INNER JOIN "_tgt_normalized" AS "tgt" ON "src"."id" = "tgt"."id"' in sql
+        assert f'SELECT 0 AS "{VALUE_MAP_COLUMN_ALIAS}"' in sql
+        assert f'SELECT 1 AS "{VALUE_MAP_COLUMN_ALIAS}"' in sql
+        # No column name ever becomes a string literal.
+        assert "'gender'" not in sql
+        assert "'status'" not in sql
+
+    def test_it_keeps_only_pairs_that_can_qualify(self) -> None:
+        """Ensure the exact predicates run in SQL, and the confidence floor does not."""
+        sql = _duckdb().compile_value_map_query("s", "t", ["id"], _VALUE_MAP_RULES, min_support=5)
+
+        assert sql is not None
+        assert f'"{VALUE_MAP_TARGET_ALIAS}" <> "{VALUE_MAP_SOURCE_ALIAS}"' in sql
+        assert f'"{VALUE_MAP_AGREEING_ALIAS}" >= 5' in sql
+        assert f'2 * "{VALUE_MAP_AGREEING_ALIAS}" > "{VALUE_MAP_ROWS_ALIAS}"' in sql
+        assert "0.95" not in sql
+        assert "ORDER BY" not in sql
+
+    def test_it_counts_in_sixty_four_bit_integers(self) -> None:
+        """Ensure counts arrive as Int64, not as a warehouse's wide decimal."""
+        sql = _snowflake().compile_value_map_query(
+            "s", "t", ["ID"], [DiffRule(column_names=["GENDER"])], min_support=5
+        )
+
+        assert sql is not None
+        assert f'CAST("{VALUE_MAP_ROWS_ALIAS}" AS BIGINT)' in sql
+        assert f'CAST("{VALUE_MAP_AGREEING_ALIAS}" AS BIGINT)' in sql
+
+    def test_it_leaves_out_rows_an_existing_map_already_translates(self) -> None:
+        """Ensure the map's outputs are excluded as escaped literals, and only where a map exists."""
+        sql = _databricks().compile_value_map_query(
+            "s", "t", ["id"], _VALUE_MAP_RULES, min_support=5
+        )
+
+        assert sql is not None
+        assert sql.count("NOT IN") == 1
+        literal, rest = _read_literal(
+            sql[sql.index("NOT IN (") + len("NOT IN (") :], SQLDialect.DATABRICKS
+        )
+        assert literal == "O'Brien"
+        assert rest.startswith(")")
+
+    def test_it_compiles_nothing_without_candidates(self) -> None:
+        """Ensure no statement is sent when no column can take a map."""
+        assert _duckdb().compile_value_map_query("s", "t", ["id"], [], min_support=5) is None
+
+    @pytest.mark.parametrize(
+        ("compiler", "bucket"),
+        [
+            pytest.param(
+                _snowflake(),
+                'MOD(MOD(HASH("src"."id", "src"."region"), 1000000) + 1000000, 1000000)',
+                id="snowflake",
+            ),
+            pytest.param(
+                _databricks(),
+                "pmod(xxhash64(`src`.`id`, `src`.`region`), 1000000)",
+                id="databricks",
+            ),
+            pytest.param(_duckdb(), 'hash("src"."id", "src"."region") % 1000000', id="duckdb"),
+        ],
+    )
+    def test_it_samples_by_a_hash_of_the_normalized_keys(
+        self, compiler: SQLPushdownCompiler, bucket: str
+    ) -> None:
+        """Ensure a sample keeps a key's rows together, picked in the joined CTE."""
+        sql = compiler.compile_value_map_query(
+            "s",
+            "t",
+            ["id", "region"],
+            [DiffRule(column_names=["gender"])],
+            min_support=5,
+            sample_fraction=0.25,
+        )
+
+        assert sql is not None
+        assert f"WHERE {bucket} < 250000" in sql
+
+    def test_it_reads_every_row_unless_sampling(self) -> None:
+        """Ensure a full read carries no hash filter."""
+        sql = _duckdb().compile_value_map_query("s", "t", ["id"], _VALUE_MAP_RULES, min_support=5)
+
+        assert sql is not None
+        assert "hash(" not in sql
+
+    def test_the_hash_table_covers_every_dialect(self) -> None:
+        """Ensure a new dialect cannot be added without deciding how it samples."""
+        assert set(_SAMPLE_HASH_FUNCTIONS) == set(SQLDialect)
+        assert SAMPLE_BUCKETS == 1_000_000
+
+    @pytest.mark.parametrize(
+        "support",
+        [
+            pytest.param(True, id="bool"),
+            pytest.param(5.0, id="float"),
+            pytest.param("5", id="text"),
+        ],
+    )
+    def test_it_renders_only_real_integers(self, support: object) -> None:
+        """Ensure a threshold reaches SQL only as an `int`, never as whatever `repr` gives."""
+        with pytest.raises(ConnectorError, match="SQL integer"):
+            _duckdb().compile_value_map_query(
+                "s",
+                "t",
+                ["id"],
+                _VALUE_MAP_RULES,
+                min_support=support,  # type: ignore[arg-type]
+            )

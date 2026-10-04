@@ -27,13 +27,13 @@ import duckdb
 import polars as pl
 
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
-from veridelta.engine import DiffEngine, _collect_pushdown_summary
+from veridelta.engine import DiffEngine, _collect_pushdown_summary, _collect_value_map_proposals
 from veridelta.exceptions import ConnectorError
 
 if TYPE_CHECKING:
     from types import TracebackType
 
-    from veridelta.models import DiffConfig, DiffResult, DiffSummary
+    from veridelta.models import DiffConfig, DiffResult, DiffSummary, ValueMapProposal
 
 SOURCE_TABLE = "src_data"
 """Relation name the harness registers the source frame under."""
@@ -152,6 +152,42 @@ def run_pushdown(
     with DuckDBPushdownSession(source, target) as session:
         result = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
         return result, list(session.statements)
+
+
+def run_value_map_pushdown(
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    min_confidence: float = 0.95,
+    min_support: int = 5,
+    sample_fraction: float = 1.0,
+) -> tuple[list[ValueMapProposal], list[str]]:
+    """Propose value maps from the frames through compiled SQL in DuckDB.
+
+    Args:
+        config (DiffConfig): Comparison rules and keys.
+        source (pl.DataFrame): Source rows.
+        target (pl.DataFrame): Target rows.
+        min_confidence (float): Share of rows that must agree.
+        min_support (int): Agreeing rows a proposal needs.
+        sample_fraction (float): Share of source keys to read.
+
+    Returns:
+        tuple[list[ValueMapProposal], list[str]]: The proposals and the SQL
+            that produced them, in execution order.
+    """
+    with DuckDBPushdownSession(source, target) as session:
+        proposals = _collect_value_map_proposals(
+            session,
+            SOURCE_TABLE,
+            TARGET_TABLE,
+            config,
+            min_confidence=min_confidence,
+            min_support=min_support,
+            sample_fraction=sample_fraction,
+        )
+        return proposals, list(session.statements)
 
 
 def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:

@@ -193,6 +193,23 @@ class TestBigQueryDialect:
         """Ensure REGEXP_REPLACE gets no extra argument, since BigQuery replaces every match."""
         assert "REGEXP_REPLACE(`src`.`x`, '-', '')" in _predicate(regex_replace={"-": ""})
 
+    def test_it_samples_by_a_fingerprint_of_the_keys_as_one_value(self) -> None:
+        """Ensure a value map sample hashes all keys at once and folds the sign back."""
+        sql = _bigquery().compile_value_map_query(
+            "s",
+            "t",
+            ["id", "region"],
+            [DiffRule(column_names=["gender"])],
+            min_support=5,
+            sample_fraction=0.5,
+        )
+
+        assert sql is not None
+        assert (
+            "WHERE MOD(MOD(FARM_FINGERPRINT(TO_JSON_STRING(STRUCT(`src`.`id`, `src`.`region`))), "
+            "1000000) + 1000000, 1000000) < 500000"
+        ) in sql
+
     def test_it_escapes_line_breaks_in_literals(self) -> None:
         """Ensure a value with a line break stays one valid literal."""
         predicate = _predicate(value_map={"a\nb": "c"})
