@@ -4,8 +4,7 @@ Veridelta is currently in **v{{ config.extra.version }}**. The core execution en
 
 ## 1. Enterprise Ecosystem Integration
 
-* **BigQuery Pushdown:** Native SQL translation so comparisons run in BigQuery without extracting tables into local memory.
-* Additional warehouse dialects as demand requires.
+* Additional warehouse dialects, such as Redshift and Synapse, as demand requires.
 
 ## 2. Developer Experience (DX) & Tooling
 A framework is only as effective as the developer's ability to interface with it safely and efficiently.

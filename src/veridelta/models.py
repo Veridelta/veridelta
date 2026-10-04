@@ -32,6 +32,15 @@ SQL_IDENTIFIER_SEGMENT = re.compile(SQL_IDENTIFIER_SEGMENT_PATTERN)
 SQL_RELATION_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$"
 """Warehouse table path: one to three identifier segments joined by dots."""
 
+BIGQUERY_TABLE_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$"
+"""BigQuery table path: a table, or a dataset and table. The project is set
+separately, since project ids may hold hyphens, which an identifier may not."""
+
+BIGQUERY_PROJECT_PATTERN = r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$"
+"""Google Cloud project id: six to thirty lowercase letters, digits, or hyphens,
+starting with a letter and not ending with a hyphen. Older domain-scoped ids,
+such as `example.com:project`, are refused rather than guessed at."""
+
 SourceType = Literal[
     "csv",
     "parquet",
@@ -994,6 +1003,77 @@ class DatabricksConfig(BaseModel):
     schema_name: str | None = Field(default=None, description="Optional default schema name.")
 
 
+class BigQueryConfig(BaseModel):
+    """Immutable connection settings for BigQuery warehouse pushdown.
+
+    Attributes:
+        type (Literal["bigquery"]): Discriminator for YAML source routing.
+        table (str): Table to compare, as `dataset.table`, or `table` when
+            `dataset` names the default dataset.
+        project (str): Google Cloud project that runs the queries and holds
+            the data. It never appears in SQL.
+        dataset (str | None): Default dataset for a table named without one.
+        location (str | None): Location the queries run in, such as `US` or
+            `europe-west2`. BigQuery infers it when unset.
+        credentials_path (str | None): Service account key file. Application
+            Default Credentials are used when unset. Left out when the config
+            is printed, but kept by `model_dump()`, which the connector needs.
+        maximum_bytes_billed (int | None): Fail any statement that would bill
+            more bytes than this, instead of running it.
+    """
+
+    # Credentials pass through here, and Pydantic quotes raw input in its errors.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    type: Literal["bigquery"] = Field("bigquery", description="Discriminator for BigQuery.")
+    table: str = Field(
+        ...,
+        pattern=BIGQUERY_TABLE_PATTERN,
+        description="Table to compare, as dataset.table, or table with a default dataset.",
+    )
+    project: str = Field(
+        ...,
+        pattern=BIGQUERY_PROJECT_PATTERN,
+        description="Google Cloud project that runs the queries and holds the data.",
+    )
+    dataset: str | None = Field(
+        default=None,
+        pattern=SQL_IDENTIFIER_SEGMENT_PATTERN,
+        description="Default dataset for a table named without one.",
+    )
+    location: str | None = Field(
+        default=None, description="Location the queries run in, such as US or europe-west2."
+    )
+    credentials_path: str | None = Field(
+        default=None,
+        repr=False,
+        description="Service account key file; Application Default Credentials when unset.",
+    )
+    maximum_bytes_billed: int | None = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description="Fail any statement that would bill more bytes than this.",
+    )
+
+    @model_validator(mode="after")
+    def validate_dataset(self) -> "BigQueryConfig":
+        """Require a default dataset when the table is named without one.
+
+        Returns:
+            BigQueryConfig: The validated configuration.
+
+        Raises:
+            ValueError: If `table` has one segment and `dataset` is unset.
+        """
+        if "." not in self.table and self.dataset is None:
+            raise ValueError(
+                "A 'table' without a dataset needs 'dataset'; write it as dataset.table, "
+                "or name the default dataset."
+            )
+        return self
+
+
 class DeltaLakeConfig(BaseModel):
     """Immutable settings for a Delta Lake table scan.
 
@@ -1159,6 +1239,7 @@ SourceRef = Annotated[
     SourceConfig
     | SnowflakeConfig
     | DatabricksConfig
+    | BigQueryConfig
     | DeltaLakeConfig
     | IcebergConfig
     | DatabaseConfig,

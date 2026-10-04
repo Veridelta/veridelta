@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from veridelta.models import (
+    BigQueryConfig,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -26,6 +27,7 @@ _CONFIG_MODELS = (
     SourceConfig,
     SnowflakeConfig,
     DatabricksConfig,
+    BigQueryConfig,
     DeltaLakeConfig,
     IcebergConfig,
     DatabaseConfig,

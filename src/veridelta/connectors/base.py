@@ -52,7 +52,8 @@ class VerideltaConnector(ABC):
 
     Three families implement it, and they divide the work differently:
 
-    - Warehouse connectors (`SnowflakeConnector`, `DatabricksConnector`) hold
+    - Warehouse connectors (`SnowflakeConnector`, `DatabricksConnector`,
+      `BigQueryConnector`) hold
       a driver session plus a `compiler`. The engine compiles comparison SQL
       and calls `execute_pushdown` for each round-trip; results come back as
       Arrow wrapped in a LazyFrame. They also satisfy `PushdownSession`.

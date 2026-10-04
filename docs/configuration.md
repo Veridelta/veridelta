@@ -74,6 +74,7 @@ Set `type` on `source` and `target` to select a connector. Warehouse, lakehouse,
 ```bash
 uv add 'veridelta[snowflake]'
 uv add 'veridelta[databricks]'
+uv add 'veridelta[bigquery]'
 uv add 'veridelta[delta]'
 uv add 'veridelta[iceberg]'
 uv add 'veridelta[database]'
@@ -82,7 +83,7 @@ uv add 'veridelta[all]'
 
 Do not commit `password` or `access_token` in YAML, including a database source's `password`. Write `${NAME}` so the loader reads them from the environment (see [Environment variables](#environment-variables)), or build the connection in Python (for example `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`) and pass it to `DiffEngine.run_from_configs`.
 
-Same-warehouse SQL pushdown runs only when both sides are Snowflake or both sides are Databricks, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse/database and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`. Database sources are read into the local engine like files, so they never push down; see [Database sources](#database-sources).
+Same-warehouse SQL pushdown runs only when both sides are Snowflake, both are Databricks, or both are BigQuery, the connection fields match (`account`, `user`, `warehouse`, `database`, `schema_name`, `role`, and `password` for Snowflake; `server_hostname`, `http_path`, `access_token`, `catalog`, and `schema_name` for Databricks; `project`, `dataset`, `location`, `credentials_path`, and `maximum_bytes_billed` for BigQuery), and the `table` names differ; naming the same table twice raises `ConfigError`, since a table compared with itself always matches. Mixed file/lakehouse/database and warehouse backends, or Snowflake paired with Databricks, raise `ConnectorError`. Database sources are read into the local engine like files, so they never push down; see [Database sources](#database-sources).
 
 `table` must be one to three unquoted identifier segments (`EVENTS`, `schema.table`, or `catalog.schema.table`). Rules that select columns by `pattern` are matched against the probed column names before any SQL is compiled, so they apply in the warehouse exactly as they do locally.
 
@@ -97,7 +98,7 @@ All nine transform stages compile for compared columns, and stages 1 through 7 f
 - Artifacts contain primary keys only, since the comparison SQL never projects full rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only` so they cannot be confused with local artifacts, which hold complete records.
 - `strict_types` compares the types the warehouse driver reports for each side, after normalization, and fails every row of a column whose two types differ, as a local run does. Those are the driver's types, not the declared ones: Snowflake's `NUMBER(38,0)`, for one, arrives as a decimal, so it meets a `NUMBER(38,0)` column but not a `FLOAT`.
 
-Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake and Databricks spellings are pinned by direct assertions on the emitted SQL instead. DuckDB's `levenshtein` counts bytes rather than characters, so edit-distance parity is checked on ASCII text, where the two agree. A property test also draws random configurations and data, from integers at the edges of their types to NULLs, NaN, and text timestamps, and requires both engines to reach the same counts on each.
+Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake, Databricks, and BigQuery spellings are pinned by direct assertions on the emitted SQL instead. DuckDB's `levenshtein` counts bytes rather than characters, so edit-distance parity is checked on ASCII text, where the two agree. A property test also draws random configurations and data, from integers at the edges of their types to NULLs, NaN, and text timestamps, and requires both engines to reach the same counts on each.
 
 Write `regex_replace` patterns, `value_map` entries, and text `null_values` exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in `\d` or `\N` and an apostrophe in `O'Brien` arrive intact; do not double them yourself. Escaping preserves the text, but each warehouse still runs its own regex engine: keep replacements free of capture-group references, which Polars and Databricks write as `$1` and Snowflake as `\1`. Likewise `whitespace_mode` trims only spaces in a warehouse, where Polars also strips tabs and line breaks.
 
@@ -182,6 +183,38 @@ primary_keys: ["event_id"]
 
 `storage_options` is a string map passed through to the Delta or Iceberg scanner (credentials, region, and other object-store settings).
 
+### BigQuery
+
+A `bigquery` block names a `project` and a `table`. The project runs the queries and holds the data; it never appears in SQL, so a project id with hyphens is fine. The table is `dataset.table`, or `table` alone when `dataset` names the default dataset.
+
+```yaml
+source:
+  type: bigquery
+  project: analytics-prod
+  table: legacy.events
+  location: US
+  maximum_bytes_billed: 50000000000
+
+target:
+  type: bigquery
+  project: analytics-prod
+  table: modern.events
+  location: US
+  maximum_bytes_billed: 50000000000
+
+primary_keys: ["event_id"]
+```
+
+Credentials come from Application Default Credentials, such as `gcloud auth application-default login` on a workstation or the attached service account on Google Cloud. Set `credentials_path` to a service account key file to use that instead. `maximum_bytes_billed` makes BigQuery refuse any statement that would bill more, which caps what a run can cost. Project ids follow Google's rules: six to thirty lowercase letters, digits, or hyphens. Older domain-scoped ids such as `example.com:project` are refused.
+
+BigQuery differs from the other warehouses in a few ways a comparison can notice:
+
+- `whitespace_mode` trims every kind of whitespace, as a local run does, not only spaces.
+- In a `regex_replace` replacement, `\1` is a group reference and `$1` is literal text, the reverse of Polars.
+- `datetime_format` cannot use `%f`, since BigQuery spells fractional seconds only as part of the seconds. A format with `%z` parses to an aware timestamp, and one without it to a naive one, as Polars does.
+- Comparing columns of different types fails the statement rather than coercing one side, so give such a pair a `cast_to`, or set `strict_types`.
+- `GEOGRAPHY` and `JSON` columns cannot be compared; `ignore` them.
+
 ### Database sources
 
 A `database` source reads a table, or the result of a query, from an operational database into Polars through [ConnectorX](https://github.com/sfu-db/connector-x). Install the `database` extra. The comparison runs locally, so a database pairs with a file, a lakehouse table, or another database, and `crosswalk` reads it too.
@@ -218,13 +251,14 @@ Every connector block is selected by `type` and rejects keys it does not list.
 | `file` (default) | `path` | `format` (default `csv`), `options` |
 | `snowflake` | `table`, `account`, `user`, `warehouse`, `database`, `schema_name` | `password`, `role` |
 | `databricks` | `table`, `server_hostname`, `http_path` | `access_token`, `catalog`, `schema_name` |
+| `bigquery` | `table`, `project` | `dataset`, `location`, `credentials_path`, `maximum_bytes_billed` |
 | `delta` | `table_uri` | `version`, `storage_options` |
 | `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
 | `database` | `uri`, and exactly one of `table` or `query` | `password` |
 
-`version` and `snapshot_id` must be non-negative integers; a quoted number is rejected rather than coerced, because both are interpolated into scan calls. Warehouse, lakehouse, and database blocks are frozen once loaded.
+`version` and `snapshot_id` must be non-negative integers, and `maximum_bytes_billed` a positive one; a quoted number is rejected rather than coerced, because each is passed straight to a scan or a job. Warehouse, lakehouse, and database blocks are frozen once loaded.
 
-Printing a connection config, or formatting one into a log line, leaves out its credentials: `password` for Snowflake and databases, `access_token` for Databricks, `storage_options` for Delta Lake and Iceberg, and a `storage_options` map nested in a file source's `options`, whose other reader options still print. A password written inside a database `uri` prints as `***`, and the rest of the URI prints as written. They stay readable as attributes and in `model_dump()`, because the connectors and readers need them, so log a dump only after removing them.
+Printing a connection config, or formatting one into a log line, leaves out its credentials: `password` for Snowflake and databases, `access_token` for Databricks, `credentials_path` for BigQuery, `storage_options` for Delta Lake and Iceberg, and a `storage_options` map nested in a file source's `options`, whose other reader options still print. A password written inside a database `uri` prints as `***`, and the rest of the URI prints as written. They stay readable as attributes and in `model_dump()`, because the connectors and readers need them, so log a dump only after removing them.
 
 ### Environment variables
 
