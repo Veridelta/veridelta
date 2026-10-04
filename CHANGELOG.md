@@ -1,3 +1,95 @@
+## v0.11.0 (2026-10-04)
+
+Veridelta now reads operational databases, compares BigQuery tables in place, and
+checks a configuration before it runs. Read the behavior changes first: a few
+comparisons that matched on 0.10.0 because of arithmetic or parsing bugs now report
+drift that is really there.
+
+A `type: database` source reads a table, or the result of a query, from Postgres,
+MySQL or MariaDB, SQL Server, Oracle, Redshift, ClickHouse, or SQLite through
+ConnectorX, installed with the new `database` extra. The read is eager and the
+comparison runs locally, so a database pairs with a file, a lakehouse table, or
+another database, and `crosswalk` reads it too. A `query` is sent verbatim, so connect
+with a read-only role. A `password` field is percent-encoded into the URI and kept out
+of printed configs and error messages.
+
+BigQuery joins Snowflake and Databricks for warehouse pushdown through the new
+`bigquery` extra. It authenticates with Application Default Credentials or a key
+file, and `maximum_bytes_billed` caps what each statement may scan. The dialect
+follows the GoogleSQL reference and is tested against a stand-in client; it has not
+yet run against a live project. `veridelta crosswalk` now also runs inside a
+warehouse when both tables share one connection, counting every candidate column in
+one statement. There, only columns stored as text on both sides qualify.
+
+`veridelta validate` checks a configuration without reading any rows: backend
+pairing, missing extras, and regex patterns Polars rejects, plus each side's columns
+with `--schemas`. `--allow-missing-env` lets it run in CI without secrets. A JSON
+Schema gives editors completion and validation as you type, and `veridelta schema`
+prints it. `veridelta run --markdown` writes a summary for pull requests, and a
+composite GitHub Action and a GitLab CI template run a comparison and keep one summary
+comment up to date. Pin either to `v0.11.0` or later. Avro files are read with
+`format: avro`, from local paths and eagerly.
+
+Several parity fixes change results. Local integer tolerances measure the true
+difference, where `Int8` `100` against `-100` used to wrap into a match. `%f` in
+`datetime_format` reads a fraction of a second, so `.5` is 500 ms rather than 5 ns.
+`strict_types: true` now applies in warehouse comparisons, which used to treat `10.0`
+and `10` as equal. DuckDB pushdown replaces every regex match, and pushdown tolerances
+widen integer operands, so narrow and extreme values no longer overflow. A Hypothesis
+property test compares local and pushdown verdicts on generated data in every CI run.
+
+`veridelta[all]` now includes ConnectorX, which publishes no wheels for musllinux or
+Windows on ARM, so install only the extras you need there.
+
+### Feat
+
+- read a table or query from Postgres, MySQL, SQL Server, Oracle, Redshift,
+  ClickHouse, or SQLite with `type: database`, through the new `database` extra
+- compare two BigQuery tables in place with `type: bigquery`, through the new
+  `bigquery` extra, with an optional `maximum_bytes_billed` cap
+- propose `value_map` entries inside the warehouse when both tables share one
+  connection
+- check a configuration without reading rows with `veridelta validate`, adding each
+  side's columns with `--schemas`
+- generate a JSON Schema for configuration files, print it with `veridelta schema`,
+  and publish it with the docs for editors
+- write a Markdown summary with `veridelta run --markdown`
+- run a comparison in CI with a composite GitHub Action or a GitLab CI template, each
+  keeping one summary comment on the pull or merge request
+- read Avro files with `format: avro`
+
+### Fix
+
+- widen integer pairs before applying a local tolerance, so a difference no longer
+  wraps into a match
+- read `%f` in `datetime_format` as a fraction of a second, without Polars'
+  `ChronoFormatWarning`
+- replace every regex match in DuckDB pushdown
+- widen integer operands in pushdown tolerances, so narrow and extreme values no
+  longer overflow
+- enforce `strict_types` in warehouse comparisons
+- reject crosswalk thresholds that are not plain numbers, and a `min_support` that is
+  not an `int`
+
+### Refactor
+
+- route every warehouse pair through one registry, and plan a run from the schemas
+  alone, so `validate` checks exactly what a run would compile
+
+### Chore
+
+- publish to PyPI only for `vX.Y.Z` tags, so a floating action tag cannot publish
+- compare local and pushdown verdicts on generated data with Hypothesis in CI
+
+### BREAKING CHANGE
+
+- `%f` in `datetime_format` reads `.5` as 500 ms instead of 5 ns
+- local integer tolerances use the true difference, so pairs that wrapped into a match
+  now mismatch
+- `strict_types: true` fails warehouse columns whose types differ after normalization
+- crosswalk thresholds must be `int` or `float` values other than `bool`, and
+  `min_support` must be an `int`
+
 ## v0.10.0 (2026-09-26)
 
 Warehouse pushdown now reaches the same verdict as a local run in every case the
