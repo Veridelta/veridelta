@@ -2282,8 +2282,10 @@ class TestValueMapProposals:
 
         assert proposal.value_map == {"M": "Male"}
 
-    def test_it_refuses_warehouse_sources_without_connecting(self, mocker: MockerFixture) -> None:
-        """Ensure a warehouse table is refused with advice, before any session opens."""
+    def test_it_refuses_a_warehouse_paired_with_a_file_without_connecting(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a warehouse table cannot be crosswalked against a file, nor a session opened."""
         connector = mocker.patch("veridelta.engine.SnowflakeConnector")
         warehouse = SnowflakeConfig(
             table="ANALYTICS.PUBLIC.EVENTS",
@@ -2294,7 +2296,7 @@ class TestValueMapProposals:
             schema_name="PUBLIC",
         )
 
-        with pytest.raises(ConnectorError, match="file, lakehouse, or database sources"):
+        with pytest.raises(ConnectorError, match="Mixed file/lakehouse/database and warehouse"):
             DiffEngine.propose_value_maps_from_configs(
                 DiffConfig(primary_keys=["id"]), warehouse, SourceConfig(path="target.csv")
             )

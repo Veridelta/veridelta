@@ -3,15 +3,23 @@
 
 """Differential parity tests between the local engine and compiled pushdown SQL."""
 
+from collections.abc import Sequence
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Any
 
 import polars as pl
 import pytest
 
-from tests.integration.duckdb_harness import assert_parity, run_local, run_pushdown
+from tests.integration.duckdb_harness import (
+    assert_parity,
+    run_local,
+    run_pushdown,
+    run_value_map_pushdown,
+)
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, DataIntegrityError
-from veridelta.models import DiffConfig, DiffRule
+from veridelta.models import DiffConfig, DiffRule, ValueMapProposal
 
 
 @pytest.mark.integration
@@ -1837,3 +1845,170 @@ class TestPushdownRowAccess:
 
         with pytest.raises(ConfigError, match="was not compared"):
             result.get_mismatches("vla")
+
+
+def _proposals_agree(
+    config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame, **thresholds: Any
+) -> list[ValueMapProposal]:
+    """Assert local and warehouse value map proposals are identical, and return them."""
+    local = DiffEngine(config, source.lazy(), target.lazy()).propose_value_maps(**thresholds)
+    pushdown, statements = run_value_map_pushdown(config, source, target, **thresholds)
+
+    assert pushdown == local, "\n".join(statements)
+    return local
+
+
+def _codes(pairs: Sequence[tuple[str | None, str | None]]) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Build a keyed source and target from (source, target) value pairs."""
+    ids = list(range(len(pairs)))
+    return (
+        pl.DataFrame(
+            {"id": ids, "code": [pair[0] for pair in pairs]}, schema_overrides={"code": pl.String}
+        ),
+        pl.DataFrame(
+            {"id": ids, "code": [pair[1] for pair in pairs]}, schema_overrides={"code": pl.String}
+        ),
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+class TestValueMapProposalParity:
+    """Validate that a warehouse proposes exactly the value maps a local run does."""
+
+    def test_it_agrees_at_the_confidence_boundary(self) -> None:
+        """Ensure 19 of 20 rows is exactly 0.95 on both engines, identity rows included."""
+        source, target = _codes(
+            [("M", "Male")] * 19 + [("M", "Man")] + [("F", "Female")] * 10 + [("X", "X")] * 6
+        )
+
+        [proposal] = _proposals_agree(DiffConfig(primary_keys=["id"]), source, target)
+
+        assert proposal.value_map == {"M": "Male", "F": "Female"}
+
+    def test_it_agrees_below_the_floor_and_on_support(self) -> None:
+        """Ensure 9 of 10 falls short at 0.95, and five agreeing rows need a support of five."""
+        source, target = _codes([("U", "Unknown")] * 9 + [("U", "Other")] + [("Q", "Queued")] * 5)
+        config = DiffConfig(primary_keys=["id"])
+
+        [proposal] = _proposals_agree(config, source, target, min_support=5)
+
+        assert proposal.value_map == {"Q": "Queued"}
+        assert _proposals_agree(config, source, target, min_support=6) == []
+
+    def test_it_agrees_on_nulls(self) -> None:
+        """Ensure a NULL target counts toward the total, and a NULL source is never proposed."""
+        source, target = _codes(
+            [("M", "Male")] * 19 + [("M", None)] + [(None, "Male")] * 5 + [("F", "Female")] * 4
+        )
+
+        [proposal] = _proposals_agree(
+            DiffConfig(primary_keys=["id"]), source, target, min_support=4
+        )
+
+        assert [(entry.source_value, entry.rows) for entry in proposal.entries] == [
+            ("M", 20),
+            ("F", 4),
+        ]
+
+    def test_it_agrees_on_an_existing_map(self) -> None:
+        """Ensure entries merge with the governing rule's map, and its outputs are left out."""
+        source, target = _codes(
+            [("E", "Enterprise")] * 5 + [("Enterprise", "Enterprise")] * 3 + [("P", "Premium")] * 5
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["other"], case_insensitive=True),
+                DiffRule(column_names=["code"], value_map={"E": "Enterprise"}),
+            ],
+        )
+
+        [proposal] = _proposals_agree(config, source, target)
+
+        assert proposal.value_map == {"E": "Enterprise", "P": "Premium"}
+        assert proposal.governing_rule_index == 1
+
+    def test_it_agrees_on_normalized_and_renamed_columns(self) -> None:
+        """Ensure entries are read after case folding and trimming, under the target's name."""
+        ids = list(range(12))
+        source = pl.DataFrame({"id": ids, "legacy_state": [" active "] * 7 + ["Closed "] * 5})
+        target = pl.DataFrame({"id": ids, "state": ["Open"] * 7 + ["Shut"] * 5})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["legacy_state"],
+                    rename_to="state",
+                    case_insensitive=True,
+                    whitespace_mode="both",
+                )
+            ],
+        )
+
+        [proposal] = _proposals_agree(config, source, target)
+
+        assert proposal.column == "state"
+        assert proposal.value_map == {"active": "open", "closed": "shut"}
+
+    def test_it_agrees_on_keys_that_join_only_after_normalizing(self) -> None:
+        """Ensure a composite key with its own rule joins the same rows on both engines."""
+        source = pl.DataFrame(
+            {"tenant": [1] * 6, "code": [f"K{i}" for i in range(6)], "tier": ["G"] * 6}
+        )
+        target = pl.DataFrame(
+            {"tenant": [1] * 6, "code": [f"k{i}" for i in range(6)], "tier": ["Gold"] * 6}
+        )
+        config = DiffConfig(
+            primary_keys=["tenant", "code"],
+            rules=[DiffRule(column_names=["code"], case_insensitive=True)],
+        )
+
+        [proposal] = _proposals_agree(config, source, target)
+
+        assert proposal.value_map == {"G": "Gold"}
+
+    def test_it_agrees_on_the_order_of_tied_entries(self) -> None:
+        """Ensure entries with equal support list in the same order on both engines."""
+        values = ["c", "C", "a", "b", "d"]
+        source, target = _codes([(value, f"{value}!") for value in values for _ in range(5)])
+
+        [proposal] = _proposals_agree(DiffConfig(primary_keys=["id"]), source, target)
+
+        assert [entry.source_value for entry in proposal.entries] == ["C", "a", "b", "c", "d"]
+
+    def test_only_a_local_run_proposes_for_a_non_text_target(self) -> None:
+        """Pin the documented difference: a warehouse proposes only for text on both sides."""
+        ids = list(range(10))
+        source = pl.DataFrame({"id": ids, "flag": ["Y"] * 5 + ["N"] * 5})
+        target = pl.DataFrame({"id": ids, "flag": [1] * 5 + [0] * 5})
+        config = DiffConfig(primary_keys=["id"])
+
+        local = DiffEngine(config, source.lazy(), target.lazy()).propose_value_maps()
+        pushdown, _ = run_value_map_pushdown(config, source, target)
+
+        assert [proposal.value_map for proposal in local] == [{"Y": "1", "N": "0"}]
+        assert pushdown == []
+
+    def test_it_agrees_that_repeated_keys_stop_the_proposal(self) -> None:
+        """Ensure duplicate keys fail both engines, even before any column is counted."""
+        source = pl.DataFrame({"id": [1, 1], "code": ["M", "M"]})
+        target = pl.DataFrame({"id": [1, 1], "code": ["Male", "Male"]})
+        config = DiffConfig(primary_keys=["id"])
+
+        with pytest.raises(DataIntegrityError):
+            DiffEngine(config, source.lazy(), target.lazy()).propose_value_maps()
+        with pytest.raises(DataIntegrityError):
+            run_value_map_pushdown(config, source, target)
+
+    def test_a_warehouse_sample_is_repeatable_and_partial(self) -> None:
+        """Ensure a sampled warehouse proposal reads the same keys every time, and not all."""
+        source, target = _codes([("M", "Male")] * 2000)
+        config = DiffConfig(primary_keys=["id"])
+
+        first, _ = run_value_map_pushdown(config, source, target, sample_fraction=0.5)
+        second, _ = run_value_map_pushdown(config, source, target, sample_fraction=0.5)
+
+        assert first == second
+        [entry] = first[0].entries
+        assert 0 < entry.rows < 2000
