@@ -1,12 +1,13 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Static checks for the GitHub Action and the GitLab CI template.
+"""Static checks for the GitHub Action, the GitLab CI template, and the release workflow.
 
-Neither can run inside the test suite, so these pin the contracts a typo would
-break: every input a step reads is declared, no input is expanded inside a
-shell script, third-party actions are pinned, and the `veridelta run` command
-line they build still parses with the CLI's own parser.
+None of them can run inside the test suite, so these pin the contracts a typo
+would break: every input a step reads is declared, no input is expanded inside a
+shell script, third-party actions are pinned, the `veridelta run` command line
+they build still parses with the CLI's own parser, and a release publishes only
+a new version, only from its tag, with no more permission than each job needs.
 """
 
 import re
@@ -23,6 +24,7 @@ from veridelta.cli import build_parser
 _ROOT = Path(__file__).resolve().parents[2]
 _ACTION = _ROOT / "action.yml"
 _GITLAB = _ROOT / "ci" / "gitlab" / "veridelta.yml"
+_RELEASE = _ROOT / ".github" / "workflows" / "release.yml"
 
 
 def _action() -> dict[str, Any]:
@@ -172,3 +174,131 @@ class TestGitLabTemplate:
         body = script.split("<<'PY'", 1)[1].split("\nPY\n", 1)[0]
 
         compile(body.split("\n", 1)[1], "note.py", "exec")
+
+
+def _release() -> dict[str, Any]:
+    """Load the release workflow."""
+    loaded: dict[str, Any] = yaml.safe_load(_RELEASE.read_text(encoding="utf-8"))
+    return loaded
+
+
+def _release_triggers() -> dict[str, Any]:
+    """Return the release workflow's triggers.
+
+    YAML 1.1 reads a bare `on` key as the boolean `True`, which is how PyYAML
+    loads every GitHub workflow.
+    """
+    workflow: dict[Any, Any] = yaml.safe_load(_RELEASE.read_text(encoding="utf-8"))
+    triggers: dict[str, Any] = workflow[True] if True in workflow else workflow["on"]
+    return triggers
+
+
+def _release_job(name: str) -> dict[str, Any]:
+    """Return one job of the release workflow."""
+    job: dict[str, Any] = _release()["jobs"][name]
+    return job
+
+
+def _release_script(name: str) -> str:
+    """Return every shell script of one release job, joined."""
+    return "\n".join(step["run"] for step in _release_job(name)["steps"] if "run" in step)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestReleaseWorkflow:
+    """Pin the release workflow: a merged version bump becomes a tag, a package, and a page.
+
+    PyPI's trusted publisher is bound to this file's name and to the `pypi`
+    environment, so neither may change without updating PyPI first.
+    """
+
+    def test_it_runs_on_main_on_version_tags_and_by_hand(self) -> None:
+        """Ensure merges reach the tagging job and version tags reach publishing."""
+        triggers = _release_triggers()
+
+        assert set(triggers) == {"push", "workflow_dispatch"}
+        assert triggers["push"]["branches"] == ["main"]
+        assert triggers["push"]["tags"] == ["v[0-9]+.[0-9]+.[0-9]+"]
+
+    def test_it_tags_only_from_main(self) -> None:
+        """Ensure a branch dispatched by hand cannot tag its own commit."""
+        assert _release_job("tag")["if"] == "github.ref == 'refs/heads/main'"
+
+    def test_it_tags_only_a_version_pypi_lacks(self) -> None:
+        """Ensure a merge that leaves the version alone releases nothing.
+
+        Only a 404 from PyPI's page for the version continues; a version PyPI
+        already has stops cleanly, and any other answer fails the job rather
+        than guessing.
+        """
+        script = _release_script("tag")
+
+        assert '["project"]["version"]' in script
+        assert '"https://pypi.org/pypi/veridelta/${version}/json"' in script
+        assert re.search(r"^\s*200\)[^\n]*exit 0", script, re.MULTILINE)
+        assert re.search(r"^\s*404\) ;;", script, re.MULTILINE)
+        assert re.search(r"^\s*\*\)[^\n]*exit 1", script, re.MULTILINE)
+
+    def test_it_tags_the_merged_commit_or_refuses_a_tag_elsewhere(self) -> None:
+        """Ensure an annotated tag lands on the commit that carries the version.
+
+        A tag of the same name on another commit fails the job instead of
+        being moved.
+        """
+        script = _release_script("tag")
+
+        assert 'git tag -a "$tag" -m "$tag" "$GITHUB_SHA"' in script
+        assert '!= "$GITHUB_SHA"' in script
+
+    def test_it_starts_the_publish_run_on_the_new_tag(self) -> None:
+        """Ensure the tag is published although a token-pushed tag starts no workflow.
+
+        GitHub starts no run for a tag pushed with the job's own token, but it
+        does for a `workflow_dispatch`, so the job dispatches this file on the tag.
+        """
+        assert f'gh workflow run {_RELEASE.name} --ref "$tag"' in _release_script("tag")
+
+    def test_it_publishes_only_from_a_version_tag(self) -> None:
+        """Ensure a push to main never builds or uploads a package."""
+        publish = _release_job("publish")
+
+        assert publish["if"] == "startsWith(github.ref, 'refs/tags/v')"
+        assert publish["environment"]["name"] == "pypi"
+
+    def test_it_refuses_a_tag_that_names_another_version(self) -> None:
+        """Ensure a hand-pushed `v1.2.3` on a commit at another version uploads nothing."""
+        script = _release_script("publish")
+
+        assert '"v${version}" != "$GITHUB_REF_NAME"' in script
+        assert script.index("GITHUB_REF_NAME") < script.index("uv publish")
+
+    def test_a_rerun_skips_files_pypi_already_has(self) -> None:
+        """Ensure re-running a half-finished release does not fail on uploaded files."""
+        assert "uv publish --check-url https://pypi.org/simple/" in _release_script("publish")
+
+    def test_it_creates_the_release_page_after_publishing(self) -> None:
+        """Ensure the GitHub Release appears only once the package is on PyPI."""
+        release = _release_job("github-release")
+        script = _release_script("github-release")
+
+        assert release["needs"] == "publish"
+        assert 'gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"' in script
+        assert 'gh release view "$TAG"' in script
+
+    def test_each_job_gets_only_the_permissions_it_needs(self) -> None:
+        """Ensure write access is granted per job, never to the whole workflow."""
+        assert _release()["permissions"] == {"contents": "read"}
+        assert _release_job("tag")["permissions"] == {"contents": "write", "actions": "write"}
+        assert _release_job("publish")["permissions"] == {
+            "id-token": "write",
+            "contents": "read",
+        }
+        assert _release_job("github-release")["permissions"] == {"contents": "write"}
+
+    def test_it_never_expands_an_expression_inside_a_shell_script(self) -> None:
+        """Ensure values reach scripts through `env` only, so none can inject shell syntax."""
+        for name, job in _release()["jobs"].items():
+            for step in job["steps"]:
+                if "run" in step:
+                    assert "${{" not in step["run"], (name, step["name"])
