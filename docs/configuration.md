@@ -100,7 +100,7 @@ All nine transform stages compile for compared columns, and stages 1 through 7 f
 
 Parity is verified by a differential test harness that runs both engines over the same frames and compares the results. The harness executes compiled SQL through DuckDB, which catches semantic errors -- null propagation, three-valued logic, operator precedence -- but cannot catch vendor-specific divergence. Snowflake, Databricks, and BigQuery spellings are pinned by direct assertions on the emitted SQL instead. DuckDB's `levenshtein` counts bytes rather than characters, so edit-distance parity is checked on ASCII text, where the two agree. A property test also draws random configurations and data, from integers at the edges of their types to NULLs, NaN, and text timestamps, and requires both engines to reach the same counts on each.
 
-Write `regex_replace` patterns, `value_map` entries, and text `null_values` exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in `\d` or `\N` and an apostrophe in `O'Brien` arrive intact; do not double them yourself. Escaping preserves the text, but each warehouse still runs its own regex engine: keep replacements free of capture-group references, which Polars and Databricks write as `$1` and Snowflake as `\1`. Likewise `whitespace_mode` trims only spaces in a warehouse, where Polars also strips tabs and line breaks.
+Write `regex_replace` patterns, `value_map` entries, and text `null_values` exactly as you would for a local run. Each is escaped for the target warehouse's string-literal rules, so a backslash in `\d` or `\N` and an apostrophe in `O'Brien` arrive intact; do not double them yourself. Escaping preserves the text, but each warehouse still runs its own regex engine. Write capture-group references in a replacement as Polars reads them, `$1` or `${1}`, with `$0` for the whole match and `$$` for a dollar sign: pushdown rewrites them in each warehouse's own spelling, `\1` on Snowflake, BigQuery, and DuckDB. A backslash in a replacement is plain text, as it is in Polars. Refer to groups by number, 0 through 9: no warehouse can refer to a group by name in a replacement, so a named reference raises `ConfigError`. That includes `$1a`, which Polars reads as the group named `1a`; write `${1}a` for group 1 followed by `a`. Likewise `whitespace_mode` trims only spaces in a warehouse, where Polars also strips tabs and line breaks.
 
 Two stages need explaining:
 
@@ -210,7 +210,6 @@ Credentials come from Application Default Credentials, such as `gcloud auth appl
 BigQuery differs from the other warehouses in a few ways a comparison can notice:
 
 - `whitespace_mode` trims every kind of whitespace, as a local run does, not only spaces.
-- In a `regex_replace` replacement, `\1` is a group reference and `$1` is literal text, the reverse of Polars.
 - `datetime_format` cannot use `%f`, since BigQuery spells fractional seconds only as part of the seconds. A format with `%z` parses to an aware timestamp, and one without it to a naive one, as Polars does.
 - Comparing columns of different types fails the statement rather than coercing one side, so give such a pair a `cast_to`, or set `strict_types`.
 - `GEOGRAPHY` and `JSON` columns cannot be compared; `ignore` them.
@@ -371,7 +370,7 @@ Exit codes are `0` for a match within `threshold`, `1` for drift or any failure 
 - a database `table` uses a URI scheme Veridelta can quote;
 - each `regex_replace` pattern compiles in Polars, whose regular expressions, unlike Python's `re`, have no look-around or backreferences.
 
-On a warehouse pair it also warns about settings the warehouse refuses only for some stored names or types: `normalize_column_names`, `min_jaro_winkler_similarity`, and a `datetime_format` with no SQL spelling. A pattern Polars rejects is only a warning there, since the warehouse runs it with its own engine.
+On a warehouse pair it also warns about settings the warehouse refuses only for some stored names or types: `normalize_column_names`, `min_jaro_winkler_similarity`, a `datetime_format` with no SQL spelling, and a `regex_replace` replacement that refers to a group by name. A pattern Polars rejects is only a warning there, since the warehouse runs it with its own engine.
 
 `--schemas` also connects and checks the rules against each side's columns, never its rows:
 

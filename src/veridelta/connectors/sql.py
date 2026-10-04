@@ -282,6 +282,111 @@ _REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
 replaces only the first unless given the `'g'` option."""
 
 
+_REFERENCE_NAME: Final = re.compile(r"[_0-9A-Za-z]+")
+"""The name after a bare `$` in a Polars replacement: the longest run of these characters."""
+
+_GROUP_NUMBER: Final = re.compile(r"[0-9]+")
+"""A reference name that Polars reads as a group number rather than a group name."""
+
+_HIGHEST_GROUP: Final = 9
+"""The highest group a warehouse replacement can refer to: their references are one digit."""
+
+
+def _reference_at(replacement: str, index: int) -> tuple[str, int] | None:
+    """Read the group reference that starts at a `$` in a Polars replacement.
+
+    Polars follows the `regex` crate: `${name}` names everything up to the
+    closing brace, and a bare `$name` takes the longest run of letters,
+    digits, and underscores, so `$1a` names the group `1a`, not group 1.
+
+    Args:
+        replacement (str): Replacement text, as Polars reads it.
+        index (int): Position of a `$` that is not part of `$$`.
+
+    Returns:
+        tuple[str, int] | None: The reference's name and the position after
+            it, or None when the `$` starts no reference and is plain text.
+    """
+    if replacement.startswith("{", index + 1):
+        close = replacement.find("}", index + 2)
+        if close == -1:
+            return None
+        return replacement[index + 2 : close], close + 1
+    name = _REFERENCE_NAME.match(replacement, index + 1)
+    if name is None:
+        return None
+    return name.group(), name.end()
+
+
+def _replacement_tokens(pattern: str, replacement: str) -> list[str | int]:
+    """Split a Polars replacement into runs of plain text and group numbers.
+
+    `$$` is a dollar sign, and a `$` that starts no reference is plain text,
+    as are backslashes. Polars and these rules agree on 1.39.3 and later.
+
+    Args:
+        pattern (str): The `regex_replace` key, for the error message.
+        replacement (str): Its replacement, as Polars reads it.
+
+    Returns:
+        list[str | int]: Plain text and group numbers, in order.
+
+    Raises:
+        ConfigError: If a reference names a group, which no warehouse can write
+            in a replacement, or a group above 9.
+    """
+    tokens: list[str | int] = []
+    text: list[str] = []
+    index = 0
+    while index < len(replacement):
+        if replacement.startswith("$$", index):
+            text.append("$")
+            index += 2
+            continue
+        reference = _reference_at(replacement, index) if replacement[index] == "$" else None
+        if reference is None:
+            text.append(replacement[index])
+            index += 1
+            continue
+        name, index = reference
+        if text:
+            tokens.append("".join(text))
+            text.clear()
+        tokens.append(_group_number(pattern, replacement, name))
+    if text:
+        tokens.append("".join(text))
+    return tokens
+
+
+def _group_number(pattern: str, replacement: str, name: str) -> int:
+    """Return the group a reference names, if a warehouse can refer to it.
+
+    Args:
+        pattern (str): The `regex_replace` key, for the error message.
+        replacement (str): Its replacement, for the error message.
+        name (str): The reference's name, as Polars reads it.
+
+    Returns:
+        int: The group number, 0 to 9.
+
+    Raises:
+        ConfigError: If the name is not a number, or the number is above 9.
+    """
+    where = f"regex_replace replacement {replacement!r} for pattern {pattern!r}"
+    if _GROUP_NUMBER.fullmatch(name) is None:
+        raise ConfigError(
+            f"{where} refers to a group by name (${{{name}}}), which SQL pushdown cannot "
+            "write: warehouses refer to groups by number only. Use the group's number, "
+            "and braces to keep it apart from text that follows, as in ${1}a."
+        )
+    number = int(name)
+    if number > _HIGHEST_GROUP:
+        raise ConfigError(
+            f"{where} refers to group {number}, but warehouses refer to groups 0 through 9 only."
+        )
+    return number
+
+
 _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "NUMBER(38, 0)",
     SQLDialect.DATABRICKS: "DECIMAL(38, 0)",
@@ -1524,17 +1629,62 @@ class SQLPushdownCompiler:
 
         Returns:
             str: Nested `REGEXP_REPLACE` expression.
+
+        Raises:
+            ConfigError: If a replacement refers to a group the warehouse
+                cannot write; see `_regex_replacement`.
         """
         if not rule.regex_replace:
             return expr
         wrapped = expr
         flags = _REGEX_REPLACE_FLAGS[self.dialect]
         for pattern, replacement in rule.regex_replace.items():
+            written = self._regex_replacement(pattern, replacement)
             wrapped = (
                 f"REGEXP_REPLACE({wrapped}, {self._literal(pattern)}, "
-                f"{self._literal(replacement)}{flags})"
+                f"{self._literal(written)}{flags})"
             )
         return wrapped
+
+    def _regex_replacement(self, pattern: str, replacement: str) -> str:
+        r"""Rewrite a Polars replacement in the dialect's replacement syntax.
+
+        Polars writes a group as `$1` or `${1}` and reads a backslash as plain
+        text. Snowflake, BigQuery, and DuckDB write a group as `\1`, read `$` as
+        plain text, and need a plain backslash doubled. Databricks follows Java:
+        a group is `$1`, a backslash makes the next character plain, and a
+        digit right after a group would extend its number, so it is escaped.
+
+        Args:
+            pattern (str): The `regex_replace` key, for error messages.
+            replacement (str): Its replacement, as Polars reads it.
+
+        Returns:
+            str: The replacement as the dialect's `REGEXP_REPLACE` reads it,
+                before string-literal escaping.
+
+        Raises:
+            ConfigError: If the replacement names a group, or refers to a group
+                above 9.
+        """
+        written: list[str] = []
+        follows_group = False
+        for token in _replacement_tokens(pattern, replacement):
+            if isinstance(token, int):
+                written.append(
+                    f"${token}" if self.dialect is SQLDialect.DATABRICKS else f"\\{token}"
+                )
+                follows_group = True
+                continue
+            if self.dialect is SQLDialect.DATABRICKS:
+                token = token.replace("\\", "\\\\").replace("$", "\\$")
+                if follows_group and token[:1].isdigit():
+                    token = f"\\{token}"
+            else:
+                token = token.replace("\\", "\\\\")
+            written.append(token)
+            follows_group = False
+        return "".join(written)
 
     def _apply_whitespace(self, expr: str, rule: DiffRule) -> str:
         """Apply dialect-neutral trim functions for `whitespace_mode`.

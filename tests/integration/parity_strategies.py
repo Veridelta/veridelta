@@ -135,7 +135,16 @@ def _text_rules(draw: st.DrawFn) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     if draw(st.booleans()):
         fields["regex_replace"] = draw(
-            st.sampled_from([{"-": ""}, {"[^A-Za-z0-9]": ""}, {"\\$": ""}, {"a+": "a"}])
+            st.sampled_from(
+                [
+                    {"-": ""},
+                    {"[^A-Za-z0-9]": ""},
+                    {"\\$": ""},
+                    {"a+": "a"},
+                    {"(A)(b)": "$2$1"},
+                    {"([01])": "${1}$$"},
+                ]
+            )
         )
     if draw(st.booleans()):
         fields["whitespace_mode"] = draw(st.sampled_from(["left", "right", "both"]))
