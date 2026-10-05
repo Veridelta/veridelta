@@ -26,8 +26,10 @@ from veridelta.connectors import (
     DatabricksConnector,
     DeltaLakeConnector,
     IcebergConnector,
+    PostgresPushdownSession,
     PushdownQueryType,
     SnowflakeConnector,
+    SQLDialect,
     VerideltaConnector,
 )
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -706,3 +708,164 @@ class TestDatabaseSchemaProbe:
             DatabaseConnector(config, probe=True).connect()
 
         read.assert_not_called()
+
+
+_POSTGRES_URI = "postgresql://analyst@db.internal:5432/sales"
+
+
+def _postgres_session(password: str | None = None) -> PostgresPushdownSession:
+    """Build an unconnected session for a pushed-down Postgres table."""
+    return PostgresPushdownSession(
+        DatabaseConfig(uri=_POSTGRES_URI, password=password, table="orders", pushdown=True)
+    )
+
+
+def _setting(value: str) -> pl.DataFrame:
+    """Return the one-row result of the literal-rules check."""
+    return pl.DataFrame({"value": [value]})
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestPostgresPushdownSession:
+    """Validate the session that runs compiled comparison SQL inside Postgres."""
+
+    def test_it_compiles_for_postgres(self) -> None:
+        """Ensure the engine compiles this session's statements in the Postgres dialect."""
+        assert _postgres_session().compiler.dialect is SQLDialect.POSTGRES
+
+    def test_it_checks_how_the_server_reads_string_literals(self, mocker: MockerFixture) -> None:
+        """Ensure connecting asks whether backslashes in literals are plain text."""
+        read = _read_database(mocker, return_value=_setting("on"))
+
+        _postgres_session().connect()
+
+        read.assert_called_once_with(
+            "SELECT current_setting('standard_conforming_strings') AS value", _POSTGRES_URI
+        )
+
+    def test_it_refuses_a_server_that_reads_backslashes_as_escapes(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a literal can never be cut short by a backslash the compiler left alone.
+
+        The Postgres dialect writes literals by the SQL standard, where a
+        backslash is plain text. With `standard_conforming_strings` off, a value
+        ending in a backslash would escape its own closing quote.
+        """
+        _read_database(mocker, return_value=_setting("off"))
+
+        with pytest.raises(ConnectorError, match="standard_conforming_strings is off"):
+            _postgres_session().connect()
+
+    def test_it_runs_each_statement_as_one_read(self, mocker: MockerFixture) -> None:
+        """Ensure a statement reaches ConnectorX as written and returns its rows lazily."""
+        result = pl.DataFrame({"id": [3]})
+        read = _read_database(mocker, return_value=_setting("on"))
+        session = _postgres_session()
+        session.connect()
+        read.return_value = result
+
+        frame = session.execute_pushdown('SELECT "id" FROM "orders"', query_type="added")
+
+        read.assert_called_with('SELECT "id" FROM "orders"', _POSTGRES_URI)
+        assert frame.collect().equals(result)
+
+    def test_it_sends_the_password_field_encoded(self, mocker: MockerFixture) -> None:
+        """Ensure a password with URI syntax reaches the driver as one intact field."""
+        read = _read_database(mocker, return_value=_setting("on"))
+
+        _postgres_session(_DATABASE_SECRET).connect()
+
+        assert read.call_args.args[1] == (
+            "postgresql://analyst:p%40ss%3Aw%2Frd%20%25%2B%26%3F%23@db.internal:5432/sales"
+        )
+
+    def test_it_reports_a_failed_statement_without_the_password(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a driver error names the statement kind but carries no secret."""
+        read = _read_database(mocker, return_value=_setting("on"))
+        session = _postgres_session(_DATABASE_SECRET)
+        session.connect()
+        read.side_effect = RuntimeError(f"auth failed for {quote(_DATABASE_SECRET, safe='')}")
+
+        with pytest.raises(ConnectorError, match="Postgres mismatch statement") as info:
+            session.execute_pushdown("SELECT 1")
+
+        assert info.value.__cause__ is None
+        assert _DATABASE_SECRET not in "".join(traceback.format_exception(info.value))
+        assert quote(_DATABASE_SECRET, safe="") not in str(info.value)
+
+    def test_it_explains_a_missing_extra_before_connecting(self, mocker: MockerFixture) -> None:
+        """Ensure a missing ConnectorX names the extra and never reaches Polars."""
+        mocker.patch("veridelta.connectors.database.connectorx", None)
+        read = mocker.patch("veridelta.connectors.database.pl.read_database_uri")
+
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[database\]'"):
+            _postgres_session().connect()
+
+        read.assert_not_called()
+
+    def test_it_explains_missing_pyarrow_as_the_extra(self, mocker: MockerFixture) -> None:
+        """Ensure a partial install reads as the same install hint, not an import trace."""
+        _read_database(mocker, side_effect=ModuleNotFoundError("No module named 'pyarrow'"))
+
+        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[database\]'"):
+            _postgres_session().connect()
+
+    def test_it_describes_the_last_result_without_its_rows(self, mocker: MockerFixture) -> None:
+        """Ensure `fetch_schema` reruns the last statement wrapped to return no rows."""
+        empty = pl.DataFrame(schema={"id": pl.Int64})
+        read = _read_database(mocker, return_value=_setting("on"))
+        session = _postgres_session()
+        session.connect()
+        session.execute_pushdown('SELECT "id" FROM "orders"')
+        read.return_value = empty
+
+        schema = session.fetch_schema()
+
+        assert schema == empty.schema
+        assert read.call_args.args[0] == session.compiler.compile_result_schema_query(
+            'SELECT "id" FROM "orders"'
+        )
+
+    def test_it_needs_a_statement_before_it_can_describe_one(self, mocker: MockerFixture) -> None:
+        """Ensure `fetch_schema` explains itself when nothing has run yet."""
+        _read_database(mocker, return_value=_setting("on"))
+        session = _postgres_session()
+        session.connect()
+
+        with pytest.raises(ConnectorError, match="No pushdown statement has run"):
+            session.fetch_schema()
+
+    def test_it_refuses_work_until_connected_and_after_closing(self, mocker: MockerFixture) -> None:
+        """Ensure the lifecycle matches the other connectors, and closing twice is safe."""
+        _read_database(mocker, return_value=_setting("on"))
+        session = _postgres_session()
+
+        with pytest.raises(ConnectorError, match="not connected"):
+            session.execute_pushdown("SELECT 1")
+        with pytest.raises(ConnectorError, match="not connected"):
+            session.fetch_schema()
+
+        session.connect()
+        session.close()
+        session.close()
+
+        with pytest.raises(ConnectorError, match="not connected"):
+            session.execute_pushdown("SELECT 1")
+
+    def test_it_logs_the_statement_kind_and_never_the_sql(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure a log line can be shared without leaking SQL or credentials."""
+        _read_database(mocker, return_value=_setting("on"))
+        session = _postgres_session(_DATABASE_SECRET)
+
+        with caplog.at_level(logging.INFO, logger="veridelta.connectors.database"):
+            session.connect()
+
+        assert "settings" in caplog.text
+        assert "current_setting" not in caplog.text
+        assert _DATABASE_SECRET not in caplog.text

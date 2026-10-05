@@ -4,7 +4,7 @@
 """Warehouse pushdown, lakehouse-native, and database connector abstractions."""
 
 from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
-from veridelta.connectors.database import DatabaseConnector
+from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.connectors.warehouse import (
@@ -19,6 +19,7 @@ __all__ = [
     "DatabricksConnector",
     "DeltaLakeConnector",
     "IcebergConnector",
+    "PostgresPushdownSession",
     "PushdownQueryType",
     "SQLDialect",
     "SQLPushdownCompiler",
