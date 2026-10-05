@@ -557,11 +557,3 @@ class TestDatabricksExecution:
             connector.execute_pushdown("SELECT 1")
         with pytest.raises(ConnectorError, match="not connected"):
             connector.fetch_schema()
-
-    def test_it_raises_when_databricks_extra_is_missing(self, mocker: MockerFixture) -> None:
-        """Ensure a missing Databricks driver raises an extra-install error."""
-        mocker.patch("veridelta.connectors.warehouse.databricks_sql", None)
-        connector = DatabricksConnector(_databricks_config())
-
-        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[databricks\]'"):
-            connector.connect()

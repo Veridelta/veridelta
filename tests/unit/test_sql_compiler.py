@@ -1018,10 +1018,32 @@ class TestColumnMismatchAggregate:
 class TestCompilerErrors:
     """Validate ConnectorError guards for unsupported or invalid input."""
 
-    def test_it_rejects_empty_primary_keys(self) -> None:
-        """Ensure joins cannot be compiled without keys."""
-        with pytest.raises(ConnectorError, match="primary key"):
-            _snowflake().compile_query("src_tbl", "tgt_tbl", [], [])
+    @pytest.mark.parametrize(
+        ("source", "keys", "rules", "message"),
+        [
+            # Joins cannot compile without keys.
+            pytest.param("src_tbl", [], [], "primary key", id="empty-keys"),
+            # `catalog.schema.table` is the longest allowed relation path.
+            pytest.param("a.b.c.d", ["id"], [], "three dotted segments", id="four-segments"),
+            # Pattern rules cannot expand without a resolved column list.
+            pytest.param(
+                "src_tbl", ["id"], [DiffRule(pattern="^AMT_")], "Pattern-only", id="pattern-only"
+            ),
+            pytest.param(
+                "src_tbl",
+                ["id"],
+                [DiffRule(column_names=["a", "b"], rename_to="c")],
+                "rename_to",
+                id="rename-to-two-columns",
+            ),
+        ],
+    )
+    def test_it_rejects_a_query_it_cannot_compile(
+        self, source: str, keys: list[str], rules: list[DiffRule], message: str
+    ) -> None:
+        """Ensure `compile_query` fails closed on keys, relations, or rules it cannot compile."""
+        with pytest.raises(ConnectorError, match=message):
+            _snowflake().compile_query(source, "tgt_tbl", keys, rules)
 
     def test_it_rejects_empty_table_names(self) -> None:
         """Ensure blank source or target relations raise ConnectorError."""
@@ -1045,31 +1067,6 @@ class TestCompilerErrors:
             _databricks().compile_missing_query("src_tbl", "tgt`x", ["id"])
         with pytest.raises(ConnectorError, match="identifier"):
             _snowflake().compile_added_query("src_tbl", "tgt_tbl", ["id dropped"])
-
-    def test_it_rejects_relations_with_more_than_three_segments(self) -> None:
-        """Ensure catalog.schema.table is the longest allowed relation path."""
-        with pytest.raises(ConnectorError, match="three dotted segments"):
-            _snowflake().compile_query("a.b.c.d", "tgt_tbl", ["id"], [])
-
-    def test_it_rejects_pattern_only_rules(self) -> None:
-        """Ensure pattern rules cannot expand without a resolved column list."""
-        with pytest.raises(ConnectorError, match="Pattern-only"):
-            _snowflake().compile_query(
-                "src_tbl",
-                "tgt_tbl",
-                ["id"],
-                [DiffRule(pattern="^AMT_")],
-            )
-
-    def test_it_rejects_rename_to_with_multiple_columns(self) -> None:
-        """Ensure rename_to stays restricted to single-column rules."""
-        with pytest.raises(ConnectorError, match="rename_to"):
-            _snowflake().compile_query(
-                "src_tbl",
-                "tgt_tbl",
-                ["id"],
-                [DiffRule(column_names=["a", "b"], rename_to="c")],
-            )
 
     def test_it_compiles_every_transform_stage(self) -> None:
         """Ensure no transform stage is rejected as unimplemented any more.
@@ -1097,42 +1094,33 @@ class TestCastCompilation:
     """Validate stage 7 across the dialect keyword table."""
 
     @pytest.mark.parametrize(
-        ("target", "keyword"),
+        ("compiler", "column", "target", "keyword"),
         [
-            ("Int64", "BIGINT"),
-            ("Float64", "FLOAT"),
-            ("String", "VARCHAR"),
-            ("Boolean", "BOOLEAN"),
-            ("Date", "DATE"),
-            ("Datetime", "TIMESTAMP_NTZ"),
+            pytest.param(_snowflake(), '"src"."c"', "Int64", "BIGINT", id="snowflake-int64"),
+            pytest.param(_snowflake(), '"src"."c"', "Float64", "FLOAT", id="snowflake-float64"),
+            pytest.param(_snowflake(), '"src"."c"', "String", "VARCHAR", id="snowflake-string"),
+            pytest.param(_snowflake(), '"src"."c"', "Boolean", "BOOLEAN", id="snowflake-boolean"),
+            pytest.param(_snowflake(), '"src"."c"', "Date", "DATE", id="snowflake-date"),
+            pytest.param(
+                _snowflake(), '"src"."c"', "Datetime", "TIMESTAMP_NTZ", id="snowflake-datetime"
+            ),
+            pytest.param(_databricks(), "`src`.`c`", "Int64", "BIGINT", id="databricks-int64"),
+            pytest.param(_databricks(), "`src`.`c`", "Float64", "DOUBLE", id="databricks-float64"),
+            pytest.param(_databricks(), "`src`.`c`", "String", "STRING", id="databricks-string"),
+            pytest.param(_databricks(), "`src`.`c`", "Boolean", "BOOLEAN", id="databricks-boolean"),
+            pytest.param(_databricks(), "`src`.`c`", "Date", "DATE", id="databricks-date"),
+            pytest.param(
+                _databricks(), "`src`.`c`", "Datetime", "TIMESTAMP", id="databricks-datetime"
+            ),
         ],
     )
-    def test_it_maps_snowflake_cast_keywords(self, target: str, keyword: str) -> None:
-        """Ensure each cast target resolves to its Snowflake type name."""
+    def test_it_maps_cast_keywords(
+        self, compiler: SQLPushdownCompiler, column: str, target: str, keyword: str
+    ) -> None:
+        """Ensure each cast target resolves to the type name of each dialect."""
         rule = DiffRule(column_names=["c"], cast_to=target)  # type: ignore[arg-type]
 
-        sql = _snowflake().compile_column_predicate(rule, "c")
-
-        assert f'CAST("src"."c" AS {keyword})' in sql
-
-    @pytest.mark.parametrize(
-        ("target", "keyword"),
-        [
-            ("Int64", "BIGINT"),
-            ("Float64", "DOUBLE"),
-            ("String", "STRING"),
-            ("Boolean", "BOOLEAN"),
-            ("Date", "DATE"),
-            ("Datetime", "TIMESTAMP"),
-        ],
-    )
-    def test_it_maps_databricks_cast_keywords(self, target: str, keyword: str) -> None:
-        """Ensure each cast target resolves to its Databricks type name."""
-        rule = DiffRule(column_names=["c"], cast_to=target)  # type: ignore[arg-type]
-
-        sql = _databricks().compile_column_predicate(rule, "c")
-
-        assert f"CAST(`src`.`c` AS {keyword})" in sql
+        assert f"CAST({column} AS {keyword})" in compiler.compile_column_predicate(rule, "c")
 
     def test_it_truncates_a_float_bound_for_an_integer(self) -> None:
         """Ensure the float-to-integer cast truncates instead of rounding.
@@ -1222,36 +1210,34 @@ class TestDatetimeFormatCompilation:
     Databricks format languages get.
     """
 
-    def test_it_translates_a_snowflake_format(self) -> None:
-        """Ensure directives become Snowflake elements and literals are quoted."""
-        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S")
+    @pytest.mark.parametrize(
+        ("compiler", "datetime_format", "expected"),
+        [
+            pytest.param(
+                _snowflake(),
+                "%Y-%m-%d %H:%M:%S",
+                'TRY_TO_TIMESTAMP("src"."ts", \'YYYY"-"MM"-"DD" "HH24":"MI":"SS\')',
+                id="snowflake",
+            ),
+            # Unquoted letters are pattern symbols, and a backslash keeps the quotes in one literal.
+            pytest.param(
+                _databricks(),
+                "%Y-%m-%d",
+                r"try_to_timestamp(`src`.`ts`, 'yyyy\'-\'MM\'-\'dd')",
+                id="databricks",
+            ),
+            pytest.param(
+                _duckdb(), "%Y-%m-%d", 'try_strptime("src"."ts", \'%Y-%m-%d\')', id="duckdb"
+            ),
+        ],
+    )
+    def test_it_translates_a_format(
+        self, compiler: SQLPushdownCompiler, datetime_format: str, expected: str
+    ) -> None:
+        """Ensure the format reaches each dialect in the language its parser reads."""
+        rule = DiffRule(column_names=["ts"], datetime_format=datetime_format)
 
-        sql = _snowflake().compile_column_predicate(rule, "ts")
-
-        assert 'TRY_TO_TIMESTAMP("src"."ts", \'YYYY"-"MM"-"DD" "HH24":"MI":"SS\')' in sql
-
-    def test_it_translates_a_databricks_format(self) -> None:
-        """Ensure directives become Java pattern letters with quoted literals.
-
-        Databricks parses with `DateTimeFormatter`, where every unquoted letter
-        is a pattern symbol. The literal quoting is what keeps a separator from
-        being read as one.
-        """
-        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d")
-
-        sql = _databricks().compile_column_predicate(rule, "ts")
-
-        # Databricks concatenates adjacent literals, so `''` would drop the
-        # quotes the pattern needs; a backslash keeps them inside one literal.
-        assert r"try_to_timestamp(`src`.`ts`, 'yyyy\'-\'MM\'-\'dd')" in sql
-
-    def test_it_translates_a_duckdb_format(self) -> None:
-        """Ensure DuckDB keeps the Python directives it already understands."""
-        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d")
-
-        sql = _duckdb().compile_column_predicate(rule, "ts")
-
-        assert 'try_strptime("src"."ts", \'%Y-%m-%d\')' in sql
+        assert expected in compiler.compile_column_predicate(rule, "ts")
 
     def test_it_translates_a_literal_percent(self) -> None:
         """Ensure `%%` becomes a quoted literal rather than a directive."""
@@ -1261,34 +1247,24 @@ class TestDatetimeFormatCompilation:
         assert r"'yyyy\'%\''" in _databricks().compile_column_predicate(rule, "ts")
         assert "'%Y%%'" in _duckdb().compile_column_predicate(rule, "ts")
 
-    def test_it_rejects_an_untranslatable_directive(self) -> None:
-        """Ensure an unsupported directive fails closed.
+    @pytest.mark.parametrize(
+        ("datetime_format", "message"),
+        [
+            # A `%j` left in the format makes every row NULL, which reads as a clean match.
+            pytest.param("%Y-%j", "%j", id="untranslatable-directive"),
+            # The separator allowlist has no quotes, so no literal can close the quoting around it.
+            pytest.param("%Y'X", "literal character", id="unquotable-literal"),
+            # A truncated directive is an error, not a silent literal.
+            pytest.param("%Y-%", "dangling", id="dangling-percent"),
+        ],
+    )
+    def test_it_rejects_a_format_it_cannot_translate(
+        self, datetime_format: str, message: str
+    ) -> None:
+        """Ensure a format the translator cannot render fails closed."""
+        rule = DiffRule(column_names=["ts"], datetime_format=datetime_format)
 
-        A blind substitution would leave `%j` in the emitted format, where the
-        warehouse parses nothing and returns NULL for every row -- which reads
-        as a clean match rather than as an error.
-        """
-        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%j")
-
-        with pytest.raises(ConfigError, match="%j"):
-            _snowflake().compile_column_predicate(rule, "ts")
-
-    def test_it_rejects_an_unquotable_literal(self) -> None:
-        """Ensure a literal outside the separator allowlist is refused.
-
-        The allowlist excludes both quote characters, so no literal run can
-        close the quoting the translator wraps it in.
-        """
-        rule = DiffRule(column_names=["ts"], datetime_format="%Y'X")
-
-        with pytest.raises(ConfigError, match="literal character"):
-            _snowflake().compile_column_predicate(rule, "ts")
-
-    def test_it_rejects_a_dangling_percent(self) -> None:
-        """Ensure a truncated directive is an error, not a silent literal."""
-        rule = DiffRule(column_names=["ts"], datetime_format="%Y-%")
-
-        with pytest.raises(ConfigError, match="dangling"):
+        with pytest.raises(ConfigError, match=message):
             _snowflake().compile_column_predicate(rule, "ts")
 
     def test_it_skips_parsing_a_non_text_column(self) -> None:

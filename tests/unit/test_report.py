@@ -241,36 +241,31 @@ class TestHTMLReport:
         assert "No rows." in document
         assert "No column-level drift." in document
 
-    def test_it_escapes_markup_in_the_data(self) -> None:
-        """Ensure a value cannot break out of its cell into the document.
-
-        Column names reach the table header as text, so a crafted name would
-        otherwise be parsed as markup by the browser.
-        """
-        src = pl.DataFrame({"id": [1], "<script>x</script>": ["A"]})
-        tgt = pl.DataFrame({"id": [1], "<script>x</script>": ["B"]})
+    @pytest.mark.parametrize(
+        ("column", "value", "raw", "escaped"),
+        [
+            # Column names reach the table header as text, so an unescaped name parses as markup.
+            pytest.param(
+                "<script>x</script>", "A", "<script>x</script>_source", "&lt;script&gt;", id="name"
+            ),
+            # The rows travel inside a script element, which an unescaped `</script>` ends early.
+            pytest.param(
+                "val", "</script><img onerror=x>", "</script><img", r"\u003c/script>", id="cell"
+            ),
+        ],
+    )
+    def test_it_escapes_markup_in_the_data(
+        self, column: str, value: str, raw: str, escaped: str
+    ) -> None:
+        """Ensure a column name or a value cannot inject markup into the document."""
+        src = pl.DataFrame({"id": [1], column: [value]})
+        tgt = pl.DataFrame({"id": [1], column: ["B"]})
         result = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
 
         document = render_html(result)
 
-        assert "<script>x</script>_source" not in document
-        assert "&lt;script&gt;" in document
-
-    def test_it_keeps_embedded_data_from_closing_the_script_block(self) -> None:
-        """Ensure a value containing a closing tag cannot inject markup.
-
-        The rows travel inside a script element, so an unescaped `</script>`
-        in the data would terminate it early and hand the remainder to the
-        HTML parser.
-        """
-        src = pl.DataFrame({"id": [1], "val": ["</script><img onerror=x>"]})
-        tgt = pl.DataFrame({"id": [1], "val": ["B"]})
-        result = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
-
-        document = render_html(result)
-
-        assert "</script><img" not in document
-        assert r"\u003c/script>" in document
+        assert raw not in document
+        assert escaped in document
 
     def test_it_writes_the_file_and_creates_parent_directories(self, tmp_path: Path) -> None:
         """Ensure a nested output path does not require pre-creating the tree."""
