@@ -10,7 +10,7 @@ Veridelta ships a GitHub Action and a GitLab CI template. Both run `veridelta ru
 - they keep the JSON summary, the HTML report, and the OpenTelemetry metrics as artifacts;
 - they fail the job on drift or on an error.
 
-Both are available from the release after 0.10.0; the examples pin `v0.11.0`.
+Both are available from the release after 0.10.0; the examples pin `v0.12.0`.
 
 ## GitHub Actions
 
@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: Veridelta/veridelta@v0.11.0
+      - uses: Veridelta/veridelta@v0.12.0
         with:
           config: veridelta.yaml
           extras: snowflake
@@ -35,7 +35,7 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
 ```
 
-**Version.** Pin the action to a release tag such as `v0.11.0`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
+**Version.** Pin the action to a release tag such as `v0.12.0`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
 
 **Credentials.** Pass credentials as step environment variables, as above, and reference them from the configuration as `${SNOWFLAKE_PASSWORD}` (see [Environment variables](configuration.md#environment-variables)).
 
@@ -99,7 +99,7 @@ Add any header your backend requires, such as an API key, from a secret.
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.11.0/ci/gitlab/veridelta.yml
+  - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.12.0/ci/gitlab/veridelta.yml
     inputs:
       config: veridelta.yaml
       extras: snowflake
@@ -124,10 +124,10 @@ The template defines one job, named `veridelta` by default, which:
 
 ```yaml
 - uses: astral-sh/setup-uv@v7
-- run: uvx veridelta@0.11.0 validate -c veridelta.yaml --allow-missing-env
+- run: uvx veridelta@0.12.0 validate -c veridelta.yaml --allow-missing-env
 ```
 
-`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.11.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](configuration.md#checking-a-configuration).
+`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.12.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](configuration.md#checking-a-configuration).
 
 ## Exit codes and statuses
 

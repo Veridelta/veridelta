@@ -1,3 +1,47 @@
+## v0.12.0 (2026-10-05)
+
+Veridelta now requires Python 3.11 or later, since Python 3.10 reaches end of life this
+month; pip and uv keep installing 0.11.1 on 3.10. Pushdown reports can now show values,
+and any run can feed a dashboard through OpenTelemetry.
+
+Set `pushdown_sample_rows` on a comparison that runs in a warehouse or inside Postgres,
+and one more statement fetches up to that many changed rows, lowest keys first, with
+both sides' values and each column's match flag, laid out like a local run's changed
+rows. The HTML report shows them in place of the bare keys, `DiffResult.changed_sample`
+holds them, and `output_path` writes them as `changed_rows_sample`. The counts do not
+change. Values do leave the warehouse, so the default, `0`, fetches nothing, and the
+Markdown summary that CI posts, the `--json` summary, and the logs never carry them.
+
+`veridelta run --otel PATH` writes the run's metrics as one line of OTLP JSON for an
+OpenTelemetry Collector or any OTLP/HTTP endpoint, with no new dependency: rows on each
+side, added, removed, and changed rows, mismatched rows for every compared column, the
+mismatch ratio, and the verdict, each a gauge. They carry counts and column names,
+never row values, connection URIs, credentials, or SQL. The GitHub Action and the
+GitLab CI template write the file into their artifact, and the Action exposes its path
+as the `otel-metrics` output. A fifth tutorial takes a database source through
+`veridelta validate` and into the CI integrations.
+
+### Feat
+
+- fetch up to `pushdown_sample_rows` changed rows with both sides' values in a pushdown
+  run, shown in the HTML report and written as `changed_rows_sample`
+- write OpenTelemetry metrics with `veridelta run --otel`, and from the GitHub Action
+  and the GitLab CI template
+
+### Refactor
+
+- make `SQLDialect` a `StrEnum`, so `str()` of a dialect is its value
+
+### Chore
+
+- finish a release that is still waiting for approval when another change merges to
+  `main`, and upload only the files PyPI does not have yet
+- require Python 3.11 or later, and test 3.11 through 3.14
+
+### BREAKING CHANGE
+
+- Veridelta requires Python 3.11 or later
+
 ## v0.11.1 (2026-10-05)
 
 Two Postgres tables can now be compared inside Postgres, and warehouse pushdown trims

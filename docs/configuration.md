@@ -59,7 +59,7 @@ primary_keys: ["user_id"]
 
 A `$schema:` key does not work: the loader rejects keys it does not know.
 
-The site's copy follows the main branch. To pin the schema to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.11.0/docs/schema/veridelta.schema.json`, or print the installed version's schema and point at the file:
+The site's copy follows the main branch. To pin the schema to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.12.0/docs/schema/veridelta.schema.json`, or print the installed version's schema and point at the file:
 
 ```bash
 veridelta schema > veridelta.schema.json
