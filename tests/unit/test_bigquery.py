@@ -155,6 +155,28 @@ class TestBigQueryDialect:
         """Ensure a naive `Datetime` becomes DATETIME, which has no zone, like Polars'."""
         assert f"AS {keyword})" in _predicate(cast_to=cast_to)
 
+    def test_it_tests_numbers_against_zero_to_make_booleans(self) -> None:
+        """Ensure `cast_to: Boolean` on a FLOAT64 or NUMERIC column compares it with zero.
+
+        GoogleSQL casts only INT64 and STRING to BOOL, so a `CAST` would fail the
+        statement for a float or a decimal. `<> 0` is true for every nonzero
+        number, NaN included, which is how Polars reads a number as a boolean.
+        """
+        rule = DiffRule(column_names=["flag"], cast_to="Boolean")
+
+        numbers = _bigquery().compile_column_predicate(
+            rule, "flag", source_dtype=pl.Float64(), target_dtype=pl.Decimal(10, 2)
+        )
+        others = _bigquery().compile_column_predicate(
+            rule, "flag", source_dtype=pl.String(), target_dtype=pl.Boolean()
+        )
+
+        assert "(`src`.`flag` <> 0)" in numbers
+        assert "(`tgt`.`flag` <> 0)" in numbers
+        assert "AS BOOL)" not in numbers
+        assert "CAST(`src`.`flag` AS BOOL)" in others
+        assert "CAST(`tgt`.`flag` AS BOOL)" in others
+
     def test_it_parses_a_naive_timestamp_format_first(self) -> None:
         """Ensure the non-throwing parse takes its format before its value."""
         predicate = _predicate(datetime_format="%Y-%m-%d %H:%M:%S")

@@ -160,12 +160,15 @@ parameter, so this table is the boundary that keeps configuration text out of
 the emitted SQL grammar. Nothing outside it ever reaches a `CAST`.
 """
 
-_ZERO_TEST_BOOLEANS: Final[frozenset[SQLDialect]] = frozenset({SQLDialect.POSTGRES})
+_ZERO_TEST_BOOLEANS: Final[frozenset[SQLDialect]] = frozenset(
+    {SQLDialect.POSTGRES, SQLDialect.BIGQUERY}
+)
 """Dialects that turn a number into a boolean by comparing it with zero.
 
 Postgres casts only `integer` to `boolean` and refuses `smallint`, `bigint`,
-`numeric`, and floats. Polars reads every nonzero number as true, NaN included,
-which is exactly what `<> 0` returns for each of them.
+`numeric`, and floats. BigQuery casts only INT64 and STRING to BOOL, so a
+FLOAT64 or NUMERIC column fails there too. Polars reads every nonzero number as
+true, NaN included, which is exactly what `<> 0` returns for each of them.
 """
 
 _IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
