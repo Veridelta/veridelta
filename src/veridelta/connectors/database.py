@@ -188,18 +188,7 @@ class DatabaseConnector(VerideltaConnector):
         self._frame = None
 
     def _statement(self, scheme: str) -> str:
-        """Return the SQL to read: the compiled table select, or the query as written.
-
-        Args:
-            scheme (str): Lowercase URI scheme, which picks the table's quoting.
-
-        Returns:
-            str: Statement for the driver.
-
-        Raises:
-            ConfigError: If `table` names a database Veridelta cannot quote for,
-                or a probe was asked of a `query`.
-        """
+        """Return the SQL to read: the compiled table select, or the query as written."""
         if self._config.table is not None and self._probe:
             return compile_database_probe(scheme, self._config.table)
         if self._config.table is not None:
@@ -226,11 +215,7 @@ class DatabaseConnector(VerideltaConnector):
 
     @property
     def _subject(self) -> str:
-        """Name what is read without repeating any SQL.
-
-        Returns:
-            str: `table '<name>'`, or `the configured query`.
-        """
+        """Name what is read without repeating any SQL."""
         if self._config.table is not None:
             return f"table '{self._config.table}'"
         return "the configured query"
@@ -342,32 +327,13 @@ class PostgresPushdownSession(VerideltaConnector):
         self._last_statement = None
 
     def _connected_uri(self) -> str:
-        """Return the URI `connect()` kept.
-
-        Returns:
-            str: The connection URI, with the password spliced in.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
+        """Return the URI `connect()` kept."""
         if self._uri is None:
             raise ConnectorError(_POSTGRES_UNCONNECTED)
         return self._uri
 
     def _read(self, statement: str, uri: str, *, query_type: str) -> pl.DataFrame:
-        """Run a statement through ConnectorX, logging and reporting without secrets.
-
-        Args:
-            statement (str): SQL to run.
-            uri (str): Connection URI, password included.
-            query_type (str): What the statement is for, named in logs and errors.
-
-        Returns:
-            pl.DataFrame: The result.
-
-        Raises:
-            ConnectorError: If pyarrow is missing or the statement fails.
-        """
+        """Run a statement through ConnectorX, logging and reporting without secrets."""
         started = time.perf_counter()
         try:
             frame = pl.read_database_uri(statement, uri)
@@ -409,19 +375,7 @@ def _declared_decimals(catalog: pl.DataFrame) -> dict[str, pl.Decimal]:
 def _with_declared_scale(
     frame: pl.DataFrame, declared: Mapping[str, pl.Decimal], subject: str
 ) -> pl.DataFrame:
-    """Cast the `numeric` columns read as text back to their declared precision and scale.
-
-    Args:
-        frame (pl.DataFrame): Rows as read, with each declared column as text.
-        declared (Mapping[str, pl.Decimal]): Declared type of each such column.
-        subject (str): What was read, for the error.
-
-    Returns:
-        pl.DataFrame: The rows, with each declared column a decimal.
-
-    Raises:
-        ConnectorError: If a value has no decimal form, such as `NaN`.
-    """
+    """Cast the `numeric` columns read as text back to their declared precision and scale."""
     for name, dtype in declared.items():
         try:
             frame = frame.with_columns(pl.col(name).cast(dtype, strict=True))
@@ -434,38 +388,19 @@ def _with_declared_scale(
 
 
 def _connection_uri(config: DatabaseConfig) -> str:
-    """Return the URI to connect with, carrying the `password` field if set.
-
-    The model guarantees a user name and no password of its own in the URI
-    whenever `password` is set.
-
-    Args:
-        config (DatabaseConfig): The source's connection settings.
-
-    Returns:
-        str: The configured URI, with the password percent-encoded into its
-            user information when the `password` field holds one.
-    """
+    """Return the URI to connect with, carrying the `password` field if set."""
     password = config.password
     if password is None:
         return config.uri
     parts = urlsplit(config.uri)
+    # The model guarantees a user name and no password in the URI whenever `password` is set.
     user, _, host = parts.netloc.rpartition("@")
     netloc = f"{user}:{quote(password, safe='')}@{host}"
     return urlunsplit(parts._replace(netloc=netloc))
 
 
 def _scrub(config: DatabaseConfig, text: str) -> str:
-    """Replace every form of the password in driver output with `***`.
-
-    Args:
-        config (DatabaseConfig): The source's connection settings.
-        text (str): Message from the driver or Polars.
-
-    Returns:
-        str: The message with the raw and percent-encoded forms of the
-            `password` field and of any password in the URI masked.
-    """
+    """Replace every form of the password in driver output with `***`."""
     secrets: set[str] = set()
     if config.password:
         secrets.update({config.password, quote(config.password, safe="")})
@@ -479,23 +414,10 @@ def _scrub(config: DatabaseConfig, text: str) -> str:
 
 
 def _existing_sqlite_uri(uri: str) -> str:
-    """Encode a SQLite URI's path for ConnectorX and require the file to exist.
-
-    ConnectorX percent-decodes everything after `sqlite://`, so the path is
-    re-encoded here and may be written plainly, spaces and a Windows drive
-    included. It opens SQLite files in create mode, so a missing path would
-    leave an empty database behind and fail on the first table instead.
-
-    Args:
-        uri (str): Connection URI with the `sqlite` scheme.
-
-    Returns:
-        str: `sqlite://` followed by the percent-encoded path.
-
-    Raises:
-        ConnectorError: If no file exists at the path.
-    """
+    """Encode a SQLite URI's path for ConnectorX and require the file to exist."""
+    # ConnectorX percent-decodes the text after `sqlite://`: decode it here, re-encode on return.
     path = unquote(uri[len(_SQLITE_PREFIX) :])
+    # ConnectorX opens SQLite in create mode, so a missing file leaves an empty database behind.
     if not Path(path).is_file():
         raise ConnectorError(
             f"SQLite database '{path}' does not exist. Point 'uri' at an existing file, "
