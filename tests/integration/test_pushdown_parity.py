@@ -581,52 +581,45 @@ class TestTimezoneParity:
 
         assert {key: getattr(summary, key) for key in expected} == expected
 
-    def test_it_rejects_a_naive_timestamp_on_both_paths(self) -> None:
-        """Ensure pushdown refuses to guess an origin zone, exactly as local does."""
-        frame = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30)]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["ts"], timezone="America/New_York")],
-        )
-
-        with pytest.raises(ConfigError, match="timezone-naive"):
-            run_local(config, frame, frame)
-        with pytest.raises(ConfigError, match="timezone-naive"):
-            run_pushdown(config, frame, frame)
-
-    def test_it_rejects_a_non_temporal_column_on_both_paths(self) -> None:
-        """Ensure a zone rule on a text column fails before any comparison."""
-        frame = pl.DataFrame({"id": [1], "ts": ["2026-01-02"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["ts"], timezone="America/New_York")],
-        )
-
-        with pytest.raises(ConfigError, match="not a"):
-            run_local(config, frame, frame)
-        with pytest.raises(ConfigError, match="not a"):
-            run_pushdown(config, frame, frame)
-
-    @_REFUSED_PARSE
-    def test_it_rejects_text_parsed_without_an_offset_on_both_paths(self) -> None:
-        """Ensure text parsed into naive timestamps meets the zone rule's refusal."""
-        frame = pl.DataFrame({"id": [1], "ts": ["2026-01-02 02:30:00"]})
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
+    @pytest.mark.parametrize(
+        ("frame", "rule", "match"),
+        [
+            # Pushdown refuses to guess an origin zone, as local does.
+            pytest.param(
+                pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30)]}),
+                DiffRule(column_names=["ts"], timezone="America/New_York"),
+                "timezone-naive",
+                id="naive-timestamp",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1], "ts": ["2026-01-02"]}),
+                DiffRule(column_names=["ts"], timezone="America/New_York"),
+                "not a",
+                id="non-temporal-column",
+            ),
+            # A parse without `%z` yields naive timestamps, which meet the same refusal.
+            pytest.param(
+                pl.DataFrame({"id": [1], "ts": ["2026-01-02 02:30:00"]}),
                 DiffRule(
                     column_names=["ts"],
                     datetime_format="%Y-%m-%d %H:%M:%S",
                     timezone="America/New_York",
-                )
-            ],
-        )
+                ),
+                "timezone-naive",
+                id="text-parsed-without-an-offset",
+                marks=_REFUSED_PARSE,
+            ),
+        ],
+    )
+    def test_it_rejects_a_zone_rule_on_both_paths(
+        self, frame: pl.DataFrame, rule: DiffRule, match: str
+    ) -> None:
+        """Ensure a zone rule on anything but an aware timestamp fails before any comparison."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
 
-        with pytest.raises(ConfigError, match="timezone-naive"):
+        with pytest.raises(ConfigError, match=match):
             run_local(config, frame, frame)
-        with pytest.raises(ConfigError, match="timezone-naive"):
+        with pytest.raises(ConfigError, match=match):
             run_pushdown(config, frame, frame)
 
 
