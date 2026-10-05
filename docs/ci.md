@@ -71,13 +71,13 @@ jobs:
 | `is-match` | `true` when the comparison matched within its threshold. |
 | `exit-code` | Exit code of `veridelta run`. |
 | `summary-json`, `summary-markdown`, `report-html` | Paths to the reports. Empty when the run did not finish. |
-| `otel-metrics` | Path to the run's [OpenTelemetry metrics](configuration.md#opentelemetry-metrics). Empty when the run did not finish. |
+| `otel-metrics` | Path to the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). Empty when the run did not finish. |
 
 To act on drift in a later step instead of failing, set `fail-on-mismatch: false` and read `status`.
 
 ### Sending metrics to an observability backend
 
-From 0.12.0, the action also writes the run's [OpenTelemetry metrics](configuration.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
+From 0.12.0, the action also writes the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
 
 ```yaml
       - uses: Veridelta/veridelta@v0.12.0
@@ -130,7 +130,7 @@ The template defines one job, named `veridelta` by default, which:
 - run: uvx veridelta@0.12.0 validate -c veridelta.yaml --allow-missing-env
 ```
 
-`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.12.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](configuration.md#checking-a-configuration).
+`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.12.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](cli.md#checking-a-configuration).
 
 ## Exit codes and statuses
 
