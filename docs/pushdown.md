@@ -106,7 +106,9 @@ Veridelta then runs each statement inside Postgres through ConnectorX, as in a w
 - Set `pushdown` on both sides or on neither. A pair where only one side sets it raises `ConfigError` instead of reading both.
 - The server must read string literals by the SQL standard, which is the Postgres default (`standard_conforming_strings` on). Veridelta checks before the first statement and raises `ConnectorError` if it is off, since a backslash in a value would otherwise be read as an escape.
 - `datetime_format` and `max_levenshtein_distance` raise `ConfigError` before any statement runs. Postgres has no date parse that returns NULL for text it cannot read, so one bad value would fail the whole statement. Its `levenshtein` needs the `fuzzystrmatch` extension and refuses text longer than 255 characters. Leave `pushdown` off to compare such columns locally; `veridelta validate` warns about both.
-- ConnectorX reports every `numeric` as `Decimal(38, 10)`, which shows in two places. `strict_types` treats `numeric(10, 2)` and `numeric(12, 4)` as one type, with or without `pushdown`. And a `numeric` turned into text by `pad_zeros` or `cast_to: String` keeps its stored scale inside Postgres, but gets ten decimal places when read locally: seven in a `numeric(20, 0)` column is `7` with `pushdown` and `7.0000000000` without it.
+- After the column probes, one catalog query per table reads the declared precision and scale of each `numeric` column, which a local read also keeps. `strict_types` tells `numeric(10, 2)` from `numeric(12, 4)`, and `pad_zeros` or `cast_to: String` writes seven in a `numeric(20, 0)` column as `7` with or without `pushdown`.
+- A `numeric` declared without a precision, with one above 38, or with a negative scale has the type ConnectorX reads it as: `Decimal(38, 10)`. Turned into text, seven in such a column is `7` with `pushdown` and `7.0000000000` without it.
+- Primary keys and row samples come back through ConnectorX too. A `numeric` value among them is rounded to ten decimal places, and one with more than 18 digits before the decimal point fails the statement.
 
 ## Row samples
 

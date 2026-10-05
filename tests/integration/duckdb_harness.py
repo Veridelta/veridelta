@@ -58,11 +58,6 @@ if PARITY_BACKEND not in {"duckdb", "postgres"}:
 REFUSED_RULES = postgres_harness.REFUSED_RULES if PARITY_BACKEND == "postgres" else frozenset()
 """Rule fields the selected backend's pushdown refuses before running any query."""
 
-UNPADDED_DTYPES: frozenset[type[pl.DataType]] = (
-    postgres_harness.NUMERIC_DTYPES if PARITY_BACKEND == "postgres" else frozenset()
-)
-"""Dtypes the selected backend writes as different text on its two sides."""
-
 
 class DuckDBPushdownSession:
     """A `PushdownSession` backed by an in-memory DuckDB database.

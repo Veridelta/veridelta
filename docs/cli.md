@@ -72,8 +72,8 @@ On a warehouse pair, it also warns about settings the warehouse refuses only for
 With `--schemas`, `validate` also connects and checks the rules against each side's columns:
 
 - Files and lakehouse tables are opened as a run opens them, then checked with `DiffEngine.validate_rules`. JSON, Excel, and Avro files have no lazy reader, so they are read whole.
-- A database `table` is read with `SELECT * FROM … WHERE 1 = 0`. SQLite reports a `NUMERIC` column as text in that probe, although a full read returns numbers. A `query` is not run, and that side is reported as unchecked.
-- A warehouse pair runs the two column probes a run starts with, then compiles every comparison statement without running it. That settles each warning above one way or the other.
+- A database `table` is read as a run reads it, with `WHERE 1 = 0` added, so no row is fetched. SQLite reports a `NUMERIC` column as text in that probe, although a full read returns numbers. A `query` is not run, and that side is reported as unchecked.
+- A warehouse pair runs the column probes a run starts with, then compiles every comparison statement without running it. That settles each warning above one way or the other.
 
 Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, and `warnings`. The verdict goes to stderr.
 

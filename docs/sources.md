@@ -130,7 +130,9 @@ Column types come from the database driver. For SQLite, that means the declared 
 
 A SQLite column declared without a type cannot be typed when its first rows are NULL, and the read fails.
 
-Every Postgres `numeric` arrives as `Decimal(38, 10)`, whatever its declared precision and scale. Values are rounded to ten decimal places, and a value with more than 18 digits before the decimal point fails the read.
+A Postgres `table` keeps the declared precision and scale of each `numeric` column, so `numeric(10, 2)` arrives as `Decimal(10, 2)` with every stored digit. Veridelta reads the declarations from the `pg_attribute` catalog before the rows, so a Postgres-compatible server without that catalog needs a `query`. A `NaN` has no decimal form and fails the read; leave it out with a `query`.
+
+Any other Postgres `numeric` arrives as `Decimal(38, 10)`. Its values are rounded to ten decimal places, and a value with more than 18 digits before the decimal point fails the read. That applies to every column of a `query`, to a `numeric` declared without a precision, and to one with a precision above 38 or a negative scale.
 
 ## Warehouses
 

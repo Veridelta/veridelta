@@ -5,8 +5,9 @@
 
 import logging
 import traceback
+from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import DEFAULT, MagicMock, call
 from urllib.parse import quote
 
 import polars as pl
@@ -32,6 +33,7 @@ from veridelta.connectors import (
     SQLDialect,
     VerideltaConnector,
 )
+from veridelta.connectors.sql import compile_postgres_columns_query
 from veridelta.exceptions import ConfigError, ConnectorError
 
 
@@ -416,13 +418,37 @@ class TestConnectorLifecycleDefaults:
 _DATABASE_SECRET = "p@ss:w/rd %+&?#"
 """A password holding every character a URI treats specially."""
 
+_CATALOG_SCHEMA = {"attname": pl.String, "atttypmod": pl.Int32, "is_numeric": pl.Boolean}
+"""Columns of the Postgres catalog query a `table` read sends first."""
+
+
+def _catalog(*columns: tuple[str, int, bool]) -> pl.DataFrame:
+    """Build a Postgres catalog result: each column's name, typmod, and whether it is numeric."""
+    return pl.DataFrame(list(columns), schema=_CATALOG_SCHEMA, orient="row")
+
 
 def _read_database(
-    mocker: MockerFixture, *, return_value: object = None, side_effect: object = None
+    mocker: MockerFixture,
+    *,
+    return_value: object = None,
+    side_effect: object = None,
+    catalog: pl.DataFrame | None = None,
 ) -> MagicMock:
-    """Patch the extra probe and Polars' reader, returning the reader mock."""
+    """Patch the extra probe and Polars' reader, returning the reader mock.
+
+    A Postgres `table` read asks the catalog for its `numeric` columns first.
+    `catalog` answers that query, by default with no `numeric` columns, and
+    every other statement returns the mock's `return_value`.
+    """
     mocker.patch("veridelta.connectors.database.connectorx", object())
-    read = MagicMock(return_value=return_value, side_effect=side_effect)
+    answers = _catalog() if catalog is None else catalog
+
+    def _answer(statement: str, uri: str) -> object:
+        return answers if statement.startswith("SELECT attname") else DEFAULT
+
+    read = MagicMock(
+        return_value=return_value, side_effect=_answer if side_effect is None else side_effect
+    )
     mocker.patch("veridelta.connectors.database.pl.read_database_uri", read)
     return read
 
@@ -432,8 +458,8 @@ def _read_database(
 class TestDatabaseConnector:
     """Validate the connector that reads a database table or query into Polars."""
 
-    def test_it_reads_a_table_through_one_select(self, mocker: MockerFixture) -> None:
-        """Ensure a table is read once, with its name quoted for the database."""
+    def test_it_reads_a_table_with_its_name_quoted(self, mocker: MockerFixture) -> None:
+        """Ensure a table is read with each segment of its name quoted for the database."""
         frame = pl.DataFrame({"id": [1, 2], "name": ["a", "b"]})
         read = _read_database(mocker, return_value=frame)
         uri = "postgresql://analyst@db.internal:5432/sales"
@@ -441,15 +467,15 @@ class TestDatabaseConnector:
 
         connector.connect()
 
-        read.assert_called_once_with('SELECT * FROM "public"."orders"', uri)
+        read.assert_called_with('SELECT * FROM "public"."orders"', uri)
         assert connector.lazyframe().collect().equals(frame)
         assert connector.fetch_schema() == frame.schema
 
     def test_it_sends_a_query_verbatim(self, mocker: MockerFixture) -> None:
-        """Ensure a configured statement reaches the driver exactly as written."""
+        """Ensure a configured statement reaches the driver as written, with no catalog lookup."""
         read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
         query = "SELECT id, total FROM orders WHERE region = 'EU'"
-        uri = "mysql://analyst@db.internal/sales"
+        uri = "postgresql://analyst@db.internal/sales"
 
         DatabaseConnector(DatabaseConfig(uri=uri, query=query)).connect()
 
@@ -471,7 +497,7 @@ class TestDatabaseConnector:
 
         DatabaseConnector(config).connect()
 
-        read.assert_called_once_with(
+        read.assert_called_with(
             'SELECT * FROM "orders"',
             "postgresql://analyst:p%40ss%3Aw%2Frd%20%25%2B%26%3F%23@db.internal:5432/sales"
             "?sslmode=require",
@@ -643,7 +669,7 @@ class TestDatabaseConnector:
         """Ensure close() returns the connector to its unconnected state."""
         read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
         connector = DatabaseConnector(
-            DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="t")
+            DatabaseConfig(uri="mysql://analyst@db.internal/sales", table="t")
         )
         connector.close()  # before connect: a no-op
 
@@ -696,7 +722,7 @@ class TestDatabaseSchemaProbe:
             connector.connect()
             schema = connector.fetch_schema()
 
-        read.assert_called_once_with('SELECT * FROM "orders" WHERE 1 = 0', uri)
+        read.assert_called_with('SELECT * FROM "orders" WHERE 1 = 0', uri)
         assert schema == frame.schema
 
     def test_it_refuses_to_probe_a_query(self, mocker: MockerFixture) -> None:
@@ -708,6 +734,113 @@ class TestDatabaseSchemaProbe:
             DatabaseConnector(config, probe=True).connect()
 
         read.assert_not_called()
+
+
+_NUMERIC_10_2 = 655366
+"""Postgres `atttypmod` of a `numeric(10, 2)` column: (10 << 16 | 2) + 4."""
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestPostgresDeclaredScale:
+    """Validate that a Postgres table's `numeric` columns keep their declared precision and scale.
+
+    ConnectorX reads every `numeric` as Decimal(38, 10), which rounds past ten
+    decimal places and fails on a value with 19 or more integer digits.
+    """
+
+    def test_it_reads_each_declared_numeric_as_text_and_casts_it_back(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a `numeric` arrives at its declared type, with every digit it stores."""
+        catalog = _catalog(
+            ("id", -1, False), ("amount", _NUMERIC_10_2, True), ("units", 1310724, True)
+        )
+        as_text = pl.DataFrame(
+            {"id": [1, 2], "amount": ["1.50", "-7.25"], "units": ["12345678901234567890", "0"]}
+        )
+        read = _read_database(mocker, return_value=as_text, catalog=catalog)
+        uri = "postgresql://analyst@db.internal/sales"
+
+        with DatabaseConnector(DatabaseConfig(uri=uri, table="public.orders")) as connector:
+            connector.connect()
+            frame = connector.lazyframe().collect()
+
+        assert read.call_args_list == [
+            call(compile_postgres_columns_query("public.orders"), uri),
+            call(
+                'SELECT "id", CAST("amount" AS TEXT) AS "amount", '
+                'CAST("units" AS TEXT) AS "units" FROM "public"."orders"',
+                uri,
+            ),
+        ]
+        assert frame.schema == pl.Schema(
+            {"id": pl.Int64(), "amount": pl.Decimal(10, 2), "units": pl.Decimal(20, 0)}
+        )
+        assert frame.get_column("amount").to_list() == [Decimal("1.50"), Decimal("-7.25")]
+        assert frame.get_column("units").to_list() == [
+            Decimal("12345678901234567890"),
+            Decimal("0"),
+        ]
+
+    @pytest.mark.parametrize(
+        ("typmod", "is_numeric"),
+        [
+            pytest.param(-1, True, id="unconstrained"),
+            pytest.param(2621446, True, id="precision-40"),
+            pytest.param(329730, True, id="negative-scale"),
+            pytest.param(_NUMERIC_10_2, False, id="not-numeric"),
+        ],
+    )
+    def test_it_keeps_the_default_read_for_a_column_without_an_exact_decimal(
+        self, mocker: MockerFixture, typmod: int, is_numeric: bool
+    ) -> None:
+        """Ensure only a `numeric` Polars holds at its declared precision and scale is cast."""
+        catalog = _catalog(("amount", typmod, is_numeric))
+        read = _read_database(mocker, return_value=pl.DataFrame({"amount": [1]}), catalog=catalog)
+        uri = "postgresql://analyst@db.internal/sales"
+
+        DatabaseConnector(DatabaseConfig(uri=uri, table="orders")).connect()
+
+        read.assert_called_with('SELECT * FROM "orders"', uri)
+
+    def test_it_probes_a_declared_numeric_at_its_declared_type(self, mocker: MockerFixture) -> None:
+        """Ensure `validate --schemas` sees the type a run reads."""
+        catalog = _catalog(("amount", _NUMERIC_10_2, True))
+        empty = pl.DataFrame(schema={"amount": pl.String})
+        read = _read_database(mocker, return_value=empty, catalog=catalog)
+        uri = "postgres://analyst@db.internal/sales"
+
+        with DatabaseConnector(DatabaseConfig(uri=uri, table="orders"), probe=True) as connector:
+            connector.connect()
+            schema = connector.fetch_schema()
+
+        read.assert_called_with(
+            'SELECT CAST("amount" AS TEXT) AS "amount" FROM "orders" WHERE 1 = 0', uri
+        )
+        assert schema == pl.Schema({"amount": pl.Decimal(10, 2)})
+
+    def test_it_names_the_column_holding_a_value_no_decimal_holds(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a stored NaN fails the read with its column named, and nothing is kept."""
+        catalog = _catalog(("amount", _NUMERIC_10_2, True))
+        _read_database(
+            mocker, return_value=pl.DataFrame({"amount": ["1.50", "NaN"]}), catalog=catalog
+        )
+        connector = DatabaseConnector(
+            DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="orders")
+        )
+
+        with pytest.raises(
+            ConnectorError,
+            match="Column 'amount' of table 'orders' holds a value with no decimal form",
+        ) as info:
+            connector.connect()
+
+        assert info.value.__cause__ is None
+        with pytest.raises(ConnectorError, match="not connected"):
+            connector.lazyframe()
 
 
 _POSTGRES_URI = "postgresql://analyst@db.internal:5432/sales"
@@ -829,6 +962,18 @@ class TestPostgresPushdownSession:
         assert read.call_args.args[0] == session.compiler.compile_result_schema_query(
             'SELECT "id" FROM "orders"'
         )
+
+    def test_it_reads_declared_numeric_types_from_the_catalog(self, mocker: MockerFixture) -> None:
+        """Ensure the session reports the declared type of each `numeric` Polars holds exactly."""
+        catalog = _catalog(("id", -1, False), ("amount", _NUMERIC_10_2, True), ("free", -1, True))
+        read = _read_database(mocker, return_value=_setting("on"), catalog=catalog)
+        session = _postgres_session()
+        session.connect()
+
+        declared = session.declared_types("public.orders")
+
+        read.assert_called_with(compile_postgres_columns_query("public.orders"), _POSTGRES_URI)
+        assert declared == {"amount": pl.Decimal(10, 2)}
 
     def test_it_needs_a_statement_before_it_can_describe_one(self, mocker: MockerFixture) -> None:
         """Ensure `fetch_schema` explains itself when nothing has run yet."""
