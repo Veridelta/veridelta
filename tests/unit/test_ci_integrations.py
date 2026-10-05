@@ -483,6 +483,14 @@ class TestCIWorkflow:
         for name, job in _workflow(workflow)["jobs"].items():
             assert 1 <= job.get("timeout-minutes", 0) <= 15, (workflow.name, name)
 
+    def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
+        """Ensure the CLI runs as a real command on each OS the core suite runs on."""
+        jobs = _workflow(_CI)["jobs"]
+
+        assert set(jobs["test-e2e"]["strategy"]["matrix"]["os"]) == set(
+            jobs["test-core"]["strategy"]["matrix"]["os"]
+        )
+
 
 def _rerun_script() -> str:
     """Return the shell script of the re-run workflow's one step."""
