@@ -34,7 +34,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Dependencies
-        run: uv sync --all-extras --group dev
+        run: uv sync --all-extras
 
       - name: Deploy MkDocs to GitHub Pages
         run: uv run mkdocs gh-deploy --force --strict

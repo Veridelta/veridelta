@@ -105,11 +105,8 @@ dev = [
 [project.scripts]
 veridelta = "veridelta.cli:main"
 
-[tool.uv]
-managed = true
-
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.11"
 mypy_path = "src"
 files = ["src", "tests"]
 strict = true
@@ -209,7 +206,7 @@ select = [
     "C90",
 ]
 
-ignore = ["E501", "B008", "D100", "D104", "D105", "D106", "D401"]
+ignore = ["E501", "D104"]
 
 [tool.ruff.lint.mccabe]
 # Complexity budget per function. Split a function before suppressing C901.
@@ -219,7 +216,7 @@ max-complexity = 10
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "FBT001", "ARG"]
+"tests/**/*.py" = ["ARG"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -231,7 +228,7 @@ addopts = [
     "--tb=short",
     "--strict-config",
     "--strict-markers",
-    "--cov=veridelta",
+    "--cov",
     "--cov-report=term-missing",
     "--cov-report=xml",
 ]
