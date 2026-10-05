@@ -121,33 +121,12 @@ document.querySelectorAll('[data-table]').forEach(render);
 
 
 def _escape(value: object) -> str:
-    """Escape a value for embedding in HTML text.
-
-    Args:
-        value (object): Value to render.
-
-    Returns:
-        str: HTML-safe text.
-    """
+    """Escape a value for embedding in HTML text."""
     return html.escape(str(value))
 
 
 def _json_cell(value: object) -> object:
-    """Make one cell safe for the page's `JSON.parse` without changing what it shows.
-
-    Python's `json` writes non-finite floats as bare `NaN` and `Infinity`,
-    which `JSON.parse` rejects, and one such cell used to leave its table and
-    every later table empty. Integers beyond 2**53 would parse but round, so
-    a changed row could display two identical values. Both travel as text,
-    which the pager prints unchanged. Nested list and struct values are
-    handled the same way.
-
-    Args:
-        value (object): Cell from `DataFrame.iter_rows`.
-
-    Returns:
-        object: The value, or its text where JSON or JavaScript cannot hold it.
-    """
+    """Make one cell safe for the page's `JSON.parse` without changing what it shows."""
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _JS_SAFE_INTEGER:
@@ -160,17 +139,7 @@ def _json_cell(value: object) -> object:
 
 
 def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
-    """Render one paginated table section.
-
-    Args:
-        title (str): Section heading.
-        frame (pl.DataFrame): Rows to embed.
-        max_rows (int): Cap on embedded rows.
-
-    Returns:
-        str: HTML fragment. Rows travel as JSON and are drawn by the pager,
-        so the document stays small even when the table is wide.
-    """
+    """Render one paginated table section."""
     if frame.height == 0 or not frame.columns:
         return f"<h2>{_escape(title)}</h2>\n<p class='empty'>No rows.</p>"
 
@@ -200,15 +169,7 @@ def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
 
 
 def _card(label: str, value: object) -> str:
-    """Render one headline metric.
-
-    Args:
-        label (str): Metric name.
-        value (object): Metric value, formatted by the caller.
-
-    Returns:
-        str: HTML fragment.
-    """
+    """Render one headline metric."""
     return (
         f"<div class='card'><div class='label'>{_escape(label)}</div>"
         f"<div class='value'>{_escape(value)}</div></div>"
@@ -319,6 +280,17 @@ def write_html(result: DiffResult, path: str | Path, *, max_rows: int = DEFAULT_
 
     Raises:
         ConfigError: If `max_rows` is negative.
+
+    Examples:
+        >>> import polars as pl
+        >>> from veridelta.engine import DiffEngine
+        >>> from veridelta.models import DiffConfig
+        >>> source = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 20.0]})
+        >>> target = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 21.5]})
+        >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+        >>> render_html(result).startswith("<!DOCTYPE html>")
+        True
+        >>> path = write_html(result, "reports/orders.html")  # doctest: +SKIP
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -331,21 +303,9 @@ _BACKTICK_RUN = re.compile(r"`+")
 
 
 def _markdown_code(name: str) -> str:
-    """Render a column name as literal text inside a Markdown table cell.
-
-    Column names come from the data, and the summary is posted where Markdown
-    is rendered, so the name goes in a code span: its content is never read
-    as formatting or HTML, which keeps a name from opening a comment that could
-    spoof the sticky-comment marker. The fence is one backtick longer than any
-    run in the name, line breaks become spaces, and `|` is escaped so it cannot
-    split the table cell.
-
-    Args:
-        name (str): Column name.
-
-    Returns:
-        str: A code span safe to place in a table cell.
-    """
+    """Render a column name as literal text inside a Markdown table cell."""
+    # Column names come from the data, and a code span keeps one from opening an HTML
+    # comment that can spoof the sticky-comment marker.
     flat = " ".join(name.splitlines())
     longest = max((len(run) for run in _BACKTICK_RUN.findall(flat)), default=0)
     fence = "`" * (longest + 1)
@@ -392,16 +352,7 @@ def render_markdown(result: DiffResult) -> str:
 
 
 def _drift_lines(mismatches: dict[str, int], limit: int) -> list[str]:
-    """Render the top drifting columns as a Markdown table.
-
-    Args:
-        mismatches (dict[str, int]): Mismatch count per column.
-        limit (int): Most columns to list.
-
-    Returns:
-        list[str]: Table lines, plus a note when columns were left out, or a
-            single line saying nothing drifted.
-    """
+    """Render the top drifting columns as a Markdown table."""
     if not mismatches:
         return ["No column-level drift."]
     ranked = sorted(mismatches.items(), key=lambda item: -item[1])
@@ -421,6 +372,17 @@ def write_markdown(result: DiffResult, path: str | Path) -> Path:
 
     Returns:
         Path: The file that was written.
+
+    Examples:
+        >>> import polars as pl
+        >>> from veridelta.engine import DiffEngine
+        >>> from veridelta.models import DiffConfig
+        >>> source = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 20.0]})
+        >>> target = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 21.5]})
+        >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+        >>> print(render_markdown(result).splitlines()[0])
+        ### Veridelta: FAILED
+        >>> path = write_markdown(result, "summary.md")  # doctest: +SKIP
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

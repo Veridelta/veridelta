@@ -65,28 +65,13 @@ _UNCONNECTED = "Warehouse connector is not connected. Call connect() first."
 _NO_STATEMENT = "Call execute_pushdown before fetch_schema."
 _NON_TABULAR = "Warehouse cursor did not return a tabular Arrow result."
 
+# Without `force_return_table`, the driver returns None, not an empty table, for zero rows.
 _SNOWFLAKE_FETCH_KWARGS: Final[Mapping[str, Any]] = {"force_return_table": True}
-"""Arguments for `SnowflakeCursor.fetch_arrow_all`.
-
-Without `force_return_table` the driver returns None rather than an empty table
-when a statement yields no rows. Every pushdown run opens with a zero-row
-schema probe and a clean comparison returns empty sets, so the default would
-fail the common case. The flag arrived in snowflake-connector-python 3.7.0,
-which is why the `snowflake` extra requires that release."""
+"""Arguments for `SnowflakeCursor.fetch_arrow_all`."""
 
 
 def _lazy_from_arrow(table: Any) -> pl.LazyFrame:
-    """Convert a driver Arrow payload into an unevaluated Polars LazyFrame.
-
-    Args:
-        table (Any): Arrow table returned by a warehouse cursor.
-
-    Returns:
-        pl.LazyFrame: Lazy wrapper around the tabular Arrow payload.
-
-    Raises:
-        ConnectorError: If the payload is missing or not a table.
-    """
+    """Convert a driver Arrow payload into an unevaluated Polars LazyFrame."""
     if table is None:
         raise ConnectorError(_NON_TABULAR)
     frame = pl.from_arrow(table)  # pyright: ignore[reportUnknownMemberType]
@@ -96,18 +81,7 @@ def _lazy_from_arrow(table: Any) -> pl.LazyFrame:
 
 
 def _schema_from_arrow(table: Any, description: Any) -> pl.Schema:
-    """Build a Polars schema from an Arrow table, falling back to cursor metadata.
-
-    Args:
-        table (Any): Arrow table from a `LIMIT 0` query, if available.
-        description (Any): Cursor `description` listing column names.
-
-    Returns:
-        pl.Schema: Deterministic column names and dtypes.
-
-    Raises:
-        ConnectorError: If neither Arrow nor cursor description is usable.
-    """
+    """Build a Polars schema from an Arrow table, falling back to cursor metadata."""
     if table is not None:
         frame = pl.from_arrow(table)  # pyright: ignore[reportUnknownMemberType]
         if isinstance(frame, pl.DataFrame):
@@ -127,23 +101,7 @@ def _run_arrow_query(
     query_type: str,
     fetch_kwargs: Mapping[str, Any] | None = None,
 ) -> tuple[Any, Any]:
-    """Execute SQL on a native session and fetch an Arrow payload.
-
-    Args:
-        session (Any): Open warehouse connection.
-        statement (str): SQL to execute.
-        fetch_method (str): Cursor method name that returns Arrow.
-        backend (str): Warehouse name for log lines.
-        query_type (str): Pushdown round-trip this statement represents.
-        fetch_kwargs (Mapping[str, Any] | None): Keyword arguments for the
-            fetch method, for drivers that need one to return empty results.
-
-    Returns:
-        tuple[Any, Any]: Arrow payload and cursor description metadata.
-
-    Raises:
-        ConnectorError: If the driver raises during execute or fetch.
-    """
+    """Execute SQL on a native session and fetch an Arrow payload."""
     started = time.perf_counter()
     cursor = session.cursor()
     try:
@@ -176,29 +134,11 @@ def _run_arrow_query(
 
 
 def _run_bigquery_query(client: Any, statement: str, job_config: Any, *, query_type: str) -> Any:
-    """Run SQL as a BigQuery job and fetch its result as Arrow record batches.
-
-    BigQuery has no Arrow cursor, so this mirrors `_run_arrow_query` around the
-    client's job API. `to_arrow_iterable` is the Arrow path that neither warns
-    nor needs the storage extra; it yields one batch per page, and a zero-row
-    result still yields one batch carrying the schema.
-
-    Args:
-        client (Any): Open `bigquery.Client`.
-        statement (str): SQL to execute.
-        job_config (Any): `QueryJobConfig` every statement runs under.
-        query_type (str): Pushdown round-trip this statement represents.
-
-    Returns:
-        Any: The result's Arrow record batches.
-
-    Raises:
-        ConnectorError: If the job fails, or returns no batches at all, which
-            would read as a table without columns.
-    """
+    """Run SQL as a BigQuery job and fetch its result as Arrow record batches."""
     started = time.perf_counter()
     try:
         rows = client.query(statement, job_config=job_config).result()
+        # `to_arrow_iterable` is the Arrow path that neither warns nor needs the storage extra.
         batches = list(rows.to_arrow_iterable())
     except Exception as exc:
         # The statement stays out of the log, as for the other warehouses.
@@ -209,25 +149,19 @@ def _run_bigquery_query(client: Any, statement: str, job_config: Any, *, query_t
     logger.debug(
         "BigQuery %s statement completed in %.3fs", query_type, time.perf_counter() - started
     )
+    # A zero-row result still yields one batch, which carries the schema.
     if not batches:
         raise ConnectorError(_NO_ARROW_BATCHES)
     return batches
 
 
 def _close_session(session: Any, backend: str) -> None:
-    """Close a driver session, logging rather than raising if the driver objects.
-
-    Closing runs from `finally` blocks after the comparison has already
-    produced its result, so a driver error here must not mask that result or
-    the exception that is already propagating.
-
-    Args:
-        session (Any): Open warehouse connection.
-        backend (str): Warehouse name for log lines.
-    """
+    """Close a driver session, logging rather than raising if the driver objects."""
     closer = getattr(session, "close", None)
     if not callable(closer):
         return
+    # Closing runs from `finally` blocks, so a driver error must not mask the result or an
+    # exception already propagating.
     try:
         closer()
     except Exception:
@@ -356,11 +290,7 @@ class SnowflakeConnector(VerideltaConnector):
         _close_session(session, "Snowflake")
 
     def _require_session(self) -> None:
-        """Ensure the Snowflake extra is present and a session is open.
-
-        Raises:
-            ConnectorError: If the extra is missing or `connect()` was not called.
-        """
+        """Ensure the Snowflake extra is present and a session is open."""
         if snowflake_connector is None:
             raise ConnectorError(_SNOWFLAKE_EXTRA)
         if self._session is None:
@@ -482,11 +412,7 @@ class DatabricksConnector(VerideltaConnector):
         _close_session(session, "Databricks")
 
     def _require_session(self) -> None:
-        """Ensure the Databricks extra is present and a session is open.
-
-        Raises:
-            ConnectorError: If the extra is missing or `connect()` was not called.
-        """
+        """Ensure the Databricks extra is present and a session is open."""
         if databricks_sql is None:
             raise ConnectorError(_DATABRICKS_EXTRA)
         if self._session is None:
@@ -611,10 +537,6 @@ class BigQueryConnector(VerideltaConnector):
         _close_session(client, "BigQuery")
 
     def _require_client(self) -> None:
-        """Ensure `connect()` has created a client.
-
-        Raises:
-            ConnectorError: If `connect()` was not called, or the client closed.
-        """
+        """Ensure `connect()` has created a client."""
         if self._client is None:
             raise ConnectorError(_UNCONNECTED)

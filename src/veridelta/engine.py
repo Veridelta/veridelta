@@ -80,14 +80,7 @@ from veridelta.sentinels import usable_sentinels
 
 
 def _optional_module(name: str) -> ModuleType | None:
-    """Import an optional extra, or return None when it is not installed.
-
-    Args:
-        name (str): Module name to import.
-
-    Returns:
-        ModuleType | None: The imported module, or None on ImportError.
-    """
+    """Import an optional extra, or return None when it is not installed."""
     try:
         return importlib.import_module(name)
     except ImportError:
@@ -104,7 +97,7 @@ rapidfuzz_distance = _optional_module("rapidfuzz.distance")
 
 
 class EffectiveRule(TypedDict):
-    """Flattened per-column parameters after specific, pattern, and global merge."""
+    """Per-column settings after specific, pattern, and global rules are merged."""
 
     abs_tol: float
     rel_tol: float
@@ -127,19 +120,7 @@ class EffectiveRule(TypedDict):
 def _unusable_sentinel_error(
     column: str, dtype: pl.DataType, sentinels: Sequence[SentinelValue]
 ) -> ConfigError:
-    """Build the error for an explicit rule whose sentinels can never match.
-
-    Only explicit rules raise. A global `default_null_values` is expected to
-    cover a mixed schema, so columns it cannot apply to are skipped instead.
-
-    Args:
-        column (str): Column the rule resolved to.
-        dtype (pl.DataType): Type that column actually holds.
-        sentinels (Sequence[SentinelValue]): Sentinels configured for it.
-
-    Returns:
-        ConfigError: Error naming the column, its type, and the sentinels.
-    """
+    """Build the error for an explicit rule whose sentinels can never match."""
     return ConfigError(
         f"Column '{column}' has type {dtype}, which cannot hold any of the "
         f"null_values {list(sentinels)!r} configured for it. Quote text sentinels "
@@ -148,19 +129,7 @@ def _unusable_sentinel_error(
 
 
 def _duplicate_keys_error(keys: list[str], side: str, count: int) -> DataIntegrityError:
-    """Build the error for primary keys that repeat within one dataset.
-
-    Both engines raise through here, so a repeated key reads the same whether
-    a local run or a warehouse found it.
-
-    Args:
-        keys (list[str]): Configured primary keys.
-        side (str): Dataset the keys repeat in, `SOURCE` or `TARGET`.
-        count (int): Rows sharing a key with another row, every copy counted.
-
-    Returns:
-        DataIntegrityError: Error naming the keys, the dataset, and the count.
-    """
+    """Build the error for primary keys that repeat within one dataset."""
     return DataIntegrityError(
         f"Primary keys {keys} are not unique in {side} dataset. "
         f"Found {count} duplicate rows. Clean your data before diffing."
@@ -168,29 +137,9 @@ def _duplicate_keys_error(keys: list[str], side: str, count: int) -> DataIntegri
 
 
 def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None:
-    """Enforce the local engine's `timezone` preconditions on a warehouse column.
-
-    The compiler emits nothing for stage 6b, because Polars' `convert_time_zone`
-    only rewrites a column's timezone label: every downstream cast and
-    comparison still reads the underlying UTC instant, so the conversion cannot
-    change a verdict. Warehouses have no per-column zone label to rewrite, and
-    Spark's `TIMESTAMP` is a bare instant. A function that looks equivalent
-    shifts the value to a wall clock instead, which would make pushdown
-    disagree with a local run.
-
-    What the rule does carry is a precondition, and that has to survive
-    pushdown. A run that would fail locally on naive or non-temporal data must
-    fail here too, rather than quietly comparing columns the local engine
-    refuses to touch.
-
-    Args:
-        column (str): Column the rule resolved to.
-        dtype (pl.DataType): Type of that side after padding and parsing.
-        zone (str): Configured target timezone.
-
-    Raises:
-        ConfigError: If the column is not a timestamp or carries no timezone.
-    """
+    """Raise unless a warehouse column meets the local engine's `timezone` preconditions."""
+    # Stage 6b emits no SQL: a zone label cannot change a verdict. Its precondition
+    # still holds, so pushdown never compares columns a local run refuses.
     if not isinstance(dtype, pl.Datetime):
         raise ConfigError(
             f"Column '{column}' sets timezone='{zone}' but holds {dtype}, not a "
@@ -206,26 +155,24 @@ def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None
 
 
 class BaseLoader(ABC):
-    """Contract for turning one `SourceConfig` into an unevaluated LazyFrame.
+    """Base class for the file loaders, each turning a `SourceConfig` into a LazyFrame.
 
-    Every file format Veridelta reads is a subclass registered in
-    `LoaderFactory._loaders`, keyed by the `SourceType` literal. Implementations
-    should prefer a Polars `scan_*` reader so the comparison graph stays lazy
-    end to end; the eager loaders (`JSONLoader`, `AvroLoader`, `ExcelLoader`) say why in
-    their own docstrings. `SourceConfig.options` are forwarded to the reader
-    unchanged, so any keyword the underlying Polars function accepts is valid.
+    Each file format has a subclass registered in `LoaderFactory._loaders`, keyed by
+    its `SourceType`. A loader prefers a Polars `scan_*` reader, so the comparison
+    stays lazy end to end; the eager loaders say why in their own docstrings.
+    `SourceConfig.options` reach the reader unchanged, so any keyword the Polars
+    function accepts is valid.
     """
 
     @abstractmethod
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads data from a source into a Polars LazyFrame.
+        """Load a source into a LazyFrame.
 
         Args:
-            config (SourceConfig): The configuration detailing the path, format,
-                and format-specific parsing options.
+            config (SourceConfig): Path, format, and reader options.
 
         Returns:
-            pl.LazyFrame: The lazy-loaded dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
 
 
@@ -237,14 +184,13 @@ class CSVLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a CSV file into a Polars LazyFrame.
+        """Scan a CSV file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_csv`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_csv`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_csv(config.path, **config.options)
 
@@ -257,14 +203,13 @@ class ParquetLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a Parquet file into a Polars LazyFrame.
+        """Scan a Parquet file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_parquet`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_parquet`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_parquet(config.path, **config.options)
 
@@ -277,14 +222,13 @@ class NDJSONLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads an NDJSON file into a Polars LazyFrame.
+        """Scan a newline-delimited JSON file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_ndjson`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_ndjson`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_ndjson(config.path, **config.options)
 
@@ -297,14 +241,13 @@ class ArrowLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads an Arrow IPC file into a Polars LazyFrame.
+        """Scan an Arrow IPC file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_ipc`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_ipc`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_ipc(config.path, **config.options)
 
@@ -318,36 +261,34 @@ class AvroLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads an Avro file into a Polars LazyFrame.
+        """Read an Avro file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options
-                (`columns`, `n_rows`) are passed directly to `pl.read_avro`.
+            config (SourceConfig): Source configuration, whose `columns` and `n_rows`
+                options go to `pl.read_avro`.
 
         Returns:
-            pl.LazyFrame: A lazy wrapper over the fully materialized file.
+            pl.LazyFrame: A lazy wrapper over the rows read.
         """
         return pl.read_avro(config.path, **config.options).lazy()
 
 
 class JSONLoader(BaseLoader):
-    """Loader for a single JSON document holding an array of records.
+    """Loader for a JSON file holding one array of records.
 
-    Polars has no lazy JSON reader, because a JSON array cannot be parsed
-    incrementally the way newline-delimited records can. The file is therefore
-    read whole and wrapped, which is a deliberate exception to the lazy-first
-    rule. Prefer `ndjson` for anything large enough to care about.
+    Polars has no lazy JSON reader: a JSON array cannot be parsed incrementally the
+    way newline-delimited records can. The file is read whole and wrapped. Prefer
+    `ndjson` for large files.
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a JSON file into a Polars LazyFrame.
+        """Read a JSON file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.read_json`.
+            config (SourceConfig): Source configuration, whose options go to `pl.read_json`.
 
         Returns:
-            pl.LazyFrame: A lazy wrapper over the fully materialized document.
+            pl.LazyFrame: A lazy wrapper over the rows read.
         """
         return pl.read_json(config.path, **config.options).lazy()
 
@@ -360,18 +301,18 @@ class ExcelLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads one worksheet into a Polars LazyFrame.
+        """Read one worksheet.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.read_excel` (for example `sheet_name`).
+            config (SourceConfig): Source configuration, whose options go to
+                `pl.read_excel`, such as `sheet_name`.
 
         Returns:
-            pl.LazyFrame: A lazy wrapper over the fully materialized sheet.
+            pl.LazyFrame: A lazy wrapper over the rows read.
 
         Raises:
-            ConfigError: If the `excel` extra is missing, or the options select
-                more than one worksheet.
+            ConfigError: If the `excel` extra is missing, or the options select more
+                than one worksheet.
         """
         if fastexcel is None:
             raise ConfigError(
@@ -390,23 +331,17 @@ class ExcelLoader(BaseLoader):
 
 
 class LoaderFactory:
-    """Resolve any file, lakehouse, or database `SourceRef` to a LazyFrame.
+    """Resolve a file, lakehouse, or database `SourceRef` to a LazyFrame.
 
-    File sources are dispatched by their `format` through the `_loaders`
-    registry; Delta Lake and Iceberg sources open a connector and return its
-    lazy scan; a database source is read once through its connector, which is
-    then closed. Warehouse sources are refused here because their comparison
-    runs as SQL pushdown via `DiffEngine.run_from_configs`, never as a local
-    scan.
-
-    The registry is the single source of truth for which formats exist. Tests
-    bind it to the `SourceType` literal in both directions, so a format cannot
-    be advertised without a loader or shipped without appearing in the literal.
+    A file source goes to the loader for its `format`. A Delta Lake or Iceberg
+    source returns its connector's lazy scan, and a database source is read once
+    through its connector, which then closes. A warehouse source is refused: its
+    comparison runs as SQL pushdown through `DiffEngine.run_from_configs`.
 
     Attributes:
-        _loaders (ClassVar[dict[str, BaseLoader]]): Format name to loader
-            instance. Error messages derive their supported-format list from
-            this mapping rather than a hardcoded string.
+        _loaders (ClassVar[dict[str, BaseLoader]]): Format name to loader. It is
+            the one list of formats, and `SourceType` names the same set. Error
+            messages list the supported formats from it.
     """
 
     _loaders: ClassVar[dict[str, BaseLoader]] = {
@@ -421,16 +356,16 @@ class LoaderFactory:
 
     @classmethod
     def get_loader(cls, source_type: str) -> BaseLoader:
-        """Retrieves the correct loader instance for the given data format.
+        """Return the loader for a file format.
 
         Args:
-            source_type (str): The format identifier (e.g., 'csv', 'parquet').
+            source_type (str): Format name, such as `csv` or `parquet`.
 
         Returns:
-            BaseLoader: An instantiated data loader.
+            BaseLoader: The loader.
 
         Raises:
-            ConfigError: If the requested format has no loader.
+            ConfigError: If the format has no loader.
         """
         loader = cls._loaders.get(source_type)
         if loader is None:
@@ -480,8 +415,7 @@ class LoaderFactory:
 _T = TypeVar("_T")
 
 _WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig | BigQueryConfig | DatabaseConfig
-"""Connection configs whose comparisons compile to SQL and run in place. A database
-source belongs here only when it sets `pushdown`; `_is_warehouse` checks that."""
+"""Connection configs whose comparisons compile to SQL and run in place."""
 
 
 class _WarehouseSession(PushdownSession, Protocol):
@@ -496,14 +430,7 @@ class _WarehouseSession(PushdownSession, Protocol):
 
 @dataclass(frozen=True)
 class _Warehouse:
-    """How the engine identifies and opens one warehouse backend.
-
-    Attributes:
-        name (str): Vendor name used in error messages.
-        dialect (SQLDialect): Dialect its connector compiles for.
-        session (Callable[[Any], _WarehouseSession]): Builds an unconnected
-            session from one side's configuration.
-    """
+    """How the engine identifies and opens one warehouse backend."""
 
     name: str
     dialect: SQLDialect
@@ -536,85 +463,39 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
         lambda config: PostgresPushdownSession(config),
     ),
 }
-"""Every warehouse the engine pushes comparisons down to, keyed by config type.
-Adding a backend means one entry here and one member of `_WarehouseConfig`."""
+"""Every warehouse the engine pushes comparisons down to, keyed by config type."""
 
 
 def _is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
-    """Return whether a source reference is a warehouse connection.
-
-    Args:
-        config (SourceRef): Parsed source or target configuration.
-
-    Returns:
-        bool: True for a config type in the warehouse registry, and for a
-            database source only when it sets `pushdown`.
-    """
+    """Return whether a source reference is a warehouse connection."""
     if isinstance(config, DatabaseConfig):
         return config.pushdown
     return type(config) in _WAREHOUSES
 
 
 def _rename_pairs(rules: Sequence[DiffRule]) -> dict[str, str]:
-    """Map each renamed source column to its target spelling.
-
-    The first single-column rule that declares a `rename_to` for a column
-    wins. Rules that also `ignore` the column count too: the pair still tells
-    the target side which spelling belongs to the ignored column.
-
-    Args:
-        rules (Sequence[DiffRule]): Declared rules, in configuration order.
-
-    Returns:
-        dict[str, str]: Source name to target name.
-    """
+    """Map each renamed source column to its target spelling."""
     pairs: dict[str, str] = {}
     for rule in rules:
+        # An `ignore` rule counts too: its pair tells the target side which column to drop.
         if rule.rename_to and len(rule.column_names) == 1:
             pairs.setdefault(rule.column_names[0], rule.rename_to)
     return pairs
 
 
 def _rule_spellings(pairs: Mapping[str, str], column: str) -> tuple[str, ...]:
-    """List the names a rule may use for a column, in order of precedence.
-
-    `column` is the post-rename name that every aligned frame carries. A
-    renamed column answers to its target spelling first and its source
-    spelling second, so a rule written against either one governs the pair.
-    When the target spelling also names a source column that is itself
-    renamed away, as in a swap or a chain, a rule listing it governs that other
-    column, and only the source spelling counts.
-
-    Args:
-        pairs (Mapping[str, str]): Source-to-target renames from `_rename_pairs`.
-        column (str): Post-rename column name.
-
-    Returns:
-        tuple[str, ...]: Names to try for an exact-name match, in order.
-    """
+    """List the names a rule may use for a column, in order of precedence."""
     source = next((src for src, tgt in pairs.items() if tgt == column), column)
     if source == column:
         return (column,)
+    # In a swap or chain, a rule naming `column` governs the source column renamed away from it.
     if pairs.get(column, column) != column:
         return (source,)
     return (column, source)
 
 
 def _match_rule(rules: Sequence[DiffRule], column: str) -> DiffRule | None:
-    """Resolve the single rule governing a column, exact names before patterns.
-
-    Both engines resolve through here, keyed by the post-rename name, so a
-    rule means the same thing wherever it runs: to `ignore` as much as to a
-    tolerance, and to a renamed column as much as to one that kept its name.
-
-    Args:
-        rules (Sequence[DiffRule]): Declared rules, in configuration order.
-        column (str): Post-rename column name to resolve.
-
-    Returns:
-        DiffRule | None: The first rule naming one of the column's spellings,
-            else the first whose pattern matches it, else None.
-    """
+    """Resolve the single rule governing a column, exact names before patterns."""
     for name in _rule_spellings(_rename_pairs(rules), column):
         for rule in rules:
             if name in rule.column_names:
@@ -628,23 +509,7 @@ def _match_rule(rules: Sequence[DiffRule], column: str) -> DiffRule | None:
 def _alignment_maps(
     rules: list[DiffRule], columns: Sequence[str], *, rename: bool
 ) -> tuple[dict[str, str], set[str]]:
-    """Derive the `rename_to` map and `ignore` drop set for one frame's columns.
-
-    Shared by `DataIngestor.get_dataframes` and `DiffEngine._align_structure`
-    for both sides. Each column is dropped only when the rule governing it
-    ignores it, so an exact-name rule keeps a column a broader ignore pattern
-    would otherwise remove, and a column is never both dropped and renamed.
-
-    Args:
-        rules (list[DiffRule]): Declared rules, in configuration order.
-        columns (Sequence[str]): Column names present in the frame.
-        rename (bool): Whether `rename_to` applies. It is a source-only mapping,
-            so the target side, which already carries the post-rename
-            spellings, passes False and only collects drops.
-
-    Returns:
-        tuple[dict[str, str], set[str]]: Rename map and the columns to drop.
-    """
+    """Derive the `rename_to` map and `ignore` drop set for one frame's columns."""
     pairs = _rename_pairs(rules)
     rename_map: dict[str, str] = {}
     to_drop: set[str] = set()
@@ -659,19 +524,7 @@ def _alignment_maps(
 
 
 def _normalize_header_names(frame: pl.LazyFrame) -> pl.LazyFrame:
-    """Strip and lowercase every column name, as `normalize_column_names` asks.
-
-    Args:
-        frame (pl.LazyFrame): Frame whose headers to normalize.
-
-    Returns:
-        pl.LazyFrame: The frame with normalized headers. Normalizing an already
-            normalized frame changes nothing, so every entry point may call it.
-
-    Raises:
-        ConfigError: If two headers normalize to the same name, which would
-            otherwise surface as a raw Polars duplicate-column error.
-    """
+    """Strip and lowercase every column name, as `normalize_column_names` asks."""
     names = frame.collect_schema().names()
     normalized = [name.strip().lower() for name in names]
     collisions = sorted(name for name, count in Counter(normalized).items() if count > 1)
@@ -684,20 +537,7 @@ def _normalize_header_names(frame: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRule:
-    """Layer one matched rule over the configuration's `default_*` settings.
-
-    Both execution paths read from this. The local engine consumes the result
-    directly, and the pushdown resolver re-materializes it as a fully specified
-    `DiffRule` for the compiler. One folder means an unspecified field cannot
-    mean one thing locally and another in a warehouse.
-
-    Args:
-        rule (DiffRule | None): Rule resolved by `_match_rule`, if any.
-        diff (DiffConfig): Master configuration supplying the global defaults.
-
-    Returns:
-        EffectiveRule: Flattened operational parameters for one column.
-    """
+    """Layer one matched rule over the configuration's `default_*` settings."""
     effective: EffectiveRule = {
         "abs_tol": diff.default_absolute_tolerance,
         "rel_tol": diff.default_relative_tolerance,
@@ -731,8 +571,6 @@ def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRul
         effective["whitespace"] = rule.whitespace_mode
     if rule.null_values is not None:
         effective["null_values"] = rule.null_values
-        # A global default silently skips columns it cannot apply to,
-        # whereas an explicit rule that can never fire is a config error.
         effective["null_values_explicit"] = True
     if rule.case_insensitive is not None:
         effective["case_insensitive"] = rule.case_insensitive
@@ -752,24 +590,7 @@ def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRul
 def _enforce_pushdown_preconditions(
     effective: EffectiveRule, sides: tuple[tuple[str, pl.Schema], ...]
 ) -> None:
-    """Fail a pushdown rule that the probed column types can never satisfy.
-
-    Only an explicit `null_values` rule is checked. A global default is expected
-    to span a mixed schema, so the compiler skips the columns it cannot
-    hold, exactly as the local engine does. The `timezone` precondition applies
-    either way: the compiler emits nothing for that stage, so the check is the
-    only thing keeping a warehouse run from comparing columns the local engine
-    would refuse.
-
-    Args:
-        effective (EffectiveRule): Rule with global defaults already folded in.
-        sides (tuple[tuple[str, pl.Schema], ...]): Column name and probed
-            schema for each side of the comparison.
-
-    Raises:
-        ConfigError: If none of the explicit sentinels fit a probed type, or a
-            `timezone` rule targets a column that is not a zoned timestamp.
-    """
+    """Fail a pushdown rule that the probed column types can never satisfy."""
     if effective["null_values_explicit"] and effective["null_values"]:
         for name, schema in sides:
             dtype = schema.get(name)
@@ -788,27 +609,7 @@ _OFFSET_DIRECTIVE: Final = re.compile(r"%%|%[:#]*z")
 
 
 def _normalized_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
-    """Predict a column's dtype after stages 1 through 7, from its stored dtype.
-
-    Pushdown never materializes the normalized column, so every decision that
-    depends on what a local run compares follows these stage gates, which
-    mirror `_normalize_value_expr` and `_normalize_temporal_expr`:
-
-    - stages 1 through 4 keep the type;
-    - `pad_zeros` stringifies;
-    - `datetime_format` parses text into microsecond timestamps, aware in UTC
-      when the format reads an offset;
-    - `timezone` relabels a timestamp's zone and keeps its unit;
-    - `cast_to` decides the final type outright.
-
-    Args:
-        effective (EffectiveRule): Rule with global defaults folded in.
-        dtype (pl.DataType | None): Stored dtype, or None when unknown.
-
-    Returns:
-        pl.DataType | None: The compared dtype, or None when it depends on the
-            unknown stored type.
-    """
+    """Predict a column's dtype after stages 1 through 7, from its stored dtype."""
     if effective["cast_to"] is not None:
         return _CAST_TARGETS[effective["cast_to"]]
     dtype = _parsed_dtype(effective, dtype)
@@ -837,19 +638,8 @@ _FRACTION_DIRECTIVE: Final = re.compile(r"%%|\.%f|%f")
 
 
 def _polars_datetime_format(fmt: str) -> str:
-    """Spell a Python `strptime` format the way Polars reads it.
-
-    Python's `%f` is a fraction of a second, one to six digits. Polars' `%f`
-    counts nanoseconds, so `.5` would read as five of them. A dot and its
-    fraction become `%.f`, and a `%f` without a dot becomes `%6f`, exactly six
-    digits. `%%` is a literal percent sign, so `%%f` is left alone.
-
-    Args:
-        fmt (str): Format from a rule's `datetime_format`.
-
-    Returns:
-        str: The same format in Polars' directive language.
-    """
+    """Spell a Python `strptime` format the way Polars reads it."""
+    # Polars' `%f` counts nanoseconds, so a Python fraction such as `.5` would read as 5 ns.
     return _FRACTION_DIRECTIVE.sub(lambda match: _FRACTION_SPELLINGS[match[0]], fmt)
 
 
@@ -860,23 +650,7 @@ def _tolerance_match(
     dtype: pl.DataType,
     tgt_dtype: pl.DataType | None,
 ) -> pl.Expr:
-    """Match two numeric values within a rule's absolute and relative tolerance.
-
-    Equal values match outright, so NaN meets NaN and an infinity meets itself.
-    Integer pairs are widened to Int128 first, so neither the difference nor the
-    source's magnitude can wrap around the column's type: Int8 `100` and `-100`
-    differ by 200, and `abs(-128)` is 128.
-
-    Args:
-        src (pl.Expr): Normalized source values.
-        tgt (pl.Expr): Normalized target values, after any soft cast.
-        rule (EffectiveRule): Rule carrying `abs_tol` and `rel_tol`.
-        dtype (pl.DataType): Source dtype, which is numeric.
-        tgt_dtype (pl.DataType | None): Type the target is compared as.
-
-    Returns:
-        pl.Expr: True where the pair is equal or within the allowance.
-    """
+    """Match two numeric values within a rule's absolute and relative tolerance."""
     if dtype.is_integer() and tgt_dtype is not None and tgt_dtype.is_integer():
         src = src.cast(pl.Int128)
         tgt = tgt.cast(pl.Int128)
@@ -889,6 +663,7 @@ def _tolerance_match(
         # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
         # non-finite source must never reach the allowance.
         within = within & src.is_finite()
+    # Equality matches outright, so NaN meets NaN and an infinity meets itself.
     return (src == tgt) | within
 
 
@@ -903,27 +678,7 @@ def _pushdown_rule(
     treat_null_as_equal: bool | None = None,
     max_levenshtein_distance: int | None = None,
 ) -> DiffRule:
-    """Re-materialize a folded rule as the fully specified `DiffRule` the compiler reads.
-
-    Keys and compared columns both pass through here, so a normalization stage
-    cannot reach one and silently miss the other. The comparison fields stay
-    unset unless given: keys only ever join on equality, so stages 8 and 9
-    never reach them.
-
-    Args:
-        stored (str): Column name as stored in the source relation.
-        aligned (str): Post-rename name, which is also the target's name.
-        rule (DiffRule | None): Rule `_match_rule` resolved, if any.
-        effective (EffectiveRule): That rule with global defaults folded in.
-        absolute_tolerance (float | None): Stage 8 absolute tolerance.
-        relative_tolerance (float | None): Stage 8 relative tolerance.
-        treat_null_as_equal (bool | None): Stage 9 null-safe equality.
-        max_levenshtein_distance (int | None): Stage 8 edit-distance limit.
-
-    Returns:
-        DiffRule: Rule naming the stored column, with a `rename_to` when the
-            target spells it differently.
-    """
+    """Re-materialize a folded rule as the fully specified `DiffRule` the compiler reads."""
     return DiffRule(
         column_names=[stored],
         rename_to=None if aligned == stored else aligned,
@@ -949,28 +704,7 @@ def _pushdown_rule(
 def _resolve_pushdown_keys(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
-    """Expand configuration into the normalization each primary key receives.
-
-    A local run normalizes keys along with every other column before it joins,
-    so a key the rules strip, fold, map, pad, or cast must reach the warehouse
-    joins transformed the same way. Keys are resolved under their post-rename
-    name, as the local engine resolves its aligned frames, and read on the
-    source under whichever stored column `rename_to` maps onto them.
-
-    Args:
-        diff (DiffConfig): Master comparison rules, keys, and global defaults.
-        source_schema (pl.Schema): Schema probed from the source relation.
-        target_schema (pl.Schema): Schema probed from the target relation.
-
-    Returns:
-        list[DiffRule]: One rule per primary key, in key order, carrying stages
-            1 through 7 with global defaults already folded in.
-
-    Raises:
-        ConfigError: If a key carries an explicit `null_values` rule whose
-            sentinels none of its probed types can hold, or a `timezone` rule
-            the probed types cannot satisfy.
-    """
+    """Expand configuration into the normalization each primary key receives."""
     source_names = set(source_schema.names())
     pairs = _rename_pairs(diff.rules)
 
@@ -991,29 +725,7 @@ def _resolve_pushdown_keys(
 def _pushdown_columns(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> Iterator[tuple[str, str, DiffRule | None, EffectiveRule]]:
-    """Walk the probed source columns a warehouse statement compares.
-
-    Each probed source column is paired with its post-rename spelling and
-    resolved under that name, exactly as the local engine resolves its aligned
-    frames. Keys, columns the target lacks, and ignored columns are skipped,
-    and every column left is checked against the preconditions a local run
-    enforces while normalizing.
-
-    Args:
-        diff (DiffConfig): Master comparison rules, keys, and global defaults.
-        source_schema (pl.Schema): Schema probed from the source relation.
-        target_schema (pl.Schema): Schema probed from the target relation.
-
-    Yields:
-        tuple[str, str, DiffRule | None, EffectiveRule]: Stored source name,
-            post-rename name, the rule governing it if any, and that rule with
-            global defaults folded in.
-
-    Raises:
-        ConfigError: If a column carries an explicit `null_values` rule whose
-            sentinels none of its probed types can hold, or a `timezone` rule
-            the probed types cannot satisfy.
-    """
+    """Walk the probed source columns a warehouse statement compares."""
     target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
     pairs = _rename_pairs(diff.rules)
@@ -1034,30 +746,7 @@ def _pushdown_columns(
 def _resolve_pushdown_rules(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
-    """Expand configuration into one fully specified rule per compared column.
-
-    The compiler reads semantics from `DiffRule` alone, while the local engine
-    layers each rule over the `default_*` settings. Without this expansion a
-    warehouse run would ignore global tolerances and would skip every column
-    lacking an explicit rule, reporting all joined rows as changed. Each probed
-    source column is paired with its post-rename spelling and resolved under
-    that name, exactly as the local engine resolves its aligned frames.
-
-    Args:
-        diff (DiffConfig): Master comparison rules, keys, and global defaults.
-        source_schema (pl.Schema): Schema probed from the source relation.
-        target_schema (pl.Schema): Schema probed from the target relation.
-
-    Returns:
-        list[DiffRule]: One rule per shared, non-key, non-ignored column, with
-            global defaults already folded in.
-
-    Raises:
-        ConfigError: If a column carries an explicit `null_values` rule whose
-            sentinels none of its probed types can hold, a `timezone` rule the
-            probed types cannot satisfy, or a `min_jaro_winkler_similarity` on
-            a column compared as text.
-    """
+    """Expand configuration into one fully specified rule per compared column."""
     resolved: list[DiffRule] = []
     for column, aligned, rule, effective in _pushdown_columns(diff, source_schema, target_schema):
         # As in `_build_match_expr`, a tolerance loosens only a column compared as
@@ -1097,19 +786,7 @@ def _resolve_pushdown_rules(
 def _compared_dtypes(
     diff: DiffConfig, rule: DiffRule, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> tuple[pl.DataType | None, pl.DataType | None]:
-    """Predict the dtypes a local run would compare one pushdown column as.
-
-    Args:
-        diff (DiffConfig): Comparison settings the rule was resolved under.
-        rule (DiffRule): A rule from `_resolve_pushdown_rules`, naming the
-            stored source column and, when renamed, the target's name.
-        source_schema (pl.Schema): Probed source schema.
-        target_schema (pl.Schema): Probed target schema.
-
-    Returns:
-        tuple[pl.DataType | None, pl.DataType | None]: The normalized source and
-            target dtypes, each None when its probe did not report one.
-    """
+    """Predict the dtypes a local run would compare one pushdown column as."""
     effective = _fold_rule_defaults(rule, diff)
     stored = rule.column_names[0]
     return (
@@ -1121,22 +798,7 @@ def _compared_dtypes(
 def _wide_integer_columns(
     diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
 ) -> frozenset[str]:
-    """Name the tolerance columns a warehouse must subtract in a wider integer type.
-
-    A local run widens integer pairs to Int128 before measuring a tolerance.
-    In SQL the stored type wraps or overflows instead: DuckDB raises on an
-    unsigned difference below zero, and `ABS` of the smallest BIGINT overflows.
-
-    Args:
-        diff (DiffConfig): Comparison settings the rules were resolved under.
-        rules (Sequence[DiffRule]): Rules from `_resolve_pushdown_rules`.
-        source_schema (pl.Schema): Probed source schema.
-        target_schema (pl.Schema): Probed target schema.
-
-    Returns:
-        frozenset[str]: Target names of the columns that carry a tolerance and
-            compare as integers on both sides.
-    """
+    """Name the tolerance columns a warehouse must subtract in a wider integer type."""
     return frozenset(
         rule.rename_to or rule.column_names[0]
         for rule in rules
@@ -1151,22 +813,7 @@ def _wide_integer_columns(
 def _type_drift_columns(
     diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
 ) -> frozenset[str]:
-    """Name the columns `strict_types` fails because their two sides differ in type.
-
-    A local run compares the dtypes the two sides hold after normalization and
-    fails every row of a column where they differ. A warehouse reports its own
-    types through its driver, so the same comparison runs on those.
-
-    Args:
-        diff (DiffConfig): Comparison settings the rules were resolved under.
-        rules (Sequence[DiffRule]): Rules from `_resolve_pushdown_rules`.
-        source_schema (pl.Schema): Probed source schema.
-        target_schema (pl.Schema): Probed target schema.
-
-    Returns:
-        frozenset[str]: Target names of the drifting columns, empty unless
-            `strict_types` is on.
-    """
+    """Name the columns `strict_types` fails because their two sides differ in type."""
     if not diff.strict_types:
         return frozenset()
     drift: set[str] = set()
@@ -1178,18 +825,7 @@ def _type_drift_columns(
 
 
 def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
-    """Reduce the single-row mismatch tally to positive per-column counts.
-
-    Args:
-        frame (pl.DataFrame): Result of `compile_column_mismatch_query`.
-
-    Returns:
-        dict[str, int]: Columns with at least one mismatch. Columns that fully
-            matched are dropped, matching the local engine's filtering.
-
-    Raises:
-        ConnectorError: If the aggregate is not a single row of numbers.
-    """
+    """Reduce the single-row mismatch tally to positive per-column counts."""
     if frame.height != 1:
         raise ConnectorError("Column mismatch query did not return exactly one row.")
 
@@ -1208,17 +844,7 @@ def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
 
 
 def _local_column_mismatches(changed: pl.DataFrame, compared_columns: list[str]) -> dict[str, int]:
-    """Count, per compared column, how many changed rows failed its match flag.
-
-    Args:
-        changed (pl.DataFrame): Changed rows carrying one `<column>_is_match`
-            flag per compared column.
-        compared_columns (list[str]): Columns that were evaluated.
-
-    Returns:
-        dict[str, int]: Columns with at least one mismatch. Fully matched
-            columns are dropped, mirroring `_column_mismatches_from_frame`.
-    """
+    """Count, per compared column, how many changed rows failed its match flag."""
     if not compared_columns or changed.is_empty():
         return {}
     tally = changed.select(
@@ -1235,20 +861,11 @@ _CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
     "Date": pl.Date(),
     "Datetime": pl.Datetime(),
 }
-"""`cast_to` name to the dtype it resolves to. An explicit table rather than a
-`getattr(pl, ...)` lookup, which returned None for anything unrecognized and
-skipped the cast without a word."""
+"""`cast_to` name to the dtype it resolves to."""
 
 
 def _fuzzy_measures() -> ModuleType:
-    """Return rapidfuzz's distance module, or explain how to install it.
-
-    Returns:
-        ModuleType: The `rapidfuzz.distance` module.
-
-    Raises:
-        ConfigError: If the `fuzzy` extra is not installed.
-    """
+    """Return rapidfuzz's distance module, or explain how to install it."""
     if rapidfuzz_distance is None:
         raise ConfigError(
             "max_levenshtein_distance and min_jaro_winkler_similarity need the optional "
@@ -1258,18 +875,7 @@ def _fuzzy_measures() -> ModuleType:
 
 
 def _similarity_test(rule: EffectiveRule) -> Callable[[str, str], bool] | None:
-    """Build the test a differing text pair must pass to match at stage 8.
-
-    Args:
-        rule (EffectiveRule): Rule with global defaults folded in.
-
-    Returns:
-        Callable[[str, str], bool] | None: The test for the rule's similarity
-            limit, or None when the rule sets neither.
-
-    Raises:
-        ConfigError: If a limit is set but the `fuzzy` extra is not installed.
-    """
+    """Build the test a differing text pair must pass to match at stage 8."""
     limit = rule["max_levenshtein_distance"]
     if limit is not None:
         distance = _fuzzy_measures().Levenshtein.distance
@@ -1284,18 +890,7 @@ def _similarity_test(rule: EffectiveRule) -> Callable[[str, str], bool] | None:
 
 
 def _score_differing_pairs(pairs: pl.Series, *, test: Callable[[str, str], bool]) -> pl.Series:
-    """Mark the pairs that still differ after normalization but pass `test`.
-
-    Equal pairs already match through equality, and a missing value is never
-    similar to anything, so only non-null pairs that differ reach Python.
-
-    Args:
-        pairs (pl.Series): Struct series with `source` and `target` text fields.
-        test (Callable[[str, str], bool]): Similarity test for one pair.
-
-    Returns:
-        pl.Series: Boolean mask, True where a differing pair passes `test`.
-    """
+    """Mark the pairs that still differ after normalization but pass `test`."""
     differing = (
         pairs.struct.unnest()
         .with_row_index("row")
@@ -1306,16 +901,7 @@ def _score_differing_pairs(pairs: pl.Series, *, test: Callable[[str, str], bool]
 
 
 def _similarity_expr(src: pl.Expr, tgt: pl.Expr, test: Callable[[str, str], bool]) -> pl.Expr:
-    """Evaluate a similarity test over two aligned text columns, lazily.
-
-    Args:
-        src (pl.Expr): Normalized source column.
-        tgt (pl.Expr): Normalized target column, already cast to the source type.
-        test (Callable[[str, str], bool]): Similarity test for one pair.
-
-    Returns:
-        pl.Expr: Boolean expression, True where a differing pair passes `test`.
-    """
+    """Evaluate a similarity test over two aligned text columns, lazily."""
     return pl.struct(src.alias("source"), tgt.alias("target")).map_batches(
         partial(_score_differing_pairs, test=test),
         return_dtype=pl.Boolean,
@@ -1330,36 +916,13 @@ _ARTIFACT_WRITERS: Final[dict[ArtifactFormat, Callable[[pl.DataFrame, Path], Non
     "ndjson": lambda frame, path: frame.write_ndjson(path),
     "arrow": lambda frame, path: frame.write_ipc(path),
 }
-"""Artifact format to writer. Single source of truth for the guard and dispatch,
-so a format can never be accepted without something actually writing it.
-
-Deliberately not the same set as `LoaderFactory._loaders`: Excel is readable
-through the `excel` extra but not writable, since emitting a workbook needs a
-second dependency that a discrepancy dump does not justify."""
+"""Artifact format to writer."""
 
 
 def _export_artifacts(
     frames: dict[str, pl.DataFrame], output_path: str | None, output_format: ArtifactFormat
 ) -> bool:
-    """Persist non-empty discrepancy frames to the configured directory.
-
-    Shared by the local and pushdown paths so both report `artifacts_written`
-    from the same rules about what actually reaches disk.
-
-    Args:
-        frames (dict[str, pl.DataFrame]): Artifact base name mapped to its rows.
-        output_path (str | None): Directory to create and write into, or None
-            to write nothing.
-        output_format (ArtifactFormat): Format to write, which must have an
-            entry in `_ARTIFACT_WRITERS`.
-
-    Returns:
-        bool: True when at least one file was written. Empty frames are skipped,
-            so a clean comparison leaves no artifacts behind.
-
-    Raises:
-        ConfigError: If `output_path` is set and `output_format` has no writer.
-    """
+    """Persist non-empty discrepancy frames to the configured directory."""
     if output_path is None:
         return False
     # Checked before the loop so a misconfigured format fails the same way on a
@@ -1392,22 +955,7 @@ def _summary(
     column_mismatches: dict[str, int],
     artifacts_written: bool,
 ) -> DiffSummary:
-    """Count a comparison's discrepancies and apply the threshold, for either engine.
-
-    Args:
-        diff (DiffConfig): Comparison rules including `threshold`.
-        changed (pl.DataFrame): Rows whose compared values differ.
-        added (pl.DataFrame): Target-only rows.
-        removed (pl.DataFrame): Source-only rows.
-        source_total (int): Rows in the source, counted as `COUNT(*)` counts.
-        target_total (int): Rows in the target.
-        column_mismatches (dict[str, int]): Per-column drift counts.
-        artifacts_written (bool): Whether any artifact reached disk.
-
-    Returns:
-        DiffSummary: Counts from the three frame heights, ratioed against the
-            source total.
-    """
+    """Count a comparison's discrepancies and apply the threshold, for either engine."""
     changed_count = changed.height
     added_count = added.height
     removed_count = removed.height
@@ -1432,20 +980,7 @@ def _pushdown_scalar(
     query_type: PushdownQueryType,
     label: str,
 ) -> int:
-    """Collect the single integer an aggregate pushdown statement returns.
-
-    Args:
-        connector (PushdownSession): Connected session with a matching compiler.
-        statement (str): Compiled aggregate returning one row and one column.
-        query_type (PushdownQueryType): Round-trip tag passed to the connector.
-        label (str): Names the statement in error messages.
-
-    Returns:
-        int: The aggregate's value.
-
-    Raises:
-        ConnectorError: If the warehouse does not return a single numeric value.
-    """
+    """Collect the single integer an aggregate pushdown statement returns."""
     frame = connector.execute_pushdown(statement, query_type=query_type).collect()
     if frame.height != 1 or frame.width != 1:
         raise ConnectorError(f"{label} did not return a single value.")
@@ -1463,25 +998,7 @@ def _reject_duplicate_pushdown_keys(
     tables: tuple[str, str],
     schemas: tuple[pl.Schema, pl.Schema],
 ) -> None:
-    """Fail a pair whose normalized primary keys repeat on either side, as a local run does.
-
-    A repeated key would fan out every join below it, so the local engine
-    refuses to compare such a dataset. The check groups the keys after stages
-    1 through 7, since normalizing can collapse distinct stored keys into one.
-
-    Args:
-        connector (PushdownSession): Connected session with a matching compiler.
-        diff (DiffConfig): Master comparison rules and keys.
-        key_rules (Sequence[DiffRule]): Normalization resolved for each key.
-        tables (tuple[str, str]): Source and target relations, checked in that
-            order. The source reads renamed keys under their stored names and
-            applies `value_map`.
-        schemas (tuple[pl.Schema, pl.Schema]): Schemas probed from each.
-
-    Raises:
-        DataIntegrityError: If any normalized key appears on more than one row.
-        ConnectorError: If the warehouse does not return a single numeric value.
-    """
+    """Fail a pair whose normalized primary keys repeat on either side, as a local run does."""
     for table, types, side in zip(tables, schemas, ("SOURCE", "TARGET"), strict=True):
         statement = connector.compiler.compile_duplicate_key_query(
             table, diff.primary_keys, is_source=side == "SOURCE", key_rules=key_rules, types=types
@@ -1494,20 +1011,7 @@ def _reject_duplicate_pushdown_keys(
 
 
 def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema) -> None:
-    """Refuse `normalize_column_names` where it would rename a warehouse column.
-
-    A local run renames headers inside its frames. Pushdown cannot: the
-    compiler quotes identifiers exactly as they are stored, so a column whose
-    stored name normalization would change could no longer be referenced.
-
-    Args:
-        diff (DiffConfig): Comparison settings carrying the flag.
-        *schemas (pl.Schema): Probed schemas of the compared relations.
-
-    Raises:
-        ConfigError: If the flag is on and a probed name is not already
-            stripped and lowercase.
-    """
+    """Refuse `normalize_column_names` where it would rename a warehouse column."""
     if not diff.normalize_column_names:
         return
     changed = [
@@ -1527,28 +1031,7 @@ def _validate_pushdown_schema(
     target_table: str,
     diff: DiffConfig,
 ) -> tuple[pl.Schema, pl.Schema]:
-    """Enforce `schema_mode` against warehouse relations before comparing them.
-
-    Zero-row probes expose the stored column names, so misconfigured keys surface
-    as a `ConfigError` instead of a driver failure mid-comparison. Names are
-    compared exactly as the compiler quotes them, without case folding.
-
-    Args:
-        connector (PushdownSession): Connected session with a matching compiler.
-        source_table (str): Source relation name.
-        target_table (str): Target relation name.
-        diff (DiffConfig): Master comparison rules and keys.
-
-    Returns:
-        tuple[pl.Schema, pl.Schema]: Raw source and target schemas, before any
-            rename or drop. The driver's Arrow result carries dtypes as well as
-            names, and the compiler needs both to filter null sentinels. A
-            Postgres `numeric` carries its declared precision and scale.
-
-    Raises:
-        ConfigError: If primary keys are missing, `normalize_column_names`
-            would rename a stored column, or schema constraints are violated.
-    """
+    """Enforce `schema_mode` against warehouse relations before comparing them."""
     source_probe = connector.execute_pushdown(
         connector.compiler.compile_schema_probe_query(source_table), query_type="schema"
     )
@@ -1572,14 +1055,7 @@ def _with_declared_types(schema: pl.Schema, declared: Mapping[str, pl.DataType])
 
 
 class _PushdownPlan(NamedTuple):
-    """What a warehouse run learns before it reads a row.
-
-    Attributes:
-        source_schema (pl.Schema): Probed source columns and types.
-        target_schema (pl.Schema): Probed target columns and types.
-        key_rules (list[DiffRule]): Normalization resolved for each key.
-        rules (list[DiffRule]): One resolved rule per compared column.
-    """
+    """What a warehouse run learns before it reads a row."""
 
     source_schema: pl.Schema
     target_schema: pl.Schema
@@ -1590,21 +1066,7 @@ class _PushdownPlan(NamedTuple):
 def _plan_pushdown(
     connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
 ) -> _PushdownPlan:
-    """Probe both relations, then resolve the keys and rules against them.
-
-    Args:
-        connector (PushdownSession): Connected session with a matching compiler.
-        source_table (str): Source relation name.
-        target_table (str): Target relation name.
-        diff (DiffConfig): Master comparison rules and keys.
-
-    Returns:
-        _PushdownPlan: The probed schemas and the resolved keys and rules.
-
-    Raises:
-        ConfigError: If the probed relations violate `schema_mode` or omit a
-            primary key, or a rule asks for what the warehouse cannot reproduce.
-    """
+    """Probe both relations, then resolve the keys and rules against them."""
     source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff
     )
@@ -1619,22 +1081,7 @@ def _plan_pushdown(
 def _check_pushdown_plan(
     connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
 ) -> None:
-    """Do what a warehouse run does before reading a row, and compile the rest.
-
-    The schema probes, with Postgres' catalog lookups, are the only statements
-    executed. Every statement a run would execute after them is compiled
-    against the probed types, so a rule the warehouse cannot spell fails here.
-
-    Args:
-        connector (PushdownSession): Connected session with a matching compiler.
-        source_table (str): Source relation name.
-        target_table (str): Target relation name.
-        diff (DiffConfig): Master comparison rules and keys.
-
-    Raises:
-        ConfigError: If the probed relations violate `schema_mode` or omit a
-            primary key, or a rule asks for what the warehouse cannot reproduce.
-    """
+    """Do what a warehouse run does before reading a row, and compile the rest."""
     plan = _plan_pushdown(connector, source_table, target_table, diff)
     compiler = connector.compiler
     keys = diff.primary_keys
@@ -1689,31 +1136,7 @@ def _collect_pushdown_summary(
     target_table: str,
     diff: DiffConfig,
 ) -> DiffResult:
-    """Compile and collect the warehouse key checks, counts, mismatches, and anti-joins.
-
-    Args:
-        connector (PushdownSession): Connected warehouse session whose compiler
-            matches the dialect.
-        source_table (str): Source relation name.
-        target_table (str): Target relation name.
-        diff (DiffConfig): Master comparison rules and keys.
-
-    Returns:
-        DiffResult: Heights from the three collected LazyFrames, ratioed against
-            the source relation's total row count, alongside the primary-key
-            frames themselves. Flagged `keys_only`, since the comparison SQL
-            never projects values.
-
-    Raises:
-        ConfigError: If the probed relations violate `schema_mode` or omit a
-            primary key, or a rule asks for what the warehouse cannot reproduce:
-            `min_jaro_winkler_similarity` on a column compared as text, a
-            `datetime_format` directive with no SQL spelling, or a
-            `regex_replace` replacement that refers to a group by name or
-            above 9.
-        DataIntegrityError: If either relation repeats a normalized primary key.
-        ConnectorError: If the warehouse returns a malformed aggregate.
-    """
+    """Compile and collect the warehouse key checks, counts, mismatches, and anti-joins."""
     plan = _plan_pushdown(connector, source_table, target_table, diff)
     source_schema, target_schema, key_rules, rules = plan
     # As in a local run, a ConfigError from rule resolution wins over repeated
@@ -1838,30 +1261,7 @@ def _collect_changed_sample(
     wide_integers: frozenset[str],
     type_drift: frozenset[str],
 ) -> pl.DataFrame | None:
-    """Fetch up to `pushdown_sample_rows` changed rows with both sides' values.
-
-    Runs only when a sample was asked for and some row changed, so a default
-    run issues exactly the statements it always has. The statement takes the
-    changed-row query's arguments, so it samples the rows that query counted.
-
-    Args:
-        connector (PushdownSession): Connected warehouse session.
-        source_table (str): Source relation name.
-        target_table (str): Target relation name.
-        diff (DiffConfig): Master comparison rules and keys.
-        plan (_PushdownPlan): The probed schemas and resolved keys and rules.
-        changed (pl.DataFrame): Keys of every changed row.
-        wide_integers (frozenset[str]): Integer columns measured in a wide type.
-        type_drift (frozenset[str]): Columns `strict_types` fails.
-
-    Returns:
-        pl.DataFrame | None: Keys, then `{column}_source`, `{column}_target`,
-            and `{column}_is_match` per compared column, as in a local run's
-            changed rows; None when no sample was asked for or nothing changed.
-
-    Raises:
-        ConnectorError: If the result lacks a column the statement selected.
-    """
+    """Fetch up to `pushdown_sample_rows` changed rows with both sides' values."""
     if diff.pushdown_sample_rows == 0 or changed.is_empty():
         return None
     sample = connector.compiler.compile_changed_sample_query(
@@ -1894,42 +1294,21 @@ _HALF_PUSHDOWN: Final = (
 
 
 def _table_name(config: _WarehouseConfig) -> str:
-    """Return the table a pushdown side names.
-
-    Args:
-        config (_WarehouseConfig): One side of a warehouse pair.
-
-    Returns:
-        str: The configured table. A database source that sets `pushdown`
-            always names one; its model refuses a `query`.
-    """
+    """Return the table a pushdown side names."""
+    # `DatabaseConfig` requires a `table` whenever it sets `pushdown`.
     return cast("str", config.table)
 
 
 @dataclass(frozen=True)
 class _WarehousePair:
-    """Two warehouse tables cleared to share one pushdown session.
-
-    Attributes:
-        warehouse (_Warehouse): The backend both sides use.
-        source (_WarehouseConfig): Source connection and table.
-        target (_WarehouseConfig): Target connection and table.
-    """
+    """Two warehouse tables cleared to share one pushdown session."""
 
     warehouse: _Warehouse
     source: _WarehouseConfig
     target: _WarehouseConfig
 
     def with_session(self, work: Callable[[PushdownSession, str, str], _T]) -> _T:
-        """Open one session, run `work` on it, and close it whatever happens.
-
-        Args:
-            work (Callable[[PushdownSession, str, str], _T]): Called with the
-                connected session and the source and target table names.
-
-        Returns:
-            _T: Whatever `work` returns.
-        """
+        """Open one session, run `work` on it, and close it whatever happens."""
         session = self.warehouse.session(self.source)
         session.connect()
         try:
@@ -1939,26 +1318,7 @@ class _WarehousePair:
 
 
 def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePair | None:
-    """Refuse a pair no engine can compare, without connecting to anything.
-
-    Two sides are read locally unless both are warehouse tables. A warehouse
-    pair must use one backend and one connection, which means every setting but
-    the table is equal, and name two different tables.
-
-    Args:
-        source (SourceRef): Source configuration.
-        target (SourceRef): Target configuration.
-
-    Returns:
-        _WarehousePair | None: The pair to push down, or None when both sides
-            are read locally.
-
-    Raises:
-        ConnectorError: If only one side is a warehouse table, the sides use
-            different warehouses, or their connections differ.
-        ConfigError: If both sides name the same table on one connection, or
-            only one of two database sources sets `pushdown`.
-    """
+    """Refuse a pair no engine can compare, without connecting to anything."""
     if (
         isinstance(source, DatabaseConfig)
         and isinstance(target, DatabaseConfig)
@@ -2010,14 +1370,8 @@ _EXTRA_PROBES: Final[dict[type[object], tuple[str, Callable[[], bool]]]] = {
 
 
 def _findable(module: str) -> bool:
-    """Return whether a dotted module could be imported, without importing it.
-
-    Args:
-        module (str): Dotted module name.
-
-    Returns:
-        bool: False when the module, or a package above it, is not installed.
-    """
+    """Return whether a dotted module could be imported, without importing it."""
+    # `find_spec` imports a dotted name's parents, and raises when one is not installed.
     try:
         return find_spec(module) is not None
     except ModuleNotFoundError:
@@ -2025,15 +1379,7 @@ def _findable(module: str) -> bool:
 
 
 def _required_extra(config: SourceRef) -> tuple[str, Callable[[], bool]] | None:
-    """Name the optional extra one side reads through, with its probe.
-
-    Args:
-        config (SourceRef): Source or target configuration.
-
-    Returns:
-        tuple[str, Callable[[], bool]] | None: The extra and a probe that is
-            True when it is installed, or None when the core install suffices.
-    """
+    """Name the optional extra one side reads through, with its probe."""
     if isinstance(config, SourceConfig):
         if config.format == "excel":
             return "excel", lambda: fastexcel is not None
@@ -2042,39 +1388,17 @@ def _required_extra(config: SourceRef) -> tuple[str, Callable[[], bool]] | None:
 
 
 def _error(message: str) -> ConfigFinding:
-    """Build a finding that would stop a run.
-
-    Args:
-        message (str): What is wrong and what to do about it.
-
-    Returns:
-        ConfigFinding: An `error` finding.
-    """
+    """Build a finding that would stop a run."""
     return ConfigFinding(severity="error", message=message)
 
 
 def _warning(message: str) -> ConfigFinding:
-    """Build a finding that stops a run only for some stored names or types.
-
-    Args:
-        message (str): What may go wrong and what to do about it.
-
-    Returns:
-        ConfigFinding: A `warning` finding.
-    """
+    """Build a finding that stops a run only for some stored names or types."""
     return ConfigFinding(severity="warning", message=message)
 
 
 def _missing_extra_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
-    """Report each optional extra a side reads through that is not installed.
-
-    Args:
-        source (SourceRef): Source configuration.
-        target (SourceRef): Target configuration.
-
-    Returns:
-        list[ConfigFinding]: One error per missing extra, naming the sides.
-    """
+    """Report each optional extra a side reads through that is not installed."""
     sides: dict[str, list[str]] = {}
     for label, config in (("source", source), ("target", target)):
         required = _required_extra(config)
@@ -2090,15 +1414,7 @@ def _missing_extra_findings(source: SourceRef, target: SourceRef) -> list[Config
 
 
 def _database_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
-    """Report a database `table` whose URI scheme Veridelta cannot quote for.
-
-    Args:
-        source (SourceRef): Source configuration.
-        target (SourceRef): Target configuration.
-
-    Returns:
-        list[ConfigFinding]: One error per side that would fail to compile.
-    """
+    """Report a database `table` whose URI scheme Veridelta cannot quote for."""
     findings: list[ConfigFinding] = []
     for label, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig) and config.table is not None:
@@ -2110,16 +1426,7 @@ def _database_findings(source: SourceRef, target: SourceRef) -> list[ConfigFindi
 
 
 def _polars_regex_error(pattern: str, replacement: str) -> str | None:
-    """Return why Polars' regular expression engine rejects a pattern, if it does.
-
-    Args:
-        pattern (str): `regex_replace` key.
-        replacement (str): Its replacement.
-
-    Returns:
-        str | None: The parser's own `error:` line, or the whole message when
-            there is none, or None when the pattern compiles.
-    """
+    """Return why Polars' regular expression engine rejects a pattern, if it does."""
     try:
         pl.select(pl.lit("").str.replace_all(pattern, replacement))
     except pl.exceptions.PolarsError as exc:
@@ -2136,21 +1443,9 @@ def _polars_regex_error(pattern: str, replacement: str) -> str | None:
 
 
 def _regex_findings(diff: DiffConfig, *, pushdown: bool) -> list[ConfigFinding]:
-    """Report `regex_replace` patterns that Polars' regular expression engine rejects.
-
-    The models compile each pattern with Python's `re`, which accepts
-    look-around and backreferences that Polars does not, so a local run would
-    otherwise fail only once it reached the rows.
-
-    Args:
-        diff (DiffConfig): Comparison settings and rules.
-        pushdown (bool): Whether the pair runs in a warehouse, whose own engine
-            may accept the pattern.
-
-    Returns:
-        list[ConfigFinding]: One finding per rejected pattern, an error for a
-            local run and a warning for a warehouse run.
-    """
+    """Report `regex_replace` patterns that Polars' regular expression engine rejects."""
+    # The models compile each pattern with Python's `re`, which accepts look-around
+    # and backreferences that Polars rejects.
     findings: list[ConfigFinding] = []
     for index, rule in enumerate(diff.rules):
         for pattern, replacement in (rule.regex_replace or {}).items():
@@ -2174,15 +1469,7 @@ def _regex_findings(diff: DiffConfig, *, pushdown: bool) -> list[ConfigFinding]:
 
 
 def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
-    """Report similarity rules a local run cannot score without the `fuzzy` extra.
-
-    Args:
-        diff (DiffConfig): Comparison settings and rules.
-
-    Returns:
-        list[ConfigFinding]: One error per rule with a similarity limit, when
-            the scorer is missing.
-    """
+    """Report similarity rules a local run cannot score without the `fuzzy` extra."""
     if rapidfuzz_distance is not None:
         return []
     return [
@@ -2197,18 +1484,7 @@ def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
 
 
 def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
-    """Report settings a warehouse run refuses for some stored names or types.
-
-    Each refusal depends on what the warehouse reports for the columns, which
-    only a live check can see, so these are warnings.
-
-    Args:
-        diff (DiffConfig): Comparison settings and rules.
-        pair (_WarehousePair): The warehouse both sides share.
-
-    Returns:
-        list[ConfigFinding]: Warnings, in the order a run would meet them.
-    """
+    """Report settings a warehouse run refuses for some stored names or types."""
     name = pair.warehouse.name
     compiler = SQLPushdownCompiler(pair.warehouse.dialect)
     findings: list[ConfigFinding] = []
@@ -2257,21 +1533,7 @@ def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFin
 
 
 def _schema_frame(config: SourceRef) -> pl.LazyFrame:
-    """Read one local side's columns and types, as a frame with no rows.
-
-    A database `table` is read with a zero-row probe. Files and lakehouse
-    tables are opened as a run opens them; formats without a lazy reader,
-    such as JSON and Excel, are read whole.
-
-    Args:
-        config (SourceRef): File, lakehouse, or database configuration.
-
-    Returns:
-        pl.LazyFrame: An empty frame with the side's schema.
-
-    Raises:
-        VerideltaError: If the side cannot be opened or read.
-    """
+    """Read one local side's columns and types, as a frame with no rows."""
     if isinstance(config, DatabaseConfig):
         with DatabaseConnector(config, probe=True) as database:
             database.connect()
@@ -2282,17 +1544,7 @@ def _schema_frame(config: SourceRef) -> pl.LazyFrame:
 def _local_schema_findings(
     diff: DiffConfig, source: SourceRef, target: SourceRef
 ) -> list[ConfigFinding]:
-    """Check the rules against two local sides' stored columns.
-
-    Args:
-        diff (DiffConfig): Comparison settings and rules.
-        source (SourceRef): Source configuration.
-        target (SourceRef): Target configuration.
-
-    Returns:
-        list[ConfigFinding]: An error if a side cannot be read or a rule does
-            not fit, or a warning per side that reads a query, which is not run.
-    """
+    """Check the rules against two local sides' stored columns."""
     queries = [
         _warning(
             f"The {label} reads a query, which validate does not run, so the rules were "
@@ -2315,16 +1567,7 @@ def _local_schema_findings(
 
 
 def _pushdown_schema_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
-    """Probe a warehouse pair and compile its statements without running them.
-
-    Args:
-        diff (DiffConfig): Comparison settings and rules.
-        pair (_WarehousePair): The warehouse both sides share.
-
-    Returns:
-        list[ConfigFinding]: An error if the session, the probes, or a rule
-            fails, else nothing.
-    """
+    """Probe a warehouse pair and compile its statements without running them."""
     try:
         pair.with_session(
             lambda session, source_table, target_table: _check_pushdown_plan(
@@ -2346,36 +1589,14 @@ DEFAULT_MIN_SUPPORT: Final = 5
 
 
 def _is_real_number(value: object) -> TypeGuard[int | float]:
-    """Return whether a value is an `int` or `float`, and not a `bool`.
-
-    Args:
-        value (object): Threshold as the caller passed it.
-
-    Returns:
-        bool: True for a real number Python did not derive from `bool`.
-    """
+    """Return whether a value is an `int` or `float`, and not a `bool`."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _check_value_map_thresholds(
     min_confidence: object, min_support: object, sample_fraction: object
 ) -> None:
-    """Reject proposal thresholds that cannot produce a meaningful answer.
-
-    The parameters are typed `object` because callers pass whatever they were
-    given; each is narrowed here before it is compared.
-
-    Args:
-        min_confidence (object): Share of rows that must agree.
-        min_support (object): Agreeing rows a proposal needs.
-        sample_fraction (object): Share of source rows to read.
-
-    Raises:
-        ConfigError: If a threshold is not a real number, `min_support` is not
-            a whole number, or a threshold is out of range, NaN included.
-            Booleans are refused although Python counts them as integers, and
-            so are Decimals: `min_support` reaches warehouse SQL as written.
-    """
+    """Reject proposal thresholds that cannot produce a meaningful answer."""
     if not _is_real_number(min_confidence):
         raise ConfigError(f"min_confidence must be a number, got {min_confidence!r}.")
     if not _is_real_number(sample_fraction):
@@ -2394,19 +1615,7 @@ def _check_value_map_thresholds(
 
 
 def _compares_mapped_text(effective: EffectiveRule, dtype: pl.DataType) -> bool:
-    """Decide whether a `value_map` output reaches the comparison unchanged.
-
-    Stage 4 maps only text, and stages 5 through 7 would pad, parse, or cast
-    whatever it produced, so a proposal is only sound for a stored text column
-    those stages leave alone.
-
-    Args:
-        effective (EffectiveRule): Rule with global defaults folded in.
-        dtype (pl.DataType): Stored source dtype, before normalization.
-
-    Returns:
-        bool: True when a proposed entry would be compared as written.
-    """
+    """Decide whether a `value_map` output reaches the comparison unchanged."""
     return (
         isinstance(dtype, pl.String)
         and effective["pad_zeros"] is None
@@ -2423,26 +1632,7 @@ def _value_map_query(
     min_confidence: float,
     min_support: int,
 ) -> pl.LazyFrame:
-    """Count how each source value lines up with the target, and keep strong pairs.
-
-    Every joined row with a given source value counts toward its `rows`,
-    including rows that already match and rows whose target is NULL, so a
-    proposal can never break a row that matches today without paying for it
-    in confidence.
-
-    Args:
-        joined (pl.LazyFrame): Keys plus `<column>_source` and `<column>_target`.
-        column (str): Column to count.
-        mapped_values (Sequence[str]): Outputs of the column's existing map.
-            Rows comparing as one of them are left out, since their raw text
-            cannot be recovered from the mapped value.
-        min_confidence (float): Share of rows that must agree.
-        min_support (int): Agreeing rows a proposal needs.
-
-    Returns:
-        pl.LazyFrame: `source_value`, `target_value`, `agreeing_rows`, and
-            `rows`, one row per proposed entry, most agreeing rows first.
-    """
+    """Count how each source value lines up with the target, and keep strong pairs."""
     source = pl.col("source_value")
     target = pl.col("target_value")
     agreeing = pl.col("agreeing_rows")
@@ -2455,6 +1645,7 @@ def _value_map_query(
         .filter(source.is_not_null() & ~source.is_in(list(mapped_values)))
         .group_by("source_value", "target_value")
         .agg(pl.len().alias("agreeing_rows"))
+        # Rows that already match count too, so a proposal that breaks one pays in confidence.
         .with_columns(agreeing.sum().over("source_value").alias("rows"))
         # A NULL target makes the inequality NULL, so it counts but is never proposed.
         .filter((target != source) & (agreeing >= min_support))
@@ -2463,20 +1654,7 @@ def _value_map_query(
 
 
 def _confident_pairs(pairs: pl.LazyFrame, min_confidence: float) -> pl.LazyFrame:
-    """Keep the counted pairs that meet `min_confidence`, most agreeing rows first.
-
-    Local and warehouse proposals both finish here, so the confidence each
-    entry must reach, and the order entries are listed in, cannot differ
-    between engines. Ties break on the source value's code points.
-
-    Args:
-        pairs (pl.LazyFrame): `source_value`, `target_value`, `agreeing_rows`,
-            and `rows` per counted pair.
-        min_confidence (float): Share of rows that must agree.
-
-    Returns:
-        pl.LazyFrame: The pairs that qualify, in proposal order.
-    """
+    """Keep the counted pairs that meet `min_confidence`, most agreeing rows first."""
     return pairs.filter(pl.col("agreeing_rows") / pl.col("rows") >= min_confidence).sort(
         ["agreeing_rows", "source_value"], descending=[True, False]
     )
@@ -2485,17 +1663,7 @@ def _confident_pairs(pairs: pl.LazyFrame, min_confidence: float) -> pl.LazyFrame
 def _value_map_proposal(
     config: DiffConfig, column: str, frame: pl.DataFrame
 ) -> ValueMapProposal | None:
-    """Turn one column's qualifying pairs into a proposal.
-
-    Args:
-        config (DiffConfig): Configuration whose rules may already map the column.
-        column (str): Candidate column, by its post-rename name.
-        frame (pl.DataFrame): `source_value`, `target_value`, `rows`, and
-            `agreeing_rows` per qualifying pair, in proposal order.
-
-    Returns:
-        ValueMapProposal | None: The proposal, or None without new entries.
-    """
+    """Turn one column's qualifying pairs into a proposal."""
     if frame.is_empty():
         return None
     entries = tuple(ValueMapEntry(**row) for row in frame.iter_rows(named=True))
@@ -2510,14 +1678,14 @@ def _value_map_proposal(
 
 
 _VALUE_MAP_RESULT_COLUMNS: Final[dict[str, pl.DataType]] = {
+    # A warehouse may deliver text as Categorical and counts as wide decimals.
     VALUE_MAP_COLUMN_ALIAS: pl.Int64(),
     VALUE_MAP_SOURCE_ALIAS: pl.String(),
     VALUE_MAP_TARGET_ALIAS: pl.String(),
     VALUE_MAP_ROWS_ALIAS: pl.Int64(),
     VALUE_MAP_AGREEING_ALIAS: pl.Int64(),
 }
-"""Columns `compile_value_map_query` returns, and the type each is read as. A
-warehouse may deliver text as Categorical and counts as wide decimals."""
+"""Columns `compile_value_map_query` returns, and the type each is read as."""
 
 _VALUE_MAP_FIELDS: Final[dict[str, str]] = {
     VALUE_MAP_SOURCE_ALIAS: "source_value",
@@ -2529,18 +1697,7 @@ _VALUE_MAP_FIELDS: Final[dict[str, str]] = {
 
 
 def _value_map_pairs(result: pl.DataFrame) -> pl.DataFrame:
-    """Read the value map statement's result into typed, labeled pairs.
-
-    Args:
-        result (pl.DataFrame): Rows returned by `compile_value_map_query`.
-
-    Returns:
-        pl.DataFrame: The label column, then `source_value`, `target_value`,
-            `rows`, and `agreeing_rows`.
-
-    Raises:
-        ConnectorError: If a column is missing or holds values of the wrong kind.
-    """
+    """Read the value map statement's result into typed, labeled pairs."""
     missing = [name for name in _VALUE_MAP_RESULT_COLUMNS if name not in result.columns]
     if missing:
         raise ConnectorError(f"Value map query result is missing the columns {missing}.")
@@ -2563,33 +1720,7 @@ def _collect_value_map_proposals(
     min_support: int,
     sample_fraction: float,
 ) -> list[ValueMapProposal]:
-    """Propose `value_map` entries from warehouse tables, in one counting statement.
-
-    Mirrors a local proposal: the probes enforce `schema_mode`, both sides'
-    normalized keys must be unique, and then one statement counts how each
-    candidate's values line up. That statement keeps only pairs that can
-    qualify; the confidence floor and the order of entries are applied here,
-    by the same code a local run uses.
-
-    Args:
-        connector (PushdownSession): Connected warehouse session.
-        source_table (str): Source relation name.
-        target_table (str): Target relation name.
-        diff (DiffConfig): Master comparison rules and keys.
-        min_confidence (float): Share of rows that must agree, above 0.5.
-        min_support (int): Agreeing rows a proposal needs.
-        sample_fraction (float): Share of source keys to read.
-
-    Returns:
-        list[ValueMapProposal]: One proposal per column with new entries, in
-            source column order.
-
-    Raises:
-        ConfigError: If the probed relations violate `schema_mode` or omit a
-            primary key, or a column fails a normalization precondition.
-        DataIntegrityError: If either relation repeats a normalized primary key.
-        ConnectorError: If the warehouse returns a malformed result.
-    """
+    """Propose `value_map` entries from warehouse tables, in one counting statement."""
     source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff
     )
@@ -2638,37 +1769,36 @@ def _collect_value_map_proposals(
 
 
 class DataIngestor:
-    """Coordinates the loading, renaming, and structural alignment of datasets.
+    """Load a source and a target and align them for inspection.
 
-    This class prepares raw external data for inspection by normalizing
-    headers, dropping ignored columns, and applying renames. `DiffEngine`
-    performs the same alignment itself, so `run_from_configs` loads sources
-    directly rather than through this class. Frames from `get_dataframes` are
-    already aligned: passing them to `DiffEngine` aligns them a second time,
+    It normalizes headers, drops ignored columns, and applies renames. `DiffEngine`
+    aligns its inputs itself, so `run_from_configs` loads sources without this
+    class. Passing frames from `get_dataframes` to `DiffEngine` aligns them twice,
     which is harmless except for renames that swap or chain names.
     """
 
     def __init__(
         self, diff_config: DiffConfig, source_config: SourceRef, target_config: SourceRef
     ) -> None:
-        """Initializes the ingestor.
+        """Hold the comparison settings and both source configurations.
 
         Args:
-            diff_config (DiffConfig): The master comparison configuration.
-            source_config (SourceRef): File, lakehouse, or database settings for
-                the source.
-            target_config (SourceRef): File, lakehouse, or database settings for
-                the target.
+            diff_config (DiffConfig): Comparison settings and rules.
+            source_config (SourceRef): File, lakehouse, or database settings for the
+                source.
+            target_config (SourceRef): File, lakehouse, or database settings for the
+                target.
         """
         self.config = diff_config
         self.source_config = source_config
         self.target_config = target_config
 
     def get_dataframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
-        """Loads and aligns both source and target datasets.
+        """Load both datasets and align them.
 
         Returns:
-            tuple[pl.LazyFrame, pl.LazyFrame]: The prepared (source_df, target_df).
+            tuple[pl.LazyFrame, pl.LazyFrame]: The aligned source, then the aligned
+                target.
         """
         frames: list[pl.LazyFrame] = []
         for config, is_source in ((self.source_config, True), (self.target_config, False)):
@@ -2744,18 +1874,25 @@ class DiffEngine:
         """Route a comparison to warehouse pushdown or local Polars evaluation.
 
         Args:
-            diff (DiffConfig): Master comparison rules and keys.
+            diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source file, lakehouse, database, or warehouse config.
             target (SourceRef): Target file, lakehouse, database, or warehouse config.
 
         Returns:
-            DiffResult: Pushdown mismatch and anti-join counts, or a full Polars
-                diff for file, lakehouse, and database pairs.
+            DiffResult: The result. A pushdown pair returns counts and keys, and a
+                local pair also returns the differing rows.
 
         Raises:
             ConfigError: If primary keys are missing or `schema_mode` is violated.
             DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
+
+        Examples:
+            >>> from veridelta.models import DiffConfig, SourceConfig
+            >>> diff = DiffConfig(primary_keys=["order_id"])
+            >>> source = SourceConfig(path="legacy/orders.parquet", format="parquet")
+            >>> target = SourceConfig(path="modern/orders.parquet", format="parquet")
+            >>> result = DiffEngine.run_from_configs(diff, source, target)  # doctest: +SKIP
         """
         pair = _check_backend_pairing(source, target)
         if pair is not None:
@@ -2779,7 +1916,7 @@ class DiffEngine:
         Operates on schema metadata only, so callers may pass zero-row frames.
 
         Args:
-            config (DiffConfig): The master validation rules configuration.
+            config (DiffConfig): Comparison settings and rules.
             source_df (pl.LazyFrame): Source frame or column probe.
             target_df (pl.LazyFrame): Target frame or column probe.
 
@@ -2797,21 +1934,20 @@ class DiffEngine:
         """Check everything a run checks before it reads a row.
 
         Goes past `validate_schemas`: every rule is resolved against the aligned
-        columns, both schemas are normalized, and each column's comparison is
-        built. A rule the run could not honor therefore fails here, such as a
-        null sentinel its column's type cannot hold, or a similarity limit
-        without the `fuzzy` extra. Operates on schema metadata only, so callers
-        may pass zero-row frames. Repeated keys and invalid regular expressions
-        surface only when rows are read.
+        columns, both schemas are normalized, and each column's comparison is built. A
+        rule the run could not honor fails here, such as a null sentinel its column's
+        type cannot hold, or a similarity limit without the `fuzzy` extra. Operates on
+        schema metadata only, so callers may pass zero-row frames. Repeated keys and
+        invalid regular expressions surface only when rows are read.
 
         Args:
-            config (DiffConfig): The master validation rules configuration.
+            config (DiffConfig): Comparison settings and rules.
             source_df (pl.LazyFrame): Source frame or column probe.
             target_df (pl.LazyFrame): Target frame or column probe.
 
         Returns:
-            list[str]: The columns a run would compare, in source order, under
-                their target names.
+            list[str]: The columns a run would compare, in source order, under their
+                target names.
 
         Raises:
             ConfigError: If primary keys are missing, schema constraints are
@@ -2848,8 +1984,8 @@ class DiffEngine:
             diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source configuration.
             target (SourceRef): Target configuration.
-            schemas (bool): Also connect and check the rules against the
-                stored columns.
+            schemas (bool): Whether to also connect and check the rules against
+                the stored columns.
 
         Returns:
             list[ConfigFinding]: Errors and warnings, empty when nothing is
@@ -2894,7 +2030,7 @@ class DiffEngine:
         equally repeatable, set of keys than a local one.
 
         Args:
-            diff (DiffConfig): Master comparison rules and keys.
+            diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source configuration.
             target (SourceRef): Target configuration.
             min_confidence (float): Share of rows that must agree, above 0.5.
@@ -2943,31 +2079,40 @@ class DiffEngine:
     ) -> list[ValueMapProposal]:
         """Propose `value_map` entries from how source and target values line up.
 
-        Rows are aligned, normalized, and joined exactly as `run()` does, on a
-        copy, so this engine can still run afterward. For each compared text
-        column that stage 4 can map, a source value is proposed for the target
-        value it lines up with in at least `min_confidence` of its joined rows,
-        provided at least `min_support` rows agree. Values are read as the
-        `value_map` stage sees them, so a `case_insensitive` column gets
-        lowercase keys. Rows a column's existing map already translates are
-        left out, which also means a raw value equal to one of that map's
+        Rows are aligned, normalized, and joined as `run()` does, on a copy, so this
+        engine can still run afterward. For each compared text column that stage 4 can
+        map, a source value is proposed for the target value it lines up with in at
+        least `min_confidence` of its joined rows, provided at least `min_support` rows
+        agree. Values are read as the `value_map` stage sees them, so a
+        `case_insensitive` column gets lowercase keys. Rows a column's existing map
+        already translates are left out, so a raw value equal to one of that map's
         outputs cannot receive an entry.
 
         Args:
             min_confidence (float): Share of rows that must agree, above 0.5.
             min_support (int): Agreeing rows a proposal needs.
-            sample_fraction (float): Share of source rows to read, picked by a
-                hash of the primary keys, so the same data samples the same
-                rows under one Polars version.
+            sample_fraction (float): Share of source rows to read, picked by a hash of
+                the primary keys, so the same data samples the same rows under one
+                Polars version.
 
         Returns:
-            list[ValueMapProposal]: One proposal per column with new entries,
-                in source column order.
+            list[ValueMapProposal]: One proposal per column with new entries, in source
+                column order.
 
         Raises:
-            ConfigError: If a threshold is out of range, or the configuration
-                fails as it would in a run.
+            ConfigError: If a threshold is out of range, or the configuration fails as
+                it would in a run.
             DataIntegrityError: If either dataset repeats a normalized primary key.
+
+        Examples:
+            >>> import polars as pl
+            >>> from veridelta.models import DiffConfig
+            >>> source = pl.LazyFrame({"id": range(6), "sex": ["M"] * 6})
+            >>> target = pl.LazyFrame({"id": range(6), "sex": ["Male"] * 6})
+            >>> engine = DiffEngine(DiffConfig(primary_keys=["id"]), source, target)
+            >>> proposals = engine.propose_value_maps()
+            >>> proposals[0].to_rule().value_map
+            {'M': 'Male'}
         """
         _check_value_map_thresholds(min_confidence, min_support, sample_fraction)
         prepared = type(self)(self.config, self.source, self.target)
@@ -3001,14 +2146,7 @@ class DiffEngine:
         return [proposal for proposal in proposals if proposal is not None]
 
     def _value_map_columns(self, stored: pl.Schema) -> list[str]:
-        """Pick the compared columns a `value_map` proposal can apply to.
-
-        Args:
-            stored (pl.Schema): Aligned source schema, before normalization.
-
-        Returns:
-            list[str]: Candidate columns, in source order.
-        """
+        """Pick the compared columns a `value_map` proposal can apply to."""
         keys = set(self.config.primary_keys)
         target_schema = self.target.collect_schema()
         columns: list[str] = []
@@ -3025,15 +2163,7 @@ class DiffEngine:
         return columns
 
     def _value_map_join(self, columns: list[str], sample_fraction: float) -> pl.LazyFrame:
-        """Pair each candidate column's normalized values on the primary keys.
-
-        Args:
-            columns (list[str]): Candidate columns.
-            sample_fraction (float): Share of source rows to keep.
-
-        Returns:
-            pl.LazyFrame: Keys plus `<column>_source` and `<column>_target`.
-        """
+        """Pair each candidate column's normalized values on the primary keys."""
         keys = self.config.primary_keys
         source = self.source.select(*keys, pl.col(columns).name.suffix("_source"))
         target = self.target.select(*keys, pl.col(columns).name.suffix("_target"))
@@ -3043,23 +2173,11 @@ class DiffEngine:
         return source.join(target, on=keys, how="inner")
 
     def _get_effective_rule(self, col_name: str) -> EffectiveRule:
-        """Resolves all rules (Specific > Pattern > Global) into a unified dictionary.
-
-        Args:
-            col_name (str): The name of the column to resolve rules for.
-
-        Returns:
-            EffectiveRule: A flattened dictionary of operational parameters.
-        """
+        """Resolve all rules (Specific > Pattern > Global) into a unified dictionary."""
         return _fold_rule_defaults(_match_rule(self.config.rules, col_name), self.config)
 
     def _check_uniqueness(self) -> None:
-        """Verifies that primary keys are unique in both datasets.
-
-        Raises:
-            DataIntegrityError: If duplicates are found in the primary keys of either
-                dataset, preventing join explosions.
-        """
+        """Verify that primary keys are unique in both datasets."""
         pks = self.config.primary_keys
         for side, frame in (("SOURCE", self.source), ("TARGET", self.target)):
             keys = frame.select(pks).collect()
@@ -3068,24 +2186,7 @@ class DiffEngine:
                 raise _duplicate_keys_error(pks, side, keys.filter(duplicated).height)
 
     def _normalize_frame(self, frame: pl.LazyFrame, *, is_source: bool) -> pl.LazyFrame:
-        """Apply stages 1 through 7 of the canonical transform order to one dataset.
-
-        Normalization runs per frame before any join, so primary keys are treated
-        exactly like compared columns and a rule naming a target-only column still
-        fires. See `DiffRule` for the authoritative stage ordering.
-
-        Args:
-            frame (pl.LazyFrame): Structurally aligned source or target dataset.
-            is_source (bool): True when normalizing the source, which is the only
-                side `value_map` rewrites.
-
-        Returns:
-            pl.LazyFrame: Frame with the normalization expressions appended lazily.
-
-        Raises:
-            ConfigError: If `timezone` targets a column that is not timezone-aware
-                or names a zone Polars does not recognize.
-        """
+        """Apply stages 1 through 7 of the canonical transform order to one dataset."""
         schema = frame.collect_schema()
         rules = {
             column: rule
@@ -3118,21 +2219,7 @@ class DiffEngine:
     def _normalize_value_expr(
         self, column: str, rule: EffectiveRule, dtype: pl.DataType, *, is_source: bool
     ) -> pl.Expr | None:
-        """Build stages 1 through 6a for one column: sentinels through datetime parsing.
-
-        Text stages are gated on the column actually holding text, so a global
-        `default_null_values` or `default_whitespace_mode` cannot fail a run that
-        also contains numeric or temporal columns.
-
-        Args:
-            column (str): Column being normalized.
-            rule (EffectiveRule): Parameters resolved by `_get_effective_rule`.
-            dtype (pl.DataType): Current dtype of the column within its own frame.
-            is_source (bool): True when normalizing the source frame.
-
-        Returns:
-            pl.Expr | None: Aliased expression, or None when no stage applies.
-        """
+        """Build stages 1 through 6a for one column: sentinels through datetime parsing."""
         expr = pl.col(column)
         applied = False
         # Deliberately narrower than `is_text_dtype`: `is_in` accepts Categorical
@@ -3143,6 +2230,7 @@ class DiffEngine:
         if sentinels:
             expr = pl.when(expr.is_in(sentinels)).then(None).otherwise(expr)
             applied = True
+        # Only an explicit rule raises: a global default is expected to span a mixed schema.
         elif rule["null_values"] and rule["null_values_explicit"]:
             raise _unusable_sentinel_error(column, dtype, rule["null_values"])
 
@@ -3170,23 +2258,7 @@ class DiffEngine:
     def _normalize_text_expr(
         expr: pl.Expr, rule: EffectiveRule, *, is_source: bool
     ) -> tuple[pl.Expr, bool]:
-        """Build stages 2 through 4 for a text column: regex, whitespace, case, value map.
-
-        Mirrors the compiler's `_apply_regex_replace`, `_apply_whitespace`,
-        `_apply_case`, and `_apply_value_map` so the two engines keep the same
-        stage boundaries. Callers gate on the column holding text; the `.str`
-        namespace used here rejects Categorical and Enum.
-
-        Args:
-            expr (pl.Expr): Expression produced by the sentinel stage.
-            rule (EffectiveRule): Parameters resolved by `_get_effective_rule`.
-            is_source (bool): True when normalizing the source frame, the only
-                side `value_map` rewrites.
-
-        Returns:
-            tuple[pl.Expr, bool]: The transformed expression and whether any
-                stage applied.
-        """
+        """Build stages 2 through 4 for a text column: regex, whitespace, case, value map."""
         applied = False
         if rule["regex_replace"]:
             for pattern, replacement in rule["regex_replace"].items():
@@ -3217,20 +2289,7 @@ class DiffEngine:
     def _normalize_temporal_expr(
         self, column: str, rule: EffectiveRule, dtype: pl.DataType
     ) -> pl.Expr:
-        """Build stages 6b and 7 for one column: timezone conversion, then cast.
-
-        Args:
-            column (str): Column being normalized.
-            rule (EffectiveRule): Parameters resolved by `_get_effective_rule`.
-            dtype (pl.DataType): Dtype after the value stages have been applied.
-
-        Returns:
-            pl.Expr: Aliased expression. The caller passes only columns that set
-                `timezone` or `cast_to`.
-
-        Raises:
-            ConfigError: If `timezone` cannot be applied to the column.
-        """
+        """Build stages 6b and 7 for one column: timezone conversion, then cast."""
         expr = pl.col(column)
         if rule["timezone"]:
             expr = self._convert_time_zone(column, expr, dtype, rule["timezone"])
@@ -3241,29 +2300,13 @@ class DiffEngine:
     def _convert_time_zone(
         self, column: str, expr: pl.Expr, dtype: pl.DataType, zone: str
     ) -> pl.Expr:
-        """Convert a timezone-aware column to `zone`, refusing to guess for naive data.
-
-        Polars would happily read a naive timestamp as UTC here, which silently
-        shifts every value by the real offset, so naive input is rejected outright.
-
-        Args:
-            column (str): Column being converted, used for error messages.
-            expr (pl.Expr): Expression produced by the earlier stages.
-            dtype (pl.DataType): Dtype of the column after datetime parsing.
-            zone (str): Target timezone name.
-
-        Returns:
-            pl.Expr: Expression converted to the requested zone.
-
-        Raises:
-            ConfigError: If the column is not a timestamp, carries no timezone, or
-                the zone name is unknown.
-        """
+        """Convert a timezone-aware column to `zone`, refusing to guess for naive data."""
         if not isinstance(dtype, pl.Datetime):
             raise ConfigError(
                 f"Column '{column}' sets timezone='{zone}' but holds {dtype}, not a "
                 "timestamp. Parse it with datetime_format first."
             )
+        # `convert_time_zone` treats a naive timestamp as UTC instead of refusing it.
         if dtype.time_zone is None:
             raise ConfigError(
                 f"Column '{column}' sets timezone='{zone}' but its timestamps are "
@@ -3277,28 +2320,7 @@ class DiffEngine:
             raise ConfigError(f"Column '{column}' sets an unusable timezone. {exc}") from exc
 
     def _build_match_expr(self, col_name: str, rule: EffectiveRule, dtype: pl.DataType) -> pl.Expr:
-        """Builds stages 8 and 9 of the transform order: comparison and null equality.
-
-        Both sides have already been normalized by `_normalize_frame`, so this
-        evaluates the aligned pair without applying any further transformations.
-
-        Implicit Type Alignment:
-            When the source and target store a column as different types:
-            - If `strict_types=True`: The mismatch is immediately evaluated as `False`.
-            - If `strict_types=False` (Default): Two numeric types compare by value in
-              their common supertype, as a warehouse compares them. Casting the target
-              to the source's type instead would truncate a Float64 `10.7` to an Int64
-              `10` and hide the difference. Any other pair soft-casts the target to the
-              source's type purely for the evaluation, so text `"10"` meets an Int64.
-
-        Args:
-            col_name (str): The column being compared.
-            rule (EffectiveRule): The unified rules to apply.
-            dtype (pl.DataType): The data type of the source column.
-
-        Returns:
-            pl.Expr: A boolean expression evaluating to True where the row values match.
-        """
+        """Build stages 8 and 9 of the transform order: comparison and null equality."""
         src = pl.col(f"{col_name}_source")
         tgt = pl.col(f"{col_name}_target")
 
@@ -3313,6 +2335,7 @@ class DiffEngine:
                     null_match = src.is_null() & tgt.is_null()
                     return (val_match | null_match).fill_null(False)
                 return val_match
+            # Numbers skip the cast, which would truncate a Float64 `10.7` to an Int64 `10`.
             elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
                 compared_tgt_dtype = dtype
@@ -3333,20 +2356,7 @@ class DiffEngine:
         return val_match.fill_null(False)
 
     def _align_structure(self) -> None:
-        """Perform structural normalization to reconcile asymmetrical schemas.
-
-        Maps Source headers to Target counterparts and drops excluded fields based
-        on declarative rules. This establishes the Target system's schema as the
-        authoritative state, ensuring subsequent validation and comparison operate
-        against a single source of truth.
-
-        Side Effects:
-            Mutates `self.source` and `self.target` to reflect the aligned structure.
-
-        Note:
-            Mandatory prerequisite for `_validate_schema`. Validating raw data
-            metadata before alignment results in `ConfigError` during migrations.
-        """
+        """Perform structural normalization to reconcile asymmetrical schemas."""
         if self.config.normalize_column_names:
             self.source = _normalize_header_names(self.source)
             self.target = _normalize_header_names(self.target)
@@ -3363,11 +2373,7 @@ class DiffEngine:
         self.target = self.target.drop(list(tgt_drop))
 
     def _validate_schema(self) -> None:
-        """Enforces the configured SchemaMode before comparison.
-
-        Raises:
-            ConfigError: If primary keys are missing or schema constraints are violated.
-        """
+        """Enforce the configured `SchemaMode` before comparison."""
         source_cols = set(self.source.collect_schema().names())
         target_cols = set(self.target.collect_schema().names())
         pks = set(self.config.primary_keys)
@@ -3397,37 +2403,40 @@ class DiffEngine:
                 )
 
     def run(self) -> DiffResult:
-        """Execute the end-to-end dataset comparison pipeline lazily.
+        """Compare the two datasets and return the result.
 
-        Builds an optimized Polars computation graph (DAG) to guarantee deterministic
-        alignment, preventing compute errors and memory exhaustion on large datasets.
-        Data is only materialized into memory when absolutely necessary for execution.
+        The comparison stays lazy until it collects the joins, so the inputs can be
+        scans over files larger than memory. A run takes these steps, in order:
 
-        Execution Pipeline:
-            1. Structural Alignment: Maps and prunes schemas to establish the
-               Target as the authoritative structural contract.
-            2. Validation: Asserts primary key existence and enforces the `SchemaMode`.
-            3. Semantic Normalization: Applies stages 1-7 of the `DiffRule` transform
-               order to each dataset independently and builds the stage 8-9 match
-               expressions from the normalized schemas, so a rule the run cannot
-               honor fails before any data moves. It then asserts key uniqueness
-               on the normalized keys (triggering a localized collection).
-            4. Relational Joins: Formulates the lazy anti-joins ('Added', 'Removed')
-               and inner-joins ('Changed') to isolate discrepancies.
-            5. Graph Execution: Executes the computation DAG via `.collect()` to
-               evaluate vectorized match expressions and compute exact row counts.
-            6. Artifact Persistence: Exports the materialized discrepancy dataframes
-               to the configured storage backend, if requested.
+        1. Align the columns: apply renames, drop ignored columns, and treat the
+           target as the authoritative schema.
+        2. Check that the primary keys exist and that `schema_mode` holds.
+        3. Apply stages 1 to 7 of the `DiffRule` transform order to each side, and
+           build each column's stage 8 and 9 comparison, so a rule the run cannot
+           honor fails before any rows move.
+        4. Check that the normalized primary keys are unique on each side.
+        5. Find the added, removed, and changed rows, and count the mismatches.
+        6. Write the artifacts, when `output_path` is set.
 
         Returns:
-            DiffResult: Execution report detailing match status, discrepancy counts,
-                and column-level drift metrics.
+            DiffResult: Counts, column-level drift, and the differing rows.
 
         Raises:
-            ConfigError: If schema constraints or primary keys are violated
-                post-alignment, a similarity limit needs the missing `fuzzy`
-                extra, or the requested artifact export format has no writer.
-            DataIntegrityError: If duplicate primary keys prevent deterministic joins.
+            ConfigError: If a primary key is missing, `schema_mode` is violated, a
+                similarity limit needs the missing `fuzzy` extra, or the artifact
+                format has no writer.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
+
+        Examples:
+            >>> import polars as pl
+            >>> from veridelta.models import DiffConfig
+            >>> source = pl.LazyFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]})
+            >>> target = pl.LazyFrame({"id": [2, 3, 4], "amount": [20.0, 31.0, 40.0]})
+            >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+            >>> result.summary.added_count, result.summary.removed_count
+            (1, 1)
+            >>> result.summary.column_mismatches
+            {'amount': 1}
         """
         compared_columns, match_expressions = self._plan()
 
@@ -3443,20 +2452,7 @@ class DiffEngine:
         return self._build_result(added_df, removed_df, changed_df, compared_columns)
 
     def _plan(self) -> tuple[list[str], list[pl.Expr]]:
-        """Align, validate, and normalize both frames, then build the comparisons.
-
-        Reads schemas only, so a rule the run cannot honor fails here, before any
-        rows are collected, as it does in a warehouse.
-
-        Returns:
-            tuple[list[str], list[pl.Expr]]: Compared column names, in source
-                order, and their parallel match expressions.
-
-        Raises:
-            ConfigError: If schema constraints or primary keys are violated
-                post-alignment, a rule cannot apply to its column's type, or a
-                similarity limit needs the missing `fuzzy` extra.
-        """
+        """Align, validate, and normalize both frames, then build the comparisons."""
         self._align_structure()
         self._validate_schema()
         self.source = self._normalize_frame(self.source, is_source=True)
@@ -3464,16 +2460,7 @@ class DiffEngine:
         return self._match_expressions()
 
     def _match_expressions(self) -> tuple[list[str], list[pl.Expr]]:
-        """Build one boolean match expression per compared column.
-
-        Columns are compared when they survive alignment on both sides, are not
-        primary keys, and are not ignored by their effective rule. Each
-        expression is aliased `<column>_is_match` so the tally can find it.
-
-        Returns:
-            tuple[list[str], list[pl.Expr]]: Compared column names, in source
-                order, and their parallel match expressions.
-        """
+        """Build one boolean match expression per compared column."""
         # Re-read the schema here: normalization may have retyped columns.
         source_schema = self.source.collect_schema()
         target_columns = set(self.target.collect_schema().names())
@@ -3495,18 +2482,7 @@ class DiffEngine:
     def _collect_changed_rows(
         self, compared_columns: list[str], match_expressions: list[pl.Expr]
     ) -> pl.DataFrame:
-        """Inner-join both sides and keep the rows where any compared column differs.
-
-        Non-key columns are suffixed `_source` / `_target` so the two values sit
-        side by side in the collected frame together with their match flags.
-
-        Args:
-            compared_columns (list[str]): Columns that carry a match expression.
-            match_expressions (list[pl.Expr]): Expressions from `_match_expressions`.
-
-        Returns:
-            pl.DataFrame: Changed rows, or an empty frame when nothing is compared.
-        """
+        """Inner-join both sides and keep the rows where any compared column differs."""
         if not match_expressions:
             return pl.DataFrame()
 
@@ -3525,20 +2501,7 @@ class DiffEngine:
         changed_df: pl.DataFrame,
         compared_columns: list[str],
     ) -> DiffResult:
-        """Count totals, apply the threshold, export artifacts, and assemble the result.
-
-        Args:
-            added_df (pl.DataFrame): Target-only rows.
-            removed_df (pl.DataFrame): Source-only rows.
-            changed_df (pl.DataFrame): Rows whose compared values differ.
-            compared_columns (list[str]): Columns that were evaluated.
-
-        Returns:
-            DiffResult: Summary plus the materialized discrepancy frames.
-
-        Raises:
-            ConfigError: If the requested artifact export format has no writer.
-        """
+        """Count totals, apply the threshold, export artifacts, and assemble the result."""
         column_mismatches = _local_column_mismatches(changed_df, compared_columns)
 
         # Count rows, as the warehouse's COUNT(*) does. Counting a key column

@@ -110,6 +110,7 @@ class SQLDialect(StrEnum):
     POSTGRES = "postgres"
 
 
+# `cast_to` reaches SQL only through this table, since SQL cannot quote or bind a type name.
 _CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
     SQLDialect.SNOWFLAKE: {
         "Int64": "BIGINT",
@@ -153,23 +154,13 @@ _CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
         "Datetime": "TIMESTAMP",
     },
 }
-"""`cast_to` value to the type keyword each dialect spells it with.
+"""`cast_to` value to the type keyword each dialect spells it with."""
 
-A type name is the one thing in a `CAST` that cannot be quoted or bound as a
-parameter, so this table is the boundary that keeps configuration text out of
-the emitted SQL grammar. Nothing outside it ever reaches a `CAST`.
-"""
-
+# Postgres casts only `integer` to `boolean`, and BigQuery only `INT64` and `STRING` to `BOOL`.
 _ZERO_TEST_BOOLEANS: Final[frozenset[SQLDialect]] = frozenset(
     {SQLDialect.POSTGRES, SQLDialect.BIGQUERY}
 )
-"""Dialects that turn a number into a boolean by comparing it with zero.
-
-Postgres casts only `integer` to `boolean` and refuses `smallint`, `bigint`,
-`numeric`, and floats. BigQuery casts only INT64 and STRING to BOOL, so a
-FLOAT64 or NUMERIC column fails there too. Polars reads every nonzero number as
-true, NaN included, which is exactly what `<> 0` returns for each of them.
-"""
+"""Dialects that turn a number into a boolean by comparing it with zero."""
 
 _IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: '"',
@@ -178,32 +169,22 @@ _IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "`",
     SQLDialect.POSTGRES: '"',
 }
-"""Character each dialect quotes identifiers with. Names are allowlisted before
-they are quoted, so no identifier ever holds a quote character to escape."""
+"""Character each dialect quotes identifiers with."""
 
 _LITERAL_ESCAPES: Final[dict[SQLDialect, tuple[tuple[str, str], ...]]] = {
+    # Snowflake and Databricks read backslash escapes, so a trailing backslash would escape the
+    # closing quote. Backslashes double first, before any other escape adds one.
     SQLDialect.SNOWFLAKE: (("\\", "\\\\"), ("'", "''")),
+    # Databricks reads `''` as two adjacent literals and joins them, dropping the apostrophe.
     SQLDialect.DATABRICKS: (("\\", "\\\\"), ("'", "\\'")),
+    # DuckDB follows the SQL standard, where a backslash is ordinary text.
     SQLDialect.DUCKDB: (("'", "''"),),
+    # BigQuery reads backslash escapes too, rejects unknown ones, and refuses a raw line break.
     SQLDialect.BIGQUERY: (("\\", "\\\\"), ("'", "\\'"), ("\n", "\\n"), ("\r", "\\r")),
+    # Postgres follows the standard too; its session checks `standard_conforming_strings` is on.
     SQLDialect.POSTGRES: (("'", "''"),),
 }
-"""Replacements that keep text inside a single-quoted literal, applied in order.
-
-The dialects disagree on what a string literal is, and every difference is
-silent. Snowflake and Databricks read backslash escape sequences inside quotes:
-a regex `\\d` arrives as `d`, a `\\N` sentinel as `N`, and a value ending in a
-backslash escapes its own closing quote, carrying configuration text out of the
-literal and into the statement. Both therefore double backslashes first, before
-anything else adds one. Databricks also reads `''` as two adjacent literals and
-concatenates them, dropping the apostrophe, so it escapes quotes with a
-backslash instead. BigQuery reads backslash escapes too, rejects any it does
-not know, and refuses a raw line break inside quotes, so line breaks become
-`\\n` and `\\r`. DuckDB follows the SQL standard, where a backslash is
-ordinary text and only the quote needs doubling. So does Postgres while
-`standard_conforming_strings` is on, its default, which the Postgres session
-checks before it runs anything.
-"""
+"""Replacements that keep text inside a single-quoted literal, applied in order."""
 
 _STRPTIME_DIRECTIVES: Final[dict[SQLDialect, dict[str, str]]] = {
     SQLDialect.SNOWFLAKE: {
@@ -252,34 +233,20 @@ _STRPTIME_DIRECTIVES: Final[dict[SQLDialect, dict[str, str]]] = {
         "%": "%%",
     },
 }
-"""Python `strptime` directive to its spelling in each dialect's format language.
-
-Four different languages: Snowflake's own, Java `DateTimeFormatter` for
-Databricks, Python's own for DuckDB, and GoogleSQL's for BigQuery. Membership here is the allowlist, and
-anything absent is refused rather than passed through. A directive that survives
-translation unrecognized parses to NULL, which reads as a clean match rather
-than as an error.
-"""
+"""Python `strptime` directive to its spelling in each dialect's format language."""
 
 _FORMAT_LITERAL_QUOTES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: '"',
     SQLDialect.DATABRICKS: "'",
+    # DuckDB and BigQuery mark directives with `%`, so their literals need no wrapper.
     SQLDialect.DUCKDB: "",
     SQLDialect.BIGQUERY: "",
 }
-"""Character each dialect wraps a literal run of a format string in.
+"""Character each dialect wraps a literal run of a format string in."""
 
-DuckDB and BigQuery mark directives with `%`, so their literals need no wrapper.
-"""
-
+# The set excludes both quote characters, so a literal run cannot close its quotes early.
 _FORMAT_LITERALS: Final[frozenset[str]] = frozenset(" -/:.,_T")
-"""Characters allowed between directives in a `datetime_format`.
-
-Small on purpose. Every separator in a real timestamp format is here, and the
-set excludes both quote characters, so a literal run can be wrapped in either
-dialect's quoting without any escaping and without a way to close the quote
-early.
-"""
+"""Characters allowed between directives in a `datetime_format`."""
 
 _PARSE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "TRY_TO_TIMESTAMP",
@@ -287,18 +254,10 @@ _PARSE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.DUCKDB: "try_strptime",
     SQLDialect.BIGQUERY: "SAFE.PARSE_DATETIME",
 }
-"""Each dialect's non-throwing parse, matching Polars `strptime(strict=False)`.
-
-The strict variants abort the whole statement on one unparseable row where the
-local engine yields a null and keeps going. BigQuery takes the format first, and
-parses a format with an offset into a TIMESTAMP, `_BIGQUERY_OFFSET_PARSE`.
-Postgres has none: its `to_timestamp` raises, so a dialect missing here refuses
-`datetime_format`, and the directive and quoting tables leave it out too.
-"""
+"""Each dialect's non-throwing parse, matching Polars `strptime(strict=False)`."""
 
 _BIGQUERY_OFFSET_PARSE: Final = "SAFE.PARSE_TIMESTAMP"
-"""BigQuery's non-throwing parse for a format that reads a UTC offset. The result
-is an instant, as Polars' is for a `%z` format; PARSE_DATETIME has no zone."""
+"""BigQuery's non-throwing parse for a format that reads a UTC offset."""
 
 _INFINITY_LITERALS: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "'inf'::FLOAT",
@@ -307,25 +266,18 @@ _INFINITY_LITERALS: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "CAST('inf' AS FLOAT64)",
     SQLDialect.POSTGRES: "'Infinity'::double precision",
 }
-"""Each dialect's positive infinity, which bounds the finite values a tolerance
-may apply to. `ABS(x) < inf` is false for an infinity and for NaN, whether an
-engine treats NaN comparisons as false or sorts NaN above every number.
-"""
+"""Each dialect's positive infinity, which bounds the finite values a tolerance may apply to."""
 
 _EDIT_DISTANCE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
+    # Snowflake's optional third argument caps the result, and Databricks' returns -1 above it
+    # and needs Runtime 13.3, so neither is portable.
     SQLDialect.SNOWFLAKE: "EDITDISTANCE",
     SQLDialect.DATABRICKS: "levenshtein",
+    # DuckDB counts UTF-8 bytes, not characters, so the parity tests compare ASCII text.
     SQLDialect.DUCKDB: "levenshtein",
     SQLDialect.BIGQUERY: "EDIT_DISTANCE",
 }
-"""Each dialect's Levenshtein distance, always called with two arguments.
-Snowflake's optional third argument caps the result, and Databricks' returns -1
-above it and needs Runtime 13.3, so neither is portable. Snowflake,
-Databricks, and BigQuery count characters, as the local engine does. DuckDB counts UTF-8
-bytes, which is why the parity tests compare ASCII text. Postgres is left out: its
-`levenshtein` needs the `fuzzystrmatch` extension and refuses text longer than 255
-characters, so a dialect missing here refuses `max_levenshtein_distance`.
-"""
+"""Each dialect's Levenshtein distance, always called with two arguments."""
 
 
 _REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
@@ -335,9 +287,7 @@ _REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "",
     SQLDialect.POSTGRES: ", 'g'",
 }
-"""Trailing `REGEXP_REPLACE` arguments that make it replace every match, as Polars'
-`replace_all` does. Snowflake, Databricks, and BigQuery already replace every match; DuckDB
-and Postgres replace only the first unless given the `'g'` option."""
+"""Trailing `REGEXP_REPLACE` arguments to replace every match, as Polars' `replace_all` does."""
 
 
 _REFERENCE_NAME: Final = re.compile(r"[_0-9A-Za-z]+")
@@ -351,25 +301,13 @@ _HIGHEST_GROUP: Final = 9
 
 
 def _reference_at(replacement: str, index: int) -> tuple[str, int] | None:
-    """Read the group reference that starts at a `$` in a Polars replacement.
-
-    Polars follows the `regex` crate: `${name}` names everything up to the
-    closing brace, and a bare `$name` takes the longest run of letters,
-    digits, and underscores, so `$1a` names the group `1a`, not group 1.
-
-    Args:
-        replacement (str): Replacement text, as Polars reads it.
-        index (int): Position of a `$` that is not part of `$$`.
-
-    Returns:
-        tuple[str, int] | None: The reference's name and the position after
-            it, or None when the `$` starts no reference and is plain text.
-    """
+    """Read the group reference that starts at a `$` in a Polars replacement."""
     if replacement.startswith("{", index + 1):
         close = replacement.find("}", index + 2)
         if close == -1:
             return None
         return replacement[index + 2 : close], close + 1
+    # Polars follows the `regex` crate: `$1a` names the group `1a`, not group 1.
     name = _REFERENCE_NAME.match(replacement, index + 1)
     if name is None:
         return None
@@ -377,22 +315,7 @@ def _reference_at(replacement: str, index: int) -> tuple[str, int] | None:
 
 
 def _replacement_tokens(pattern: str, replacement: str) -> list[str | int]:
-    """Split a Polars replacement into runs of plain text and group numbers.
-
-    `$$` is a dollar sign, and a `$` that starts no reference is plain text,
-    as are backslashes. Polars and these rules agree on 1.39.3 and later.
-
-    Args:
-        pattern (str): The `regex_replace` key, for the error message.
-        replacement (str): Its replacement, as Polars reads it.
-
-    Returns:
-        list[str | int]: Plain text and group numbers, in order.
-
-    Raises:
-        ConfigError: If a reference names a group, which no warehouse can write
-            in a replacement, or a group above 9.
-    """
+    """Split a Polars replacement into runs of plain text and group numbers."""
     tokens: list[str | int] = []
     text: list[str] = []
     index = 0
@@ -417,19 +340,7 @@ def _replacement_tokens(pattern: str, replacement: str) -> list[str | int]:
 
 
 def _group_number(pattern: str, replacement: str, name: str) -> int:
-    """Return the group a reference names, if a warehouse can refer to it.
-
-    Args:
-        pattern (str): The `regex_replace` key, for the error message.
-        replacement (str): Its replacement, for the error message.
-        name (str): The reference's name, as Polars reads it.
-
-    Returns:
-        int: The group number, 0 to 9.
-
-    Raises:
-        ConfigError: If the name is not a number, or the number is above 9.
-    """
+    """Return the group a reference names, if a warehouse can refer to it."""
     where = f"regex_replace replacement {replacement!r} for pattern {pattern!r}"
     if _GROUP_NUMBER.fullmatch(name) is None:
         raise ConfigError(
@@ -445,16 +356,12 @@ def _group_number(pattern: str, replacement: str, name: str) -> int:
     return number
 
 
+# Zero-width spaces and byte-order marks are not whitespace to Polars, so they stay out.
 _WHITESPACE_CHARACTERS: Final = (
     "\t\n\x0b\x0c\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
     "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
 )
-"""The characters Polars' `strip_chars` removes: Unicode's `White_Space` set.
-
-A bare `TRIM` removes only spaces on Snowflake, Databricks, and DuckDB, so every
-dialect is handed this set, and a tab, a line break, or a no-break space is
-stripped from the same values in a warehouse as in a local run. Zero-width
-spaces and byte-order marks are not whitespace to Polars, so they stay."""
+"""The characters Polars' `strip_chars` removes: Unicode's `White_Space` set."""
 
 _TRIM_FUNCTIONS: Final[dict[str, str]] = {"left": "LTRIM", "right": "RTRIM", "both": "TRIM"}
 """The trim function for each `whitespace_mode` that strips something."""
@@ -463,6 +370,8 @@ _TRIM_SIDES: Final[dict[str, str]] = {"left": "LEADING", "right": "TRAILING", "b
 """The side keyword of the standard `TRIM(side characters FROM value)` form, by mode."""
 
 
+# Thirty-eight digits hold every difference of two 64-bit values, signed or not, and `ABS` of
+# the smallest `BIGINT`, which overflows in the column's own type.
 _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "NUMBER(38, 0)",
     SQLDialect.DATABRICKS: "DECIMAL(38, 0)",
@@ -471,11 +380,10 @@ _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "NUMERIC",
     SQLDialect.POSTGRES: "NUMERIC(38, 0)",
 }
-"""An exact integer type wide enough to subtract any two stored integers in.
-Thirty-eight digits hold every difference of two 64-bit values, signed or not,
-and `ABS` of the smallest BIGINT, which overflows in the column's own type."""
+"""An exact integer type wide enough to subtract any two stored integers in."""
 
 
+# No engine hashes as Polars does: a warehouse sample is repeatable but differs from a local one.
 _SAMPLE_HASH_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "HASH",
     SQLDialect.DATABRICKS: "xxhash64",
@@ -483,24 +391,11 @@ _SAMPLE_HASH_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "FARM_FINGERPRINT",
     SQLDialect.POSTGRES: "hashtextextended",
 }
-"""Each dialect's hash of several values, used to sample value map evidence by
-key. Snowflake's `HASH` and Databricks' `xxhash64` return signed 64-bit
-integers, so their buckets fold negatives back into range; DuckDB's `hash` is
-unsigned. BigQuery's `FARM_FINGERPRINT` is signed and takes one string, so the
-keys are hashed as one JSON value, and Postgres' `hashtextextended` likewise hashes
-the keys as the text of one row. No engine hashes the way Polars does, so a warehouse sample is a
-different, though equally repeatable, set of rows from a local one."""
+"""Each dialect's hash of several values, for sampling value map evidence by key."""
 
 
 def _reads_offset(fmt: str) -> bool:
-    """Return whether a `strptime` format reads a UTC offset with `%z`.
-
-    Args:
-        fmt (str): Python `strptime` format.
-
-    Returns:
-        bool: True when a `%z` directive appears outside a `%%` escape.
-    """
+    """Return whether a `strptime` format reads a UTC offset with `%z`."""
     return "%z" in re.findall(r"%.", fmt)
 
 
@@ -514,33 +409,11 @@ _DATABASE_IDENTIFIER_QUOTES: Final[dict[str, tuple[str, str]]] = {
     "redshift": ('"', '"'),
     "sqlite": ('"', '"'),
 }
-"""Opening and closing identifier quote for each database URI scheme a `table` may name.
-
-Keyed by URI scheme rather than `SQLDialect`, whose members are pushdown
-dialects that must fill every table above. A database source is compared
-locally and only ever reads `SELECT * FROM <table>`, so quoting is all it
-needs from this module. Quoting keeps a name's stored case and lets it be a
-reserved word. A scheme missing here refuses `table` instead of borrowing
-another database's quote character.
-"""
+"""Opening and closing identifier quote for each database URI scheme a `table` may name."""
 
 
 def _relation_segments(name: str) -> list[str]:
-    """Split a possibly dotted relation name into allowlisted segments.
-
-    The allowlist admits letters, digits, and underscores only, so no segment
-    can contain a quote character of any dialect or close its own quoting.
-
-    Args:
-        name (str): Relation name, optionally `catalog.schema.table`.
-
-    Returns:
-        list[str]: One to three unquoted identifier segments.
-
-    Raises:
-        ConnectorError: If the name is empty, has more than three segments, or
-            contains a disallowed identifier.
-    """
+    """Split a possibly dotted relation name into allowlisted segments."""
     trimmed = name.strip()
     if not trimmed:
         raise ConnectorError("Table name must be a non-empty string.")
@@ -772,7 +645,8 @@ class SQLPushdownCompiler:
 
         Stages 1 through 7 run once per column in a pair of CTEs, keys
         included. The join and the match predicates then read those projected
-        values, so adding a stage no longer copies the entire expression tree.
+        values, so each stage appears once in the statement however many
+        predicates read it.
 
         Args:
             source_table (str): Source relation (optionally dotted catalog path).
@@ -1218,19 +1092,7 @@ class SQLPushdownCompiler:
         source_alias: str,
         target_alias: str,
     ) -> str:
-        """Build the CTE pairing each candidate's normalized values on the keys.
-
-        Args:
-            columns (list[str]): Candidate columns, by their target names.
-            primary_keys (list[str]): Join keys.
-            sample_fraction (float): Share of source keys to keep.
-            source_alias (str): Alias for the source CTE.
-            target_alias (str): Alias for the target CTE.
-
-        Returns:
-            str: `"_veridelta_joined" AS (SELECT ...)`, with a sample filter
-                when the fraction is below 1.
-        """
+        """Build the CTE pairing each candidate's normalized values on the keys."""
         projections = ", ".join(
             f"{self._qualify(source_alias, column)} AS {self._quote_ident(f'_veridelta_source_{label}')}, "
             f"{self._qualify(target_alias, column)} AS {self._quote_ident(f'_veridelta_target_{label}')}"
@@ -1247,14 +1109,7 @@ class SQLPushdownCompiler:
         return f"{self._quote_ident('_veridelta_joined')} AS (SELECT {projections} {join}{sample})"
 
     def _sample_bucket(self, keys: list[str]) -> str:
-        """Hash qualified keys into one of `SAMPLE_BUCKETS` buckets.
-
-        Args:
-            keys (list[str]): Qualified, normalized key expressions.
-
-        Returns:
-            str: An expression from 0 to `SAMPLE_BUCKETS - 1`.
-        """
+        """Hash qualified keys into one of `SAMPLE_BUCKETS` buckets."""
         joined = ", ".join(keys)
         function = _SAMPLE_HASH_FUNCTIONS[self.dialect]
         buckets = self._integer(SAMPLE_BUCKETS)
@@ -1274,15 +1129,7 @@ class SQLPushdownCompiler:
         return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
 
     def _value_map_branch(self, label: int, rule: DiffRule) -> str:
-        """Select one candidate's pairs, labeled, without NULL or already mapped sources.
-
-        Args:
-            label (int): The candidate's position among the compared columns.
-            rule (DiffRule): Its rule, whose existing map outputs are left out.
-
-        Returns:
-            str: One `SELECT` of the `UNION ALL`.
-        """
+        """Select one candidate's pairs, labeled, without NULL or already mapped sources."""
         source = self._quote_ident(f"_veridelta_source_{label}")
         target = self._quote_ident(f"_veridelta_target_{label}")
         conditions = [f"{source} IS NOT NULL"]
@@ -1299,20 +1146,7 @@ class SQLPushdownCompiler:
         )
 
     def _value_map_tally(self, branches: str, min_support: int) -> str:
-        """Count the labeled pairs and keep the ones that can qualify.
-
-        The pair count runs in a subquery and the per-value total in the query
-        around it, the form every supported dialect accepts. A NULL target is
-        a group of its own, so it counts toward the total, and `<>` then
-        drops it along with every identity pair.
-
-        Args:
-            branches (str): The `UNION ALL` of labeled pairs.
-            min_support (int): Agreeing rows a pair needs.
-
-        Returns:
-            str: The statement's `SELECT`, after its `WITH` clause.
-        """
+        """Count the labeled pairs and keep the ones that can qualify."""
         column = self._quote_ident(VALUE_MAP_COLUMN_ALIAS)
         source = self._quote_ident(VALUE_MAP_SOURCE_ALIAS)
         target = self._quote_ident(VALUE_MAP_TARGET_ALIAS)
@@ -1324,11 +1158,13 @@ class SQLPushdownCompiler:
             f"FROM ({branches}) AS {self._quote_ident('_veridelta_pairs')} "
             f"GROUP BY {column}, {source}, {target}"
         )
+        # The per-value total wraps the pair count, a form every supported dialect accepts.
         counted = (
             f"SELECT {column}, {source}, {target}, {agreeing}, "
             f"SUM({agreeing}) OVER (PARTITION BY {column}, {source}) AS {rows} "
             f"FROM ({grouped}) AS {self._quote_ident('_veridelta_groups')}"
         )
+        # A NULL target forms its own group: it counts toward the total, then `<>` drops it.
         return (
             f"SELECT {column}, {source}, {target}, "
             f"CAST({rows} AS {count_type}) AS {rows}, "
@@ -1373,12 +1209,12 @@ class SQLPushdownCompiler:
         The local engine asserts uniqueness after normalization and reports
         every row that shares its key with another. Summing the size of each
         key group larger than one is that same number, and `GROUP BY` puts NULL
-        keys in one group just as Polars counts them as duplicates of each other.
+        keys in one group, as Polars counts them as duplicates of each other.
 
         Args:
             table (str): Relation to check (optionally dotted catalog path).
             primary_keys (list[str]): Keys, spelled as the target stores them.
-            is_source (bool): True for the source relation, which reads a
+            is_source (bool): Whether the relation is the source, which reads a
                 renamed key under its stored name and applies `value_map`.
             key_rules (Sequence[DiffRule] | None): Key normalization, as for
                 `compile_query`.
@@ -1448,31 +1284,7 @@ class SQLPushdownCompiler:
         target_types: ColumnTypes | None,
         key_rules: Sequence[DiffRule] | None,
     ) -> str:
-        """Assemble a LEFT or RIGHT JOIN anti-join selecting keys from one side.
-
-        Both sides are read through the same key-only CTEs the changed-row
-        query uses, so a row counts as added or removed only when its
-        normalized key has no match, exactly as in the local engine.
-
-        Args:
-            source_table (str): Source relation.
-            target_table (str): Target relation.
-            primary_keys (list[str]): Join keys, spelled as the target stores them.
-            join_kind (str): `LEFT` projects the source's keys where the target
-                has none, and `RIGHT` the target's keys where the source has none.
-            source_alias (str): Alias assigned to the source relation.
-            target_alias (str): Alias assigned to the target relation.
-            source_types (ColumnTypes | None): Probed source dtypes.
-            target_types (ColumnTypes | None): Probed target dtypes.
-            key_rules (Sequence[DiffRule] | None): Key normalization rules.
-
-        Returns:
-            str: Anti-join SELECT statement.
-
-        Raises:
-            ConnectorError: If tables or keys are empty, or a key rule does not
-                name exactly one primary key.
-        """
+        """Assemble a LEFT or RIGHT JOIN anti-join selecting keys from one side."""
         keys = self._key_columns(primary_keys, key_rules)
         with_clause = self._normalized_with_clause(
             source_table,
@@ -1498,17 +1310,7 @@ class SQLPushdownCompiler:
     def _normalized_join(
         self, join_kind: str, primary_keys: list[str], *, source_alias: str, target_alias: str
     ) -> str:
-        """Join the two normalized CTEs on their keys.
-
-        Args:
-            join_kind (str): `INNER`, `LEFT`, or `RIGHT`.
-            primary_keys (list[str]): Join keys, spelled as the target stores them.
-            source_alias (str): Alias for the source CTE.
-            target_alias (str): Alias for the target CTE.
-
-        Returns:
-            str: `FROM ... JOIN ... ON ...` clause.
-        """
+        """Join the two normalized CTEs on their keys."""
         on_clause = " AND ".join(
             f"{self._qualify(source_alias, pk)} = {self._qualify(target_alias, pk)}"
             for pk in primary_keys
@@ -1527,21 +1329,7 @@ class SQLPushdownCompiler:
         *,
         is_source: bool,
     ) -> str:
-        """Apply stages 1 through 7 to one side of a comparison.
-
-        Stage 6b, `timezone`, emits nothing on purpose. See
-        `_reject_unzoned_timezone` in the engine for why.
-
-        Args:
-            expr (str): Qualified column or already-wrapped expression.
-            rule (DiffRule): Rule supplying the transform fields.
-            dtype (pl.DataType | None): Probed dtype for this side.
-            is_source (bool): True when this is the source side, which is the
-                only side that receives a `value_map`.
-
-        Returns:
-            str: Expression after every compiled stage.
-        """
+        """Apply stages 1 through 7 to one side of a comparison."""
         # With no probed dtype, every sentinel is emitted as configured.
         sentinels = (
             list(rule.null_values or [])
@@ -1557,26 +1345,13 @@ class SQLPushdownCompiler:
                 expr = self._apply_value_map(expr, rule)
         expr = self._apply_pad_zeros(expr, rule)
         expr = self._apply_datetime_format(expr, rule, dtype)
+        # Stage 6b, `timezone`, emits no SQL; see `_reject_unzoned_timezone` in the engine.
         return self._apply_cast(expr, rule, dtype)
 
     def _key_columns(
         self, primary_keys: list[str], key_rules: Sequence[DiffRule] | None
     ) -> list[_Projection]:
-        """Pair each primary key with its stored source name and normalizing rule.
-
-        Args:
-            primary_keys (list[str]): Keys, spelled as the target stores them.
-            key_rules (Sequence[DiffRule] | None): Rules naming each key's stored
-                source column, with `rename_to` set when the spellings differ.
-
-        Returns:
-            list[_Projection]: Stored source name, key name, and rule per key.
-            A key without a rule is projected unchanged.
-
-        Raises:
-            ConnectorError: If no keys are given, or a key rule does not name
-                exactly one column or does not resolve to a primary key.
-        """
+        """Pair each primary key with its stored source name and normalizing rule."""
         if not primary_keys:
             raise ConnectorError("At least one primary key is required for pushdown joins.")
         by_key: dict[str, DiffRule] = {}
@@ -1601,22 +1376,7 @@ class SQLPushdownCompiler:
         wide_integers: frozenset[str],
         type_drift: frozenset[str],
     ) -> list[str]:
-        """Build each compared column's match predicate over the normalized CTEs.
-
-        The changed-row query, the per-column tally, and a row sample all read
-        their predicates here, so the three never disagree on what matches.
-
-        Args:
-            compared (list[tuple[str, str, DiffRule]]): Columns from
-                `_compared_columns`.
-            source_alias (str): Alias of the normalized source relation.
-            target_alias (str): Alias of the normalized target relation.
-            wide_integers (frozenset[str]): Integer columns to measure in a wide type.
-            type_drift (frozenset[str]): Columns `strict_types` fails.
-
-        Returns:
-            list[str]: One predicate per compared column, in order.
-        """
+        """Build each compared column's match predicate over the normalized CTEs."""
         return [
             self._compare(
                 self._qualify(source_alias, target_column),
@@ -1630,34 +1390,12 @@ class SQLPushdownCompiler:
 
     @staticmethod
     def _changed_condition(predicates: list[str]) -> str:
-        """Join match predicates into the condition a changed row meets.
-
-        COALESCE is load-bearing, as in the tally: `NOT (NULL)` is NULL, and
-        WHERE drops it, so a one-sided NULL would vanish from the changed set.
-
-        Args:
-            predicates (list[str]): At least one match predicate.
-
-        Returns:
-            str: `NOT (COALESCE(p1, FALSE) AND ...)`.
-        """
+        """Join match predicates into the condition a changed row meets."""
         joined = " AND ".join(f"COALESCE({predicate}, FALSE)" for predicate in predicates)
         return f"NOT ({joined})"
 
     def _compared_columns(self, rules: list[DiffRule]) -> list[tuple[str, str, DiffRule]]:
-        """Resolve the columns that a join query will actually compare.
-
-        First rule to name a target-side alias wins, matching the local engine.
-
-        Args:
-            rules (list[DiffRule]): Rules to expand.
-
-        Returns:
-            list[tuple[str, str, DiffRule]]: Source name, target name, rule.
-
-        Raises:
-            ConnectorError: If a rule is pattern-only or `rename_to` is invalid.
-        """
+        """Resolve the columns that a join query compares."""
         collected: dict[str, tuple[str, str, DiffRule]] = {}
         for rule in rules:
             if rule.pattern is not None and not rule.column_names:
@@ -1672,6 +1410,7 @@ class SQLPushdownCompiler:
                 )
             for column in rule.column_names:
                 target_column = rule.rename_to if rule.rename_to is not None else column
+                # The first rule to name a target column wins, as in the local engine.
                 collected.setdefault(target_column, (column, target_column, rule))
         return list(collected.values())
 
@@ -1686,24 +1425,8 @@ class SQLPushdownCompiler:
         source_types: ColumnTypes | None,
         target_types: ColumnTypes | None,
     ) -> str:
-        """Build the CTE pair that applies stages 1-7 once per column.
-
-        Nesting the same expression into every later predicate used to copy the
-        source column once per stage that repeats its input. Projecting the
-        normalized value once keeps later SQL linear in the number of columns.
-
-        Args:
-            source_table (str): Source relation.
-            target_table (str): Target relation.
-            columns (Sequence[_Projection]): Keys first, then compared columns.
-            source_alias (str): Alias of the source relation inside its CTE.
-            target_alias (str): Alias of the target relation inside its CTE.
-            source_types (ColumnTypes | None): Probed source dtypes.
-            target_types (ColumnTypes | None): Probed target dtypes.
-
-        Returns:
-            str: `WITH src AS (...), tgt AS (...)` prefix, no trailing keyword.
-        """
+        """Build the CTE pair that applies stages 1-7 once per column."""
+        # Projecting each normalized value once keeps later SQL linear in the number of columns.
         src_select = self._normalized_select(
             source_table, source_alias, columns, types=source_types, is_source=True
         )
@@ -1724,19 +1447,7 @@ class SQLPushdownCompiler:
         types: ColumnTypes | None,
         is_source: bool,
     ) -> str:
-        """Project one normalized expression per key and compared column.
-
-        Args:
-            table (str): Relation to read.
-            alias (str): Alias assigned to that relation.
-            columns (Sequence[_Projection]): Columns to project. The source reads
-                each under its stored name, the target under its projected name.
-            types (ColumnTypes | None): Probed dtypes for this side.
-            is_source (bool): True when projecting the source relation.
-
-        Returns:
-            str: `SELECT ... FROM relation AS alias` body for one CTE.
-        """
+        """Project one normalized expression per key and compared column."""
         projections: list[str] = []
         for source_column, target_column, rule in columns:
             raw_name = source_column if is_source else target_column
@@ -1751,143 +1462,55 @@ class SQLPushdownCompiler:
         )
 
     def _quote_ident(self, name: str) -> str:
-        """Quote a single SQL identifier for the active dialect.
-
-        Args:
-            name (str): Unquoted identifier.
-
-        Returns:
-            str: Dialect-quoted identifier.
-
-        Raises:
-            ConnectorError: If `name` is not a valid unquoted identifier segment.
-        """
+        """Quote a single SQL identifier for the active dialect."""
         if SQL_IDENTIFIER_SEGMENT.fullmatch(name) is None:
             raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
+        # The allowlist admits no quote character, so the name needs no escaping.
         quote = _IDENTIFIER_QUOTES[self.dialect]
         return f"{quote}{name}{quote}"
 
     def _quote_relation(self, name: str) -> str:
-        """Quote a possibly dotted table, schema, or catalog path.
-
-        Args:
-            name (str): Relation name, optionally `catalog.schema.table`.
-
-        Returns:
-            str: Each path segment quoted independently.
-
-        Raises:
-            ConnectorError: If the relation name is empty, has more than three
-                segments, or contains a disallowed identifier.
-        """
+        """Quote a possibly dotted table, schema, or catalog path."""
         return ".".join(self._quote_ident(part) for part in _relation_segments(name))
 
     def _qualify(self, alias: str, column: str) -> str:
-        """Return `alias.column` with both parts quoted.
-
-        Args:
-            alias (str): Relation alias.
-            column (str): Column name.
-
-        Returns:
-            str: Qualified, quoted column reference.
-        """
+        """Return `alias.column` with both parts quoted."""
         return f"{self._quote_ident(alias)}.{self._quote_ident(column)}"
 
     def _literal(self, value: str) -> str:
-        """Render a single-quoted SQL string literal for the active dialect.
-
-        Every configured string that reaches SQL as data passes through here:
-        regex patterns and replacements, crosswalk keys and values, text
-        sentinels, and translated datetime formats. This is where configuration
-        text is kept from becoming statement text.
-
-        Args:
-            value (str): Raw Python string.
-
-        Returns:
-            str: Quoted literal that the dialect decodes back to `value`.
-        """
+        """Render a single-quoted SQL string literal for the active dialect."""
         escaped = value
         for raw, replacement in _LITERAL_ESCAPES[self.dialect]:
             escaped = escaped.replace(raw, replacement)
         return f"'{escaped}'"
 
     def _integer(self, value: object) -> str:
-        """Render an integer SQL operand, refusing anything that is not an `int`.
-
-        Numbers otherwise render through `repr`, so `True` or a NumPy scalar
-        would reach SQL as written. A count or label must be a real integer;
-        the parameter is `object` because this is where that is checked.
-
-        Args:
-            value (object): Integer to render.
-
-        Returns:
-            str: Its decimal digits.
-
-        Raises:
-            ConnectorError: If `value` is not an `int`, or is a `bool`.
-        """
+        """Render an integer SQL operand, refusing anything that is not an `int`."""
+        # Other numbers render through `repr`, so `True` or a NumPy scalar would reach SQL.
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConnectorError(f"SQL integer operands must be int, got {value!r}.")
         return str(value)
 
     def _apply_null_values(self, expr: str, sentinels: Sequence[SentinelValue]) -> str:
-        """Coerce sentinel values to NULL with a single `CASE` expression.
-
-        Sentinels are stage 1, so `expr` is always a bare qualified column here
-        and repeating it costs nothing.
-
-        Args:
-            expr (str): SQL expression to sanitize.
-            sentinels (Sequence[SentinelValue]): Sentinels already filtered to
-                the ones this column's type can hold.
-
-        Returns:
-            str: `CASE WHEN expr IN (...) THEN NULL ELSE expr END`, or the
-            original expression when no sentinel applies.
-        """
+        """Coerce sentinel values to NULL with a single `CASE` expression."""
         if not sentinels:
             return expr
         rendered = ", ".join(self._sentinel_literal(value) for value in sentinels)
+        # Sentinels are stage 1, so `expr` is a bare column and repeating it costs nothing.
         return f"CASE WHEN {expr} IN ({rendered}) THEN NULL ELSE {expr} END"
 
     def _sentinel_literal(self, value: SentinelValue) -> str:
-        """Render one sentinel as a SQL literal of its own type.
-
-        Numbers and booleans must not be quoted. Emitting `'-999'` against a
-        numeric column reintroduces the cast error that type filtering exists to
-        prevent. Only strings can carry SQL text, and those still go through
-        `_literal` for apostrophe escaping.
-
-        Args:
-            value (SentinelValue): Configured sentinel.
-
-        Returns:
-            str: Dialect-portable literal.
-        """
+        """Render one sentinel as a SQL literal of its own type."""
         # bool first, since isinstance(True, int) is True in Python.
         if isinstance(value, bool):
             return "TRUE" if value else "FALSE"
+        # A quoted number such as `'-999'` brings back the cast error that type filtering prevents.
         if isinstance(value, (int, float)):
             return repr(value)
         return self._literal(value)
 
     def _apply_regex_replace(self, expr: str, rule: DiffRule) -> str:
-        """Apply `REGEXP_REPLACE` for each pattern/replacement pair, to every match.
-
-        Args:
-            expr (str): SQL expression to sanitize.
-            rule (DiffRule): Rule providing `regex_replace`.
-
-        Returns:
-            str: Nested `REGEXP_REPLACE` expression.
-
-        Raises:
-            ConfigError: If a replacement refers to a group the warehouse
-                cannot write; see `_regex_replacement`.
-        """
+        """Apply `REGEXP_REPLACE` for each pattern/replacement pair, to every match."""
         if not rule.regex_replace:
             return expr
         wrapped = expr
@@ -1901,27 +1524,7 @@ class SQLPushdownCompiler:
         return wrapped
 
     def _regex_replacement(self, pattern: str, replacement: str) -> str:
-        r"""Rewrite a Polars replacement in the dialect's replacement syntax.
-
-        Polars writes a group as `$1` or `${1}` and reads a backslash as plain
-        text. Snowflake, BigQuery, DuckDB, and Postgres write a group as `\1`,
-        read `$` as plain text, and need a plain backslash doubled; Postgres
-        writes the whole match as `\&`. Databricks follows Java:
-        a group is `$1`, a backslash makes the next character plain, and a
-        digit right after a group would extend its number, so it is escaped.
-
-        Args:
-            pattern (str): The `regex_replace` key, for error messages.
-            replacement (str): Its replacement, as Polars reads it.
-
-        Returns:
-            str: The replacement as the dialect's `REGEXP_REPLACE` reads it,
-                before string-literal escaping.
-
-        Raises:
-            ConfigError: If the replacement names a group, or refers to a group
-                above 9.
-        """
+        """Rewrite a Polars replacement in the dialect's replacement syntax."""
         written: list[str] = []
         follows_group = False
         for token in _replacement_tokens(pattern, replacement):
@@ -1929,7 +1532,10 @@ class SQLPushdownCompiler:
                 written.append(self._group_reference(token))
                 follows_group = True
                 continue
+            # Polars reads a backslash as plain text; each dialect reads it as an escape.
             if self.dialect is SQLDialect.DATABRICKS:
+                # Databricks follows Java: `$` starts a group, and a digit right after a group
+                # extends its number.
                 token = token.replace("\\", "\\\\").replace("$", "\\$")
                 if follows_group and token[:1].isdigit():
                     token = f"\\{token}"
@@ -1940,72 +1546,34 @@ class SQLPushdownCompiler:
         return "".join(written)
 
     def _group_reference(self, group: int) -> str:
-        r"""Write a reference to a numbered group in the dialect's replacement syntax.
-
-        Args:
-            group (int): Group number, with 0 for the whole match.
-
-        Returns:
-            str: `$N` on Databricks, and `\N` elsewhere, except the whole match on
-                Postgres, which reads `\0` as plain text and spells it `\&`.
-        """
+        """Write a reference to a numbered group in the dialect's replacement syntax."""
         if self.dialect is SQLDialect.DATABRICKS:
             return f"${group}"
+        # Postgres reads `\0` as plain text and spells the whole match `\&`.
         if group == 0 and self.dialect is SQLDialect.POSTGRES:
             return "\\&"
         return f"\\{group}"
 
     def _apply_whitespace(self, expr: str, rule: DiffRule) -> str:
-        """Trim the characters Polars strips, from the side `whitespace_mode` names.
-
-        Databricks gets the standard `TRIM(side characters FROM value)` form:
-        its two-argument `ltrim` and `rtrim` take the characters first and are
-        deprecated. The other dialects take the characters as a second argument.
-
-        Args:
-            expr (str): SQL expression to trim.
-            rule (DiffRule): Rule providing `whitespace_mode`.
-
-        Returns:
-            str: Trimmed expression, or `expr` when mode is unset/`none`.
-        """
+        """Trim the characters Polars strips, from the side `whitespace_mode` names."""
         mode = rule.whitespace_mode
         if mode not in _TRIM_FUNCTIONS:
             return expr
+        # A bare `TRIM` strips only spaces on Snowflake, Databricks, and DuckDB.
         characters = self._literal(_WHITESPACE_CHARACTERS)
+        # Databricks' two-argument `ltrim` and `rtrim` take characters first and are deprecated.
         if self.dialect is SQLDialect.DATABRICKS:
             return f"TRIM({_TRIM_SIDES[mode]} {characters} FROM {expr})"
         return f"{_TRIM_FUNCTIONS[mode]}({expr}, {characters})"
 
     def _apply_case(self, expr: str, rule: DiffRule) -> str:
-        """Lowercase an expression when `case_insensitive` is enabled.
-
-        Args:
-            expr (str): SQL expression to normalize.
-            rule (DiffRule): Rule providing `case_insensitive`.
-
-        Returns:
-            str: `LOWER(expr)` or the original expression.
-        """
+        """Lowercase an expression when `case_insensitive` is enabled."""
         if rule.case_insensitive:
             return f"LOWER({expr})"
         return expr
 
     def _apply_value_map(self, expr: str, rule: DiffRule) -> str:
-        """Map source values with nested `IFF` on Snowflake, `CASE` elsewhere.
-
-        The two forms are equivalent. This is the one place the dialects differ
-        structurally rather than by a keyword, so it is a branch instead of a
-        table: Databricks and DuckDB both take the `CASE` path, DuckDB because
-        it has no `IFF` at all.
-
-        Args:
-            expr (str): Source-side SQL expression.
-            rule (DiffRule): Rule providing `value_map`.
-
-        Returns:
-            str: Crosswalk expression, or `expr` when no map is set.
-        """
+        """Map source values with nested `IFF` on Snowflake, `CASE` elsewhere."""
         if not rule.value_map:
             return expr
         if self.dialect is SQLDialect.SNOWFLAKE:
@@ -2021,49 +1589,21 @@ class SQLPushdownCompiler:
         return f"CASE {branches} ELSE {expr} END"
 
     def _is_text_side(self, dtype: pl.DataType | None) -> bool:
-        """Return whether stages 2 through 4 apply to one side of a comparison.
-
-        Matches the local engine's gate exactly, including its narrowness:
-        `Categorical` and `Enum` are excluded there because the Polars `.str`
-        namespace rejects them, so a warehouse that would happily run `TRIM` on
-        the same column must decline too. Parity is with the engine's behavior,
-        not with what the dialect could manage.
-
-        Args:
-            dtype (pl.DataType | None): Probed dtype, or None when no schema was
-                supplied and the caller has taken responsibility for the types.
-
-        Returns:
-            bool: True when the text stages should be emitted for this side.
-        """
+        """Return whether stages 2 through 4 apply to one side of a comparison."""
+        # Polars' `.str` rejects `Categorical` and `Enum`, so pushdown skips them too, for parity.
         return dtype is None or isinstance(dtype, pl.String)
 
     def _apply_pad_zeros(self, expr: str, rule: DiffRule) -> str:
-        """Left-pad with zeros the way Python's `str.zfill` does.
-
-        `LPAD` alone is not a substitute. It pads in front of a sign, turning
-        `-12` into `0-12` where Polars produces `-012`, and it truncates input
-        longer than the target width where Polars leaves it untouched. Both
-        divergences are silent, so the padding is spelled out instead.
-
-        The cast to text happens even at width zero, because the local engine
-        stringifies unconditionally and later stages branch on whether the
-        column is text by then.
-
-        Args:
-            expr (str): SQL expression to pad.
-            rule (DiffRule): Rule providing `pad_zeros`.
-
-        Returns:
-            str: Padded expression, or `expr` when `pad_zeros` is unset. NULL
-            input stays NULL: every branch below propagates it.
-        """
+        """Left-pad with zeros the way Python's `str.zfill` does."""
         if rule.pad_zeros is None:
             return expr
         text = f"CAST({expr} AS {self._cast_keyword('String')})"
         width = rule.pad_zeros
+        # Width zero still casts, as the local engine does, because later stages branch on text.
         if width == 0:
             return text
+        # `LPAD` alone pads before a sign, so `-12` becomes `0-12`, not `-012`, and it truncates
+        # longer input, which Polars leaves untouched.
         sign = f"SUBSTR({text}, 1, 1)"
         return (
             f"CASE WHEN LENGTH({text}) >= {width} THEN {text} "
@@ -2073,23 +1613,7 @@ class SQLPushdownCompiler:
         )
 
     def _apply_datetime_format(self, expr: str, rule: DiffRule, dtype: pl.DataType | None) -> str:
-        """Parse text timestamps with the dialect's non-throwing parser.
-
-        Gated on the value being text by this point, exactly as the local engine
-        gates it: either the column is text or stage 5 stringified it.
-
-        Args:
-            expr (str): SQL expression to parse.
-            rule (DiffRule): Rule providing `datetime_format`.
-            dtype (pl.DataType | None): Probed dtype for this side.
-
-        Returns:
-            str: Parse call, or `expr` when the stage does not apply.
-
-        Raises:
-            ConfigError: If the format uses a directive or literal character
-                this dialect cannot express.
-        """
+        """Parse text timestamps with the dialect's non-throwing parser."""
         if not rule.datetime_format:
             return expr
         if rule.pad_zeros is None and not self._is_text_side(dtype):
@@ -2112,37 +1636,19 @@ class SQLPushdownCompiler:
         return f"{parse_function}({expr}, {self._literal(pattern)})"
 
     def _translate_datetime_format(self, fmt: str) -> str:
-        """Rewrite a Python `strptime` format in the dialect's format language.
-
-        Walks the string one token at a time against `_STRPTIME_DIRECTIVES`
-        rather than substituting patterns over the whole string. A substitution
-        pass has no way to tell a directive from the same letters appearing as
-        literal text, and it leaves anything it does not recognize in place,
-        where it becomes part of the emitted format.
-
-        Runs of literal text are wrapped in the dialect's quoting so a separator
-        can never be mistaken for a format element.
-
-        Args:
-            fmt (str): Python/C `strptime` format string from the config.
-
-        Returns:
-            str: Equivalent format in the active dialect's language.
-
-        Raises:
-            ConfigError: If a directive is unsupported, a literal character is
-                outside `_FORMAT_LITERALS`, or the string ends mid-directive.
-        """
+        """Rewrite a Python `strptime` format in the dialect's format language."""
         directives = _STRPTIME_DIRECTIVES[self.dialect]
         quote = _FORMAT_LITERAL_QUOTES[self.dialect]
         out: list[str] = []
         literal: list[str] = []
 
+        # Quoting each literal run keeps a separator from reading as a format element.
         def flush() -> None:
             if literal:
                 out.append(f"{quote}{''.join(literal)}{quote}")
                 literal.clear()
 
+        # A substitution pass would mistake literal letters for directives and keep unknown ones.
         index = 0
         while index < len(fmt):
             char = fmt[index]
@@ -2162,6 +1668,7 @@ class SQLPushdownCompiler:
                 raise ConfigError(f"datetime_format '{fmt}' ends with a dangling '%'.")
             code = fmt[index + 1]
             mapped = directives.get(code)
+            # An unknown directive parses to NULL, which reads as a clean match, not an error.
             if mapped is None:
                 supported = ", ".join(f"%{key}" for key in directives)
                 raise ConfigError(
@@ -2177,21 +1684,7 @@ class SQLPushdownCompiler:
         return "".join(out)
 
     def _apply_cast(self, expr: str, rule: DiffRule, dtype: pl.DataType | None) -> str:
-        """Cast to the configured target type using the dialect's keyword.
-
-        Args:
-            expr (str): SQL expression to cast.
-            rule (DiffRule): Rule providing `cast_to`.
-            dtype (pl.DataType | None): Probed dtype for this side, used to
-                detect the float-to-integer and number-to-boolean cases below.
-
-        Returns:
-            str: `CAST(expr AS keyword)`, `(expr <> 0)` for a number on a
-                dialect in `_ZERO_TEST_BOOLEANS`, or `expr` when `cast_to` is unset.
-
-        Raises:
-            ConnectorError: If `cast_to` has no keyword for this dialect.
-        """
+        """Cast to the configured target type using the dialect's keyword."""
         if rule.cast_to is None:
             return expr
         # Every earlier stage that fires on a number leaves text or a timestamp
@@ -2204,6 +1697,7 @@ class SQLPushdownCompiler:
             and precast is not None
             and precast.is_numeric()
         ):
+            # Polars reads every nonzero number as true, NaN included, as `<> 0` does.
             return f"({expr} <> 0)"
         if rule.cast_to == "Int64" and precast is not None and precast.is_float():
             # Polars truncates a float toward zero on the way to an integer.
@@ -2216,19 +1710,7 @@ class SQLPushdownCompiler:
         return f"CAST({expr} AS {self._cast_keyword(rule.cast_to)})"
 
     def _cast_keyword(self, target: CastTarget) -> str:
-        """Look up the dialect keyword for a cast target.
-
-        Args:
-            target (CastTarget): Validated `cast_to` value.
-
-        Returns:
-            str: SQL type keyword for the active dialect.
-
-        Raises:
-            ConnectorError: If the target has no mapping. Unreachable through a
-                validated config, and deliberately fatal if a new cast target is
-                ever added without a keyword for every dialect.
-        """
+        """Look up the dialect keyword for a cast target."""
         keyword = _CAST_KEYWORDS[self.dialect].get(target)
         if keyword is None:
             raise ConnectorError(f"SQL pushdown has no {self.dialect.value} type for '{target}'.")
@@ -2237,26 +1719,7 @@ class SQLPushdownCompiler:
     def _numeric_predicate(
         self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
     ) -> str:
-        """Build the engine-equivalent absolute/relative tolerance predicate.
-
-        Equal values match outright, so NaN meets NaN and an infinity meets
-        itself. The allowance applies only to a finite source: `0 * ABS(inf)` is
-        NaN, and every supported engine sorts NaN above all numbers, so an
-        unguarded `ABS(diff) <= NaN` would accept any target. Integers are
-        always finite, so a widened pair needs no guard.
-
-        Args:
-            src_expr (str): Transformed source expression.
-            tgt_expr (str): Transformed target expression.
-            rule (DiffRule): Rule providing tolerances.
-            wide (bool): Both sides are integers; cast them to
-                `_WIDE_INTEGER_TYPES` before subtracting, as the local engine
-                widens them to Int128.
-
-        Returns:
-            str: `(src = tgt OR (ABS(src) < inf AND ABS(tgt - src) <= abs + (rel * ABS(src))))`,
-                or, widened, `(src = tgt OR ABS(tgt - src) <= abs + (rel * ABS(src)))`.
-        """
+        """Build the engine-equivalent absolute/relative tolerance predicate."""
         abs_tol = repr(rule.absolute_tolerance or 0.0)
         rel_tol = repr(rule.relative_tolerance or 0.0)
         if wide:
@@ -2267,6 +1730,8 @@ class SQLPushdownCompiler:
                 f"({self._value_equality(src, tgt)} OR "
                 f"ABS({tgt} - {src}) <= {abs_tol} + ({rel_tol} * ABS({src})))"
             )
+        # The allowance needs a finite source, since `0 * ABS(inf)` is NaN. Every supported engine
+        # sorts NaN above all numbers, so `ABS(diff) <= NaN` would accept any target.
         infinity = _INFINITY_LITERALS[self.dialect]
         return (
             f"({self._value_equality(src_expr, tgt_expr)} OR (ABS({src_expr}) < {infinity} AND "
@@ -2274,23 +1739,7 @@ class SQLPushdownCompiler:
         )
 
     def _edit_distance_predicate(self, src_expr: str, tgt_expr: str, limit: int) -> str:
-        """Build the predicate matching text within a Levenshtein distance.
-
-        Equal values match outright, as in the local engine, which only scores
-        pairs that still differ. The distance of a NULL is NULL, so a one-sided
-        NULL stays a mismatch once the caller coalesces the predicate.
-
-        Args:
-            src_expr (str): Transformed source expression.
-            tgt_expr (str): Transformed target expression.
-            limit (int): Most character edits that still match.
-
-        Returns:
-            str: `(src = tgt OR <distance>(src, tgt) <= limit)`.
-
-        Raises:
-            ConfigError: If the dialect has no faithful edit distance.
-        """
+        """Build the predicate matching text within a Levenshtein distance."""
         distance = _EDIT_DISTANCE_FUNCTIONS.get(self.dialect)
         if distance is None:
             raise ConfigError(
@@ -2303,21 +1752,7 @@ class SQLPushdownCompiler:
     def _loosened_predicate(
         self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
     ) -> str | None:
-        """Build the stage 8 predicate for a rule that loosens equality.
-
-        Args:
-            src_expr (str): Transformed source expression.
-            tgt_expr (str): Transformed target expression.
-            rule (DiffRule): Rule providing a tolerance or a similarity limit.
-            wide (bool): Measure a tolerance in the wide integer type.
-
-        Returns:
-            str | None: The tolerance or edit-distance predicate, or None when
-                the rule compares by equality alone.
-
-        Raises:
-            ConfigError: If the rule sets `min_jaro_winkler_similarity`.
-        """
+        """Build the stage 8 predicate for a rule that loosens equality."""
         if rule.min_jaro_winkler_similarity is not None:
             raise ConfigError(
                 "min_jaro_winkler_similarity has no SQL translation: Snowflake's "
@@ -2340,23 +1775,7 @@ class SQLPushdownCompiler:
         wide: bool = False,
         drift: bool = False,
     ) -> str:
-        """Build the final match predicate, including null-safe equality.
-
-        Args:
-            src_expr (str): Fully transformed source expression.
-            tgt_expr (str): Fully transformed target expression.
-            rule (DiffRule): Rule providing comparison and null semantics.
-            wide (bool): Measure a tolerance in the wide integer type.
-            drift (bool): The sides hold different types under `strict_types`,
-                so no value matches. The values are never compared, which also
-                keeps the warehouse from casting one type to the other.
-
-        Returns:
-            str: Boolean SQL expression.
-
-        Raises:
-            ConfigError: If the rule sets `min_jaro_winkler_similarity`.
-        """
+        """Build the final match predicate, including null-safe equality."""
         if drift:
             if rule.treat_null_as_equal:
                 return f"({src_expr} IS NULL AND {tgt_expr} IS NULL)"
@@ -2378,17 +1797,8 @@ class SQLPushdownCompiler:
         return self._value_equality(src_expr, tgt_expr)
 
     def _value_equality(self, src_expr: str, tgt_expr: str) -> str:
-        """Build equality that, like Polars, treats two NaNs as equal.
-
-        Args:
-            src_expr (str): Fully transformed source expression.
-            tgt_expr (str): Fully transformed target expression.
-
-        Returns:
-            str: `src = tgt`, or on BigQuery, whose `=` follows IEEE 754 and
-                calls two NaNs different, `=` widened to two non-NULL values
-                that are not distinct. NULL still compares as unknown.
-        """
+        """Build equality that, like Polars, treats two NaNs as equal."""
+        # BigQuery's `=` calls two NaNs different, per IEEE 754. A NULL still compares as unknown.
         if self.dialect is SQLDialect.BIGQUERY:
             return (
                 f"({src_expr} = {tgt_expr} OR "

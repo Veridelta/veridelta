@@ -30,7 +30,7 @@ changed rows with their values."""
 
 @runtime_checkable
 class PushdownSession(Protocol):
-    """The two members the pushdown summary actually needs from a connector.
+    """The two members the pushdown summary needs from a connector.
 
     Narrower than `VerideltaConnector`, which also covers lakehouse scans that
     have no compiler. Stating the requirement structurally keeps the summary
