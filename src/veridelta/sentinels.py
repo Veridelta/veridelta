@@ -3,10 +3,10 @@
 
 """Dtype-aware filtering for null sentinel values.
 
-`null_values` accepts mixed scalars, but a sentinel is only meaningful against a
-column whose type can hold it. Polars refuses the mismatches outright, and so do
-warehouses, so both the local engine and the SQL compiler filter through this
-module to guarantee they agree on which sentinels apply where.
+`null_values` accepts mixed scalars, but a sentinel applies only to a column
+whose type can hold it. Polars and warehouses both refuse the mismatches. The
+local engine and the SQL compiler filter through this module, so they agree on
+which sentinels apply where.
 """
 
 from collections.abc import Sequence
@@ -49,11 +49,11 @@ def _sentinel_matches(value: SentinelValue, dtype: pl.DataType) -> bool:
 def usable_sentinels(
     values: Sequence[SentinelValue] | None, dtype: pl.DataType
 ) -> list[SentinelValue]:
-    """Keep only the sentinels a column's dtype can actually be compared against.
+    """Keep only the sentinels a column's dtype can be compared against.
 
-    Filtering is required rather than merely tidy: building a Polars expression
-    from a mixed list raises before any dtype check runs, and a warehouse throws
-    a cast error on `int_col IN ('N/A')`.
+    Filtering is required: a Polars expression built from a mixed list raises
+    before any dtype check runs, and a warehouse raises a cast error on
+    `int_col IN ('N/A')`.
 
     Args:
         values (Sequence[SentinelValue] | None): Configured sentinels, if any.

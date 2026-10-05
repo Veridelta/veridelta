@@ -97,7 +97,7 @@ rapidfuzz_distance = _optional_module("rapidfuzz.distance")
 
 
 class EffectiveRule(TypedDict):
-    """Flattened per-column parameters after specific, pattern, and global merge."""
+    """Per-column settings after specific, pattern, and global rules are merged."""
 
     abs_tol: float
     rel_tol: float
@@ -155,26 +155,24 @@ def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None
 
 
 class BaseLoader(ABC):
-    """Contract for turning one `SourceConfig` into an unevaluated LazyFrame.
+    """Base class for the file loaders, each turning a `SourceConfig` into a LazyFrame.
 
-    Every file format Veridelta reads is a subclass registered in
-    `LoaderFactory._loaders`, keyed by the `SourceType` literal. Implementations
-    should prefer a Polars `scan_*` reader so the comparison graph stays lazy
-    end to end; the eager loaders (`JSONLoader`, `AvroLoader`, `ExcelLoader`) say why in
-    their own docstrings. `SourceConfig.options` are forwarded to the reader
-    unchanged, so any keyword the underlying Polars function accepts is valid.
+    Each file format has a subclass registered in `LoaderFactory._loaders`, keyed by
+    its `SourceType`. A loader prefers a Polars `scan_*` reader, so the comparison
+    stays lazy end to end; the eager loaders say why in their own docstrings.
+    `SourceConfig.options` reach the reader unchanged, so any keyword the Polars
+    function accepts is valid.
     """
 
     @abstractmethod
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads data from a source into a Polars LazyFrame.
+        """Load a source into a LazyFrame.
 
         Args:
-            config (SourceConfig): The configuration detailing the path, format,
-                and format-specific parsing options.
+            config (SourceConfig): Path, format, and reader options.
 
         Returns:
-            pl.LazyFrame: The lazy-loaded dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
 
 
@@ -186,14 +184,13 @@ class CSVLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a CSV file into a Polars LazyFrame.
+        """Scan a CSV file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_csv`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_csv`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_csv(config.path, **config.options)
 
@@ -206,14 +203,13 @@ class ParquetLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a Parquet file into a Polars LazyFrame.
+        """Scan a Parquet file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_parquet`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_parquet`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_parquet(config.path, **config.options)
 
@@ -226,14 +222,13 @@ class NDJSONLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads an NDJSON file into a Polars LazyFrame.
+        """Scan a newline-delimited JSON file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_ndjson`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_ndjson`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_ndjson(config.path, **config.options)
 
@@ -246,14 +241,13 @@ class ArrowLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads an Arrow IPC file into a Polars LazyFrame.
+        """Scan an Arrow IPC file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.scan_ipc`.
+            config (SourceConfig): Source configuration, whose options go to `pl.scan_ipc`.
 
         Returns:
-            pl.LazyFrame: The lazy dataset graph.
+            pl.LazyFrame: The unevaluated rows.
         """
         return pl.scan_ipc(config.path, **config.options)
 
@@ -267,36 +261,34 @@ class AvroLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads an Avro file into a Polars LazyFrame.
+        """Read an Avro file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options
-                (`columns`, `n_rows`) are passed directly to `pl.read_avro`.
+            config (SourceConfig): Source configuration, whose `columns` and `n_rows`
+                options go to `pl.read_avro`.
 
         Returns:
-            pl.LazyFrame: A lazy wrapper over the fully materialized file.
+            pl.LazyFrame: A lazy wrapper over the rows read.
         """
         return pl.read_avro(config.path, **config.options).lazy()
 
 
 class JSONLoader(BaseLoader):
-    """Loader for a single JSON document holding an array of records.
+    """Loader for a JSON file holding one array of records.
 
-    Polars has no lazy JSON reader, because a JSON array cannot be parsed
-    incrementally the way newline-delimited records can. The file is therefore
-    read whole and wrapped, which is a deliberate exception to the lazy-first
-    rule. Prefer `ndjson` for anything large enough to care about.
+    Polars has no lazy JSON reader: a JSON array cannot be parsed incrementally the
+    way newline-delimited records can. The file is read whole and wrapped. Prefer
+    `ndjson` for large files.
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads a JSON file into a Polars LazyFrame.
+        """Read a JSON file.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.read_json`.
+            config (SourceConfig): Source configuration, whose options go to `pl.read_json`.
 
         Returns:
-            pl.LazyFrame: A lazy wrapper over the fully materialized document.
+            pl.LazyFrame: A lazy wrapper over the rows read.
         """
         return pl.read_json(config.path, **config.options).lazy()
 
@@ -309,18 +301,18 @@ class ExcelLoader(BaseLoader):
     """
 
     def load(self, config: SourceConfig) -> pl.LazyFrame:
-        """Loads one worksheet into a Polars LazyFrame.
+        """Read one worksheet.
 
         Args:
-            config (SourceConfig): The source configuration. Extra options are
-                passed directly to `pl.read_excel` (for example `sheet_name`).
+            config (SourceConfig): Source configuration, whose options go to
+                `pl.read_excel`, such as `sheet_name`.
 
         Returns:
-            pl.LazyFrame: A lazy wrapper over the fully materialized sheet.
+            pl.LazyFrame: A lazy wrapper over the rows read.
 
         Raises:
-            ConfigError: If the `excel` extra is missing, or the options select
-                more than one worksheet.
+            ConfigError: If the `excel` extra is missing, or the options select more
+                than one worksheet.
         """
         if fastexcel is None:
             raise ConfigError(
@@ -339,23 +331,17 @@ class ExcelLoader(BaseLoader):
 
 
 class LoaderFactory:
-    """Resolve any file, lakehouse, or database `SourceRef` to a LazyFrame.
+    """Resolve a file, lakehouse, or database `SourceRef` to a LazyFrame.
 
-    File sources are dispatched by their `format` through the `_loaders`
-    registry; Delta Lake and Iceberg sources open a connector and return its
-    lazy scan; a database source is read once through its connector, which is
-    then closed. Warehouse sources are refused here because their comparison
-    runs as SQL pushdown via `DiffEngine.run_from_configs`, never as a local
-    scan.
-
-    The registry is the single source of truth for which formats exist. Tests
-    bind it to the `SourceType` literal in both directions, so a format cannot
-    be advertised without a loader or shipped without appearing in the literal.
+    A file source goes to the loader for its `format`. A Delta Lake or Iceberg
+    source returns its connector's lazy scan, and a database source is read once
+    through its connector, which then closes. A warehouse source is refused: its
+    comparison runs as SQL pushdown through `DiffEngine.run_from_configs`.
 
     Attributes:
-        _loaders (ClassVar[dict[str, BaseLoader]]): Format name to loader
-            instance. Error messages derive their supported-format list from
-            this mapping rather than a hardcoded string.
+        _loaders (ClassVar[dict[str, BaseLoader]]): Format name to loader. It is
+            the one list of formats, and `SourceType` names the same set. Error
+            messages list the supported formats from it.
     """
 
     _loaders: ClassVar[dict[str, BaseLoader]] = {
@@ -370,16 +356,16 @@ class LoaderFactory:
 
     @classmethod
     def get_loader(cls, source_type: str) -> BaseLoader:
-        """Retrieves the correct loader instance for the given data format.
+        """Return the loader for a file format.
 
         Args:
-            source_type (str): The format identifier (e.g., 'csv', 'parquet').
+            source_type (str): Format name, such as `csv` or `parquet`.
 
         Returns:
-            BaseLoader: An instantiated data loader.
+            BaseLoader: The loader.
 
         Raises:
-            ConfigError: If the requested format has no loader.
+            ConfigError: If the format has no loader.
         """
         loader = cls._loaders.get(source_type)
         if loader is None:
@@ -1783,37 +1769,36 @@ def _collect_value_map_proposals(
 
 
 class DataIngestor:
-    """Coordinates the loading, renaming, and structural alignment of datasets.
+    """Load a source and a target and align them for inspection.
 
-    This class prepares raw external data for inspection by normalizing
-    headers, dropping ignored columns, and applying renames. `DiffEngine`
-    performs the same alignment itself, so `run_from_configs` loads sources
-    directly rather than through this class. Frames from `get_dataframes` are
-    already aligned: passing them to `DiffEngine` aligns them a second time,
+    It normalizes headers, drops ignored columns, and applies renames. `DiffEngine`
+    aligns its inputs itself, so `run_from_configs` loads sources without this
+    class. Passing frames from `get_dataframes` to `DiffEngine` aligns them twice,
     which is harmless except for renames that swap or chain names.
     """
 
     def __init__(
         self, diff_config: DiffConfig, source_config: SourceRef, target_config: SourceRef
     ) -> None:
-        """Initializes the ingestor.
+        """Hold the comparison settings and both source configurations.
 
         Args:
-            diff_config (DiffConfig): The master comparison configuration.
-            source_config (SourceRef): File, lakehouse, or database settings for
-                the source.
-            target_config (SourceRef): File, lakehouse, or database settings for
-                the target.
+            diff_config (DiffConfig): Comparison settings and rules.
+            source_config (SourceRef): File, lakehouse, or database settings for the
+                source.
+            target_config (SourceRef): File, lakehouse, or database settings for the
+                target.
         """
         self.config = diff_config
         self.source_config = source_config
         self.target_config = target_config
 
     def get_dataframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
-        """Loads and aligns both source and target datasets.
+        """Load both datasets and align them.
 
         Returns:
-            tuple[pl.LazyFrame, pl.LazyFrame]: The prepared (source_df, target_df).
+            tuple[pl.LazyFrame, pl.LazyFrame]: The aligned source, then the aligned
+                target.
         """
         frames: list[pl.LazyFrame] = []
         for config, is_source in ((self.source_config, True), (self.target_config, False)):
@@ -1889,18 +1874,25 @@ class DiffEngine:
         """Route a comparison to warehouse pushdown or local Polars evaluation.
 
         Args:
-            diff (DiffConfig): Master comparison rules and keys.
+            diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source file, lakehouse, database, or warehouse config.
             target (SourceRef): Target file, lakehouse, database, or warehouse config.
 
         Returns:
-            DiffResult: Pushdown mismatch and anti-join counts, or a full Polars
-                diff for file, lakehouse, and database pairs.
+            DiffResult: The result. A pushdown pair returns counts and keys, and a
+                local pair also returns the differing rows.
 
         Raises:
             ConfigError: If primary keys are missing or `schema_mode` is violated.
             DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
+
+        Examples:
+            >>> from veridelta.models import DiffConfig, SourceConfig
+            >>> diff = DiffConfig(primary_keys=["order_id"])
+            >>> source = SourceConfig(path="legacy/orders.parquet", format="parquet")
+            >>> target = SourceConfig(path="modern/orders.parquet", format="parquet")
+            >>> result = DiffEngine.run_from_configs(diff, source, target)  # doctest: +SKIP
         """
         pair = _check_backend_pairing(source, target)
         if pair is not None:
@@ -1924,7 +1916,7 @@ class DiffEngine:
         Operates on schema metadata only, so callers may pass zero-row frames.
 
         Args:
-            config (DiffConfig): The master validation rules configuration.
+            config (DiffConfig): Comparison settings and rules.
             source_df (pl.LazyFrame): Source frame or column probe.
             target_df (pl.LazyFrame): Target frame or column probe.
 
@@ -1942,21 +1934,20 @@ class DiffEngine:
         """Check everything a run checks before it reads a row.
 
         Goes past `validate_schemas`: every rule is resolved against the aligned
-        columns, both schemas are normalized, and each column's comparison is
-        built. A rule the run could not honor therefore fails here, such as a
-        null sentinel its column's type cannot hold, or a similarity limit
-        without the `fuzzy` extra. Operates on schema metadata only, so callers
-        may pass zero-row frames. Repeated keys and invalid regular expressions
-        surface only when rows are read.
+        columns, both schemas are normalized, and each column's comparison is built. A
+        rule the run could not honor fails here, such as a null sentinel its column's
+        type cannot hold, or a similarity limit without the `fuzzy` extra. Operates on
+        schema metadata only, so callers may pass zero-row frames. Repeated keys and
+        invalid regular expressions surface only when rows are read.
 
         Args:
-            config (DiffConfig): The master validation rules configuration.
+            config (DiffConfig): Comparison settings and rules.
             source_df (pl.LazyFrame): Source frame or column probe.
             target_df (pl.LazyFrame): Target frame or column probe.
 
         Returns:
-            list[str]: The columns a run would compare, in source order, under
-                their target names.
+            list[str]: The columns a run would compare, in source order, under their
+                target names.
 
         Raises:
             ConfigError: If primary keys are missing, schema constraints are
@@ -1993,8 +1984,8 @@ class DiffEngine:
             diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source configuration.
             target (SourceRef): Target configuration.
-            schemas (bool): Also connect and check the rules against the
-                stored columns.
+            schemas (bool): Whether to also connect and check the rules against
+                the stored columns.
 
         Returns:
             list[ConfigFinding]: Errors and warnings, empty when nothing is
@@ -2039,7 +2030,7 @@ class DiffEngine:
         equally repeatable, set of keys than a local one.
 
         Args:
-            diff (DiffConfig): Master comparison rules and keys.
+            diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source configuration.
             target (SourceRef): Target configuration.
             min_confidence (float): Share of rows that must agree, above 0.5.
@@ -2088,31 +2079,40 @@ class DiffEngine:
     ) -> list[ValueMapProposal]:
         """Propose `value_map` entries from how source and target values line up.
 
-        Rows are aligned, normalized, and joined exactly as `run()` does, on a
-        copy, so this engine can still run afterward. For each compared text
-        column that stage 4 can map, a source value is proposed for the target
-        value it lines up with in at least `min_confidence` of its joined rows,
-        provided at least `min_support` rows agree. Values are read as the
-        `value_map` stage sees them, so a `case_insensitive` column gets
-        lowercase keys. Rows a column's existing map already translates are
-        left out, which also means a raw value equal to one of that map's
+        Rows are aligned, normalized, and joined as `run()` does, on a copy, so this
+        engine can still run afterward. For each compared text column that stage 4 can
+        map, a source value is proposed for the target value it lines up with in at
+        least `min_confidence` of its joined rows, provided at least `min_support` rows
+        agree. Values are read as the `value_map` stage sees them, so a
+        `case_insensitive` column gets lowercase keys. Rows a column's existing map
+        already translates are left out, so a raw value equal to one of that map's
         outputs cannot receive an entry.
 
         Args:
             min_confidence (float): Share of rows that must agree, above 0.5.
             min_support (int): Agreeing rows a proposal needs.
-            sample_fraction (float): Share of source rows to read, picked by a
-                hash of the primary keys, so the same data samples the same
-                rows under one Polars version.
+            sample_fraction (float): Share of source rows to read, picked by a hash of
+                the primary keys, so the same data samples the same rows under one
+                Polars version.
 
         Returns:
-            list[ValueMapProposal]: One proposal per column with new entries,
-                in source column order.
+            list[ValueMapProposal]: One proposal per column with new entries, in source
+                column order.
 
         Raises:
-            ConfigError: If a threshold is out of range, or the configuration
-                fails as it would in a run.
+            ConfigError: If a threshold is out of range, or the configuration fails as
+                it would in a run.
             DataIntegrityError: If either dataset repeats a normalized primary key.
+
+        Examples:
+            >>> import polars as pl
+            >>> from veridelta.models import DiffConfig
+            >>> source = pl.LazyFrame({"id": range(6), "sex": ["M"] * 6})
+            >>> target = pl.LazyFrame({"id": range(6), "sex": ["Male"] * 6})
+            >>> engine = DiffEngine(DiffConfig(primary_keys=["id"]), source, target)
+            >>> proposals = engine.propose_value_maps()
+            >>> proposals[0].to_rule().value_map
+            {'M': 'Male'}
         """
         _check_value_map_thresholds(min_confidence, min_support, sample_fraction)
         prepared = type(self)(self.config, self.source, self.target)
@@ -2403,37 +2403,40 @@ class DiffEngine:
                 )
 
     def run(self) -> DiffResult:
-        """Execute the end-to-end dataset comparison pipeline lazily.
+        """Compare the two datasets and return the result.
 
-        Builds an optimized Polars computation graph (DAG) to guarantee deterministic
-        alignment, preventing compute errors and memory exhaustion on large datasets.
-        Data is only materialized into memory when absolutely necessary for execution.
+        The comparison stays lazy until it collects the joins, so the inputs can be
+        scans over files larger than memory. A run takes these steps, in order:
 
-        Execution Pipeline:
-            1. Structural Alignment: Maps and prunes schemas to establish the
-               Target as the authoritative structural contract.
-            2. Validation: Asserts primary key existence and enforces the `SchemaMode`.
-            3. Semantic Normalization: Applies stages 1-7 of the `DiffRule` transform
-               order to each dataset independently and builds the stage 8-9 match
-               expressions from the normalized schemas, so a rule the run cannot
-               honor fails before any data moves. It then asserts key uniqueness
-               on the normalized keys (triggering a localized collection).
-            4. Relational Joins: Formulates the lazy anti-joins ('Added', 'Removed')
-               and inner-joins ('Changed') to isolate discrepancies.
-            5. Graph Execution: Executes the computation DAG via `.collect()` to
-               evaluate vectorized match expressions and compute exact row counts.
-            6. Artifact Persistence: Exports the materialized discrepancy dataframes
-               to the configured storage backend, if requested.
+        1. Align the columns: apply renames, drop ignored columns, and treat the
+           target as the authoritative schema.
+        2. Check that the primary keys exist and that `schema_mode` holds.
+        3. Apply stages 1 to 7 of the `DiffRule` transform order to each side, and
+           build each column's stage 8 and 9 comparison, so a rule the run cannot
+           honor fails before any rows move.
+        4. Check that the normalized primary keys are unique on each side.
+        5. Find the added, removed, and changed rows, and count the mismatches.
+        6. Write the artifacts, when `output_path` is set.
 
         Returns:
-            DiffResult: Execution report detailing match status, discrepancy counts,
-                and column-level drift metrics.
+            DiffResult: Counts, column-level drift, and the differing rows.
 
         Raises:
-            ConfigError: If schema constraints or primary keys are violated
-                post-alignment, a similarity limit needs the missing `fuzzy`
-                extra, or the requested artifact export format has no writer.
-            DataIntegrityError: If duplicate primary keys prevent deterministic joins.
+            ConfigError: If a primary key is missing, `schema_mode` is violated, a
+                similarity limit needs the missing `fuzzy` extra, or the artifact
+                format has no writer.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
+
+        Examples:
+            >>> import polars as pl
+            >>> from veridelta.models import DiffConfig
+            >>> source = pl.LazyFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]})
+            >>> target = pl.LazyFrame({"id": [2, 3, 4], "amount": [20.0, 31.0, 40.0]})
+            >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+            >>> result.summary.added_count, result.summary.removed_count
+            (1, 1)
+            >>> result.summary.column_mismatches
+            {'amount': 1}
         """
         compared_columns, match_expressions = self._plan()
 

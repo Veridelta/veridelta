@@ -1,11 +1,10 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Data models for Veridelta configuration and results.
+"""Configuration and result models.
 
-This module defines the Pydantic models used to configure data ingestion,
-comparison rules, and format the output summaries. It acts as the strict
-schema definition for the YAML configuration files.
+The Pydantic models here define every configuration setting, in YAML or in
+Python, and the results a comparison returns.
 """
 
 import math
@@ -50,14 +49,10 @@ SourceType = Literal[
     "avro",
     "excel",
 ]
-"""File formats Veridelta can ingest.
+"""File formats Veridelta can read.
 
-Exactly the set `LoaderFactory` implements, enforced by a test. This once
-listed aspirational formats too, which meant a config could name `netcdf`,
-validate cleanly, and then fail at run time on a format nobody had written.
-
-Delta Lake is not here on purpose: it is a table format reached through the
-`delta` source type, not a file passed to a reader.
+Exactly the set `LoaderFactory` implements. Delta Lake is not here: it is a
+table format, read through the `delta` source type rather than as a file.
 """
 
 SchemaMode = Literal[
@@ -66,19 +61,19 @@ SchemaMode = Literal[
     "allow_removals",
     "intersection",
 ]
-"""Defines how strictly the engine enforces column schemas between datasets.
+"""How strictly the two datasets' columns must agree.
 
-* `"exact"`: Both sides have the same set of columns. Column order is not compared.
-* `"allow_additions"`: Target can have new columns, but must contain every column present in the Source.
-* `"allow_removals"`: Target is allowed to drop legacy columns, but cannot add any new columns.
-* `"intersection"`: Only diff columns that exist in both datasets, ignoring all others. (Default)
+- `exact`: both sides have the same columns, in any order.
+- `allow_additions`: the target may add columns, but keeps every source column.
+- `allow_removals`: the target may drop columns, but adds none.
+- `intersection`, the default: compare only the columns on both sides.
 """
 
 SentinelValue = str | int | float | bool
-"""A single `null_values` entry. Sentinels keep the type written in the config.
+"""One `null_values` entry, which keeps the type written in the config.
 
-YAML preserves the distinction natively, so `-999` is an integer sentinel while
-`"-999"` is a text one, and each is only applied to columns of a matching type.
+In YAML, `-999` is an integer sentinel and `"-999"` a text one. Each applies only
+to columns of a matching type.
 """
 
 ArtifactFormat = Literal[
@@ -90,12 +85,9 @@ ArtifactFormat = Literal[
 ]
 """File format for exported discrepancy artifacts.
 
-A closed set bound to the engine's writer registry, so a typo fails when the
-config loads rather than after a comparison has already run.
-
-Narrower than `SourceType`: Excel is readable through the `excel` extra but not
-writable, because emitting a workbook needs a second dependency that a
-discrepancy dump does not justify.
+A closed set that matches the engine's writers, so a typo fails when the config
+loads instead of after the comparison runs. Excel can be read but not written:
+writing a workbook needs another dependency.
 """
 
 CastTarget = Literal[
@@ -106,14 +98,13 @@ CastTarget = Literal[
     "Date",
     "Datetime",
 ]
-"""Polars datatype a column may be cast to before comparison.
+"""Polars type a column may be cast to before comparison.
 
-A closed set rather than a free-form name, for two reasons. Unrecognized names
-used to resolve to nothing and skip the cast in silence, so a typo produced a
-green diff of uncast columns. And because the SQL compiler renders this field
-into `CAST(x AS <type>)`, where a type name cannot be quoted or parameterized,
-an enumerated set is the only thing standing between the config file and
-arbitrary SQL. Every member maps to a fixed per-dialect keyword.
+A closed set rather than a free-form name, for two reasons. A typo fails when
+the config loads instead of skipping the cast. And the SQL compiler renders
+this field into `CAST(x AS <type>)`, where a type name cannot be quoted or
+bound, so only a closed set keeps configuration text out of the SQL. Every
+member maps to a fixed keyword in each dialect.
 """
 
 WhitespaceMode = Literal[
@@ -122,26 +113,25 @@ WhitespaceMode = Literal[
     "right",
     "both",
 ]
-"""Granular control over string whitespace stripping.
+"""Which ends of a string to strip whitespace from.
 
-* `"none"`: Do not strip any whitespace.
-* `"left"`: Strip leading whitespace only.
-* `"right"`: Strip trailing whitespace only.
-* `"both"`: Strip both leading and trailing whitespace.
+- `none`: strip nothing.
+- `left`: strip leading whitespace.
+- `right`: strip trailing whitespace.
+- `both`: strip both ends.
 """
 
 
 class SourceConfig(BaseModel):
-    """Configuration for a specific file-backed data source.
+    """Settings for a file source.
 
     Attributes:
-        type (Literal["file"]): Discriminator for YAML source routing.
-        path (str): File system path or URI to the data.
-        format (SourceType): The format of the file (e.g., 'csv', 'parquet').
-        options (dict[str, Any]): Format-specific keyword arguments passed
-            directly to the underlying Polars reader (e.g., `{'separator': ';'}`).
-            A nested `storage_options` map is left out when the config is
-            printed, but kept by `model_dump()`, which the reader needs.
+        type (Literal["file"]): Source kind. A YAML file source may omit it.
+        path (str): Local path or URI of the file.
+        format (SourceType): File format, such as `parquet`. Defaults to `csv`.
+        options (dict[str, Any]): Keyword arguments for the Polars reader, such as
+            `{'separator': ';'}`. A nested `storage_options` map is left out when the
+            config is printed, but kept by `model_dump()`, which the reader needs.
     """
 
     # Reader options can carry object-store credentials, which Pydantic would
@@ -153,7 +143,7 @@ class SourceConfig(BaseModel):
     format: SourceType = Field("csv", description="The format of the file.")
     options: dict[str, Any] = Field(
         default_factory=dict,
-        description="Format-specific options (e.g., {'separator': ';'}).",
+        description="Options for the Polars reader, such as {'separator': ';'}.",
     )
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
@@ -188,98 +178,58 @@ def _reject_non_finite_sentinels(values: Iterable[SentinelValue] | None) -> None
 
 
 class DiffRule(BaseModel):
-    """Specific overrides for one or more columns using exact names or regex.
+    """Overrides for one or more columns, chosen by exact name or by pattern.
 
-    Transform Order:
-        This sequence is the canonical contract. Both the local Polars engine and
-        the SQL pushdown compiler apply transforms in exactly this order, so a rule
-        produces the same verdict whether it runs in-process or inside a warehouse.
-
-        1. Null sentinels (`null_values`)
-        2. Regex replace (`regex_replace`)
-        3. Whitespace, then case (`whitespace_mode`, `case_insensitive`)
-        4. Source-side value map (`value_map`)
-        5. Pad zeros (`pad_zeros`)
-        6. Datetime parsing, then timezone (`datetime_format`, `timezone`)
-        7. Explicit cast (`cast_to`)
-        8. Comparison (equality, numeric tolerance, or text similarity)
-        9. Null-safe equality (`treat_null_as_equal`)
-
-        Stages 1 through 7 normalize each dataset independently and run before any
-        join, so they apply to primary keys as well as compared columns. Stages 8
-        and 9 evaluate the aligned pair. Sentinels are neutralized first so later
-        stages never operate on placeholder text, and `cast_to` runs last so it
-        casts already-sanitized values.
-
-        Warehouse pushdown implements every stage, and refuses the one setting
-        it cannot reproduce, `min_jaro_winkler_similarity`, rather than
-        approximating it, so no rule silently changes meaning by running in a
-        warehouse. Two stages need explaining:
-
-        * `pad_zeros` is emitted as a sign-aware, non-truncating expression
-          rather than a bare `LPAD`, which pads in front of a minus sign and
-          discards characters past the target width.
-        * `timezone` emits no SQL. Polars rewrites only a column's timezone
-          label, and every downstream cast and comparison still reads the
-          underlying UTC instant, so the conversion cannot change a verdict.
-          Warehouses have no per-column label to rewrite, and the functions
-          that resemble the conversion shift the value to a wall clock instead.
-          The rule's precondition, timezone-aware timestamps, is checked
-          against the probed schema after padding and parsing, so a run that
-          fails locally fails here.
+    Each setting runs at a fixed stage of the
+    [transform order](https://veridelta.github.io/veridelta/rules/#transform-order),
+    the same in a local run and in a warehouse.
 
     Attributes:
-        column_names (list[str]): Exact names of the columns in the source dataset.
-        pattern (str | None): Regex pattern to match multiple columns (e.g., '^AMT_.*').
-        absolute_tolerance (float | None): The maximum allowed absolute difference
-            for numeric mathematical comparisons. Must be finite.
-        relative_tolerance (float | None): The maximum allowed relative difference
-            (e.g., 0.01 for 1%). Must be finite. Neither tolerance ever forgives a
-            non-finite value: NaN matches only NaN, and an infinity only itself.
-        max_levenshtein_distance (int | None): The most single-character
-            insertions, deletions, and substitutions that still count as a match,
-            for columns compared as text. Needs the `fuzzy` extra locally.
-        min_jaro_winkler_similarity (float | None): The lowest Jaro-Winkler
-            similarity, above 0 and at most 1, that still counts as a match for
-            columns compared as text. Needs the `fuzzy` extra, and runs locally
-            only: warehouse pushdown refuses it before any query runs. A rule
-            sets at most one of the two similarity limits.
-        case_insensitive (bool | None): If True, ignores case differences in strings.
-        whitespace_mode (WhitespaceMode | None): Granular control over stripping
-            leading/trailing whitespace prior to string comparison.
-        regex_replace (dict[str, str] | None): Dictionary of `{pattern: replacement}`
-            to sanitize text. Applied to string columns only.
-        pad_zeros (int | None): Left-pad values to this exact length
-            (such as `5` for `00123`). Non-string columns are stringified first, so a
-            numeric `123` and a text `'00123'` compare as equal.
-        value_map (dict[str, str] | None): Translate Source values to Target values
-            before comparison (e.g., `{'M': 'Male'}`).
-        null_values (list[SentinelValue] | None): Values to actively coerce to
-            NULL (e.g., `['N/A', -999, false]`). Sentinels keep their configured
-            type and are applied only to columns that can hold them, so a mixed
-            list is safe across a mixed schema. Text sentinels reach string,
-            categorical, and enum columns; numbers reach any numeric column
-            including decimals; booleans reach boolean columns only. An explicit
-            rule whose sentinels all fail that test raises `ConfigError`.
-        treat_null_as_equal (bool | None): If True, evaluates NULL == NULL as a
-            successful match rather than a missing value mismatch.
-        datetime_format (str | None): Expected strptime format for dates
-            (e.g., '%Y-%m-%d %H:%M:%S'). Parses string columns into datetimes, so
-            the column is compared as a datetime rather than as text. Values that
-            do not match the format become NULL and therefore mismatch. Pushdown
-            translates the directives into each dialect's own format language
-            from a fixed table, and raises `ConfigError` for anything absent
-            from it rather than passing the directive through untranslated.
-        timezone (str | None): Target timezone to convert timestamps to before
-            comparison (e.g., 'UTC'). Requires timezone-aware data; naive
-            timestamps raise `ConfigError` rather than being assigned a guessed
-            zone, since guessing silently shifts comparisons.
-        cast_to (CastTarget | None): Explicitly cast column to this Polars
-            datatype (e.g., 'Float64'). Restricted to a closed set: an
-            unrecognized name used to skip the cast without complaint.
-        ignore (bool): Whether to skip this column entirely during comparison.
-        rename_to (str | None): The name in the target dataset if it differs from
-            the source. Only valid when `column_names` contains exactly one entry.
+        column_names (list[str]): Exact source column names the rule governs.
+        pattern (str | None): Regular expression that selects columns by name, such
+            as `^AMT_.*`.
+        absolute_tolerance (float | None): Largest absolute difference that still
+            matches, for numeric columns. Must be finite.
+        relative_tolerance (float | None): Largest difference relative to the source
+            value that still matches, such as `0.01` for 1%. Must be finite. Neither
+            tolerance forgives a non-finite value: NaN matches only NaN, and an
+            infinity only itself.
+        max_levenshtein_distance (int | None): Most single-character insertions,
+            deletions, and substitutions that still match, for columns compared as
+            text. Needs the `fuzzy` extra locally.
+        min_jaro_winkler_similarity (float | None): Lowest Jaro-Winkler similarity,
+            above 0 and at most 1, that still matches, for columns compared as text.
+            Needs the `fuzzy` extra, and runs locally only: warehouse pushdown refuses
+            it before any query runs. A rule sets at most one of the two limits.
+        case_insensitive (bool | None): Whether to ignore case in text.
+        whitespace_mode (WhitespaceMode | None): Which ends of text to strip
+            whitespace from.
+        regex_replace (dict[str, str] | None): `{pattern: replacement}` pairs applied
+            to text columns.
+        pad_zeros (int | None): Width to left-pad values to with zeros, such as `5`
+            for `00123`. Other types become text first, so a numeric `123` matches a
+            text `'00123'`.
+        value_map (dict[str, str] | None): Source values to translate to target
+            values before comparison, such as `{'M': 'Male'}`.
+        null_values (list[SentinelValue] | None): Values to read as NULL, such as
+            `['N/A', -999, false]`. Each applies only to columns whose type can hold
+            it: text reaches string, categorical, and enum columns, numbers reach
+            numeric columns, decimals included, and booleans reach boolean columns.
+            An explicit rule whose sentinels fit no column type raises `ConfigError`.
+        treat_null_as_equal (bool | None): Whether two NULLs match.
+        datetime_format (str | None): Format for `strptime`, such as
+            `%Y-%m-%d %H:%M:%S`, that parses text columns into datetimes. A value that does not match
+            becomes NULL. Pushdown translates the directives from a fixed table and
+            raises `ConfigError` for any directive outside it.
+        timezone (str | None): Timezone to convert timestamps to, such as `UTC`. The
+            column must be timezone-aware once parsed: a naive timestamp raises
+            `ConfigError` instead of being assigned a guessed zone.
+        cast_to (CastTarget | None): Polars type to cast the column to, such as
+            `Float64`. A closed set, so a typo fails when the config loads.
+        ignore (bool): Whether to leave the column out of the comparison. Defaults
+            to False.
+        rename_to (str | None): Target column name, when it differs from the source.
+            Valid only when `column_names` holds exactly one name.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -288,7 +238,7 @@ class DiffRule(BaseModel):
         default_factory=list, description="Exact names of the columns in the source."
     )
     pattern: str | None = Field(
-        default=None, description="Regex pattern to match multiple columns (e.g., '^AMT_.*')."
+        default=None, description="Regex pattern that selects columns by name, such as '^AMT_.*'."
     )
 
     absolute_tolerance: float | None = Field(
@@ -303,7 +253,7 @@ class DiffRule(BaseModel):
         ge=0.0,
         strict=True,
         allow_inf_nan=False,
-        description="Relative tolerance (e.g., 0.01 for 1%).",
+        description="Relative tolerance, such as 0.01 for 1%.",
     )
     max_levenshtein_distance: int | None = Field(
         default=None,
@@ -339,19 +289,20 @@ class DiffRule(BaseModel):
     )
 
     value_map: dict[str, str] | None = Field(
-        default=None, description="Translate Source values to Target values (e.g., {'M': 'Male'})."
+        default=None,
+        description="Source values to translate to target values, such as {'M': 'Male'}.",
     )
     null_values: list[SentinelValue] | None = Field(
         default=None,
         strict=True,
-        description="Values to treat as NULL (e.g., ['N/A', -999, false]).",
+        description="Values to read as NULL, such as ['N/A', -999, false].",
     )
     treat_null_as_equal: bool | None = Field(
         default=None, description="Treat missing values (NULL/None) in both sources as a match."
     )
 
     datetime_format: str | None = Field(
-        default=None, description="Expected strptime format (e.g., '%Y-%m-%d %H:%M:%S')."
+        default=None, description="Format for strptime, such as '%Y-%m-%d %H:%M:%S'."
     )
     timezone: str | None = Field(
         default=None, description="Target timezone to normalize dates to before comparison."
@@ -359,10 +310,10 @@ class DiffRule(BaseModel):
 
     cast_to: CastTarget | None = Field(
         default=None,
-        description="Explicitly cast column to this Polars datatype (e.g., 'Float64').",
+        description="Polars type to cast the column to, such as 'Float64'.",
     )
     ignore: bool = Field(
-        default=False, description="If True, this column will be excluded from the comparison."
+        default=False, description="Whether to leave this column out of the comparison."
     )
     rename_to: str | None = Field(
         default=None,
@@ -372,16 +323,16 @@ class DiffRule(BaseModel):
     @field_validator("pattern")
     @classmethod
     def validate_pattern(cls, v: str | None) -> str | None:
-        """Ensures the provided regex pattern is a valid expression at configuration time.
+        """Reject a `pattern` that is not a valid regular expression.
 
         Args:
-            v (str | None): The string regex pattern to validate.
+            v (str | None): Configured pattern.
 
         Returns:
-            str | None: The validated regex string.
+            str | None: The pattern, unchanged.
 
         Raises:
-            ValueError: If the regex pattern cannot be compiled.
+            ValueError: If the pattern does not compile.
         """
         if v is not None:
             try:
@@ -393,13 +344,13 @@ class DiffRule(BaseModel):
     @field_validator("null_values")
     @classmethod
     def validate_null_values(cls, v: list[SentinelValue] | None) -> list[SentinelValue] | None:
-        """Ensures every sentinel is a value that can actually be matched.
+        """Reject a sentinel that can never match, such as NaN.
 
         Args:
-            v (list[SentinelValue] | None): The configured sentinel list.
+            v (list[SentinelValue] | None): Configured sentinels.
 
         Returns:
-            list[SentinelValue] | None: The validated list.
+            list[SentinelValue] | None: The sentinels, unchanged.
 
         Raises:
             ValueError: If any entry is a non-finite float.
@@ -410,16 +361,16 @@ class DiffRule(BaseModel):
     @field_validator("regex_replace")
     @classmethod
     def validate_regex_replace(cls, v: dict[str, str] | None) -> dict[str, str] | None:
-        """Ensures all keys in the regex replacement dictionary are valid regex patterns.
+        """Reject a `regex_replace` key that is not a valid regular expression.
 
         Args:
-            v (dict[str, str] | None): A mapping of regex patterns to replacements.
+            v (dict[str, str] | None): Patterns and their replacements.
 
         Returns:
-            dict[str, str] | None: The validated dictionary.
+            dict[str, str] | None: The mapping, unchanged.
 
         Raises:
-            ValueError: If any key in the dictionary is an invalid regex pattern.
+            ValueError: If a pattern does not compile.
         """
         if v is not None:
             for pattern in v:
@@ -431,7 +382,7 @@ class DiffRule(BaseModel):
 
     @model_validator(mode="after")
     def validate_similarity_measure(self) -> "DiffRule":
-        """Rejects a rule that sets both text similarity limits.
+        """Reject a rule that sets both text similarity limits.
 
         Returns:
             DiffRule: The validated rule.
@@ -452,42 +403,45 @@ class DiffRule(BaseModel):
 
 
 class DiffConfig(BaseModel):
-    """The master configuration for a Veridelta comparison run.
+    """Settings and rules for one comparison.
 
     Attributes:
-        primary_keys (list[str]): Columns used to join and align the datasets.
-            At least one is required, and together they must be unique in
-            both datasets.
-        schema_mode (SchemaMode): How strictly to enforce column existence and
-            matching between sources.
-        strict_types (bool): If False (default), a column stored as different
-            types on the two sides is still compared: two numeric types compare by
-            value, so an integer `10` and a float `10.7` differ, and any other pair
-            soft-casts the target to the source type. If True, type mismatches
-            will automatically evaluate as row failures.
-        normalize_column_names (bool): If True, strips whitespace and lowercases
-            all column headers prior to schema alignment.
-        default_absolute_tolerance (float): Global absolute tolerance for numeric columns.
-        default_relative_tolerance (float): Global relative tolerance for numeric columns.
-        default_treat_null_as_equal (bool): Global setting for handling NULL == NULL.
-        default_whitespace_mode (WhitespaceMode): Global string whitespace stripping mode.
-        default_null_values (list[SentinelValue]): Global list of values to
-            coerce to NULL. Each is applied only to columns whose type can hold
-            it, and unusable combinations are skipped rather than raising.
-        rules (list[DiffRule]): List of per-column comparison overrides. Specific
-            `column_names` take precedence over regex `pattern` rules.
-        threshold (float): Allowed mismatch ratio (0.0 to 1.0) before the `is_match`
-            flag evaluates to False.
+        primary_keys (list[str]): Columns that join the datasets. At least one is
+            required, and together they must be unique in each dataset.
+        schema_mode (SchemaMode): How strictly the two sides' columns must agree.
+            Defaults to `intersection`.
+        strict_types (bool): Whether a column stored as different types on the two
+            sides fails every row. Defaults to False, which compares such a column
+            anyway: two numeric types compare by value, so an integer `10` and a
+            float `10.7` differ, and any other pair casts the target to the source
+            type, with values that do not convert becoming NULL.
+        normalize_column_names (bool): Whether to strip whitespace from column
+            names and lowercase them before alignment. Defaults to False.
+        default_absolute_tolerance (float): Absolute tolerance for numeric columns
+            whose rule sets none. Defaults to 0.
+        default_relative_tolerance (float): Relative tolerance for numeric columns
+            whose rule sets none. Defaults to 0.
+        default_treat_null_as_equal (bool): Whether two NULLs match in columns whose
+            rule does not say. Defaults to True.
+        default_whitespace_mode (WhitespaceMode): Whitespace mode for text columns
+            whose rule sets none. Defaults to `none`.
+        default_null_values (list[SentinelValue]): Values to read as NULL in every
+            column. Each applies only to columns whose type can hold it, and the
+            rest are skipped without an error.
+        rules (list[DiffRule]): Per-column overrides. A rule naming a column wins
+            over a `pattern` rule.
+        threshold (float): Largest share of mismatched rows, from 0 to 1, that
+            still counts as a match. Defaults to 0.
         report_top_columns_limit (int): Most drifted columns to list in
-            `report_summary` and the Markdown summary.
-        pushdown_sample_rows (int): Pushdown only. Fetch up to this many
-            changed rows with both sides' values, so the HTML report and the
-            result can show values rather than keys. 0 (default) fetches none,
-            so no value leaves the warehouse. Local runs hold every row already.
-        output_path (str | None): Optional path to save the resulting diff report
-            and artifacts (added, removed, and changed rows).
-        output_format (ArtifactFormat): The file format for exported discrepancy
-            artifacts.
+            `report_summary` and the Markdown summary. Defaults to 5.
+        pushdown_sample_rows (int): Changed rows a pushdown run fetches with both
+            sides' values, so the HTML report and the result can show values
+            instead of keys. Defaults to 0, which fetches none, so no value leaves
+            the warehouse. A local run holds every row already.
+        output_path (str | None): Folder to write the added, removed, and changed
+            rows to. None, the default, writes nothing.
+        output_format (ArtifactFormat): File format of those rows. Defaults to
+            `parquet`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -503,13 +457,14 @@ class DiffConfig(BaseModel):
     strict_types: bool = Field(
         default=False,
         description=(
-            "If False, numeric types compare by value and other types cast Target to Source."
+            "Whether differing column types fail every row. If False, numeric types compare "
+            "by value and other types cast the target to the source type."
         ),
     )
 
     normalize_column_names: bool = Field(
         default=False,
-        description="If True, strips whitespace and lowercases all column headers before processing.",
+        description="Whether to strip whitespace from column names and lowercase them.",
     )
 
     default_absolute_tolerance: float = Field(
@@ -566,19 +521,19 @@ class DiffConfig(BaseModel):
     )
     output_format: ArtifactFormat = Field(
         default="parquet",
-        description="File format for exported discrepancy artifacts (e.g., 'parquet').",
+        description="File format for exported discrepancy artifacts, such as 'parquet'.",
     )
 
     @field_validator("default_null_values")
     @classmethod
     def validate_default_null_values(cls, v: list[SentinelValue]) -> list[SentinelValue]:
-        """Ensures every global sentinel is a value that can actually be matched.
+        """Reject a default sentinel that can never match, such as NaN.
 
         Args:
-            v (list[SentinelValue]): The configured global sentinel list.
+            v (list[SentinelValue]): Configured default sentinels.
 
         Returns:
-            list[SentinelValue]: The validated list.
+            list[SentinelValue]: The sentinels, unchanged.
 
         Raises:
             ValueError: If any entry is a non-finite float.
@@ -615,31 +570,27 @@ class DiffConfig(BaseModel):
 
 
 class DiffSummary(BaseModel):
-    """The high-level execution results of a Veridelta comparison.
+    """Counts and verdict for one comparison.
 
     Attributes:
-        total_rows_source (int): Number of rows in the source dataset.
-        total_rows_target (int): Number of rows in the target dataset.
-        added_count (int): Rows found only in the target (missing from source).
-        removed_count (int): Rows found only in the source (missing from target).
-        changed_count (int): Rows present in both datasets but with value differences.
-        column_mismatches (dict[str, int]): Dictionary mapping column names to the
-            exact count of mismatched rows for that specific column.
-        is_match (bool): Boolean indicating if the overall diff falls within the
-            allowed mismatch threshold.
-        total_mismatches (int): (Computed) The sum of all added, removed, and changed rows.
-        mismatch_ratio (float): (Computed) The ratio of mismatched rows to the baseline
-            source dataset.
-        match_rate_percentage (float): (Computed) The overall match rate expressed
-            as a percentage (e.g., 99.98).
-        is_perfect_match (bool): (Computed) True only if there are exactly 0 mismatches.
-        volume_shift (int): (Computed) The net change in row volume (Target - Source).
-        report_summary (str): (Computed) A plain-text status report for CI logs.
-        report_limit (int): Internal configuration dictating the max columns to display
-            in the `report_summary`. Implicitly excluded from JSON serialization.
-        artifacts_written (bool): Whether discrepancy files were persisted to
-            `output_path`. Warehouse pushdown writes primary keys only, under
-            `_pks_only` filenames. Implicitly excluded from JSON serialization.
+        total_rows_source (int): Rows in the source dataset.
+        total_rows_target (int): Rows in the target dataset.
+        added_count (int): Rows only in the target.
+        removed_count (int): Rows only in the source.
+        changed_count (int): Rows in both datasets with at least one differing
+            column.
+        column_mismatches (dict[str, int]): Mismatched rows per compared column.
+        is_match (bool): Whether the mismatch ratio is within `threshold`.
+        total_mismatches (int): Added, removed, and changed rows together.
+        mismatch_ratio (float): `total_mismatches` divided by the source row count.
+        match_rate_percentage (float): Match rate as a percentage, such as `99.98`.
+        is_perfect_match (bool): Whether nothing mismatched.
+        volume_shift (int): Target rows minus source rows.
+        report_summary (str): Plain-text report for CI logs.
+        report_limit (int): Most columns `report_summary` lists. Left out of JSON.
+        artifacts_written (bool): Whether artifacts were written to `output_path`.
+            Pushdown writes primary keys only, under `_pks_only` file names. Left
+            out of JSON.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -658,63 +609,60 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def total_mismatches(self) -> int:
-        """Calculates the sum of all added, removed, and changed rows.
+        """Count added, removed, and changed rows together.
 
         Returns:
-            int: The total count of discrepancy events.
+            int: The total.
         """
         return self.added_count + self.removed_count + self.changed_count
 
     @computed_field
     @property
     def mismatch_ratio(self) -> float:
-        """Calculates the ratio of mismatched rows to the baseline source dataset.
+        """Divide the mismatches by the source row count.
 
         Returns:
-            float: A float representing the ratio (0.0 to 1.0+).
+            float: The ratio, which can exceed 1.
         """
         return float(self.total_mismatches) / float(max(self.total_rows_source, 1))
 
     @computed_field
     @property
     def match_rate_percentage(self) -> float:
-        """Calculates the overall match rate expressed as a percentage.
+        """Express the match rate as a percentage.
 
         Returns:
-            float: The match percentage rounded to two decimal places (e.g., 99.98).
+            float: The percentage, rounded to two decimal places, such as `99.98`.
         """
         return round((1.0 - self.mismatch_ratio) * 100.0, 2)
 
     @computed_field
     @property
     def is_perfect_match(self) -> bool:
-        """Evaluates if the datasets are completely identical under the configured rules.
+        """Return whether nothing mismatched under the configured rules.
 
         Returns:
-            bool: True if there are zero total mismatches.
+            bool: Whether `total_mismatches` is zero.
         """
         return self.total_mismatches == 0
 
     @computed_field
     @property
     def volume_shift(self) -> int:
-        """Calculates the net change in row volume between the systems.
+        """Subtract the source row count from the target's.
 
         Returns:
-            int: The net shift (Target rows - Source rows).
+            int: Target rows minus source rows.
         """
         return self.total_rows_target - self.total_rows_source
 
     @computed_field
     @property
     def report_summary(self) -> str:
-        """Generates a pre-formatted, human-readable status report.
-
-        The text holds every count and the columns that drifted most, laid out
-        for a CI log.
+        """Format the counts and the most drifted columns as plain text for a CI log.
 
         Returns:
-            str: The formatted execution summary.
+            str: The report.
         """
         status_icon = "PASSED" if self.is_match else "FAILED"
         perfect_tag = " (Perfect Match)" if self.is_perfect_match else ""
@@ -748,28 +696,26 @@ class DiffSummary(BaseModel):
 
 @dataclass(frozen=True)
 class DiffResult:
-    """A completed comparison: the metrics plus the rows behind them.
+    """A completed comparison: the counts plus the rows behind them.
 
-    `DiffSummary` stays a pure value object that serializes to JSON, so it
-    cannot carry frames. This wraps it with the discrepancy rows the engine
-    already materialized, which previously were computed, counted, and thrown
-    away. Reaching them no longer requires exporting artifacts to disk.
+    `DiffSummary` serializes to JSON, so it cannot carry frames. This class pairs it
+    with the discrepancy rows the engine already materialized.
 
     Attributes:
         summary (DiffSummary): Counts, ratios, and the formatted report.
         added (pl.DataFrame): Rows present only in the target.
         removed (pl.DataFrame): Rows present only in the source.
-        changed (pl.DataFrame): Rows present in both with at least one
-            differing column. Local runs carry `{column}_source`,
-            `{column}_target`, and `{column}_is_match` for every compared
-            column; pushdown runs carry primary keys alone.
+        changed (pl.DataFrame): Rows present in both with at least one differing
+            column. A local run carries `{column}_source`, `{column}_target`, and
+            `{column}_is_match` for every compared column, and a pushdown run
+            carries primary keys alone.
         primary_keys (tuple[str, ...]): Join keys, in configured order.
-        compared_columns (tuple[str, ...]): Columns actually evaluated, after
-            renames and exclusions. Recorded explicitly so a mistyped column
-            name is caught on both paths, including pushdown, where the frames
-            themselves cannot reveal which columns were compared.
-        keys_only (bool): True for warehouse pushdown, which compares in place
-            and projects primary keys rather than extracting rows.
+        compared_columns (tuple[str, ...]): Columns compared, after renames and
+            exclusions. Recorded so `get_mismatches` refuses a mistyped name on both
+            engines, including pushdown, whose frames cannot show which columns
+            were compared.
+        keys_only (bool): Whether the run was pushdown, which returns primary keys
+            instead of rows.
         changed_sample (pl.DataFrame | None): Pushdown only, when
             `pushdown_sample_rows` is set: up to that many changed rows, in key
             order, with `{column}_source`, `{column}_target`, and
@@ -802,6 +748,15 @@ class DiffResult:
 
         Raises:
             ConfigError: If the column was not part of the comparison.
+
+        Examples:
+            >>> import polars as pl
+            >>> from veridelta.engine import DiffEngine
+            >>> source = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 20.0]})
+            >>> target = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 21.5]})
+            >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+            >>> result.get_mismatches("amount")["id"].to_list()
+            [2]
         """
         if column not in self.compared_columns:
             compared = ", ".join(self.compared_columns) or "none"
@@ -860,7 +815,7 @@ class ValueMapEntry(BaseModel):
     @computed_field
     @property
     def confidence(self) -> float:
-        """Calculates the share of the source value's rows that agree.
+        """Return the share of the source value's rows that agree.
 
         Returns:
             float: `agreeing_rows / rows`.
@@ -869,7 +824,7 @@ class ValueMapEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_counts(self) -> "ValueMapEntry":
-        """Rejects more agreeing rows than rows.
+        """Reject more agreeing rows than rows.
 
         Returns:
             ValueMapEntry: The validated entry.
@@ -943,16 +898,16 @@ class SnowflakeConfig(BaseModel):
     """Immutable connection settings for Snowflake warehouse pushdown.
 
     Attributes:
-        type (Literal["snowflake"]): Discriminator for YAML source routing.
+        type (Literal["snowflake"]): Source kind, which selects this model.
         table (str): Fully qualified table or view to compare.
         account (str): Snowflake account identifier.
         user (str): Login name used to authenticate the session.
         warehouse (str): Virtual warehouse that executes pushdown SQL.
         database (str): Default database for unqualified object names.
         schema_name (str): Default schema for unqualified object names.
-        password (str | None): Optional password; omitted when using SSO. Left
-            out when the config is printed, but kept by `model_dump()`, which
-            the connector needs.
+        password (str | None): Optional password, unset for SSO. Left out when
+            the config is printed, but kept by `model_dump()`, which the
+            connector needs.
         role (str | None): Optional role assumed after authentication.
     """
 
@@ -982,7 +937,7 @@ class DatabricksConfig(BaseModel):
     """Immutable connection settings for Databricks SQL warehouse pushdown.
 
     Attributes:
-        type (Literal["databricks"]): Discriminator for YAML source routing.
+        type (Literal["databricks"]): Source kind, which selects this model.
         table (str): Fully qualified table or view to compare.
         server_hostname (str): Workspace hostname for the SQL warehouse.
         http_path (str): HTTP path of the SQL warehouse or cluster.
@@ -1014,7 +969,7 @@ class BigQueryConfig(BaseModel):
     """Immutable connection settings for BigQuery warehouse pushdown.
 
     Attributes:
-        type (Literal["bigquery"]): Discriminator for YAML source routing.
+        type (Literal["bigquery"]): Source kind, which selects this model.
         table (str): Table to compare, as `dataset.table`, or `table` when
             `dataset` names the default dataset.
         project (str): Google Cloud project that runs the queries and holds
@@ -1084,7 +1039,7 @@ class DeltaLakeConfig(BaseModel):
     """Immutable settings for a Delta Lake table scan.
 
     Attributes:
-        type (Literal["delta"]): Discriminator for YAML source routing.
+        type (Literal["delta"]): Source kind, which selects this model.
         table_uri (str): Filesystem path or object-store URI of the table.
         version (int | None): Optional table version to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
@@ -1113,7 +1068,7 @@ class IcebergConfig(BaseModel):
     """Immutable settings for an Apache Iceberg table scan.
 
     Attributes:
-        type (Literal["iceberg"]): Discriminator for YAML source routing.
+        type (Literal["iceberg"]): Source kind, which selects this model.
         table_uri (str): Catalog identifier or filesystem URI of the table.
         snapshot_id (int | None): Optional snapshot to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
@@ -1152,7 +1107,7 @@ class DatabaseConfig(BaseModel):
     database, without reading their rows, when both sides set `pushdown`.
 
     Attributes:
-        type (Literal["database"]): Discriminator for YAML source routing.
+        type (Literal["database"]): Source kind, which selects this model.
         uri (str): ConnectorX connection URI, such as
             `postgresql://analyst@db.internal:5432/sales` or
             `sqlite:///srv/data/legacy.db`. A password written inside it is
@@ -1165,8 +1120,9 @@ class DatabaseConfig(BaseModel):
             unquoted identifier segments.
         query (str | None): SQL statement to run instead, sent to the database
             exactly as written. Set exactly one of `table` and `query`.
-        pushdown (bool): Compare inside the database instead of reading the
-            rows. Postgres `table` sources only, and both sides must set it.
+        pushdown (bool): Whether to compare inside the database instead of
+            reading the rows. Postgres `table` sources only, and both sides must
+            set it. Defaults to False.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
@@ -1237,7 +1193,7 @@ class DatabaseConfig(BaseModel):
 
     @property
     def redacted_uri(self) -> str:
-        """The URI with any password written into it replaced by `***`.
+        """Return the URI with any password in it replaced by `***`.
 
         Returns:
             str: The URI, safe to print or log.

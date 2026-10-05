@@ -1,56 +1,47 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Custom exceptions for Veridelta operations.
+"""The errors Veridelta raises.
 
-This module defines the core exception hierarchy used throughout the
-Veridelta framework. Consumers of the Python API can catch the base
-`VerideltaError` to safely handle all framework-specific failures.
+Each derives from `VerideltaError`, so one `except` clause catches them all.
 """
 
 
 class VerideltaError(Exception):
-    """Base exception for all Veridelta-specific errors.
+    """Base class for every error Veridelta raises.
 
-    Consumers should catch this exception to handle pipeline validation
-    failures gracefully without silencing standard Python runtime errors
-    (like `MemoryError` or `ValueError`).
+    Catch it to handle any Veridelta failure without also catching Python's own
+    errors, such as `MemoryError` or `ValueError`.
     """
 
 
 class ConfigError(VerideltaError):
-    """Raised when configuration validation or schema enforcement fails.
+    """Raised when a configuration is invalid or the data breaks its rules.
 
-    This is triggered during pipeline initialization or schema validation
-    if mandatory parameters (like primary keys) are missing, or if strict
-    schema constraints (e.g., `allow_removals`, `exact`) are violated by
-    the provided datasets.
+    Such failures include a primary key missing from a dataset, a rule the
+    column types cannot satisfy, and a column that `schema_mode` forbids.
     """
 
 
 class DataIntegrityError(VerideltaError):
-    """Raised when foundational data assumptions are violated.
+    """Raised when the data breaks an assumption the comparison relies on.
 
-    This is typically raised during the pre-evaluation phase if primary
-    keys are not unique within either dataset. Halting execution on this
-    error prevents catastrophic join explosions and Out-Of-Memory (OOM)
-    crashes during the Polars evaluation phase.
+    Repeated primary keys in either dataset raise it before any join runs,
+    since a repeated key multiplies the joined rows.
     """
 
 
 class ConnectorError(VerideltaError):
-    """Raised when a warehouse or lakehouse connector cannot complete an operation.
+    """Raised when a source connector cannot complete an operation.
 
-    This covers unimplemented pushdown backends, missing optional extras
-    required for native table scans, and calls made before a session or
-    lazy scan handle has been established.
+    Such failures include a missing optional extra, a failed query or scan, a
+    pair of backends that cannot be compared, and a call before a session opens.
     """
 
 
 class DatasetError(VerideltaError):
-    """Raised when a bundled sample dataset cannot be downloaded.
+    """Raised when a sample dataset cannot be downloaded.
 
-    `veridelta.datasets` fetches tutorial data over the network. A failed or
-    interrupted download raises this so callers can catch `VerideltaError`
-    for every framework failure instead of a bare `RuntimeError`.
+    `veridelta.datasets` fetches tutorial data over the network, and a failed
+    or interrupted download raises this error.
     """

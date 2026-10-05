@@ -645,7 +645,8 @@ class SQLPushdownCompiler:
 
         Stages 1 through 7 run once per column in a pair of CTEs, keys
         included. The join and the match predicates then read those projected
-        values, so adding a stage no longer copies the entire expression tree.
+        values, so each stage appears once in the statement however many
+        predicates read it.
 
         Args:
             source_table (str): Source relation (optionally dotted catalog path).
@@ -1208,12 +1209,12 @@ class SQLPushdownCompiler:
         The local engine asserts uniqueness after normalization and reports
         every row that shares its key with another. Summing the size of each
         key group larger than one is that same number, and `GROUP BY` puts NULL
-        keys in one group just as Polars counts them as duplicates of each other.
+        keys in one group, as Polars counts them as duplicates of each other.
 
         Args:
             table (str): Relation to check (optionally dotted catalog path).
             primary_keys (list[str]): Keys, spelled as the target stores them.
-            is_source (bool): True for the source relation, which reads a
+            is_source (bool): Whether the relation is the source, which reads a
                 renamed key under its stored name and applies `value_map`.
             key_rules (Sequence[DiffRule] | None): Key normalization, as for
                 `compile_query`.

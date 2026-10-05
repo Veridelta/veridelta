@@ -1,11 +1,7 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Built-in datasets for Veridelta testing and documentation examples.
-
-This module provides utilities to download, cache, and load sample
-datasets used in Veridelta's documentation and tutorials.
-"""
+"""Sample datasets for the tutorials and documentation examples."""
 
 import importlib.metadata
 import logging
@@ -40,17 +36,17 @@ def _get_cache_dir() -> pathlib.Path:
 
 
 def load_nyc_taxi() -> pl.DataFrame:
-    """Loads the NYC Taxi sample dataset.
+    """Load the NYC Taxi sample dataset.
 
-    Downloads the dataset from the official Veridelta repository and caches it
-    locally. If the cached file is corrupted, it automatically evicts it and
-    attempts a fresh download. Enforces a 15-second timeout.
+    The file is downloaded from the Veridelta repository once and cached under
+    `~/.cache/veridelta/datasets`. A corrupt cached copy is deleted and
+    downloaded again. A download times out after 15 seconds.
 
     Returns:
-        pl.DataFrame: A Polars DataFrame containing the NYC Taxi sample data.
+        pl.DataFrame: The sample trips.
 
     Raises:
-        DatasetError: If the download fails due to network or routing issues.
+        DatasetError: If the download fails.
     """
     cache_path = _get_cache_dir() / "sample_taxi_data.parquet"
 

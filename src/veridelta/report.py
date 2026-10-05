@@ -280,6 +280,17 @@ def write_html(result: DiffResult, path: str | Path, *, max_rows: int = DEFAULT_
 
     Raises:
         ConfigError: If `max_rows` is negative.
+
+    Examples:
+        >>> import polars as pl
+        >>> from veridelta.engine import DiffEngine
+        >>> from veridelta.models import DiffConfig
+        >>> source = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 20.0]})
+        >>> target = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 21.5]})
+        >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+        >>> render_html(result).startswith("<!DOCTYPE html>")
+        True
+        >>> path = write_html(result, "reports/orders.html")  # doctest: +SKIP
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -361,6 +372,17 @@ def write_markdown(result: DiffResult, path: str | Path) -> Path:
 
     Returns:
         Path: The file that was written.
+
+    Examples:
+        >>> import polars as pl
+        >>> from veridelta.engine import DiffEngine
+        >>> from veridelta.models import DiffConfig
+        >>> source = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 20.0]})
+        >>> target = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 21.5]})
+        >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+        >>> print(render_markdown(result).splitlines()[0])
+        ### Veridelta: FAILED
+        >>> path = write_markdown(result, "summary.md")  # doctest: +SKIP
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

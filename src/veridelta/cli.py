@@ -1,15 +1,11 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Command-line interface for Veridelta.
+"""The `veridelta` command line.
 
-This module provides the terminal entry points for running Veridelta
-comparisons in CI/CD pipelines and local environments.
-
-Progress and diagnostics go to stderr; only the requested result goes to
-stdout. That keeps `veridelta run --json | jq` working without the caller
-having to strip chatter out of the stream first, and lets the rules that
-`veridelta crosswalk` prints be redirected straight into a file.
+Progress and diagnostics go to stderr, and only the requested result goes to
+stdout. So `veridelta run --json | jq` needs no filtering, and the rules that
+`veridelta crosswalk` prints can be redirected straight into a file.
 """
 
 import argparse
@@ -114,7 +110,7 @@ def _report_failure(exc: Exception) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
-    """Executes the comparison workflow based on CLI arguments.
+    """Run the comparison a configuration file describes.
 
     Args:
         args (argparse.Namespace): Parsed command-line arguments carrying the
@@ -280,8 +276,9 @@ def validate(args: argparse.Namespace) -> int:
     """Check a configuration for what would stop a run, without reading any rows.
 
     Offline by default. With `--schemas`, it also connects and checks the rules
-    against each side's stored columns. Findings go to stdout, one `error:` or `warning:` line each, or as one JSON
-    object with `--json`. The verdict goes to stderr.
+    against each side's stored columns. Findings go to stdout, one `error:` or
+    `warning:` line each, or as one JSON object with `--json`. The verdict goes
+    to stderr.
 
     Args:
         args (argparse.Namespace): Parsed arguments carrying the config path,
