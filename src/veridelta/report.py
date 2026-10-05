@@ -262,8 +262,18 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
         ]
     )
 
+    changed = result.changed
     keys_note = ""
-    if result.keys_only:
+    if result.keys_only and result.changed_sample is not None:
+        changed = result.changed_sample
+        keys_note = (
+            "<p class='note'>This comparison ran as warehouse pushdown, which "
+            f"evaluates in place. Changed rows show values for the first {changed.height:,} "
+            f"of {summary.changed_count:,}, in key order, fetched because "
+            "<code>pushdown_sample_rows</code> is set. Added and removed rows list "
+            "primary keys.</p>"
+        )
+    elif result.keys_only:
         keys_note = (
             "<p class='note'>This comparison ran as warehouse pushdown, which "
             "evaluates in place and never extracts rows. The tables below list "
@@ -283,7 +293,7 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
 
     tables = "\n".join(
         [
-            _table("Changed rows", result.changed, max_rows),
+            _table("Changed rows", changed, max_rows),
             _table("Added rows", result.added, max_rows),
             _table("Removed rows", result.removed, max_rows),
         ]

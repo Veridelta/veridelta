@@ -21,9 +21,11 @@ PushdownQueryType = Literal[
     "schema",
     "value_maps",
     "settings",
+    "samples",
 ]
 """Warehouse pushdown round-trip: comparison rows, tallies, totals, key checks,
-probes, value map evidence, or a check of the server's settings."""
+probes, value map evidence, a check of the server's settings, or a sample of
+changed rows with their values."""
 
 _ConnectorT = TypeVar("_ConnectorT", bound="VerideltaConnector")
 

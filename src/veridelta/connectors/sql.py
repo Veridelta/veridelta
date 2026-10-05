@@ -18,7 +18,7 @@ dialect's syntax.
 import re
 from collections.abc import Mapping, Sequence
 from enum import Enum
-from typing import Final
+from typing import Final, NamedTuple
 
 import polars as pl
 
@@ -58,6 +58,33 @@ VALUE_MAP_ROWS_ALIAS = "_veridelta_value_rows"
 
 VALUE_MAP_AGREEING_ALIAS = "_veridelta_agreeing_rows"
 """Those rows whose target is the target value."""
+
+SAMPLE_KEY_PREFIX = "_veridelta_key_"
+"""Positional alias prefix for each primary key in a changed-row sample."""
+
+SAMPLE_SOURCE_PREFIX = "_veridelta_source_"
+"""Positional alias prefix for each compared column's source value in a sample."""
+
+SAMPLE_TARGET_PREFIX = "_veridelta_target_"
+"""Positional alias prefix for each compared column's target value in a sample."""
+
+SAMPLE_MATCH_PREFIX = "_veridelta_match_"
+"""Positional alias prefix for each compared column's match flag in a sample."""
+
+
+class SampleQuery(NamedTuple):
+    """A changed-row sample statement and the names its positional aliases stand for.
+
+    Attributes:
+        statement (str): The SQL to run.
+        renames (dict[str, str]): Positional alias to the name the local engine
+            gives that column: each key's own name, then `{column}_source`,
+            `{column}_target`, and `{column}_is_match` per compared column.
+    """
+
+    statement: str
+    renames: dict[str, str]
+
 
 SAMPLE_BUCKETS: Final = 1_000_000
 """Resolution of a value map sample: rows whose key hash falls in the first
@@ -746,24 +773,128 @@ class SQLPushdownCompiler:
             "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
         )
         statement = f"{with_clause} SELECT {select_list} {join}"
-        predicates = [
-            self._compare(
-                self._qualify(source_alias, target_column),
-                self._qualify(target_alias, target_column),
-                rule,
-                wide=target_column in wide_integers,
-                drift=target_column in type_drift,
-            )
-            for _source_column, target_column, rule in compared
-        ]
+        predicates = self._column_predicates(
+            compared,
+            source_alias=source_alias,
+            target_alias=target_alias,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
         if not predicates:
             # Nothing to compare means nothing can have changed. Without this
             # guard the bare join would report every shared key as drift.
             return f"{statement} WHERE 1 = 0"
-        # COALESCE is load-bearing, as in the tally: `NOT (NULL)` is NULL, and
-        # WHERE drops it, so a one-sided NULL would vanish from the changed set.
-        joined = " AND ".join(f"COALESCE({pred}, FALSE)" for pred in predicates)
-        return f"{statement} WHERE NOT ({joined})"
+        return f"{statement} WHERE {self._changed_condition(predicates)}"
+
+    def compile_changed_sample_query(
+        self,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        rules: list[DiffRule],
+        *,
+        limit: int,
+        source_alias: str = "src",
+        target_alias: str = "tgt",
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
+        key_rules: Sequence[DiffRule] | None = None,
+        wide_integers: frozenset[str] = frozenset(),
+        type_drift: frozenset[str] = frozenset(),
+    ) -> SampleQuery | None:
+        """Assemble a query for the first changed rows, with both sides' values.
+
+        This is `compile_query` with values: the same normalized CTEs, join,
+        and WHERE clause, so every sampled row is one `compile_query` reports
+        as changed, and each match flag is the predicate that decided it. Each
+        output column takes a positional alias, so a long column name cannot
+        pass an identifier limit and a key cannot clash with a suffixed column;
+        `SampleQuery.renames` gives the local engine's names back. Rows come in
+        key order, so the same tables give the same sample.
+
+        Args:
+            source_table (str): Source relation (optionally dotted catalog path).
+            target_table (str): Target relation (optionally dotted catalog path).
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
+            rules (list[DiffRule]): Per-column semantic overrides.
+            limit (int): Most rows to return, at least 1.
+            source_alias (str): Alias assigned to the source relation.
+            target_alias (str): Alias assigned to the target relation.
+            source_types (ColumnTypes | None): Probed source dtypes, as for
+                `compile_query`.
+            target_types (ColumnTypes | None): Probed target dtypes.
+            key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
+            wide_integers (frozenset[str]): Integer columns to measure in a wide
+                type, as for `compile_query`.
+            type_drift (frozenset[str]): Columns `strict_types` fails, as for
+                `compile_query`.
+
+        Returns:
+            SampleQuery | None: The statement and its alias names, or None when
+            no column is compared, since then no row can have changed.
+
+        Raises:
+            ConfigError: If a rule sets `min_jaro_winkler_similarity`, or a
+                `datetime_format` uses a directive this dialect cannot express.
+            ConnectorError: If `limit` is not a positive `int`, tables or keys
+                are empty, a rule is pattern-only, `rename_to` is used with
+                multiple `column_names`, or a key rule does not name exactly one
+                primary key.
+        """
+        rendered_limit = self._integer(limit)
+        if limit < 1:
+            raise ConnectorError(f"A row sample needs a LIMIT of at least 1, got {limit}.")
+        keys = self._key_columns(primary_keys, key_rules)
+        compared = self._compared_columns(rules)
+        if not compared:
+            return None
+
+        with_clause = self._normalized_with_clause(
+            source_table,
+            target_table,
+            [*keys, *compared],
+            source_alias=source_alias,
+            target_alias=target_alias,
+            source_types=source_types,
+            target_types=target_types,
+        )
+        predicates = self._column_predicates(
+            compared,
+            source_alias=source_alias,
+            target_alias=target_alias,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
+        renames: dict[str, str] = {}
+        projections: list[str] = []
+        for index, key in enumerate(primary_keys):
+            alias = f"{SAMPLE_KEY_PREFIX}{index}"
+            projections.append(f"{self._qualify(source_alias, key)} AS {self._quote_ident(alias)}")
+            renames[alias] = key
+        for index, ((_source_column, target_column, _rule), predicate) in enumerate(
+            zip(compared, predicates, strict=True)
+        ):
+            outputs = (
+                (SAMPLE_SOURCE_PREFIX, self._qualify(source_alias, target_column), "source"),
+                (SAMPLE_TARGET_PREFIX, self._qualify(target_alias, target_column), "target"),
+                (SAMPLE_MATCH_PREFIX, f"COALESCE({predicate}, FALSE)", "is_match"),
+            )
+            for prefix, expression, suffix in outputs:
+                alias = f"{prefix}{index}"
+                projections.append(f"{expression} AS {self._quote_ident(alias)}")
+                renames[alias] = f"{target_column}_{suffix}"
+        join = self._normalized_join(
+            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
+        )
+        order = ", ".join(
+            self._quote_ident(f"{SAMPLE_KEY_PREFIX}{index}") for index in range(len(primary_keys))
+        )
+        statement = (
+            f"{with_clause} SELECT {', '.join(projections)} {join} "
+            f"WHERE {self._changed_condition(predicates)} ORDER BY {order} LIMIT {rendered_limit}"
+        )
+        return SampleQuery(statement, renames)
 
     def compile_missing_query(
         self,
@@ -925,19 +1056,20 @@ class SQLPushdownCompiler:
             source_types=source_types,
             target_types=target_types,
         )
-        terms: list[str] = []
-        for _source_column, target_column, rule in compared:
-            predicate = self._compare(
-                self._qualify(source_alias, target_column),
-                self._qualify(target_alias, target_column),
-                rule,
-                wide=target_column in wide_integers,
-                drift=target_column in type_drift,
+        predicates = self._column_predicates(
+            compared,
+            source_alias=source_alias,
+            target_alias=target_alias,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
+        terms = [
+            f"SUM(CASE WHEN COALESCE({predicate}, FALSE) THEN 0 ELSE 1 END) "
+            f"AS {self._quote_ident(target_column)}"
+            for (_source_column, target_column, _rule), predicate in zip(
+                compared, predicates, strict=True
             )
-            alias = self._quote_ident(target_column)
-            terms.append(
-                f"SUM(CASE WHEN COALESCE({predicate}, FALSE) THEN 0 ELSE 1 END) AS {alias}"
-            )
+        ]
         join = self._normalized_join(
             "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
         )
@@ -1420,6 +1552,58 @@ class SQLPushdownCompiler:
             (by_key[key].column_names[0] if key in by_key else key, key, by_key.get(key))
             for key in primary_keys
         ]
+
+    def _column_predicates(
+        self,
+        compared: list[tuple[str, str, DiffRule]],
+        *,
+        source_alias: str,
+        target_alias: str,
+        wide_integers: frozenset[str],
+        type_drift: frozenset[str],
+    ) -> list[str]:
+        """Build each compared column's match predicate over the normalized CTEs.
+
+        The changed-row query, the per-column tally, and a row sample all read
+        their predicates here, so the three never disagree on what matches.
+
+        Args:
+            compared (list[tuple[str, str, DiffRule]]): Columns from
+                `_compared_columns`.
+            source_alias (str): Alias of the normalized source relation.
+            target_alias (str): Alias of the normalized target relation.
+            wide_integers (frozenset[str]): Integer columns to measure in a wide type.
+            type_drift (frozenset[str]): Columns `strict_types` fails.
+
+        Returns:
+            list[str]: One predicate per compared column, in order.
+        """
+        return [
+            self._compare(
+                self._qualify(source_alias, target_column),
+                self._qualify(target_alias, target_column),
+                rule,
+                wide=target_column in wide_integers,
+                drift=target_column in type_drift,
+            )
+            for _source_column, target_column, rule in compared
+        ]
+
+    @staticmethod
+    def _changed_condition(predicates: list[str]) -> str:
+        """Join match predicates into the condition a changed row meets.
+
+        COALESCE is load-bearing, as in the tally: `NOT (NULL)` is NULL, and
+        WHERE drops it, so a one-sided NULL would vanish from the changed set.
+
+        Args:
+            predicates (list[str]): At least one match predicate.
+
+        Returns:
+            str: `NOT (COALESCE(p1, FALSE) AND ...)`.
+        """
+        joined = " AND ".join(f"COALESCE({predicate}, FALSE)" for predicate in predicates)
+        return f"NOT ({joined})"
 
     def _compared_columns(self, rules: list[DiffRule]) -> list[tuple[str, str, DiffRule]]:
         """Resolve the columns that a join query will actually compare.

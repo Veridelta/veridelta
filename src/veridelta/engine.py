@@ -1819,6 +1819,19 @@ def _check_pushdown_plan(
             target_types=plan.target_schema,
             key_rules=plan.key_rules,
         )
+    if diff.pushdown_sample_rows:
+        compiler.compile_changed_sample_query(
+            source_table,
+            target_table,
+            keys,
+            plan.rules,
+            limit=diff.pushdown_sample_rows,
+            source_types=plan.source_schema,
+            target_types=plan.target_schema,
+            key_rules=plan.key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
 
 
 def _collect_pushdown_summary(
@@ -1852,9 +1865,8 @@ def _collect_pushdown_summary(
         DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If the warehouse returns a malformed aggregate.
     """
-    source_schema, target_schema, key_rules, rules = _plan_pushdown(
-        connector, source_table, target_table, diff
-    )
+    plan = _plan_pushdown(connector, source_table, target_table, diff)
+    source_schema, target_schema, key_rules, rules = plan
     # As in a local run, a ConfigError from rule resolution wins over repeated
     # keys, and repeated keys stop the run before any count or join executes.
     _reject_duplicate_pushdown_keys(
@@ -1916,20 +1928,30 @@ def _collect_pushdown_summary(
     if columns_sql is not None:
         tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
         column_mismatches = _column_mismatches_from_frame(tally)
+    changed_sample = _collect_changed_sample(
+        connector,
+        source_table,
+        target_table,
+        diff,
+        plan,
+        changed,
+        wide_integers=wide_integers,
+        type_drift=type_drift,
+    )
 
     artifacts_written = False
     if isinstance(diff.output_path, str):
         # Pushdown projects primary keys only, never full rows, so the suffix
         # keeps these files from being mistaken for local artifacts.
-        artifacts_written = _export_artifacts(
-            {
-                "added_rows_pks_only": added,
-                "removed_rows_pks_only": removed,
-                "changed_rows_pks_only": changed,
-            },
-            diff.output_path,
-            diff.output_format,
-        )
+        frames = {
+            "added_rows_pks_only": added,
+            "removed_rows_pks_only": removed,
+            "changed_rows_pks_only": changed,
+        }
+        if changed_sample is not None:
+            # A sample holds values, so its own name sets it apart from the keys.
+            frames["changed_rows_sample"] = changed_sample
+        artifacts_written = _export_artifacts(frames, diff.output_path, diff.output_format)
 
     return DiffResult(
         summary=_summary_from_pushdown(
@@ -1950,7 +1972,66 @@ def _collect_pushdown_summary(
         # column reads the same way whichever engine ran it.
         compared_columns=tuple(rule.rename_to or rule.column_names[0] for rule in rules),
         keys_only=True,
+        changed_sample=changed_sample,
     )
+
+
+def _collect_changed_sample(
+    connector: PushdownSession,
+    source_table: str,
+    target_table: str,
+    diff: DiffConfig,
+    plan: _PushdownPlan,
+    changed: pl.DataFrame,
+    *,
+    wide_integers: frozenset[str],
+    type_drift: frozenset[str],
+) -> pl.DataFrame | None:
+    """Fetch up to `pushdown_sample_rows` changed rows with both sides' values.
+
+    Runs only when a sample was asked for and some row changed, so a default
+    run issues exactly the statements it always has. The statement takes the
+    changed-row query's arguments, so it samples the rows that query counted.
+
+    Args:
+        connector (PushdownSession): Connected warehouse session.
+        source_table (str): Source relation name.
+        target_table (str): Target relation name.
+        diff (DiffConfig): Master comparison rules and keys.
+        plan (_PushdownPlan): The probed schemas and resolved keys and rules.
+        changed (pl.DataFrame): Keys of every changed row.
+        wide_integers (frozenset[str]): Integer columns measured in a wide type.
+        type_drift (frozenset[str]): Columns `strict_types` fails.
+
+    Returns:
+        pl.DataFrame | None: Keys, then `{column}_source`, `{column}_target`,
+            and `{column}_is_match` per compared column, as in a local run's
+            changed rows; None when no sample was asked for or nothing changed.
+
+    Raises:
+        ConnectorError: If the result lacks a column the statement selected.
+    """
+    if diff.pushdown_sample_rows == 0 or changed.is_empty():
+        return None
+    sample = connector.compiler.compile_changed_sample_query(
+        source_table,
+        target_table,
+        diff.primary_keys,
+        plan.rules,
+        limit=diff.pushdown_sample_rows,
+        source_types=plan.source_schema,
+        target_types=plan.target_schema,
+        key_rules=plan.key_rules,
+        wide_integers=wide_integers,
+        type_drift=type_drift,
+    )
+    if sample is None:  # pragma: no cover - a changed row means a column was compared
+        return None
+    frame = connector.execute_pushdown(sample.statement, query_type="samples").collect()
+    missing = [alias for alias in sample.renames if alias not in frame.columns]
+    if missing:
+        raise ConnectorError(f"The warehouse returned a row sample without {', '.join(missing)}.")
+    return frame.select(list(sample.renames)).rename(sample.renames)
 
 
 def _reject_self_comparison(source_table: str, target_table: str) -> None:

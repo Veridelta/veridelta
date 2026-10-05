@@ -1884,6 +1884,67 @@ class TestSimilarityParity:
 
 @pytest.mark.integration
 @pytest.mark.slow
+class TestRowSampleParity:
+    """Validate that a pushdown sample shows the rows and values a local run reports.
+
+    Keys are integers, so both engines and every backend order them alike.
+    """
+
+    _SOURCE = pl.DataFrame(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "name": [" ada", "bob", "cy", "dee", "eve"],
+            "amt": [10, 20, 30, 40, 50],
+        }
+    )
+    _TARGET = pl.DataFrame(
+        {
+            "id": [1, 2, 3, 4, 6],
+            "name": ["ada", "Bob", "cy", "dee", "fay"],
+            "amount": [10, 20, 31, None, 60],
+        }
+    )
+    _RULES = [  # noqa: RUF012
+        DiffRule(column_names=["name"], whitespace_mode="both"),
+        DiffRule(column_names=["amt"], rename_to="amount"),
+    ]
+
+    def test_it_samples_every_changed_row_with_the_local_values(self) -> None:
+        """Ensure each sampled row carries the normalized values and flags of a local run."""
+        config = DiffConfig(primary_keys=["id"], rules=self._RULES, pushdown_sample_rows=100)
+
+        local = run_local(config, self._SOURCE, self._TARGET)
+        pushdown, statements = run_pushdown(config, self._SOURCE, self._TARGET)
+
+        sample = pushdown.changed_sample
+        assert sample is not None, "\n".join(statements)
+        assert sample.columns == [
+            "id",
+            "name_source",
+            "name_target",
+            "name_is_match",
+            "amount_source",
+            "amount_target",
+            "amount_is_match",
+        ]
+        expected = local.changed.select(sample.columns).sort("id")
+        assert sample.sort("id").to_dicts() == expected.to_dicts()
+        assert sample["id"].to_list() == [2, 3, 4]
+
+    def test_it_takes_the_first_changed_rows_in_key_order(self) -> None:
+        """Ensure a small sample is the lowest changed keys, so it repeats run to run."""
+        config = DiffConfig(primary_keys=["id"], rules=self._RULES, pushdown_sample_rows=2)
+
+        local = run_local(config, self._SOURCE, self._TARGET)
+        pushdown, _ = run_pushdown(config, self._SOURCE, self._TARGET)
+
+        assert pushdown.changed_sample is not None
+        assert pushdown.changed_sample["id"].to_list() == sorted(local.changed["id"])[:2]
+        assert pushdown.summary.changed_count == local.summary.changed_count == 3
+
+
+@pytest.mark.integration
+@pytest.mark.slow
 class TestHarnessSensitivity:
     """Prove the harness can actually observe divergence before it is trusted."""
 

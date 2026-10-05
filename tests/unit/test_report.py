@@ -195,6 +195,41 @@ class TestHTMLReport:
         """Ensure the caveat appears only where it applies."""
         assert "primary keys rather than values" not in render_html(_result())
 
+    def test_it_shows_sampled_values_for_a_pushdown_run(self) -> None:
+        """Ensure a fetched sample replaces the changed keys and says how much it shows."""
+        summary = DiffSummary(
+            total_rows_source=5,
+            total_rows_target=5,
+            added_count=0,
+            removed_count=0,
+            changed_count=3,
+            is_match=False,
+        )
+        result = DiffResult(
+            summary=summary,
+            added=pl.DataFrame({"id": []}),
+            removed=pl.DataFrame({"id": []}),
+            changed=pl.DataFrame({"id": [2, 3, 4]}),
+            primary_keys=("id",),
+            compared_columns=("val",),
+            keys_only=True,
+            changed_sample=pl.DataFrame(
+                {
+                    "id": [2, 3],
+                    "val_source": ["b", "c"],
+                    "val_target": ["B", "C"],
+                    "val_is_match": [False, False],
+                }
+            ),
+        )
+
+        document = render_html(result)
+
+        assert "values for the first 2 of 3" in document
+        assert "primary keys rather than values" not in document
+        assert "<th>val_source</th><th>val_target</th>" in document
+        assert _embedded_rows(document) == [[[2, "b", "B", False], [3, "c", "C", False]]]
+
     def test_it_handles_a_perfect_match(self) -> None:
         """Ensure empty frames render as an explicit statement, not a broken table."""
         frame = pl.DataFrame({"id": [1], "val": ["A"]})
