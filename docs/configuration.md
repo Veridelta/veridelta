@@ -378,6 +378,44 @@ write_markdown(result, "reports/summary.md")
 
 Warehouse pushdown compares in place and never projects values, so its frames hold primary keys alone and the result is flagged `keys_only`. `get_mismatches` there returns every changed key rather than one column's values, and still rejects a column that was not part of the comparison. A run with `pushdown_sample_rows` set also carries `changed_sample`: up to that many changed rows with each compared column's values, laid out like a local run's `changed`; see [Row samples](#row-samples).
 
+### OpenTelemetry metrics
+
+`veridelta run --otel otel-metrics.json` writes the run's metrics for an observability backend such as Datadog or Grafana, through an OpenTelemetry Collector or any OTLP/HTTP endpoint. It needs no OpenTelemetry package. From Python:
+
+```python
+from veridelta.telemetry import write_otlp_metrics
+
+write_otlp_metrics(
+    result, "reports/otel-metrics.json", config_path="veridelta.yaml", source=source, target=target
+)
+```
+
+Every metric is a gauge, stamped with the time the file is written, so each run adds one point to each series:
+
+| Metric | Unit | Attributes | Value |
+| :--- | :--- | :--- | :--- |
+| `veridelta.dataset.rows` | `{row}` | `veridelta.side`: `source` or `target` | Rows in each dataset. |
+| `veridelta.diff.rows` | `{row}` | `veridelta.diff.kind`: `added`, `removed`, or `changed` | Rows only in the target, only in the source, or in both with a value that differs. |
+| `veridelta.column.mismatched_rows` | `{row}` | `veridelta.column.name` | Changed rows whose value in that column differs. Every compared column reports, so one that stops drifting reads `0` rather than disappearing. |
+| `veridelta.diff.mismatch_ratio` | `1` | | Added, removed, and changed rows over the source rows, as `mismatch_ratio` is. |
+| `veridelta.diff.match` | | | `1` when the run matched within `threshold`, `0` when it drifted. It has no unit, since a backend such as Prometheus would read a unit of `1` as a ratio. |
+
+Resource attributes say which comparison ran:
+
+- `service.name`, which is `veridelta`, and `service.version`;
+- `veridelta.config.path`, the configuration file;
+- `veridelta.source.type` and `veridelta.target.type`, such as `file` or `snowflake`;
+- `veridelta.source.name` and `veridelta.target.name`: the table, or the file or lakehouse path.
+
+A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run, and a database `query` source has no name. Like the Markdown summary, the file holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file. Veridelta does not read `OTEL_RESOURCE_ATTRIBUTES`; to tag runs with an environment or a team, add attributes in the Collector, with its `resource` processor for one.
+
+The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file exporter format](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/file-exporter.md) specifies, so the Collector's OTLP JSON file receiver, in its contrib distribution, can read it. The same line is the body an OTLP/HTTP endpoint accepts:
+
+```bash
+curl --fail -X POST -H "Content-Type: application/json" \
+  --data-binary @otel-metrics.json "$OTLP_ENDPOINT/v1/metrics"
+```
+
 ## Command line
 
 ```bash
@@ -387,6 +425,7 @@ veridelta run -c veridelta.yaml --json
 veridelta run -c veridelta.yaml --quiet
 veridelta run -c veridelta.yaml --html report.html --html-max-rows 1000
 veridelta run -c veridelta.yaml --markdown summary.md
+veridelta run -c veridelta.yaml --otel otel-metrics.json
 veridelta crosswalk -c veridelta.yaml
 veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 veridelta validate -c veridelta.yaml
@@ -395,7 +434,7 @@ veridelta validate -c veridelta.yaml --schemas
 veridelta schema > veridelta.schema.json
 ```
 
-`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. `--markdown` writes the Markdown summary described above, which the [CI integrations](ci.md) post. Pushdown reports and summaries are labeled as primary-keys-only, and an HTML report shows a [row sample](#row-samples)'s values when the run fetched one.
+`--json` prints `DiffSummary` as JSON on stdout. `--quiet` suppresses progress chatter on stderr (the JSON line still prints). Progress chatter always goes to stderr, so `veridelta run --json | jq` does not have to strip anything first. `--html` writes a standalone report with no CDN references, capped at `--html-max-rows` (zero or more; default 1000) so a large diff cannot produce an unopenable file. `--markdown` writes the Markdown summary described above, which the [CI integrations](ci.md) post, and `--otel` the [OpenTelemetry metrics](#opentelemetry-metrics). Pushdown reports and summaries are labeled as primary-keys-only, and an HTML report shows a [row sample](#row-samples)'s values when the run fetched one.
 
 Exit codes are `0` for a match within `threshold`, `1` for drift or any failure while running, and `2` for invalid command-line arguments.
 

@@ -7,7 +7,7 @@ render_macros: false
 Veridelta ships a GitHub Action and a GitLab CI template. Both run `veridelta run`, then report the result:
 
 - they post its Markdown summary where reviewers look;
-- they keep the JSON summary and the HTML report as artifacts;
+- they keep the JSON summary, the HTML report, and the OpenTelemetry metrics as artifacts;
 - they fail the job on drift or on an error.
 
 Both are available from the release after 0.10.0; the examples pin `v0.11.0`.
@@ -41,7 +41,7 @@ jobs:
 
 **What it does:**
 - Appends the summary to the job summary.
-- Uploads `summary.json`, `summary.md`, and `report.html` as one artifact.
+- Uploads `summary.json`, `summary.md`, `report.html`, and `otel-metrics.json` as one artifact.
 - On `pull_request` and `pull_request_target` events, keeps one comment on the pull request up to date, one per configuration.
 
 **Fork PRs.** Pull requests from forks get a read-only token, so the comment step logs a warning instead of failing.
@@ -70,8 +70,30 @@ jobs:
 | `is-match` | `true` when the comparison matched within its threshold. |
 | `exit-code` | Exit code of `veridelta run`. |
 | `summary-json`, `summary-markdown`, `report-html` | Paths to the reports. Empty when the run did not finish. |
+| `otel-metrics` | Path to the run's [OpenTelemetry metrics](configuration.md#opentelemetry-metrics). Empty when the run did not finish. |
 
 To act on drift in a later step instead of failing, set `fail-on-mismatch: false` and read `status`.
+
+### Sending metrics to an observability backend
+
+From 0.12.0, the action also writes the run's [OpenTelemetry metrics](configuration.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
+
+```yaml
+      - uses: Veridelta/veridelta@v0.12.0
+        id: veridelta
+        with:
+          config: veridelta.yaml
+      - name: Send the metrics
+        if: always() && steps.veridelta.outputs.otel-metrics != ''
+        env:
+          OTLP_ENDPOINT: ${{ secrets.OTLP_ENDPOINT }}
+          METRICS: ${{ steps.veridelta.outputs.otel-metrics }}
+        run: >-
+          curl --fail -sS -X POST -H "Content-Type: application/json"
+          --data-binary "@$METRICS" "$OTLP_ENDPOINT/v1/metrics"
+```
+
+Add any header your backend requires, such as an API key, from a secret.
 
 ## GitLab CI
 
@@ -86,7 +108,7 @@ include:
 The template defines one job, named `veridelta` by default, which:
 - installs the release the template ships with, so include it from a release tag;
 - prints the summary to the job log;
-- keeps the reports as artifacts, exposed on the merge request as "Veridelta report".
+- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above.
 
 **Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports.
 

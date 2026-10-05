@@ -51,7 +51,7 @@ Standalone, air-gapped HTML dashboards rendered from a `DiffResult`.
       show_source: true
 
 ## OpenTelemetry Metrics
-Writes a comparison's counts, column drift, and verdict as an OTLP/JSON metrics export, for an OpenTelemetry Collector or any OTLP/HTTP endpoint.
+Writes a comparison's counts, column drift, and verdict as an OTLP/JSON metrics export, for an OpenTelemetry Collector or any OTLP/HTTP endpoint. See [OpenTelemetry metrics](configuration.md#opentelemetry-metrics).
 
 ::: veridelta.telemetry
     options:
