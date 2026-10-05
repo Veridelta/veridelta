@@ -4,7 +4,7 @@
 """Differential parity tests between the local engine and compiled pushdown SQL."""
 
 from collections.abc import Sequence
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -677,8 +677,8 @@ class TestTimezoneParity:
             {
                 "id": [1, 2],
                 "ts": [
-                    datetime(2026, 1, 2, 2, 30, tzinfo=timezone.utc),
-                    datetime(2026, 7, 2, 15, 30, tzinfo=timezone.utc),
+                    datetime(2026, 1, 2, 2, 30, tzinfo=UTC),
+                    datetime(2026, 7, 2, 15, 30, tzinfo=UTC),
                 ],
             }
         )
@@ -686,8 +686,8 @@ class TestTimezoneParity:
             {
                 "id": [1, 2],
                 "ts": [
-                    datetime(2026, 1, 2, 2, 30, tzinfo=timezone.utc),
-                    datetime(2026, 7, 2, 16, 30, tzinfo=timezone.utc),
+                    datetime(2026, 1, 2, 2, 30, tzinfo=UTC),
+                    datetime(2026, 7, 2, 16, 30, tzinfo=UTC),
                 ],
             }
         )
@@ -708,8 +708,8 @@ class TestTimezoneParity:
         UTC. Polars casts through the instant and yields the UTC day, so a
         warehouse that shifted to wall-clock time first would disagree.
         """
-        src = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=timezone.utc)]})
-        tgt = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=timezone.utc)]})
+        src = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=UTC)]})
+        tgt = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=UTC)]})
 
         config = DiffConfig(
             primary_keys=["id"],
