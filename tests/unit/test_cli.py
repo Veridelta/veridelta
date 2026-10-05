@@ -33,6 +33,7 @@ class TestCommandLineInterface:
             html=None,
             html_max_rows=1000,
             markdown=None,
+            otel=None,
         )
 
     def test_it_returns_exit_code_zero_when_datasets_match(
@@ -268,6 +269,61 @@ class TestCommandLineInterface:
         assert (
             parser.parse_args(["run", "--markdown", "out/summary.md"]).markdown == "out/summary.md"
         )
+
+    @pytest.mark.parametrize("is_match", [True, False])
+    def test_it_writes_otel_metrics_when_asked(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        is_match: bool,
+    ) -> None:
+        """Ensure `--otel` writes the metrics for a match or drift, and says where on stderr."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_write = mocker.patch(
+            "veridelta.cli.write_otlp_metrics", return_value=Path("otel-metrics.json")
+        )
+        mock_result = MagicMock(summary=MagicMock(is_match=is_match, report_summary="DONE"))
+        source, target = MagicMock(), MagicMock()
+        mock_load.return_value = (MagicMock(output_path=None), source, target)
+        mock_engine.run_from_configs.return_value = mock_result
+        default_args.otel = "otel-metrics.json"
+
+        exit_code = run(default_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == (0 if is_match else 1)
+        mock_write.assert_called_once_with(
+            mock_result,
+            "otel-metrics.json",
+            config_path="dummy.yaml",
+            source=source,
+            target=target,
+        )
+        assert "OpenTelemetry metrics saved to" in captured.err
+        assert "OpenTelemetry metrics saved to" not in captured.out
+
+    def test_it_writes_no_otel_metrics_when_the_run_fails(
+        self, mocker: MockerFixture, default_args: argparse.Namespace
+    ) -> None:
+        """Ensure a run that never finished leaves no metrics a collector could mistake for one."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_load.side_effect = ConfigError("Invalid schema mode")
+        mock_write = mocker.patch("veridelta.cli.write_otlp_metrics")
+        default_args.otel = "otel-metrics.json"
+
+        exit_code = run(default_args)
+
+        assert exit_code == 1
+        mock_write.assert_not_called()
+
+    def test_it_parses_the_otel_flag(self) -> None:
+        """Ensure `--otel` takes a path and defaults to writing nothing."""
+        parser = build_parser()
+
+        assert parser.parse_args(["run"]).otel is None
+        assert parser.parse_args(["run", "--otel", "out/metrics.json"]).otel == "out/metrics.json"
 
     def test_it_stays_silent_when_asked(
         self,
