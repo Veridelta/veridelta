@@ -80,9 +80,11 @@ The hooks also format the code and add the Apache-2.0 license header. If a hook 
 
 A release is a pull request that changes the version. Merging it does the rest.
 
-1. On a branch from `main`, run `uv run cz bump --version-files-only --yes`. It writes the new version into `pyproject.toml`, `src/veridelta/__init__.py`, `mkdocs.yml`, and the GitLab template, and prepends a generated block to `CHANGELOG.md`. Run `uv lock` to sync the lockfile, rewrite the generated block in the style of the earlier entries, and open a pull request titled `chore(release): X.Y.Z`.
+1. On a branch from `main`, check the version `uv run cz bump --dry-run` proposes, as described below. Then run `uv run cz bump --version-files-only --yes`. It writes the new version into `pyproject.toml`, `src/veridelta/__init__.py`, `mkdocs.yml`, and the GitLab template, and prepends a generated block to `CHANGELOG.md`. Run `uv lock` to sync the lockfile, rewrite the generated block in the style of the earlier entries, and open a pull request titled `chore(release): X.Y.Z`.
 2. Merge it once CI passes. The release workflow sees a version PyPI does not have, tags the merge commit `vX.Y.Z`, and starts a publishing run on that tag.
 3. A maintainer approves that run's `pypi` deployment. It then builds the tagged commit, uploads the package, and creates the GitHub Release with generated notes, marked Latest when it is the newest version.
+
+Commitizen picks the version from every line of every commit message since the last tag, not only the titles. A squash merge's body lists the commits it squashed, and a Dependabot body quotes upstream release notes. So a stray `feat` line can propose a minor version where a patch is due. When the dry run proposes the wrong version, pass `--increment PATCH` or `--increment MINOR` to both commands.
 
 A merge that lands while a release waits for approval leaves the tag where it is, so the tagged commit is still the one released, and that merge's run ends without asking for a second approval. If the release's run was rejected or cancelled, the next merge to `main` starts it again; to abandon a version instead, release the next one.
 

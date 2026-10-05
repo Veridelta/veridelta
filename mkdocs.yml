@@ -44,7 +44,7 @@ plugins:
             show_root_heading: true
 
 extra:
-  version: 0.12.1
+  version: 0.13.0
 
 # A link to a heading that does not exist fails `mkdocs build --strict`.
 validation:
