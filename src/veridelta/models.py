@@ -68,7 +68,7 @@ SchemaMode = Literal[
 ]
 """Defines how strictly the engine enforces column schemas between datasets.
 
-* `"exact"`: Strict 1:1 mapping. Columns must be identical and in the exact same order.
+* `"exact"`: Both sides have the same set of columns. Column order is not compared.
 * `"allow_additions"`: Target can have new columns, but must contain every column present in the Source.
 * `"allow_removals"`: Target is allowed to drop legacy columns, but cannot add any new columns.
 * `"intersection"`: Only diff columns that exist in both datasets, ignoring all others. (Default)
@@ -234,7 +234,7 @@ class DiffRule(BaseModel):
           underlying UTC instant, so the conversion cannot change a verdict.
           Warehouses have no per-column label to rewrite, and the functions
           that resemble the conversion shift the value to a wall clock instead.
-          The rule's precondition -- timezone-aware timestamps -- is enforced
+          The rule's precondition, timezone-aware timestamps, is enforced
           against the probed schema, so a run that fails locally fails here.
 
     Attributes:
@@ -259,7 +259,7 @@ class DiffRule(BaseModel):
         regex_replace (dict[str, str] | None): Dictionary of `{pattern: replacement}`
             to sanitize text. Applied to string columns only.
         pad_zeros (int | None): Left-pad values to this exact length
-            (e.g., 5 -> '00123'). Non-string columns are stringified first, so a
+            (such as `5` for `00123`). Non-string columns are stringified first, so a
             numeric `123` and a text `'00123'` compare as equal.
         value_map (dict[str, str] | None): Translate Source values to Target values
             before comparison (e.g., `{'M': 'Male'}`).
@@ -344,7 +344,7 @@ class DiffRule(BaseModel):
         default=None,
         ge=0,
         strict=True,
-        description="Left-pad numeric strings to this length (e.g., 5 -> '00123').",
+        description="Left-pad numeric strings to this length, such as 5 for '00123'.",
     )
 
     value_map: dict[str, str] | None = Field(
@@ -487,9 +487,9 @@ class DiffConfig(BaseModel):
             `column_names` take precedence over regex `pattern` rules.
         threshold (float): Allowed mismatch ratio (0.0 to 1.0) before the `is_match`
             flag evaluates to False.
-        report_top_columns_limit (int): Max number of drifted columns to display
-            in the generated markdown report summary.
-        pushdown_sample_rows (int): Warehouse pushdown only. Fetch up to this many
+        report_top_columns_limit (int): Most drifted columns to list in
+            `report_summary` and the Markdown summary.
+        pushdown_sample_rows (int): Pushdown only. Fetch up to this many
             changed rows with both sides' values, so the HTML report and the
             result can show values rather than keys. 0 (default) fetches none,
             so no value leaves the warehouse. Local runs hold every row already.
@@ -551,7 +551,7 @@ class DiffConfig(BaseModel):
     rules: list[DiffRule] = Field(default_factory=list[DiffRule], description="Column overrides.")
 
     threshold: float = Field(
-        default=0.0, ge=0.0, le=1.0, description="Allowed mismatch percentage (0.0 to 1.0)."
+        default=0.0, ge=0.0, le=1.0, description="Allowed mismatch ratio (0.0 to 1.0)."
     )
 
     report_top_columns_limit: int = Field(
@@ -565,13 +565,13 @@ class DiffConfig(BaseModel):
         ge=0,
         strict=True,
         description=(
-            "Warehouse pushdown only: fetch up to this many changed rows with both "
+            "Pushdown only: fetch up to this many changed rows with both "
             "sides' values. 0 fetches none, so no value leaves the warehouse."
         ),
     )
 
     output_path: str | None = Field(
-        default=None, description="Optional path to save the detailed diff report."
+        default=None, description="Directory to write discrepancy artifacts to."
     )
     output_format: ArtifactFormat = Field(
         default="parquet",
@@ -643,8 +643,7 @@ class DiffSummary(BaseModel):
             as a percentage (e.g., 99.98).
         is_perfect_match (bool): (Computed) True only if there are exactly 0 mismatches.
         volume_shift (int): (Computed) The net change in row volume (Target - Source).
-        report_summary (str): (Computed) A pre-formatted, human-readable markdown
-            status report intended for CI/CD logs or PR comments.
+        report_summary (str): (Computed) A plain-text status report for CI logs.
         report_limit (int): Internal configuration dictating the max columns to display
             in the `report_summary`. Implicitly excluded from JSON serialization.
         artifacts_written (bool): Whether discrepancy files were persisted to
@@ -720,8 +719,8 @@ class DiffSummary(BaseModel):
     def report_summary(self) -> str:
         """Generates a pre-formatted, human-readable status report.
 
-        This string aggregates all metrics and top column-level drifts into a
-        clean markdown format ready for immediate pipeline logging.
+        The text holds every count and the columns that drifted most, laid out
+        for a CI log.
 
         Returns:
             str: The formatted execution summary.

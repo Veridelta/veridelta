@@ -22,3 +22,22 @@ alwaysApply: false
 - Do not add documentation solely to restate obvious implementation details.
 - Configuration examples must use valid configuration and supported values.
 - Document optional dependencies where users need them to enable a feature.
+
+## Style
+
+Write like the Polars documentation: deliberate, authoritative, and concise. `tests/unit/test_docs_style.py` enforces the first four rules marked (checked).
+
+- (checked) No em dash or en dash anywhere. Use a colon or a period; write ranges as "1 to 9".
+- (checked) No double hyphen standing in for a dash in prose.
+- (checked) No marketing or filler words: mission-critical, enterprise-grade, seamless, blazing, powerful, high-performance, leverage, simply, cutting-edge.
+- (checked) In `docs/*.md`, leave a blank line before every list, or Python Markdown renders it as part of the paragraph.
+- Headings use sentence case; code names go in backticks; page titles are short noun phrases.
+- A page opens by defining its subject in one sentence. Each code block has a one-sentence lead-in that ends in a colon.
+- Present tense, active voice. No "will", no hedging, no "note that", "just", or "actually".
+- About 25 words per sentence at most, one idea each. No chains of ", so" clauses or semicolons. Prefer "such as" to "e.g.".
+- State limitations plainly and inline. Use admonitions rarely, each with a topic title.
+- One topic per page; reference pages open with a quick-reference table. No test methodology or change history in reference text.
+- Link text describes the target. Never "here".
+- Docstrings: Google style, a one-line imperative summary ending in a period, argument descriptions as capitalized fragments ending in a period, booleans described with "Whether", defaults stated inline.
+- Runtime output (the run summary, error headers) is an interface that scripts parse. Change it only on purpose, not as a style edit.
+- `CHANGELOG.md` entries are history: new entries follow these rules, old ones stay as written.

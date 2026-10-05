@@ -1,5 +1,5 @@
 site_name: Veridelta
-site_description: Semantic diffing engine for mission-critical data pipelines.
+site_description: Compare two datasets under declared rules, locally or inside the warehouse.
 site_author: Veridelta Maintainers
 site_url: https://Veridelta.github.io/veridelta/
 repo_url: https://github.com/Veridelta/veridelta

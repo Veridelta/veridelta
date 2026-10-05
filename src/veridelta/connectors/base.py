@@ -60,7 +60,7 @@ class PushdownSession(Protocol):
 class VerideltaConnector(ABC):
     """Session and compute contract for remote or table-format data sources.
 
-    Three families implement it, and they divide the work differently:
+    Four families implement it, and they divide the work differently:
 
     - Warehouse connectors (`SnowflakeConnector`, `DatabricksConnector`,
       `BigQueryConnector`) hold
@@ -73,6 +73,10 @@ class VerideltaConnector(ABC):
     - The database connector (`DatabaseConnector`) reads one table or query
       through ConnectorX when it connects and exposes the rows through
       `lazyframe()`. The diff runs in the local engine, as for a lakehouse.
+    - The Postgres pushdown session (`PostgresPushdownSession`) runs compiled
+      SQL inside Postgres through ConnectorX, for two database sources that
+      set `pushdown`. Like a warehouse connector, it satisfies
+      `PushdownSession`.
 
     Call `connect()` before anything else and `close()` when finished; the
     connector is also a context manager whose exit calls `close()`. After
@@ -105,7 +109,7 @@ class VerideltaConnector(ABC):
             statement (str): SQL (warehouse) or deferred predicate payload.
             query_type (PushdownQueryType): Which round-trip the SQL represents
                 (`mismatch`, `added`, `missing`, `count`, `duplicates`,
-                `columns`, `schema`, or `value_maps`).
+                `columns`, `schema`, `value_maps`, `settings`, or `samples`).
 
         Returns:
             pl.LazyFrame: Unevaluated result graph. Must not be collected here.

@@ -1,10 +1,10 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Core engine for data ingestion and alignment.
+"""Load, align, and compare datasets.
 
-This module houses the I/O loaders, the `DataIngestor` for dataset preparation,
-and the `DiffEngine` which performs the high-performance Polars comparisons.
+Holds the file loaders, the `DataIngestor` that prepares each side, and the
+`DiffEngine` that compares the two sides with Polars.
 """
 
 import importlib
@@ -176,10 +176,10 @@ def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None
     The compiler emits nothing for stage 6b, because Polars' `convert_time_zone`
     only rewrites a column's timezone label: every downstream cast and
     comparison still reads the underlying UTC instant, so the conversion cannot
-    change a verdict. Warehouses have no per-column zone label to rewrite --
-    Spark most notably, whose `TIMESTAMP` is a bare instant -- and any function
-    that looks like the equivalent instead shifts the value to a wall clock,
-    which would make pushdown disagree with a local run.
+    change a verdict. Warehouses have no per-column zone label to rewrite, and
+    Spark's `TIMESTAMP` is a bare instant. A function that looks equivalent
+    shifts the value to a wall clock instead, which would make pushdown
+    disagree with a local run.
 
     What the rule does carry is a precondition, and that has to survive
     pushdown. A run that would fail locally on naive or non-temporal data must
@@ -666,7 +666,7 @@ def _rule_spellings(pairs: Mapping[str, str], column: str) -> tuple[str, ...]:
     renamed column answers to its target spelling first and its source
     spelling second, so a rule written against either one governs the pair.
     When the target spelling also names a source column that is itself
-    renamed away -- a swap or a chain -- a rule listing it governs that other
+    renamed away, as in a swap or a chain, a rule listing it governs that other
     column, and only the source spelling counts.
 
     Args:
@@ -839,7 +839,7 @@ def _enforce_pushdown_preconditions(
     """Fail a pushdown rule that the probed column types can never satisfy.
 
     Only an explicit `null_values` rule is checked. A global default is expected
-    to span a mixed schema, so the compiler simply skips the columns it cannot
+    to span a mixed schema, so the compiler skips the columns it cannot
     hold, exactly as the local engine does. The `timezone` precondition applies
     either way: the compiler emits nothing for that stage, so the check is the
     only thing keeping a warehouse run from comparing columns the local engine
@@ -2983,12 +2983,14 @@ class DiffEngine:
     def __init__(
         self, config: DiffConfig, source_df: pl.LazyFrame, target_df: pl.LazyFrame
     ) -> None:
-        """Initializes the engine with datasets already aligned by the DataIngestor.
+        """Hold the configuration and the two datasets to compare.
+
+        `run()` aligns the datasets and compares them.
 
         Args:
-            config (DiffConfig): The master validation rules configuration.
-            source_df (pl.LazyFrame): The aligned 'Left' (Legacy) dataset.
-            target_df (pl.LazyFrame): The aligned 'Right' (Modern) dataset.
+            config (DiffConfig): Keys, rules, and settings for the comparison.
+            source_df (pl.LazyFrame): Source rows, as stored.
+            target_df (pl.LazyFrame): Target rows, as stored.
         """
         self.config = config
         self.source = source_df

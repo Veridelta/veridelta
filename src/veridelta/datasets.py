@@ -3,7 +3,7 @@
 
 """Built-in datasets for Veridelta testing and documentation examples.
 
-This module provides utilities to securely download, cache, and load sample
+This module provides utilities to download, cache, and load sample
 datasets used in Veridelta's documentation and tutorials.
 """
 

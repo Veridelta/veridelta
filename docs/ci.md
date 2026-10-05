@@ -40,6 +40,7 @@ jobs:
 **Credentials.** Pass credentials as step environment variables, as above, and reference them from the configuration as `${SNOWFLAKE_PASSWORD}` (see [Environment variables](configuration.md#environment-variables)).
 
 **What it does:**
+
 - Appends the summary to the job summary.
 - Uploads `summary.json`, `summary.md`, `report.html`, and `otel-metrics.json` as one artifact.
 - On `pull_request` and `pull_request_target` events, keeps one comment on the pull request up to date, one per configuration.
@@ -106,6 +107,7 @@ include:
 ```
 
 The template defines one job, named `veridelta` by default, which:
+
 - installs the release the template ships with, so include it from a release tag;
 - prints the summary to the job log;
 - keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above.
@@ -113,6 +115,7 @@ The template defines one job, named `veridelta` by default, which:
 **Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports.
 
 **Inputs:**
+
 - `config`, `version`, `extras`, `html-max-rows`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action.
 - `stage`, `job-name`, and `image` place the job in your pipeline.
 
