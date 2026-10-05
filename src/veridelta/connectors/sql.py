@@ -16,7 +16,7 @@ dialect's syntax.
 """
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from enum import StrEnum
 from typing import Final, NamedTuple
 
@@ -573,6 +573,11 @@ def compile_database_select(scheme: str, table: str) -> str:
         ConfigError: If Veridelta has no quoting for the scheme.
         ConnectorError: If the table name falls outside the identifier allowlist.
     """
+    return f"SELECT * FROM {_quoted_database_relation(scheme, table)}"
+
+
+def _quoted_database_relation(scheme: str, table: str) -> str:
+    """Quote each segment of a database source's `table` for the scheme's database."""
     quotes = _DATABASE_IDENTIFIER_QUOTES.get(scheme)
     if quotes is None:
         known = ", ".join(sorted(_DATABASE_IDENTIFIER_QUOTES))
@@ -581,8 +586,62 @@ def compile_database_select(scheme: str, table: str) -> str:
             f"one ({known}). Write the statement in 'query' instead."
         )
     opening, closing = quotes
-    quoted = ".".join(f"{opening}{part}{closing}" for part in _relation_segments(table))
-    return f"SELECT * FROM {quoted}"
+    return ".".join(f"{opening}{part}{closing}" for part in _relation_segments(table))
+
+
+def compile_postgres_columns_query(table: str) -> str:
+    """Compile a catalog query for a Postgres table's columns and numeric declarations.
+
+    The quoted relation reaches `regclass` as a string literal, so Postgres
+    resolves it as the table read does, search path included. The identifier
+    allowlist admits no quote character, so the literal cannot be closed early.
+
+    Args:
+        table (str): One to three dotted identifier segments.
+
+    Returns:
+        str: A query returning `attname`, `atttypmod`, and `is_numeric` for
+            each column, in table order.
+
+    Raises:
+        ConnectorError: If the table name falls outside the identifier allowlist.
+    """
+    relation = _quoted_database_relation("postgresql", table)
+    return (
+        "SELECT attname, atttypmod, atttypid = 'numeric'::regtype AS is_numeric "
+        f"FROM pg_attribute WHERE attrelid = '{relation}'::regclass "
+        "AND attnum > 0 AND NOT attisdropped ORDER BY attnum"
+    )
+
+
+def compile_postgres_text_select(
+    table: str, columns: Sequence[str], as_text: Collection[str], *, probe: bool = False
+) -> str:
+    """Compile a Postgres table read that returns some columns as text.
+
+    Column names come from Postgres' own catalog, not from configuration, so
+    they are quoted by doubling any `"` rather than checked against the
+    allowlist. Doubling is the whole escape grammar of a quoted Postgres name.
+
+    Args:
+        table (str): One to three dotted identifier segments.
+        columns (Sequence[str]): Every column of the table, in table order.
+        as_text (Collection[str]): Columns to cast to text.
+        probe (bool): Whether to return no rows, for a schema check.
+
+    Returns:
+        str: The table read, with the chosen columns cast to text.
+
+    Raises:
+        ConnectorError: If the table name falls outside the identifier allowlist.
+    """
+    projections: list[str] = []
+    for name in columns:
+        quoted = '"' + name.replace('"', '""') + '"'
+        projections.append(f"CAST({quoted} AS TEXT) AS {quoted}" if name in as_text else quoted)
+    relation = _quoted_database_relation("postgresql", table)
+    read = f"SELECT {', '.join(projections)} FROM {relation}"
+    return f"{read} WHERE 1 = 0" if probe else read
 
 
 def compile_database_probe(scheme: str, table: str) -> str:

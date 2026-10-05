@@ -188,7 +188,7 @@ def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None
 
     Args:
         column (str): Column the rule resolved to.
-        dtype (pl.DataType): Probed type for that side of the comparison.
+        dtype (pl.DataType): Type of that side after padding and parsing.
         zone (str): Configured target timezone.
 
     Raises:
@@ -861,7 +861,8 @@ def _enforce_pushdown_preconditions(
                 raise _unusable_sentinel_error(name, dtype, effective["null_values"])
     if effective["timezone"]:
         for name, schema in sides:
-            dtype = schema.get(name)
+            # The zone rule reads the column after padding and parsing, as locally.
+            dtype = _parsed_dtype(effective, schema.get(name))
             if dtype is not None:
                 _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
@@ -906,13 +907,19 @@ def _normalized_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl
     """
     if effective["cast_to"] is not None:
         return _CAST_TARGETS[effective["cast_to"]]
+    dtype = _parsed_dtype(effective, dtype)
+    if effective["timezone"] and isinstance(dtype, pl.Datetime):
+        dtype = pl.Datetime(dtype.time_unit, effective["timezone"])
+    return dtype
+
+
+def _parsed_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
+    """Predict a column's dtype after stages 1 through 6a, before timezone and cast."""
     if effective["pad_zeros"] is not None:
         dtype = pl.String()
     fmt = effective["datetime_format"]
     if fmt and isinstance(dtype, (pl.String, pl.Utf8)):
         dtype = pl.Datetime("us", "UTC" if _parses_offset(fmt) else None)
-    if effective["timezone"] and isinstance(dtype, pl.Datetime):
-        dtype = pl.Datetime(dtype.time_unit, effective["timezone"])
     return dtype
 
 
@@ -1703,7 +1710,8 @@ def _validate_pushdown_schema(
     Returns:
         tuple[pl.Schema, pl.Schema]: Raw source and target schemas, before any
             rename or drop. The driver's Arrow result carries dtypes as well as
-            names, and the compiler needs both to filter null sentinels.
+            names, and the compiler needs both to filter null sentinels. A
+            Postgres `numeric` carries its declared precision and scale.
 
     Raises:
         ConfigError: If primary keys are missing, `normalize_column_names`
@@ -1717,9 +1725,18 @@ def _validate_pushdown_schema(
     )
     source_schema = source_probe.collect_schema()
     target_schema = target_probe.collect_schema()
+    if isinstance(connector, database_connectors.PostgresPushdownSession):
+        # The probe reads every numeric as Decimal(38, 10); the catalog has the declared type.
+        source_schema = _with_declared_types(source_schema, connector.declared_types(source_table))
+        target_schema = _with_declared_types(target_schema, connector.declared_types(target_table))
     _reject_warehouse_header_normalization(diff, source_schema, target_schema)
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
     return source_schema, target_schema
+
+
+def _with_declared_types(schema: pl.Schema, declared: Mapping[str, pl.DataType]) -> pl.Schema:
+    """Replace probed column types with the types the catalog declares."""
+    return pl.Schema({name: declared.get(name, dtype) for name, dtype in schema.items()})
 
 
 class _PushdownPlan(NamedTuple):
@@ -1772,9 +1789,9 @@ def _check_pushdown_plan(
 ) -> None:
     """Do what a warehouse run does before reading a row, and compile the rest.
 
-    The two schema probes are the only statements executed. Every statement a
-    run would execute after them is compiled against the probed types, so a
-    rule the warehouse cannot spell fails here.
+    The schema probes, with Postgres' catalog lookups, are the only statements
+    executed. Every statement a run would execute after them is compiled
+    against the probed types, so a rule the warehouse cannot spell fails here.
 
     Args:
         connector (PushdownSession): Connected session with a matching compiler.
@@ -3098,9 +3115,9 @@ class DiffEngine:
         With `schemas`, and no errors so far, each side's columns are read too,
         but never its rows. Local sides are checked with `validate_rules`; a
         database `table` is read with a zero-row probe, and a `query` is not
-        run at all. A warehouse pair runs its two schema probes, then compiles
-        every comparison statement without executing it, which settles the
-        warnings above one way or the other.
+        run at all. A warehouse pair runs the schema probes a run starts with,
+        then compiles every comparison statement without executing it, which
+        settles the warnings above one way or the other.
 
         Args:
             diff (DiffConfig): Comparison settings and rules.

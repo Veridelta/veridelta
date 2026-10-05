@@ -234,8 +234,9 @@ class DiffRule(BaseModel):
           underlying UTC instant, so the conversion cannot change a verdict.
           Warehouses have no per-column label to rewrite, and the functions
           that resemble the conversion shift the value to a wall clock instead.
-          The rule's precondition, timezone-aware timestamps, is enforced
-          against the probed schema, so a run that fails locally fails here.
+          The rule's precondition, timezone-aware timestamps, is checked
+          against the probed schema after padding and parsing, so a run that
+          fails locally fails here.
 
     Attributes:
         column_names (list[str]): Exact names of the columns in the source dataset.

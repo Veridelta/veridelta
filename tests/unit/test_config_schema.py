@@ -45,9 +45,9 @@ def _loader_accepts(tmp_path: Path, text: str) -> bool:
 
 
 def _documented_configs() -> list[Any]:
-    """Collect every complete YAML configuration shown in the guide and README."""
+    """Collect every complete YAML configuration shown in the docs and README."""
     params = []
-    for path in (_ROOT / "docs" / "configuration.md", _ROOT / "README.md"):
+    for path in [*sorted((_ROOT / "docs").rglob("*.md")), _ROOT / "README.md"]:
         blocks = re.findall(r"```yaml\n(.*?)```", path.read_text(encoding="utf-8"), re.DOTALL)
         for index, block in enumerate(blocks):
             if all(key in block for key in ("primary_keys", "source:", "target:")):

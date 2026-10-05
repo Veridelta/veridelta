@@ -11,10 +11,16 @@ import pytest
 from pytest_mock import MockerFixture
 
 from veridelta.config import load_config
-from veridelta.connectors.database import DatabaseConnector
+from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import COUNT_ALIAS, SampleQuery
-from veridelta.engine import _WAREHOUSES, DiffEngine, LoaderFactory, _WarehouseConfig
+from veridelta.engine import (
+    _WAREHOUSES,
+    DiffEngine,
+    LoaderFactory,
+    _validate_pushdown_schema,
+    _WarehouseConfig,
+)
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     BigQueryConfig,
@@ -1154,6 +1160,41 @@ class TestPostgresPushdownRouting:
             ConnectorError, match="the source is Postgres and the target is Snowflake"
         ):
             DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+    def test_it_compares_each_numeric_at_its_declared_type(self, mocker: MockerFixture) -> None:
+        """Ensure pushdown sees `numeric(10, 2)` and `numeric(12, 4)` as a local read does.
+
+        The zero-row probe reports every `numeric` as Decimal(38, 10), so
+        `strict_types` could not tell the two apart from the probe alone.
+        """
+        # (precision << 16 | scale) + 4 for numeric(10, 2) and numeric(12, 4).
+        typmods = {'"src"': 655366, '"tgt"': 786440}
+
+        def _answer(statement: str, uri: str) -> pl.DataFrame:
+            if statement.startswith("SELECT current_setting"):
+                return pl.DataFrame({"value": ["on"]})
+            if statement.startswith("SELECT attname"):
+                typmod = next(m for table, m in typmods.items() if table in statement)
+                return pl.DataFrame(
+                    {
+                        "attname": ["id", "amount"],
+                        "atttypmod": [-1, typmod],
+                        "is_numeric": [False, True],
+                    }
+                )
+            return pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Decimal(38, 10)})
+
+        mocker.patch("veridelta.connectors.database.connectorx", object())
+        mocker.patch("veridelta.connectors.database.pl.read_database_uri", side_effect=_answer)
+        session = PostgresPushdownSession(_postgres_config(table="src"))
+        session.connect()
+
+        source, target = _validate_pushdown_schema(
+            session, "src", "tgt", DiffConfig(primary_keys=["id"])
+        )
+
+        assert source == pl.Schema({"id": pl.Int64(), "amount": pl.Decimal(10, 2)})
+        assert target == pl.Schema({"id": pl.Int64(), "amount": pl.Decimal(12, 4)})
 
 
 _SAMPLE = SampleQuery(

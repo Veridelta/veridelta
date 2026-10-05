@@ -26,6 +26,8 @@ from veridelta.connectors.sql import (
     SampleQuery,
     compile_database_probe,
     compile_database_select,
+    compile_postgres_columns_query,
+    compile_postgres_text_select,
 )
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
@@ -1871,6 +1873,48 @@ class TestDatabaseProbe:
         """Ensure the probe fails exactly as the read would."""
         with pytest.raises(ConfigError, match="'trino' is not one"):
             compile_database_probe("trino", "orders")
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestPostgresDeclaredNumerics:
+    """Validate the statements that read a Postgres `numeric` at its declared scale."""
+
+    def test_it_asks_the_catalog_for_every_column_in_table_order(self) -> None:
+        """Ensure the relation reaches `regclass` quoted as the table read quotes it."""
+        assert compile_postgres_columns_query("public.Orders") == (
+            "SELECT attname, atttypmod, atttypid = 'numeric'::regtype AS is_numeric "
+            'FROM pg_attribute WHERE attrelid = \'"public"."Orders"\'::regclass '
+            "AND attnum > 0 AND NOT attisdropped ORDER BY attnum"
+        )
+
+    def test_it_fails_closed_on_a_catalog_table_outside_the_allowlist(self) -> None:
+        """Ensure no table name can close the literal `regclass` reads."""
+        with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
+            compile_postgres_columns_query("orders'::regclass; DROP TABLE orders; --")
+
+    def test_it_reads_the_chosen_columns_as_text(self) -> None:
+        """Ensure every column is read in table order, the declared ones cast to text."""
+        sql = compile_postgres_text_select(
+            "public.orders", ["id", "amount", "rate"], {"amount", "rate"}
+        )
+
+        assert sql == (
+            'SELECT "id", CAST("amount" AS TEXT) AS "amount", CAST("rate" AS TEXT) AS "rate" '
+            'FROM "public"."orders"'
+        )
+
+    def test_it_doubles_a_quote_inside_a_catalog_column_name(self) -> None:
+        """Ensure a column name from the catalog stays one quoted identifier."""
+        sql = compile_postgres_text_select("orders", ['say "hi"', "n"], {'say "hi"'})
+
+        assert sql == 'SELECT CAST("say ""hi""" AS TEXT) AS "say ""hi""", "n" FROM "orders"'
+
+    def test_it_probes_with_the_same_columns_and_no_rows(self) -> None:
+        """Ensure `validate --schemas` sees the types the read produces."""
+        sql = compile_postgres_text_select("orders", ["amount"], {"amount"}, probe=True)
+
+        assert sql == 'SELECT CAST("amount" AS TEXT) AS "amount" FROM "orders" WHERE 1 = 0'
 
 
 _VALUE_MAP_RULES = [

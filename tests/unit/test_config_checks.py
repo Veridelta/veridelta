@@ -5,13 +5,17 @@
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
-from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
+from veridelta.connectors.sql import (
+    SQLDialect,
+    SQLPushdownCompiler,
+    compile_postgres_columns_query,
+)
 from veridelta.engine import DiffEngine
 from veridelta.models import (
     ConfigFinding,
@@ -422,8 +426,10 @@ class TestLiveSchemaChecks:
 
         assert severity == "error"
         assert "cannot hold" in message
-        read.assert_called_with('SELECT * FROM "orders" WHERE 1 = 0', uri)
-        assert read.call_count == 2
+        # Each side looks up its numeric columns, then reads no rows.
+        probe = 'SELECT * FROM "orders" WHERE 1 = 0'
+        catalog = compile_postgres_columns_query("orders")
+        assert read.call_args_list == [call(catalog, uri), call(probe, uri)] * 2
 
     def test_it_does_not_run_a_database_query(self, mocker: MockerFixture) -> None:
         """Ensure a query side is skipped with a warning, never executed."""

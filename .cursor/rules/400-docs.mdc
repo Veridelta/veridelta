@@ -9,15 +9,20 @@ alwaysApply: false
 - Documentation must describe behavior that exists in the repository; do not document aspirational or unimplemented functionality.
 - Keep examples executable or consistent with the current public API.
 - Update documentation when a change affects user-visible behavior, configuration, CLI usage, supported formats, or public APIs.
-- Link to the canonical page rather than duplicating the same explanation:
+- Link to the canonical page instead of repeating its explanation:
   - Install, extras, and a 30-second usage example: `README.md`
-  - Config fields, formats, extras, CLI flags, warehouse, lakehouse, and database routing: `docs/configuration.md`
+  - The configuration file, its settings, environment variables, and editor support: `docs/configuration.md`
+  - Files, lakehouse tables, databases, warehouses, extras, connection fields, and logging: `docs/sources.md`
+  - Rule fields, the transform order, and each transform: `docs/rules.md`
+  - Comparing inside a warehouse or Postgres, and how it differs from a local run: `docs/pushdown.md`
+  - `DiffResult`, reports, OpenTelemetry metrics, and artifacts: `docs/results.md`
+  - CLI commands, flags, exit codes, and `validate`: `docs/cli.md`
   - GitHub Action and GitLab CI template usage: `docs/ci.md` (macros are off on that page, so `${{ }}` renders literally)
   - Public Python surface: `docs/api.md` (generated; do not hand-copy signatures)
   - What is not built: `docs/roadmap.md` only
   - Tutorials: existing notebooks under `docs/examples/`
-- Roadmap lists unimplemented work only. When a feature ships, move the how-to to `docs/configuration.md` (or a README one-liner) and delete the roadmap bullet.
-- New fields on `DiffConfig`, `DiffRule`, `SourceConfig`, or the warehouse, lakehouse, and database connection models (`SnowflakeConfig`, `DatabricksConfig`, `BigQueryConfig`, `DeltaLakeConfig`, `IcebergConfig`, `DatabaseConfig`) must appear in `docs/configuration.md`; `tests/unit/test_docs_coverage.py` fails otherwise.
+- Roadmap lists unimplemented work only. When a feature ships, move the how-to to its user guide page (or a README one-liner) and delete the roadmap bullet.
+- New fields on `DiffConfig`, `DiffRule`, `SourceConfig`, or the warehouse, lakehouse, and database connection models (`SnowflakeConfig`, `DatabricksConfig`, `BigQueryConfig`, `DeltaLakeConfig`, `IcebergConfig`, `DatabaseConfig`) must appear on their guide page: `DiffConfig` in `docs/configuration.md`, `DiffRule` in `docs/rules.md`, and the source models in `docs/sources.md`. `tests/unit/test_docs_coverage.py` fails otherwise.
 - After changing any of those models, run `make schema` to regenerate `docs/schema/veridelta.schema.json`, the JSON Schema editors read; `tests/unit/test_config_schema.py` fails while it is stale.
 - Do not add documentation solely to restate obvious implementation details.
 - Configuration examples must use valid configuration and supported values.
@@ -38,6 +43,7 @@ Write like the Polars documentation: deliberate, authoritative, and concise. `te
 - State limitations plainly and inline. Use admonitions rarely, each with a topic title.
 - One topic per page; reference pages open with a quick-reference table. No test methodology or change history in reference text.
 - Link text describes the target. Never "here".
+- Tutorials and the README link to the site by absolute URL: mkdocs-jupyter leaves a notebook's links as written, and PyPI shows the README alone. `tests/unit/test_docs_links.py` resolves each URL and anchor.
 - Docstrings: Google style, a one-line imperative summary ending in a period, argument descriptions as capitalized fragments ending in a period, booleans described with "Whether", defaults stated inline.
 - Runtime output (the run summary, error headers) is an interface that scripts parse. Change it only on purpose, not as a style edit.
 - `CHANGELOG.md` entries are history: new entries follow these rules, old ones stay as written.

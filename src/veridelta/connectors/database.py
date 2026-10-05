@@ -22,8 +22,9 @@ error as the cause.
 
 import logging
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import polars as pl
@@ -34,6 +35,8 @@ from veridelta.connectors.sql import (
     SQLPushdownCompiler,
     compile_database_probe,
     compile_database_select,
+    compile_postgres_columns_query,
+    compile_postgres_text_select,
 )
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DatabaseConfig
@@ -62,6 +65,12 @@ _SQLITE_PREFIX = "sqlite://"
 _POSTGRES_UNCONNECTED = "Postgres pushdown session is not connected. Call connect() first."
 _NO_STATEMENT = "No pushdown statement has run yet, so there is no result to describe."
 _LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value"
+
+_POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})
+"""URI schemes whose `table` reads keep each `numeric` column's declared scale."""
+
+_MAX_DECIMAL_PRECISION: Final = 38
+"""Widest decimal Polars holds. A wider `numeric` keeps ConnectorX's default read."""
 
 
 class DatabaseConnector(VerideltaConnector):
@@ -103,7 +112,10 @@ class DatabaseConnector(VerideltaConnector):
             uri = _existing_sqlite_uri(uri)
 
         started = time.perf_counter()
+        declared: dict[str, pl.Decimal] = {}
         try:
+            if scheme in _POSTGRES_SCHEMES and self._config.table is not None:
+                statement, declared = self._declared_statement(self._config.table, statement, uri)
             frame = pl.read_database_uri(statement, uri)
         except ImportError:
             # A missing pyarrow surfaces here, and it is the same missing extra.
@@ -126,7 +138,7 @@ class DatabaseConnector(VerideltaConnector):
             self._config.redacted_uri,
             time.perf_counter() - started,
         )
-        self._frame = frame.lazy()
+        self._frame = _with_declared_scale(frame, declared, self._subject).lazy()
 
     def execute_pushdown(
         self, statement: str, query_type: PushdownQueryType = "mismatch"
@@ -200,6 +212,17 @@ class DatabaseConnector(VerideltaConnector):
             )
         # DatabaseConfig requires exactly one of `table` and `query`.
         return cast("str", self._config.query)
+
+    def _declared_statement(
+        self, table: str, statement: str, uri: str
+    ) -> tuple[str, dict[str, pl.Decimal]]:
+        """Look up a Postgres table's `numeric` columns and read them as text, to keep scale."""
+        catalog = pl.read_database_uri(compile_postgres_columns_query(table), uri)
+        declared = _declared_decimals(catalog)
+        if not declared:
+            return statement, declared
+        columns = catalog.get_column("attname").to_list()
+        return compile_postgres_text_select(table, columns, declared, probe=self._probe), declared
 
     @property
     def _subject(self) -> str:
@@ -293,6 +316,26 @@ class PostgresPushdownSession(VerideltaConnector):
         probe = self.compiler.compile_result_schema_query(self._last_statement)
         return self._read(probe, uri, query_type="schema").schema
 
+    def declared_types(self, table: str) -> dict[str, pl.Decimal]:
+        """Return the declared precision and scale of a table's `numeric` columns.
+
+        ConnectorX describes every `numeric` as `Decimal(38, 10)`, so a schema
+        probe alone cannot tell `numeric(10, 2)` from `numeric(12, 4)`.
+
+        Args:
+            table (str): The table, as configured.
+
+        Returns:
+            dict[str, pl.Decimal]: Each `numeric` column Polars holds exactly,
+                by name. A column without a declared precision, wider than 38
+                digits, or with a negative scale is left out.
+
+        Raises:
+            ConnectorError: If the session is not connected or the query fails.
+        """
+        statement = compile_postgres_columns_query(table)
+        return _declared_decimals(self._read(statement, self._connected_uri(), query_type="schema"))
+
     def close(self) -> None:
         """Forget the connection. Idempotent; `connect()` checks the server again."""
         self._uri = None
@@ -349,6 +392,45 @@ class PostgresPushdownSession(VerideltaConnector):
             frame.height,
         )
         return frame
+
+
+def _declared_decimals(catalog: pl.DataFrame) -> dict[str, pl.Decimal]:
+    """Map each `numeric` column Polars holds exactly to its declared precision and scale."""
+    declared: dict[str, pl.Decimal] = {}
+    for name, typmod, is_numeric in catalog.iter_rows():
+        # A typmod packs (precision << 16 | scale) + 4. An unconstrained numeric's
+        # -1 decodes to precision 65535, and a negative scale to one above 1000.
+        precision, scale = ((typmod - 4) >> 16) & 0xFFFF, (typmod - 4) & 0xFFFF
+        if is_numeric and scale <= precision <= _MAX_DECIMAL_PRECISION:
+            declared[name] = pl.Decimal(precision, scale)
+    return declared
+
+
+def _with_declared_scale(
+    frame: pl.DataFrame, declared: Mapping[str, pl.Decimal], subject: str
+) -> pl.DataFrame:
+    """Cast the `numeric` columns read as text back to their declared precision and scale.
+
+    Args:
+        frame (pl.DataFrame): Rows as read, with each declared column as text.
+        declared (Mapping[str, pl.Decimal]): Declared type of each such column.
+        subject (str): What was read, for the error.
+
+    Returns:
+        pl.DataFrame: The rows, with each declared column a decimal.
+
+    Raises:
+        ConnectorError: If a value has no decimal form, such as `NaN`.
+    """
+    for name, dtype in declared.items():
+        try:
+            frame = frame.with_columns(pl.col(name).cast(dtype, strict=True))
+        except pl.exceptions.InvalidOperationError:
+            raise ConnectorError(
+                f"Column '{name}' of {subject} holds a value with no decimal form, such as "
+                "NaN. Leave such values out with a 'query'."
+            ) from None
+    return frame
 
 
 def _connection_uri(config: DatabaseConfig) -> str:
