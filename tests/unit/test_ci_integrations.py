@@ -25,6 +25,9 @@ _ROOT = Path(__file__).resolve().parents[2]
 _ACTION = _ROOT / "action.yml"
 _GITLAB = _ROOT / "ci" / "gitlab" / "veridelta.yml"
 _RELEASE = _ROOT / ".github" / "workflows" / "release.yml"
+_WORKFLOWS = sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
+_DEPENDABOT = _ROOT / ".github" / "dependabot.yml"
+_COMMIT_PIN = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
 def _action() -> dict[str, Any]:
@@ -368,3 +371,51 @@ class TestReleaseWorkflow:
             for step in job["steps"]:
                 if "run" in step:
                     assert "${{" not in step["run"], (name, step["name"])
+
+
+def _workflow_steps(path: Path) -> list[dict[str, Any]]:
+    """Return every step of every job in a workflow file."""
+    loaded: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return [step for job in loaded["jobs"].values() for step in job.get("steps", [])]
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestWorkflowPins:
+    """Pin the third-party actions every workflow runs, and keep the pins current."""
+
+    def test_it_finds_the_workflows(self) -> None:
+        """Ensure a moved workflows folder cannot silently skip every check below."""
+        assert {path.name for path in _WORKFLOWS} >= {"ci.yml", "docs.yml", "release.yml"}
+
+    @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
+    def test_it_pins_every_action_to_a_commit(self, workflow: Path) -> None:
+        """Ensure a moved tag upstream cannot change what CI runs or what a release publishes.
+
+        The release workflow holds `id-token: write` for PyPI, so an action it
+        runs by tag could publish whatever that tag points at next.
+        """
+        for step in _workflow_steps(workflow):
+            uses = step.get("uses")
+            if uses is None or uses.startswith("./"):
+                continue
+            assert _COMMIT_PIN.fullmatch(uses), f"{workflow.name}: {uses}"
+
+    @pytest.mark.parametrize("path", [*_WORKFLOWS, _ACTION], ids=lambda path: path.name)
+    def test_it_names_the_release_behind_every_pin(self, path: Path) -> None:
+        """Ensure each commit pin says which release it is, as Dependabot keeps it."""
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if re.search(r"uses: " + _COMMIT_PIN.pattern, line):
+                assert re.search(r"@[0-9a-f]{40} # v\d+(\.\d+)*$", line), line
+
+    def test_dependabot_keeps_the_pins_and_the_lockfile_current(self) -> None:
+        """Ensure Dependabot updates action pins and `uv.lock`, never the package's floors."""
+        config: dict[str, Any] = yaml.safe_load(_DEPENDABOT.read_text(encoding="utf-8"))
+        updates = {update["package-ecosystem"]: update for update in config["updates"]}
+
+        assert config["version"] == 2
+        assert set(updates) == {"github-actions", "uv"}
+        assert all(update["directory"] == "/" for update in updates.values())
+        assert all(update["schedule"]["interval"] == "weekly" for update in updates.values())
+        # The floors in pyproject.toml are a promise to users; only the lockfile moves.
+        assert updates["uv"]["versioning-strategy"] == "lockfile-only"
