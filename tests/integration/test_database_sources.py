@@ -251,6 +251,23 @@ class TestPartitionedDatabaseReads:
         assert split.height == 10
         assert split.sort("id").equals(whole.sort("id"))
 
+    def test_it_splits_a_read_from_a_path_that_needs_encoding(self, tmp_path: Path) -> None:
+        """Ensure the ranges read the file the URI names, where a path holds a space.
+
+        A SQLite path is percent-encoded into the URI. ConnectorX decodes it to
+        read, but its own range lookup would open the encoded text as a path.
+        On Windows that is every path, since a drive letter's colon encodes too.
+        """
+        folder = tmp_path / "legacy data"
+        folder.mkdir()
+        uri = _numbered(folder / "legacy.db")
+
+        split = LoaderFactory.load(
+            DatabaseConfig(uri=uri, table="orders", partition_on="id", partitions=3)
+        ).collect()
+
+        assert sorted(split["id"].to_list()) == list(range(1, 11))
+
     def test_it_compares_a_partitioned_source_as_it_compares_a_whole_one(
         self, tmp_path: Path
     ) -> None:
@@ -277,15 +294,15 @@ class TestPartitionedDatabaseReads:
         assert split.model_dump() == whole.model_dump()
 
     def test_it_explains_a_column_it_cannot_split_on(self, tmp_path: Path) -> None:
-        """Ensure a text column fails with ConnectorX's reason and the table named."""
+        """Ensure a text column fails with the column and table named, before any range read."""
         uri = _numbered(tmp_path / "legacy.db")
 
-        with pytest.raises(ConnectorError, match="Database read of table 'orders'") as info:
+        with pytest.raises(
+            ConnectorError, match="Column 'code' of table 'orders' does not hold integers"
+        ):
             LoaderFactory.load(
                 DatabaseConfig(uri=uri, table="orders", partition_on="code", partitions=2)
             )
-
-        assert "Partition can only be done on integer columns" in str(info.value)
 
     def test_it_keeps_the_schema_of_an_empty_table(self, tmp_path: Path) -> None:
         """Ensure a table with no rows still reads with its columns and types."""

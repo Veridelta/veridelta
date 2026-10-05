@@ -629,6 +629,80 @@
       "title": "DiffRule",
       "type": "object"
     },
+    "DuckDBConfig": {
+      "additionalProperties": false,
+      "description": "Immutable settings for reading a DuckDB or MotherDuck table or query into a local comparison.\n\nThe rows are read through DuckDB into Polars and compared by the local\nengine, so a DuckDB source pairs with files, lakehouse tables, databases,\nor another DuckDB source. Requires the `duckdb` extra\n(`uv add 'veridelta[duckdb]'`).\n\nAttributes:\n    type (Literal[\"duckdb\"]): Source kind, which selects this model.\n    database (str): Path to a DuckDB file, which opens read-only, or a\n        MotherDuck database written as `md:name`.\n    table (str | None): Table or view to read whole, as one to three\n        unquoted identifier segments, such as `main.orders`.\n    query (str | None): SQL statement to run instead, sent to DuckDB\n        exactly as written. Set exactly one of `table` and `query`.\n    motherduck_token (str | None): MotherDuck token for an `md:` database.\n        When unset, the `MOTHERDUCK_TOKEN` environment variable supplies\n        it, then `motherduck_token`. Left out when the config is printed,\n        but kept by `model_dump()`.",
+      "properties": {
+        "type": {
+          "const": "duckdb",
+          "default": "duckdb",
+          "description": "Discriminator for DuckDB and MotherDuck.",
+          "title": "Type",
+          "type": "string"
+        },
+        "database": {
+          "description": "DuckDB file path, or md:name for a MotherDuck database.",
+          "minLength": 1,
+          "title": "Database",
+          "type": "string"
+        },
+        "table": {
+          "title": "Table",
+          "description": "Table or view to read whole.",
+          "default": null,
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*){0,2}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "\\$\\{"
+            }
+          ]
+        },
+        "query": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SQL statement to run instead of reading a table, sent as written.",
+          "title": "Query"
+        },
+        "motherduck_token": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "MotherDuck token for an md: database. Defaults to MOTHERDUCK_TOKEN.",
+          "title": "Motherduck Token"
+        }
+      },
+      "required": [
+        "database",
+        "type"
+      ],
+      "title": "DuckDBConfig",
+      "type": "object"
+    },
     "IcebergConfig": {
       "additionalProperties": false,
       "description": "Immutable settings for an Apache Iceberg table scan.\n\nAttributes:\n    type (Literal[\"iceberg\"]): Source kind, which selects this model.\n    table_uri (str): Catalog identifier or filesystem URI of the table.\n    snapshot_id (int | None): Optional snapshot to time-travel.\n    storage_options (dict[str, str]): Object-store credentials and options.\n        Left out when the config is printed, but kept by `model_dump()`,\n        which the scanner needs.",
@@ -969,6 +1043,7 @@
           "database": "#/$defs/DatabaseConfig",
           "databricks": "#/$defs/DatabricksConfig",
           "delta": "#/$defs/DeltaLakeConfig",
+          "duckdb": "#/$defs/DuckDBConfig",
           "file": "#/$defs/SourceConfig",
           "iceberg": "#/$defs/IcebergConfig",
           "snowflake": "#/$defs/SnowflakeConfig"
@@ -996,6 +1071,9 @@
         },
         {
           "$ref": "#/$defs/DatabaseConfig"
+        },
+        {
+          "$ref": "#/$defs/DuckDBConfig"
         }
       ],
       "title": "Source"
@@ -1007,6 +1085,7 @@
           "database": "#/$defs/DatabaseConfig",
           "databricks": "#/$defs/DatabricksConfig",
           "delta": "#/$defs/DeltaLakeConfig",
+          "duckdb": "#/$defs/DuckDBConfig",
           "file": "#/$defs/SourceConfig",
           "iceberg": "#/$defs/IcebergConfig",
           "snowflake": "#/$defs/SnowflakeConfig"
@@ -1034,6 +1113,9 @@
         },
         {
           "$ref": "#/$defs/DatabaseConfig"
+        },
+        {
+          "$ref": "#/$defs/DuckDBConfig"
         }
       ],
       "title": "Target"

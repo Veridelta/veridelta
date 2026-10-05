@@ -456,11 +456,11 @@ def _quoted_database_relation(scheme: str, table: str) -> str:
     return ".".join(f"{opening}{part}{closing}" for part in _relation_segments(table))
 
 
-def compile_database_null_count(scheme: str, table: str, column: str) -> str:
-    """Compile a count of a database table's rows whose partition column is NULL.
+def compile_database_partition_counts(scheme: str, table: str, column: str) -> str:
+    """Compile a count of a table's rows whose partition column is NULL, and of the others.
 
     ConnectorX writes the partition column into each range's statement without
-    quotes, so the count names it the same way, after the same allowlist. The
+    quotes, so this names it the same way, after the same allowlist. The
     database then resolves it as ConnectorX's ranges will, folding its case.
 
     Args:
@@ -469,16 +469,63 @@ def compile_database_null_count(scheme: str, table: str, column: str) -> str:
         column (str): One identifier segment.
 
     Returns:
-        str: The count of the table's rows whose `column` is NULL, as `null_rows`.
+        str: The table's `null_rows` and `valued_rows` for `column`.
 
     Raises:
         ConfigError: If Veridelta has no quoting for the scheme.
         ConnectorError: If the table or column name falls outside the allowlist.
     """
+    relation, name = _partition_operands(scheme, table, column)
+    return (
+        f"SELECT COUNT(*) - COUNT({name}) AS null_rows, COUNT({name}) AS valued_rows "
+        f"FROM {relation}"
+    )
+
+
+def compile_database_partition_range(scheme: str, table: str, column: str) -> str:
+    """Compile the lowest and highest value of a table's partition column.
+
+    Args:
+        scheme (str): Lowercase URI scheme, such as `postgresql`.
+        table (str): One to three dotted identifier segments.
+        column (str): One identifier segment, written unquoted as ConnectorX writes it.
+
+    Returns:
+        str: The column's `low` and `high` values.
+
+    Raises:
+        ConfigError: If Veridelta has no quoting for the scheme.
+        ConnectorError: If the table or column name falls outside the allowlist.
+    """
+    relation, name = _partition_operands(scheme, table, column)
+    return f"SELECT MIN({name}) AS low, MAX({name}) AS high FROM {relation}"
+
+
+def _partition_operands(scheme: str, table: str, column: str) -> tuple[str, str]:
+    """Quote a table for its database, and allowlist a partition column left unquoted."""
     relation = _quoted_database_relation(scheme, table)
     if SQL_IDENTIFIER_SEGMENT.fullmatch(column) is None:
         raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
-    return f"SELECT COUNT(*) AS null_rows FROM {relation} WHERE {column} IS NULL"
+    return relation, column
+
+
+def compile_duckdb_select(table: str, *, probe: bool = False) -> str:
+    """Compile the statement that reads a DuckDB source's `table`, or only its columns.
+
+    Args:
+        table (str): One to three dotted identifier segments.
+        probe (bool): Whether to return no rows, for a schema check.
+
+    Returns:
+        str: `SELECT * FROM` the table, each segment quoted as the DuckDB dialect quotes it.
+
+    Raises:
+        ConnectorError: If the table name falls outside the identifier allowlist.
+    """
+    quote = _IDENTIFIER_QUOTES[SQLDialect.DUCKDB]
+    relation = ".".join(f"{quote}{part}{quote}" for part in _relation_segments(table))
+    read = f"SELECT * FROM {relation}"
+    return f"{read} WHERE 1 = 0" if probe else read
 
 
 def compile_postgres_columns_query(table: str) -> str:

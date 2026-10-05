@@ -24,9 +24,11 @@ from veridelta.connectors.sql import (
     VALUE_MAP_SOURCE_ALIAS,
     VALUE_MAP_TARGET_ALIAS,
     SampleQuery,
-    compile_database_null_count,
+    compile_database_partition_counts,
+    compile_database_partition_range,
     compile_database_probe,
     compile_database_select,
+    compile_duckdb_select,
     compile_postgres_columns_query,
     compile_postgres_text_select,
 )
@@ -1489,25 +1491,30 @@ class TestDatabaseSelect:
             compile_database_select("postgresql", table)
 
     @pytest.mark.parametrize(
-        ("scheme", "expected"),
+        ("scheme", "counts", "bounds"),
         [
             pytest.param(
                 "postgresql",
-                'SELECT COUNT(*) AS null_rows FROM "sales"."orders" WHERE order_id IS NULL',
+                "SELECT COUNT(*) - COUNT(order_id) AS null_rows, COUNT(order_id) AS valued_rows "
+                'FROM "sales"."orders"',
+                'SELECT MIN(order_id) AS low, MAX(order_id) AS high FROM "sales"."orders"',
                 id="postgres",
             ),
             pytest.param(
                 "mysql",
-                "SELECT COUNT(*) AS null_rows FROM `sales`.`orders` WHERE order_id IS NULL",
+                "SELECT COUNT(*) - COUNT(order_id) AS null_rows, COUNT(order_id) AS valued_rows "
+                "FROM `sales`.`orders`",
+                "SELECT MIN(order_id) AS low, MAX(order_id) AS high FROM `sales`.`orders`",
                 id="mysql",
             ),
         ],
     )
-    def test_it_counts_the_nulls_a_partitioned_read_would_drop(
-        self, scheme: str, expected: str
+    def test_it_measures_the_column_a_partitioned_read_splits_on(
+        self, scheme: str, counts: str, bounds: str
     ) -> None:
         """Ensure the column is written unquoted, as ConnectorX writes it into each range."""
-        assert compile_database_null_count(scheme, "sales.orders", "order_id") == expected
+        assert compile_database_partition_counts(scheme, "sales.orders", "order_id") == counts
+        assert compile_database_partition_range(scheme, "sales.orders", "order_id") == bounds
 
     @pytest.mark.parametrize(
         "column",
@@ -1521,7 +1528,39 @@ class TestDatabaseSelect:
     def test_it_fails_closed_on_a_partition_column_outside_the_allowlist(self, column: str) -> None:
         """Ensure a column reaching the compiler directly can never carry SQL."""
         with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
-            compile_database_null_count("postgresql", "orders", column)
+            compile_database_partition_counts("postgresql", "orders", column)
+        with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
+            compile_database_partition_range("postgresql", "orders", column)
+
+
+class TestDuckDBSelect:
+    """Validate the statements a DuckDB source reads a `table` with."""
+
+    @pytest.mark.parametrize(
+        ("table", "probe", "expected"),
+        [
+            pytest.param("orders", False, 'SELECT * FROM "orders"', id="table"),
+            pytest.param(
+                "warehouse.main.Orders",
+                False,
+                'SELECT * FROM "warehouse"."main"."Orders"',
+                id="three-segments",
+            ),
+            pytest.param(
+                "main.orders", True, 'SELECT * FROM "main"."orders" WHERE 1 = 0', id="probe"
+            ),
+        ],
+    )
+    def test_it_quotes_each_segment_with_double_quotes(
+        self, table: str, probe: bool, expected: str
+    ) -> None:
+        """Ensure a table keeps its stored case, and a probe reads no rows."""
+        assert compile_duckdb_select(table, probe=probe) == expected
+
+    def test_it_fails_closed_on_a_table_outside_the_allowlist(self) -> None:
+        """Ensure a table name reaching the compiler directly can never carry SQL."""
+        with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
+            compile_duckdb_select('orders"; DROP TABLE orders; --')
 
 
 class TestWhitespaceTrim:

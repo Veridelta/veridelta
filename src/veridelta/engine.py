@@ -34,9 +34,11 @@ from urllib.parse import urlsplit
 import polars as pl
 
 from veridelta.connectors import database as database_connectors
+from veridelta.connectors import duckdb as duckdb_connectors
 from veridelta.connectors import warehouse as warehouse_connectors
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
+from veridelta.connectors.duckdb import DuckDBConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import (
     SAMPLE_BUCKETS,
@@ -67,6 +69,7 @@ from veridelta.models import (
     DiffResult,
     DiffRule,
     DiffSummary,
+    DuckDBConfig,
     IcebergConfig,
     SentinelValue,
     SnowflakeConfig,
@@ -331,12 +334,13 @@ class ExcelLoader(BaseLoader):
 
 
 class LoaderFactory:
-    """Resolve a file, lakehouse, or database `SourceRef` to a LazyFrame.
+    """Resolve a file, lakehouse, database, or DuckDB `SourceRef` to a LazyFrame.
 
     A file source goes to the loader for its `format`. A Delta Lake or Iceberg
-    source returns its connector's lazy scan, and a database source is read once
-    through its connector, which then closes. A warehouse source is refused: its
-    comparison runs as SQL pushdown through `DiffEngine.run_from_configs`.
+    source returns its connector's lazy scan, and a database or DuckDB source is
+    read once through its connector, which then closes. A warehouse source is
+    refused: its comparison runs as SQL pushdown through
+    `DiffEngine.run_from_configs`.
 
     Attributes:
         _loaders (ClassVar[dict[str, BaseLoader]]): Format name to loader. It is
@@ -377,18 +381,19 @@ class LoaderFactory:
 
     @classmethod
     def load(cls, config: SourceRef) -> pl.LazyFrame:
-        """Load a file, lakehouse, or database source into a LazyFrame.
+        """Load a file, lakehouse, database, or DuckDB source into a LazyFrame.
 
         Args:
-            config (SourceRef): File, Delta, Iceberg, or database configuration.
+            config (SourceRef): File, Delta, Iceberg, database, or DuckDB
+                configuration.
 
         Returns:
             pl.LazyFrame: Unevaluated scan graph, or a lazy wrapper over the
-                rows a database source read.
+                rows a database or DuckDB source read.
 
         Raises:
             ConnectorError: If `config` is a warehouse source, or a lakehouse
-                scan or database read fails.
+                scan, database read, or DuckDB read fails.
             ConfigError: If the file format has no loader, or a database
                 `table` names a scheme Veridelta cannot quote for.
         """
@@ -404,6 +409,10 @@ class LoaderFactory:
             with DatabaseConnector(config) as database:
                 database.connect()
                 return database.lazyframe()
+        if isinstance(config, DuckDBConfig):
+            with DuckDBConnector(config) as duck:
+                duck.connect()
+                return duck.lazyframe()
         if isinstance(config, SourceConfig):
             return cls.get_loader(config.format).load(config)
         raise ConnectorError(
@@ -1361,6 +1370,7 @@ _EXTRA_PROBES: Final[dict[type[object], tuple[str, Callable[[], bool]]]] = {
     DeltaLakeConfig: ("delta", lambda: find_spec("deltalake") is not None),
     IcebergConfig: ("iceberg", lambda: find_spec("pyiceberg") is not None),
     DatabaseConfig: ("database", lambda: database_connectors.connectorx is not None),
+    DuckDBConfig: ("duckdb", lambda: duckdb_connectors.duckdb is not None),
     SnowflakeConfig: ("snowflake", lambda: warehouse_connectors.snowflake_connector is not None),
     DatabricksConfig: ("databricks", lambda: warehouse_connectors.databricks_sql is not None),
     # The BigQuery client is imported only on connect, so it is found by name.
@@ -1538,6 +1548,10 @@ def _schema_frame(config: SourceRef) -> pl.LazyFrame:
         with DatabaseConnector(config, probe=True) as database:
             database.connect()
             return database.lazyframe()
+    if isinstance(config, DuckDBConfig):
+        with DuckDBConnector(config, probe=True) as duck:
+            duck.connect()
+            return duck.lazyframe()
     return pl.LazyFrame(schema=LoaderFactory.load(config).collect_schema())
 
 
@@ -1551,7 +1565,7 @@ def _local_schema_findings(
             "not checked against stored columns."
         )
         for label, config in (("source", source), ("target", target))
-        if isinstance(config, DatabaseConfig) and config.query is not None
+        if isinstance(config, (DatabaseConfig, DuckDBConfig)) and config.query is not None
     ]
     if queries:
         return queries

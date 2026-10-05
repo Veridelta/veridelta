@@ -4036,6 +4036,7 @@ all = [
     { name = "connectorx" },
     { name = "databricks-sql-connector" },
     { name = "deltalake" },
+    { name = "duckdb" },
     { name = "fastexcel" },
     { name = "google-cloud-bigquery" },
     { name = "pyarrow", version = "23.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
@@ -4061,6 +4062,11 @@ databricks = [
 ]
 delta = [
     { name = "deltalake" },
+]
+duckdb = [
+    { name = "duckdb" },
+    { name = "pyarrow", version = "23.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14'" },
+    { name = "pyarrow", version = "25.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.14'" },
 ]
 excel = [
     { name = "fastexcel" },
@@ -4109,6 +4115,7 @@ requires-dist = [
     { name = "connectorx", marker = "extra == 'database'", specifier = ">=0.4.5" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=3.0.0" },
     { name = "deltalake", marker = "extra == 'delta'", specifier = ">=0.15.0" },
+    { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.5.0" },
     { name = "fastexcel", marker = "extra == 'excel'", specifier = ">=0.11.0" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.11.0" },
     { name = "polars", specifier = ">=1.39.3" },
@@ -4117,6 +4124,7 @@ requires-dist = [
     { name = "pyarrow", marker = "extra == 'bigquery'", specifier = ">=14.0.1" },
     { name = "pyarrow", marker = "extra == 'database'", specifier = ">=14.0.1" },
     { name = "pyarrow", marker = "extra == 'databricks'", specifier = ">=10.0.1" },
+    { name = "pyarrow", marker = "extra == 'duckdb'", specifier = ">=14.0.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pyiceberg", marker = "extra == 'iceberg'", specifier = ">=0.6.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
@@ -4126,12 +4134,13 @@ requires-dist = [
     { name = "veridelta", extras = ["database"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["databricks"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["delta"], marker = "extra == 'all'" },
+    { name = "veridelta", extras = ["duckdb"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["excel"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["fuzzy"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["iceberg"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["snowflake"], marker = "extra == 'all'" },
 ]
-provides-extras = ["snowflake", "databricks", "delta", "iceberg", "excel", "fuzzy", "database", "bigquery", "all"]
+provides-extras = ["snowflake", "databricks", "delta", "iceberg", "excel", "fuzzy", "database", "duckdb", "bigquery", "all"]
 
 [package.metadata.requires-dev]
 dev = [

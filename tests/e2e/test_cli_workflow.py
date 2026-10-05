@@ -10,6 +10,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
+import duckdb
 import polars as pl
 import pytest
 from google.protobuf import json_format
@@ -225,6 +226,40 @@ primary_keys: [id]
             text=True,
             check=False,
             env={**os.environ, "LEGACY_DB_URI": "sqlite://" + quote(str(database))},
+        )
+
+        assert result.returncode == 1, result.stderr
+        assert "Changed:       1" in result.stdout
+
+    def test_e2e_duckdb_source_reads_a_file_named_in_the_configuration(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure `veridelta run` reads a DuckDB file's table and compares it locally."""
+        database = tmp_path / "legacy.duckdb"
+        with duckdb.connect(str(database)) as connection:
+            connection.execute(
+                "CREATE TABLE orders AS SELECT * FROM (VALUES (1, 'open'), (2, 'closed')) "
+                "AS t(id, status)"
+            )
+        modern = tmp_path / "modern.csv"
+        pl.DataFrame({"id": [1, 2], "status": ["open", "shipped"]}).write_csv(modern)
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  type: duckdb
+  database: {database}
+  table: orders
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
         )
 
         assert result.returncode == 1, result.stderr

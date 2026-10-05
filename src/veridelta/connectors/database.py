@@ -33,7 +33,8 @@ from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.connectors.sql import (
     SQLDialect,
     SQLPushdownCompiler,
-    compile_database_null_count,
+    compile_database_partition_counts,
+    compile_database_partition_range,
     compile_database_probe,
     compile_database_select,
     compile_postgres_columns_query,
@@ -81,7 +82,8 @@ class DatabaseConnector(VerideltaConnector):
     the local engine as a LazyFrame over those rows. The read is the one place
     the rows are fetched, so it happens once per `connect()`. With
     `partition_on` set, ConnectorX splits that read into ranges over parallel
-    connections, after a count confirms that no row falls outside them.
+    connections, after Veridelta confirms the column holds no NULL and reads
+    its lowest and highest values.
     `execute_pushdown` always raises: the comparison runs in Polars, never in
     the database.
     """
@@ -103,8 +105,8 @@ class DatabaseConnector(VerideltaConnector):
 
         Raises:
             ConnectorError: If the `database` extra is missing, a SQLite file
-                does not exist, the partition column holds a NULL, or the read
-                fails.
+                does not exist, the partition column holds a NULL or anything
+                but integers, or the read fails.
             ConfigError: If `table` names a database Veridelta cannot quote for,
                 or a probe was asked of a `query`.
         """
@@ -216,8 +218,8 @@ class DatabaseConnector(VerideltaConnector):
             return pl.read_database_uri(statement, uri)
         # The model sets `table` and `partitions` whenever `partition_on` is set.
         table, partitions = cast("str", self._config.table), cast("int", self._config.partitions)
-        count = compile_database_null_count(scheme, table, column)
-        nulls = pl.read_database_uri(count, uri).item()
+        counts = compile_database_partition_counts(scheme, table, column)
+        nulls, valued = pl.read_database_uri(counts, uri).row(0)
         if nulls:
             # ConnectorX reads only rows inside its ranges, and a NULL is in none of them.
             raise ConnectorError(
@@ -225,7 +227,25 @@ class DatabaseConnector(VerideltaConnector):
                 "which a partitioned read would leave out. Partition on a column without "
                 "NULLs, or remove 'partition_on' and 'partitions'."
             )
-        return pl.read_database_uri(statement, uri, partition_on=column, partition_num=partitions)
+        if not valued:
+            # An empty table has no range to split, and one read keeps its columns.
+            return pl.read_database_uri(statement, uri)
+        bounds = compile_database_partition_range(scheme, table, column)
+        low, high = pl.read_database_uri(bounds, uri).row(0)
+        if not (isinstance(low, int) and isinstance(high, int)):
+            raise ConnectorError(
+                f"Column '{column}' of {self._subject} does not hold integers, so the read "
+                "cannot be split on it. Partition on an integer column."
+            )
+        # Passing the range skips ConnectorX's own lookup, whose SQLite version opens the
+        # path without percent-decoding it: every path on Windows, or one with a space.
+        return pl.read_database_uri(
+            statement,
+            uri,
+            partition_on=column,
+            partition_num=partitions,
+            partition_range=(low, high),
+        )
 
     def _declared_statement(
         self, table: str, statement: str, uri: str
