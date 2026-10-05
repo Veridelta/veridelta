@@ -69,8 +69,7 @@ def load_nyc_taxi() -> pl.DataFrame:
                 shutil.copyfileobj(response, out_file)
 
         except urllib.error.URLError as e:
-            if cache_path.exists():
-                cache_path.unlink()
+            cache_path.unlink(missing_ok=True)
             raise DatasetError(
                 f"Failed to download Veridelta sample dataset. "
                 f"Check your internet connection or the URL. Error: {e}"
@@ -83,8 +82,7 @@ def load_nyc_taxi() -> pl.DataFrame:
         return pl.read_parquet(cache_path)
     except pl.exceptions.PolarsError:
         logger.warning("Cached dataset is corrupted. Evicting and re-downloading...")
-        if cache_path.exists():
-            cache_path.unlink()
+        cache_path.unlink(missing_ok=True)
 
         _download_file()
         return pl.read_parquet(cache_path)

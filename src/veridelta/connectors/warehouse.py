@@ -175,21 +175,6 @@ def _run_arrow_query(
             closer()
 
 
-def _import_bigquery() -> Any:
-    """Import the BigQuery client library on first use.
-
-    Returns:
-        Any: The `google.cloud.bigquery` module.
-
-    Raises:
-        ConnectorError: If the `bigquery` extra is not installed.
-    """
-    try:
-        return importlib.import_module("google.cloud.bigquery")
-    except ImportError:
-        raise ConnectorError(_BIGQUERY_EXTRA) from None
-
-
 def _run_bigquery_query(client: Any, statement: str, job_config: Any, *, query_type: str) -> Any:
     """Run SQL as a BigQuery job and fetch its result as Arrow record batches.
 
@@ -542,7 +527,12 @@ class BigQueryConnector(VerideltaConnector):
             ConnectorError: If the BigQuery extra is missing or the client
                 cannot be created, such as when no credentials are found.
         """
-        driver = bigquery if bigquery is not None else _import_bigquery()
+        driver = bigquery
+        if driver is None:
+            try:
+                driver = importlib.import_module("google.cloud.bigquery")
+            except ImportError:
+                raise ConnectorError(_BIGQUERY_EXTRA) from None
         project, location = self._config.project, self._config.location
         # Legacy SQL rejects backtick quoting, so GoogleSQL is set explicitly
         # rather than trusted to stay the client's default.
@@ -616,12 +606,8 @@ class BigQueryConnector(VerideltaConnector):
         """
         if self._client is None:
             return
-        client, self._client, self._job_config, self._last_statement = (
-            self._client,
-            None,
-            None,
-            None,
-        )
+        client = self._client
+        self._client = self._job_config = self._last_statement = None
         _close_session(client, "BigQuery")
 
     def _require_client(self) -> None:

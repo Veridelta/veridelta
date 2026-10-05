@@ -349,12 +349,6 @@ _GROUP_NUMBER: Final = re.compile(r"[0-9]+")
 _HIGHEST_GROUP: Final = 9
 """The highest group a warehouse replacement can refer to: their references are one digit."""
 
-_WHOLE_MATCH_REFERENCES: Final[dict[SQLDialect, str]] = {SQLDialect.POSTGRES: "\\&"}
-r"""How a dialect refers to the whole match, where group 0 is not spelled `\0`.
-
-Postgres' `regexp_replace` reads `\0` as plain text and the whole match as `\&`.
-"""
-
 
 def _reference_at(replacement: str, index: int) -> tuple[str, int] | None:
     """Read the group reference that starts at a `$` in a Polars replacement.
@@ -995,8 +989,6 @@ class SQLPushdownCompiler:
             target_table,
             primary_keys,
             join_kind="LEFT",
-            select_alias=source_alias,
-            null_alias=target_alias,
             source_alias=source_alias,
             target_alias=target_alias,
             source_types=source_types,
@@ -1041,8 +1033,6 @@ class SQLPushdownCompiler:
             target_table,
             primary_keys,
             join_kind="RIGHT",
-            select_alias=target_alias,
-            null_alias=source_alias,
             source_alias=source_alias,
             target_alias=target_alias,
             source_types=source_types,
@@ -1265,25 +1255,23 @@ class SQLPushdownCompiler:
         Returns:
             str: An expression from 0 to `SAMPLE_BUCKETS - 1`.
         """
-        hashed = f"{_SAMPLE_HASH_FUNCTIONS[self.dialect]}({', '.join(keys)})"
+        joined = ", ".join(keys)
+        function = _SAMPLE_HASH_FUNCTIONS[self.dialect]
         buckets = self._integer(SAMPLE_BUCKETS)
-        if self.dialect is SQLDialect.BIGQUERY:
-            # FARM_FINGERPRINT is signed, takes one string, and MOD keeps the sign.
-            hashed = (
-                f"{_SAMPLE_HASH_FUNCTIONS[self.dialect]}(TO_JSON_STRING(STRUCT({', '.join(keys)})))"
-            )
-            return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
-        if self.dialect is SQLDialect.POSTGRES:
-            # hashtextextended is signed and takes one text and a seed.
-            hashed = f"{_SAMPLE_HASH_FUNCTIONS[self.dialect]}(ROW({', '.join(keys)})::text, 0)"
-            return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
-        if self.dialect is SQLDialect.SNOWFLAKE:
-            # HASH is signed, and MOD keeps the dividend's sign.
-            return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
         if self.dialect is SQLDialect.DATABRICKS:
             # pmod is always non-negative.
-            return f"pmod({hashed}, {buckets})"
-        return f"{hashed} % {buckets}"
+            return f"pmod({function}({joined}), {buckets})"
+        if self.dialect is SQLDialect.DUCKDB:
+            # DuckDB's hash is unsigned.
+            return f"{function}({joined}) % {buckets}"
+        # These hashes are signed, and MOD keeps the dividend's sign. FARM_FINGERPRINT
+        # takes one string, and hashtextextended one text and a seed.
+        hashed = {
+            SQLDialect.SNOWFLAKE: f"{function}({joined})",
+            SQLDialect.BIGQUERY: f"{function}(TO_JSON_STRING(STRUCT({joined})))",
+            SQLDialect.POSTGRES: f"{function}(ROW({joined})::text, 0)",
+        }[self.dialect]
+        return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
 
     def _value_map_branch(self, label: int, rule: DiffRule) -> str:
         """Select one candidate's pairs, labeled, without NULL or already mapped sources.
@@ -1454,8 +1442,6 @@ class SQLPushdownCompiler:
         primary_keys: list[str],
         *,
         join_kind: str,
-        select_alias: str,
-        null_alias: str,
         source_alias: str,
         target_alias: str,
         source_types: ColumnTypes | None,
@@ -1472,9 +1458,8 @@ class SQLPushdownCompiler:
             source_table (str): Source relation.
             target_table (str): Target relation.
             primary_keys (list[str]): Join keys, spelled as the target stores them.
-            join_kind (str): `LEFT` or `RIGHT`.
-            select_alias (str): Alias whose primary keys are projected.
-            null_alias (str): Alias whose keys must be NULL (the missing side).
+            join_kind (str): `LEFT` projects the source's keys where the target
+                has none, and `RIGHT` the target's keys where the source has none.
             source_alias (str): Alias assigned to the source relation.
             target_alias (str): Alias assigned to the target relation.
             source_types (ColumnTypes | None): Probed source dtypes.
@@ -1497,6 +1482,9 @@ class SQLPushdownCompiler:
             target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
+        )
+        select_alias, null_alias = (
+            (source_alias, target_alias) if join_kind == "LEFT" else (target_alias, source_alias)
         )
         select_list = ", ".join(self._qualify(select_alias, pk) for pk in primary_keys)
         join = self._normalized_join(
@@ -1521,31 +1509,14 @@ class SQLPushdownCompiler:
         Returns:
             str: `FROM ... JOIN ... ON ...` clause.
         """
-        on_clause = self._join_on_clause(
-            primary_keys, source_alias=source_alias, target_alias=target_alias
+        on_clause = " AND ".join(
+            f"{self._qualify(source_alias, pk)} = {self._qualify(target_alias, pk)}"
+            for pk in primary_keys
         )
         return (
             f"FROM {self._quote_ident('_src_normalized')} AS {self._quote_ident(source_alias)} "
             f"{join_kind} JOIN {self._quote_ident('_tgt_normalized')} "
             f"AS {self._quote_ident(target_alias)} ON {on_clause}"
-        )
-
-    def _join_on_clause(
-        self, primary_keys: list[str], *, source_alias: str, target_alias: str
-    ) -> str:
-        """Build the equality ON clause for warehouse joins.
-
-        Args:
-            primary_keys (list[str]): Join keys present on both relations.
-            source_alias (str): Source relation alias.
-            target_alias (str): Target relation alias.
-
-        Returns:
-            str: `src.key = tgt.key` predicates joined with AND.
-        """
-        return " AND ".join(
-            f"{self._qualify(source_alias, pk)} = {self._qualify(target_alias, pk)}"
-            for pk in primary_keys
         )
 
     def _normalize_expr(
@@ -1571,7 +1542,13 @@ class SQLPushdownCompiler:
         Returns:
             str: Expression after every compiled stage.
         """
-        expr = self._apply_null_values(expr, self._sentinels_for(rule, dtype))
+        # With no probed dtype, every sentinel is emitted as configured.
+        sentinels = (
+            list(rule.null_values or [])
+            if dtype is None
+            else usable_sentinels(rule.null_values, dtype)
+        )
+        expr = self._apply_null_values(expr, sentinels)
         if self._is_text_side(dtype):
             expr = self._apply_regex_replace(expr, rule)
             expr = self._apply_whitespace(expr, rule)
@@ -1788,7 +1765,7 @@ class SQLPushdownCompiler:
         if SQL_IDENTIFIER_SEGMENT.fullmatch(name) is None:
             raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
         quote = _IDENTIFIER_QUOTES[self.dialect]
-        return quote + name.replace(quote, quote * 2) + quote
+        return f"{quote}{name}{quote}"
 
     def _quote_relation(self, name: str) -> str:
         """Quote a possibly dotted table, schema, or catalog path.
@@ -1839,7 +1816,7 @@ class SQLPushdownCompiler:
     def _integer(self, value: object) -> str:
         """Render an integer SQL operand, refusing anything that is not an `int`.
 
-        `_number` renders whatever `repr` gives, so `True` or a NumPy scalar
+        Numbers otherwise render through `repr`, so `True` or a NumPy scalar
         would reach SQL as written. A count or label must be a real integer;
         the parameter is `object` because this is where that is checked.
 
@@ -1855,17 +1832,6 @@ class SQLPushdownCompiler:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConnectorError(f"SQL integer operands must be int, got {value!r}.")
         return str(value)
-
-    def _number(self, value: float) -> str:
-        """Render a numeric SQL literal.
-
-        Args:
-            value (float): Tolerance, coefficient, or edit-distance limit.
-
-        Returns:
-            str: Portable decimal literal.
-        """
-        return repr(value)
 
     def _apply_null_values(self, expr: str, sentinels: Sequence[SentinelValue]) -> str:
         """Coerce sentinel values to NULL with a single `CASE` expression.
@@ -1905,25 +1871,8 @@ class SQLPushdownCompiler:
         if isinstance(value, bool):
             return "TRUE" if value else "FALSE"
         if isinstance(value, (int, float)):
-            return self._number(value)
+            return repr(value)
         return self._literal(value)
-
-    def _sentinels_for(self, rule: DiffRule, dtype: pl.DataType | None) -> list[SentinelValue]:
-        """Select the sentinels applicable to one side of a comparison.
-
-        Args:
-            rule (DiffRule): Rule providing `null_values`.
-            dtype (pl.DataType | None): Probed dtype for that side. When None,
-                no schema was supplied and every sentinel is emitted as-is.
-
-        Returns:
-            list[SentinelValue]: Sentinels to emit for this side.
-        """
-        if not rule.null_values:
-            return []
-        if dtype is None:
-            return list(rule.null_values)
-        return usable_sentinels(rule.null_values, dtype)
 
     def _apply_regex_replace(self, expr: str, rule: DiffRule) -> str:
         """Apply `REGEXP_REPLACE` for each pattern/replacement pair, to every match.
@@ -1997,13 +1946,13 @@ class SQLPushdownCompiler:
             group (int): Group number, with 0 for the whole match.
 
         Returns:
-            str: `$N` on Databricks, and `\N` elsewhere, except where
-                `_WHOLE_MATCH_REFERENCES` spells the whole match its own way.
+            str: `$N` on Databricks, and `\N` elsewhere, except the whole match on
+                Postgres, which reads `\0` as plain text and spells it `\&`.
         """
         if self.dialect is SQLDialect.DATABRICKS:
             return f"${group}"
-        if group == 0 and self.dialect in _WHOLE_MATCH_REFERENCES:
-            return _WHOLE_MATCH_REFERENCES[self.dialect]
+        if group == 0 and self.dialect is SQLDialect.POSTGRES:
+            return "\\&"
         return f"\\{group}"
 
     def _apply_whitespace(self, expr: str, rule: DiffRule) -> str:
@@ -2021,7 +1970,7 @@ class SQLPushdownCompiler:
             str: Trimmed expression, or `expr` when mode is unset/`none`.
         """
         mode = rule.whitespace_mode
-        if mode is None or mode not in _TRIM_FUNCTIONS:
+        if mode not in _TRIM_FUNCTIONS:
             return expr
         characters = self._literal(_WHITESPACE_CHARACTERS)
         if self.dialect is SQLDialect.DATABRICKS:
@@ -2087,7 +2036,7 @@ class SQLPushdownCompiler:
         Returns:
             bool: True when the text stages should be emitted for this side.
         """
-        return dtype is None or isinstance(dtype, (pl.String, pl.Utf8))
+        return dtype is None or isinstance(dtype, pl.String)
 
     def _apply_pad_zeros(self, expr: str, rule: DiffRule) -> str:
         """Left-pad with zeros the way Python's `str.zfill` does.
@@ -2245,7 +2194,10 @@ class SQLPushdownCompiler:
         """
         if rule.cast_to is None:
             return expr
-        precast = self._precast_dtype(rule, dtype)
+        # Every earlier stage that fires on a number leaves text or a timestamp
+        # behind, so the probed dtype reaches the cast only when none of them does.
+        earlier = rule.pad_zeros is not None or rule.datetime_format or rule.timezone
+        precast = None if earlier else dtype
         if (
             rule.cast_to == "Boolean"
             and self.dialect in _ZERO_TEST_BOOLEANS
@@ -2262,25 +2214,6 @@ class SQLPushdownCompiler:
             # as SQL does.
             expr = f"CASE WHEN {expr} < 0 THEN CEIL({expr}) ELSE FLOOR({expr}) END"
         return f"CAST({expr} AS {self._cast_keyword(rule.cast_to)})"
-
-    def _precast_dtype(self, rule: DiffRule, dtype: pl.DataType | None) -> pl.DataType | None:
-        """Return the probed dtype if stage 7 still receives it on this side.
-
-        Every earlier stage that fires on a number leaves text or a timestamp
-        behind, so the probed dtype only describes the cast's input when none
-        of them does.
-
-        Args:
-            rule (DiffRule): Rule whose earlier stages may have changed the type.
-            dtype (pl.DataType | None): Probed dtype, or None when unprobed.
-
-        Returns:
-            pl.DataType | None: The dtype reaching the cast, or None when an
-                earlier stage changed it or the side was not probed.
-        """
-        if rule.pad_zeros is not None or rule.datetime_format or rule.timezone:
-            return None
-        return dtype
 
     def _cast_keyword(self, target: CastTarget) -> str:
         """Look up the dialect keyword for a cast target.
@@ -2300,19 +2233,6 @@ class SQLPushdownCompiler:
         if keyword is None:
             raise ConnectorError(f"SQL pushdown has no {self.dialect.value} type for '{target}'.")
         return keyword
-
-    def _has_tolerance(self, rule: DiffRule) -> bool:
-        """Return whether numeric tolerance predicates should be emitted.
-
-        Args:
-            rule (DiffRule): Rule providing absolute/relative tolerances.
-
-        Returns:
-            bool: True when either tolerance is a positive number.
-        """
-        abs_tol = rule.absolute_tolerance or 0.0
-        rel_tol = rule.relative_tolerance or 0.0
-        return abs_tol != 0.0 or rel_tol != 0.0
 
     def _numeric_predicate(
         self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
@@ -2337,8 +2257,8 @@ class SQLPushdownCompiler:
             str: `(src = tgt OR (ABS(src) < inf AND ABS(tgt - src) <= abs + (rel * ABS(src))))`,
                 or, widened, `(src = tgt OR ABS(tgt - src) <= abs + (rel * ABS(src)))`.
         """
-        abs_tol = self._number(rule.absolute_tolerance or 0.0)
-        rel_tol = self._number(rule.relative_tolerance or 0.0)
+        abs_tol = repr(rule.absolute_tolerance or 0.0)
+        rel_tol = repr(rule.relative_tolerance or 0.0)
         if wide:
             wide_type = _WIDE_INTEGER_TYPES[self.dialect]
             src = f"CAST({src_expr} AS {wide_type})"
@@ -2378,10 +2298,7 @@ class SQLPushdownCompiler:
                 "levenshtein needs the fuzzystrmatch extension and refuses text longer than "
                 "255 characters. Compare locally instead (pushdown: false)."
             )
-        return (
-            f"({src_expr} = {tgt_expr} OR "
-            f"{distance}({src_expr}, {tgt_expr}) <= {self._number(limit)})"
-        )
+        return f"({src_expr} = {tgt_expr} OR {distance}({src_expr}, {tgt_expr}) <= {limit!r})"
 
     def _loosened_predicate(
         self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
@@ -2408,7 +2325,7 @@ class SQLPushdownCompiler:
                 "to 100, and Databricks has no Jaro-Winkler function. Use "
                 "max_levenshtein_distance, or compare the tables locally."
             )
-        if self._has_tolerance(rule):
+        if rule.absolute_tolerance or rule.relative_tolerance:
             return self._numeric_predicate(src_expr, tgt_expr, rule, wide=wide)
         if rule.max_levenshtein_distance is not None:
             return self._edit_distance_predicate(src_expr, tgt_expr, rule.max_levenshtein_distance)

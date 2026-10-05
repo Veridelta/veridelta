@@ -5,7 +5,7 @@
 
 from abc import ABC, abstractmethod
 from types import TracebackType
-from typing import Literal, Protocol, TypeVar, runtime_checkable
+from typing import Literal, Protocol, Self, runtime_checkable
 
 import polars as pl
 
@@ -26,8 +26,6 @@ PushdownQueryType = Literal[
 """Warehouse pushdown round-trip: comparison rows, tallies, totals, key checks,
 probes, value map evidence, a check of the server's settings, or a sample of
 changed rows with their values."""
-
-_ConnectorT = TypeVar("_ConnectorT", bound="VerideltaConnector")
 
 
 @runtime_checkable
@@ -139,7 +137,7 @@ class VerideltaConnector(ABC):
         three-method contract keep working.
         """
 
-    def __enter__(self: _ConnectorT) -> _ConnectorT:
+    def __enter__(self) -> Self:
         """Return the connector unchanged; `connect()` stays an explicit call.
 
         Returns:
