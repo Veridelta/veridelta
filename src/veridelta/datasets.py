@@ -33,11 +33,7 @@ _TAXI_URL = f"https://raw.githubusercontent.com/Veridelta/veridelta/{_GIT_REF}/d
 
 
 def _get_cache_dir() -> pathlib.Path:
-    """Gets the local cache directory for Veridelta datasets.
-
-    Returns:
-        pathlib.Path: The path to the local cache directory.
-    """
+    """Return the local cache directory for Veridelta datasets."""
     cache_dir = pathlib.Path.home() / ".cache" / "veridelta" / "datasets"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
