@@ -103,7 +103,7 @@ jobs:
         run: uv run pytest tests/unit tests/integration --cov=src/veridelta --cov-report=xml
 
       - name: Gate core-module branch coverage
-        run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py' --fail-under=100
+        run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py' --fail-under=100
 
       - name: Upload Coverage to Codecov
         uses: codecov/codecov-action@v6
@@ -245,7 +245,9 @@ jobs:
           DRIFT_IS_MATCH: ${{ steps.drift.outputs.is-match }}
           DRIFT_EXIT_CODE: ${{ steps.drift.outputs.exit-code }}
           DRIFT_SUMMARY: ${{ steps.drift.outputs.summary-markdown }}
+          DRIFT_OTEL: ${{ steps.drift.outputs.otel-metrics }}
           BROKEN_OUTCOME: ${{ steps.broken.outcome }}
+          BROKEN_OTEL: ${{ steps.broken.outputs.otel-metrics }}
         run: |
           set -x
           test "$MATCH_STATUS" = match
@@ -255,4 +257,7 @@ jobs:
           test "$DRIFT_IS_MATCH" = false
           test "$DRIFT_EXIT_CODE" = 1
           grep -q "### Veridelta: FAILED" "$DRIFT_SUMMARY"
+          grep -q '"name":"veridelta.diff.match"' "$DRIFT_OTEL"
+          test "$(wc -l < "$DRIFT_OTEL")" -eq 1
           test "$BROKEN_OUTCOME" = failure
+          test -z "$BROKEN_OTEL"

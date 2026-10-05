@@ -34,7 +34,7 @@ inputs:
     description: Token used to post the pull request comment.
     default: ${{ github.token }}
   upload-artifact:
-    description: Upload the JSON summary, Markdown summary, and HTML report as a workflow artifact.
+    description: Upload the JSON summary, Markdown summary, HTML report, and OpenTelemetry metrics as a workflow artifact.
     default: "true"
   artifact-name:
     description: Name of the uploaded artifact. Defaults to one built from the job and the configuration path; set it when a matrix runs the same configuration more than once.
@@ -59,6 +59,9 @@ outputs:
   report-html:
     description: Path to the HTML report. Empty when the comparison did not finish.
     value: ${{ steps.run.outputs.report-html }}
+  otel-metrics:
+    description: Path to the run's OpenTelemetry metrics, as an OTLP/JSON export. Empty when the comparison did not finish.
+    value: ${{ steps.run.outputs.otel-metrics }}
 
 runs:
   using: composite
@@ -96,7 +99,7 @@ runs:
           spec="veridelta${extras:+[$extras]} @ $source_url"
         fi
 
-        uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" > "$out/summary.json"
+        uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --otel "$out/otel-metrics.json" > "$out/summary.json"
         code=$?
 
         if [ "$code" -eq 0 ]; then
@@ -127,10 +130,12 @@ runs:
             echo "summary-json="
             echo "summary-markdown="
             echo "report-html="
+            echo "otel-metrics="
           else
             echo "summary-json=$out/summary.json"
             echo "summary-markdown=$out/summary.md"
             echo "report-html=$out/report.html"
+            echo "otel-metrics=$out/otel-metrics.json"
           fi
         } >> "$GITHUB_OUTPUT"
 

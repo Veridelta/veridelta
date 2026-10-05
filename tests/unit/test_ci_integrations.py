@@ -115,6 +115,17 @@ class TestGitHubAction:
         assert parsed.json is True
         assert parsed.html == "placeholder/report.html"
         assert parsed.markdown == "placeholder/summary.md"
+        assert parsed.otel == "placeholder/otel-metrics.json"
+
+    def test_it_exposes_the_metrics_file_only_for_a_finished_run(self) -> None:
+        """Ensure `otel-metrics` names the export after a match or drift, and is empty on error."""
+        script = _run_script()
+
+        assert _action()["outputs"]["otel-metrics"]["value"] == (
+            "${{ steps.run.outputs.otel-metrics }}"
+        )
+        assert 'echo "otel-metrics="\n' in script
+        assert 'echo "otel-metrics=$out/otel-metrics.json"\n' in script
 
 
 def _gitlab() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -157,6 +168,7 @@ class TestGitLabTemplate:
 
         assert parsed.json is True
         assert parsed.markdown == "veridelta-report/summary.md"
+        assert parsed.otel == "veridelta-report/otel-metrics.json"
 
     def test_it_installs_the_release_it_ships_with(self) -> None:
         """Ensure commitizen keeps the default version in step with the package.

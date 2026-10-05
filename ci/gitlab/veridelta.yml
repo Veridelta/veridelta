@@ -60,7 +60,7 @@ spec:
       mkdir -p veridelta-report
       extras=$(printf '%s' "$VERIDELTA_EXTRAS" | tr -d ' ')
       spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
-      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md > veridelta-report/summary.json
+      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md --otel veridelta-report/otel-metrics.json > veridelta-report/summary.json
       code=$?
       if [ "$code" -eq 0 ]; then
         status=match

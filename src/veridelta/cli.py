@@ -27,6 +27,7 @@ from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEn
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.models import ConfigFinding
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
+from veridelta.telemetry import write_otlp_metrics
 
 if TYPE_CHECKING:
     from veridelta.models import DiffConfig, DiffRule, SourceRef, ValueMapProposal
@@ -219,6 +220,16 @@ def run(args: argparse.Namespace) -> int:
         if args.markdown:
             summary_file = write_markdown(result, args.markdown)
             _progress(f"Markdown summary saved to: {summary_file.absolute()}", quiet=quiet)
+
+        if args.otel:
+            metrics_file = write_otlp_metrics(
+                result,
+                args.otel,
+                config_path=args.config,
+                source=source_config,
+                target=target_config,
+            )
+            _progress(f"OpenTelemetry metrics saved to: {metrics_file.absolute()}", quiet=quiet)
 
         return EXIT_MATCH if summary.is_match else EXIT_MISMATCH
 
@@ -503,6 +514,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="PATH",
         help="Also write a short Markdown summary to PATH, for CI job summaries and PR comments.",
+    )
+    run_parser.add_argument(
+        "--otel",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Also write the run's metrics to PATH as OTLP/JSON, for an OpenTelemetry collector.",
     )
 
     crosswalk_parser = subparsers.add_parser(

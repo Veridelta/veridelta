@@ -12,6 +12,10 @@ from urllib.parse import quote
 
 import polars as pl
 import pytest
+from google.protobuf import json_format
+from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
+    ExportMetricsServiceRequest,
+)
 
 
 @pytest.mark.e2e
@@ -118,6 +122,47 @@ output_format: parquet
         assert changed_df.item(0, "val_source") == "B"
         assert changed_df.item(0, "val_target") == "CHANGED"
         assert changed_df.item(0, "val_is_match") is False
+
+    def test_e2e_otel_metrics_describe_the_run(self, tmp_path: Path) -> None:
+        """Ensure `--otel` writes an OTLP export a collector accepts, alongside `--json`."""
+        src_file = tmp_path / "source.csv"
+        pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]}).write_csv(src_file)
+        tgt_file = tmp_path / "target.csv"
+        pl.DataFrame({"id": [1, 2, 4], "val": ["A", "CHANGED", "D"]}).write_csv(tgt_file)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  path: {src_file}
+target:
+  path: {tgt_file}
+primary_keys: [id]
+""")
+        metrics_file = tmp_path / "telemetry" / "otel-metrics.json"
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file), "--json", "--otel", str(metrics_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 1, result.stderr
+        assert '"is_match": false' in result.stdout
+        assert "OpenTelemetry metrics saved to:" in result.stderr
+        request = json_format.Parse(
+            metrics_file.read_text(encoding="utf-8"), ExportMetricsServiceRequest()
+        )
+        (resource_metrics,) = request.resource_metrics
+        attributes = {a.key: a.value.string_value for a in resource_metrics.resource.attributes}
+        assert attributes["veridelta.config.path"] == str(config_file)
+        assert attributes["veridelta.source.name"] == str(src_file)
+        metrics = {m.name: m for m in resource_metrics.scope_metrics[0].metrics}
+        kinds = {
+            point.attributes[0].value.string_value: point.as_int
+            for point in metrics["veridelta.diff.rows"].gauge.data_points
+        }
+        assert kinds == {"added": 1, "removed": 1, "changed": 1}
+        assert metrics["veridelta.diff.match"].gauge.data_points[0].as_int == 0
 
     def test_e2e_config_reads_references_from_the_environment(self, tmp_path: Path) -> None:
         """Ensure `${NAME}` in the source and target blocks resolves from the CLI's environment."""
