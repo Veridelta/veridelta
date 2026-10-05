@@ -1,3 +1,58 @@
+## v0.13.0 (2026-10-05)
+
+A `duckdb` source reads a table, or the result of a query, from a DuckDB file or a
+MotherDuck database written as `md:name`. It is compared locally and pairs with any
+source but a warehouse. It needs the `duckdb` extra. A file opens read-only, and every
+session reads time in UTC. MotherDuck needs a token, from the `motherduck_token` field
+or the `MOTHERDUCK_TOKEN` variable, and is tested only against a stand-in for its
+driver.
+
+Two tables in one DuckDB database that both set `pushdown` are compared inside DuckDB,
+as two Postgres tables already can be. Only counts, keys, and an optional row sample
+come back. DuckDB refuses `max_levenshtein_distance`, since its `levenshtein` counts
+bytes rather than characters.
+
+A database `table` can be read in parallel: set `partition_on` to an integer column and
+`partitions` to the number of ranges. The column must hold no NULL, which ConnectorX
+would leave out. Veridelta counts NULLs first and fails the read if it finds any.
+
+`--markdown-max-rows` lists changed values in the Markdown summary, which the GitHub
+Action and the GitLab CI template post on pull and merge requests. The default, `0`,
+lists none, since everyone who can read the comment sees the values. OpenTelemetry
+exports now read `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`, and Veridelta's own
+attributes keep their values.
+
+The rest is internal. Single-use helpers are inlined across the engine, the compiler,
+and the CLI, and private docstrings are cut to one line. Public docstrings follow the
+style rules, with doctested examples, and copied tests are parametrized. CI has one
+check to require on `main`, a time limit on each job, and a workflow that re-runs jobs
+GitHub never started.
+
+### Feat
+
+- read DuckDB files and MotherDuck databases as a `duckdb` source
+- compare two DuckDB tables inside DuckDB when both set `pushdown`
+- read a database `table` in parallel partitions with `partition_on` and `partitions`
+- list changed values in the Markdown summary with `--markdown-max-rows`, and the
+  `markdown-max-rows` input of the GitHub Action and the GitLab CI template
+- read `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES` for OpenTelemetry exports
+
+### Refactor
+
+- inline single-use helpers and drop repeated code in the engine
+- inline single-use helpers in the SQL compiler and the connector sessions
+- define `--config` once in the CLI and inline its single-use helpers
+
+### Chore
+
+- add one `CI Passed` check for `main` to require, stop each CI job after 15 minutes,
+  and re-run CI jobs that GitHub never started
+- drop stale tool configuration
+- mark each test module once, parametrize copied tests, and drop exact duplicates
+- cut private docstrings to one line, and write the public ones to the style rules with
+  doctested examples
+- start the release steps with a `cz bump` dry run
+
 ## v0.12.1 (2026-10-05)
 
 A Postgres `table` now keeps the declared precision and scale of each `numeric` column,

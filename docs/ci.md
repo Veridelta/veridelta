@@ -10,7 +10,7 @@ The GitHub Action and the GitLab CI template run `veridelta run` in a pipeline, 
 - they keep the JSON summary, the HTML report, and the OpenTelemetry metrics as artifacts;
 - they fail the job on drift or on an error.
 
-The examples pin `v0.12.1`.
+The examples pin `v0.13.0`.
 
 ## GitHub Actions
 
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: Veridelta/veridelta@v0.12.1
+      - uses: Veridelta/veridelta@v0.13.0
         with:
           config: veridelta.yaml
           extras: snowflake
@@ -37,7 +37,7 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
 ```
 
-**Version.** Pin the action to a release tag such as `v0.12.1`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
+**Version.** Pin the action to a release tag such as `v0.13.0`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
 
 **Credentials.** Pass credentials as step environment variables, as above, and reference them from the configuration as `${SNOWFLAKE_PASSWORD}`. See [Environment variables](configuration.md#environment-variables).
 
@@ -87,7 +87,7 @@ The summary lists counts and column names, never values, unless `markdown-max-ro
 The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
 
 ```yaml
-      - uses: Veridelta/veridelta@v0.12.1
+      - uses: Veridelta/veridelta@v0.13.0
         id: veridelta
         env:
           OTEL_RESOURCE_ATTRIBUTES: deployment.environment=ci,team=data
@@ -111,7 +111,7 @@ Include the template from a release tag, with its inputs:
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.12.1/ci/gitlab/veridelta.yml
+  - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.13.0/ci/gitlab/veridelta.yml
     inputs:
       config: veridelta.yaml
       extras: snowflake
@@ -138,10 +138,10 @@ The template defines one job, named `veridelta` by default, which:
 
 ```yaml
 - uses: astral-sh/setup-uv@v7
-- run: uvx veridelta@0.12.1 validate -c veridelta.yaml --allow-missing-env
+- run: uvx veridelta@0.13.0 validate -c veridelta.yaml --allow-missing-env
 ```
 
-`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.12.1' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](cli.md#checking-a-configuration).
+`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.13.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](cli.md#checking-a-configuration).
 
 ## Exit codes and statuses
 
