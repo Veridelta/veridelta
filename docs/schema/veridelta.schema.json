@@ -114,7 +114,7 @@
     },
     "DatabaseConfig": {
       "additionalProperties": false,
-      "description": "Immutable settings for reading a database table or query into a local comparison.\n\nThe rows are read through ConnectorX into Polars and compared by the local\nengine, so a database pairs with files, lakehouse tables, or another\ndatabase. Requires the `database` extra (`uv add 'veridelta[database]'`).\n\nAttributes:\n    type (Literal[\"database\"]): Discriminator for YAML source routing.\n    uri (str): ConnectorX connection URI, such as\n        `postgresql://analyst@db.internal:5432/sales` or\n        `sqlite:///srv/data/legacy.db`. A password written inside it is\n        masked when the config is printed, but kept by `model_dump()`,\n        which the connector needs.\n    password (str | None): Optional password, percent-encoded into the\n        URI's user information when the connector reads. Left out when the\n        config is printed, but kept by `model_dump()`.\n    table (str | None): Table or view to read whole, as one to three\n        unquoted identifier segments.\n    query (str | None): SQL statement to run instead, sent to the database\n        exactly as written. Set exactly one of `table` and `query`.",
+      "description": "Immutable settings for reading a database table or query into a local comparison.\n\nThe rows are read through ConnectorX into Polars and compared by the local\nengine, so a database pairs with files, lakehouse tables, or another\ndatabase. Requires the `database` extra (`uv add 'veridelta[database]'`).\nTwo Postgres tables on one connection can instead be compared inside the\ndatabase, without reading their rows, when both sides set `pushdown`.\n\nAttributes:\n    type (Literal[\"database\"]): Discriminator for YAML source routing.\n    uri (str): ConnectorX connection URI, such as\n        `postgresql://analyst@db.internal:5432/sales` or\n        `sqlite:///srv/data/legacy.db`. A password written inside it is\n        masked when the config is printed, but kept by `model_dump()`,\n        which the connector needs.\n    password (str | None): Optional password, percent-encoded into the\n        URI's user information when the connector reads. Left out when the\n        config is printed, but kept by `model_dump()`.\n    table (str | None): Table or view to read whole, as one to three\n        unquoted identifier segments.\n    query (str | None): SQL statement to run instead, sent to the database\n        exactly as written. Set exactly one of `table` and `query`.\n    pushdown (bool): Compare inside the database instead of reading the\n        rows. Postgres `table` sources only, and both sides must set it.",
       "properties": {
         "type": {
           "const": "database",
@@ -176,6 +176,12 @@
           "default": null,
           "description": "SQL statement to run instead of reading a table, sent as written.",
           "title": "Query"
+        },
+        "pushdown": {
+          "default": false,
+          "description": "Compare inside the database instead of reading the rows. Postgres tables only; set it on both sides.",
+          "title": "Pushdown",
+          "type": "boolean"
         }
       },
       "required": [

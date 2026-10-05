@@ -553,6 +553,38 @@ class TestDatabaseConfig:
         with pytest.raises(ValidationError, match="frozen"):
             config.table = "other"  # type: ignore[misc]
 
+    def test_it_reads_rows_locally_unless_told_to_push_down(self) -> None:
+        """Ensure an existing configuration keeps comparing in Polars."""
+        assert DatabaseConfig(uri="postgresql://db.internal/sales", table="t").pushdown is False
+
+    @pytest.mark.parametrize("scheme", ["postgresql", "postgres", "PostgreSQL"])
+    def test_it_pushes_down_a_postgres_table(self, scheme: str) -> None:
+        """Ensure a Postgres table can opt into comparing inside the database."""
+        config = DatabaseConfig(uri=f"{scheme}://db.internal/sales", table="t", pushdown=True)
+
+        assert config.pushdown is True
+
+    @pytest.mark.parametrize(
+        "uri",
+        ["mysql://db.internal/sales", "sqlite:///srv/legacy.db", "redshift://db.internal/dev"],
+    )
+    def test_it_pushes_down_postgres_only(self, uri: str) -> None:
+        """Ensure a database Veridelta has no pushdown dialect for is refused at load time."""
+        with pytest.raises(ValidationError, match="postgresql:// connections only"):
+            DatabaseConfig(uri=uri, table="t", pushdown=True)
+
+    def test_it_pushes_down_a_table_only(self) -> None:
+        """Ensure a query, which would have to be wrapped, cannot be pushed down."""
+        with pytest.raises(ValidationError, match="set 'table' rather than 'query'"):
+            DatabaseConfig(
+                uri="postgresql://db.internal/sales", query="SELECT 1 AS id", pushdown=True
+            )
+
+    def test_it_takes_pushdown_as_a_real_boolean(self) -> None:
+        """Ensure a quoted `"true"` is not quietly read as a switch."""
+        with pytest.raises(ValidationError, match="valid boolean"):
+            DatabaseConfig(uri="postgresql://db.internal/sales", table="t", pushdown="true")  # type: ignore[arg-type]
+
     def test_it_masks_the_password_inside_a_printed_uri(self) -> None:
         """Ensure a password written into the URI is hidden while the rest stays readable.
 
