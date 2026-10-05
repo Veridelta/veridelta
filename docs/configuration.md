@@ -407,7 +407,7 @@ Resource attributes say which comparison ran:
 - `veridelta.source.type` and `veridelta.target.type`, such as `file` or `snowflake`;
 - `veridelta.source.name` and `veridelta.target.name`: the table, or the file or lakehouse path.
 
-A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run, and a database `query` source has no name. Like the Markdown summary, the file holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file. Veridelta does not read `OTEL_RESOURCE_ATTRIBUTES`; to tag runs with an environment or a team, add attributes in the Collector, with its `resource` processor for one.
+A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run; an Azure `abfss://container@account` path keeps its container, which sits where a user would. A database `query` source has no name. Like the Markdown summary, the file holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file. Veridelta does not read `OTEL_RESOURCE_ATTRIBUTES`; to tag runs with an environment or a team, add attributes in the Collector, with its `resource` processor for one.
 
 The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file exporter format](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/file-exporter.md) specifies, so the Collector's OTLP JSON file receiver, in its contrib distribution, can read it. The same line is the body an OTLP/HTTP endpoint accepts:
 

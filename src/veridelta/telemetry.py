@@ -30,6 +30,9 @@ SERVICE_NAME: Final[str] = "veridelta"
 _ROW_UNIT: Final[str] = "{row}"
 """UCUM annotation for a count of rows; backends treat it as dimensionless."""
 
+_CONTAINER_SCHEMES: Final[frozenset[str]] = frozenset({"abfs", "abfss", "wasb", "wasbs"})
+"""Azure schemes whose `container@account` user part names a container, not a login."""
+
 _JSONObject = dict[str, object]
 
 
@@ -96,8 +99,11 @@ def _locator(text: str) -> str | None:
 
     A URL can carry a credential in its user part, such as a token used as
     the user name, and a signature in its query, as a pre-signed object-store
-    link does. Only its scheme, host, port, and path are kept. Anything
-    without a host, such as a local or Windows path, is kept as written.
+    link does. Only its scheme, host, port, and path are kept. Azure's
+    `abfss://container@account` puts the container where a user goes, so
+    there it is kept too, unless it holds a `:` and so reads as a password.
+    Anything without a host, such as a local or Windows path, is kept as
+    written.
 
     Args:
         text (str): Path or URL from a source configuration.
@@ -112,7 +118,9 @@ def _locator(text: str) -> str | None:
         return None
     if not (parts.scheme and parts.netloc):
         return text
-    host = parts.netloc.rpartition("@")[2]
+    user, _, host = parts.netloc.rpartition("@")
+    if user and parts.scheme in _CONTAINER_SCHEMES and ":" not in user:
+        host = f"{user}@{host}"
     return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
