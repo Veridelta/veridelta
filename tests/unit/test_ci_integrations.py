@@ -27,6 +27,7 @@ _GITLAB = _ROOT / "ci" / "gitlab" / "veridelta.yml"
 _RELEASE = _ROOT / ".github" / "workflows" / "release.yml"
 _WORKFLOWS = sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
 _DEPENDABOT = _ROOT / ".github" / "dependabot.yml"
+_DOCS = _ROOT / ".github" / "workflows" / "docs.yml"
 _COMMIT_PIN = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
@@ -419,3 +420,19 @@ class TestWorkflowPins:
         assert all(update["schedule"]["interval"] == "weekly" for update in updates.values())
         # The floors in pyproject.toml are a promise to users; only the lockfile moves.
         assert updates["uv"]["versioning-strategy"] == "lockfile-only"
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestDocsWorkflow:
+    """Pin how the documentation site deploys."""
+
+    def test_it_deploys_one_commit_at_a_time(self) -> None:
+        """Ensure merges that land together cannot race to push `gh-pages`.
+
+        Deploys queue instead of cancelling one another, so none stops partway
+        and the newest commit on `main` deploys last.
+        """
+        workflow: dict[str, Any] = yaml.safe_load(_DOCS.read_text(encoding="utf-8"))
+
+        assert workflow["concurrency"] == {"group": "docs-deploy", "cancel-in-progress": False}

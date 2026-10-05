@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+# One deploy at a time: merges that land together queue instead of racing to
+# push gh-pages, and the newest commit on main deploys last.
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
