@@ -84,6 +84,8 @@ The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetr
 ```yaml
       - uses: Veridelta/veridelta@v0.12.1
         id: veridelta
+        env:
+          OTEL_RESOURCE_ATTRIBUTES: deployment.environment=ci,team=data
         with:
           config: veridelta.yaml
       - name: Send the metrics
@@ -96,7 +98,7 @@ The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetr
           --data-binary "@$METRICS" "$OTLP_ENDPOINT/v1/metrics"
 ```
 
-Add any header your backend requires, such as an API key, from a secret.
+The step's `env` tags the run with [attributes from the environment](results.md#attributes-from-the-environment). Add any header your backend requires, such as an API key, from a secret.
 
 ## GitLab CI
 
@@ -114,7 +116,7 @@ The template defines one job, named `veridelta` by default, which:
 
 - installs the release the template ships with;
 - prints the summary to the job log;
-- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above.
+- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above. The job's `variables` can set the same OpenTelemetry variables.
 
 **Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports.
 

@@ -4,6 +4,7 @@
 """Unit tests for the OpenTelemetry metrics export."""
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -129,6 +130,13 @@ def _resource(text: str) -> dict[str, str]:
     """
     attributes = _request(text).resource_metrics[0].resource.attributes
     return {attribute.key: attribute.value.string_value for attribute in attributes}
+
+
+@pytest.fixture(autouse=True)
+def _clear_otel_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset the OpenTelemetry variables, so the shell running the tests cannot change an export."""
+    monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
+    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
 
 
 class TestOTLPShape:
@@ -492,6 +500,145 @@ class TestOTLPResource:
 
         assert _SECRET not in text
         assert "db.internal" not in text
+
+
+class TestOTLPEnvironment:
+    """Validate the resource attributes the OpenTelemetry environment variables add."""
+
+    def test_it_adds_the_attributes_the_environment_names(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `OTEL_RESOURCE_ATTRIBUTES` tags a run alongside Veridelta's attributes."""
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "deployment.environment=prod,team=data")
+
+        text = render_otlp_metrics(_drift(), source=SourceConfig(path="orders.csv"))
+
+        assert _resource(text) == {
+            "service.name": "veridelta",
+            "service.version": __version__,
+            "deployment.environment": "prod",
+            "team": "data",
+            "veridelta.source.type": "file",
+            "veridelta.source.name": "orders.csv",
+        }
+
+    @pytest.mark.parametrize(
+        ("variables", "service"),
+        [
+            pytest.param(
+                {"OTEL_SERVICE_NAME": "orders-migration"}, "orders-migration", id="service-name"
+            ),
+            pytest.param(
+                {"OTEL_RESOURCE_ATTRIBUTES": "service.name=from-attributes"},
+                "from-attributes",
+                id="resource-attribute",
+            ),
+            # The specification gives `OTEL_SERVICE_NAME` precedence.
+            pytest.param(
+                {
+                    "OTEL_SERVICE_NAME": "orders-migration",
+                    "OTEL_RESOURCE_ATTRIBUTES": "service.name=from-attributes",
+                },
+                "orders-migration",
+                id="both",
+            ),
+            # An empty variable counts as unset.
+            pytest.param({"OTEL_SERVICE_NAME": ""}, "veridelta", id="empty-service-name"),
+        ],
+    )
+    def test_it_takes_the_service_name_from_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch, variables: dict[str, str], service: str
+    ) -> None:
+        """Ensure the environment renames the service, as an OpenTelemetry SDK lets it."""
+        for name, value in variables.items():
+            monkeypatch.setenv(name, value)
+
+        assert _resource(render_otlp_metrics(_drift()))["service.name"] == service
+
+    def test_it_trims_and_percent_decodes_each_item(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure items read as the specification writes them, skipping blank ones."""
+        monkeypatch.setenv(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            " team = data%20platform ,, region%2Fzone=eu%2Cwest ,"
+            "city=Z%C3%BCrich,town=Z\u00fcrich,checksum=ab==,",
+        )
+
+        assert _resource(render_otlp_metrics(_drift())) == {
+            "service.name": "veridelta",
+            "service.version": __version__,
+            "team": "data platform",
+            "region/zone": "eu,west",
+            "city": "Z\u00fcrich",
+            "town": "Z\u00fcrich",
+            "checksum": "ab==",
+        }
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("team", id="missing-equals-sign"),
+            pytest.param(" =data", id="empty-key"),
+            pytest.param("team=50%", id="truncated-escape"),
+            pytest.param("team=%zz", id="non-hex-escape"),
+            pytest.param("team=%C3", id="invalid-utf-8"),
+            # One bad item discards the items before it too.
+            pytest.param("deployment.environment=prod,team", id="valid-item-first"),
+        ],
+    )
+    def test_it_discards_a_malformed_variable_with_one_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, value: str
+    ) -> None:
+        """Ensure a malformed value is dropped whole, as the specification asks, and never logged."""
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", f"{value},note={_SECRET}")
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "orders-migration")
+        result = _drift()
+
+        with caplog.at_level(logging.WARNING, logger="veridelta.telemetry"):
+            text = render_otlp_metrics(result)
+
+        assert _resource(text) == {
+            "service.name": "orders-migration",
+            "service.version": __version__,
+        }
+        (record,) = caplog.records
+        assert (record.name, record.levelno) == ("veridelta.telemetry", logging.WARNING)
+        assert "OTEL_RESOURCE_ATTRIBUTES" in record.getMessage()
+        assert _SECRET not in caplog.text
+
+    def test_it_keeps_its_own_attributes_over_the_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the environment cannot relabel the version or what was compared."""
+        monkeypatch.setenv(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            "service.version=9.9.9,veridelta.source.type=spoofed,"
+            "veridelta.config.path=other.yaml,team=data,team=platform",
+        )
+
+        text = render_otlp_metrics(
+            _drift(), config_path="veridelta.yaml", source=SourceConfig(path="orders.csv")
+        )
+
+        keys = [
+            attribute.key for attribute in _request(text).resource_metrics[0].resource.attributes
+        ]
+        assert len(keys) == len(set(keys))
+        assert _resource(text) == {
+            "service.name": "veridelta",
+            "service.version": __version__,
+            "team": "platform",
+            "veridelta.config.path": "veridelta.yaml",
+            "veridelta.source.type": "file",
+            "veridelta.source.name": "orders.csv",
+        }
+
+    def test_it_keeps_the_scope_named_for_veridelta(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure a renamed service still reports Veridelta as the instrumentation scope."""
+        monkeypatch.setenv("OTEL_SERVICE_NAME", "orders-migration")
+
+        scope = _request(render_otlp_metrics(_drift())).resource_metrics[0].scope_metrics[0].scope
+
+        assert (scope.name, scope.version) == ("veridelta", __version__)
 
 
 class TestWriteOTLPMetrics:
