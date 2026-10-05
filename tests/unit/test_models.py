@@ -592,6 +592,82 @@ class TestDatabaseConfig:
                 uri="postgresql://db.internal/sales", query="SELECT 1 AS id", pushdown=True
             )
 
+    def test_it_reads_a_table_in_one_piece_unless_told_to_split_it(self) -> None:
+        """Ensure an existing configuration keeps one read, and a table can opt into several."""
+        whole = DatabaseConfig(uri="postgresql://db.internal/sales", table="orders")
+        split = DatabaseConfig(
+            uri="postgresql://db.internal/sales",
+            table="orders",
+            partition_on="order_id",
+            partitions=4,
+        )
+
+        assert (whole.partition_on, whole.partitions) == (None, None)
+        assert (split.partition_on, split.partitions) == ("order_id", 4)
+
+    @pytest.mark.parametrize(
+        ("fields", "message"),
+        [
+            pytest.param({"table": "t", "partition_on": "id"}, "together", id="column-alone"),
+            pytest.param({"table": "t", "partitions": 4}, "together", id="count-alone"),
+            pytest.param(
+                {"query": "SELECT 1 AS id", "partition_on": "id", "partitions": 4},
+                "split a 'table'",
+                id="query",
+            ),
+            pytest.param(
+                {"table": "t", "partition_on": "id", "partitions": 4, "pushdown": True},
+                "reads no rows",
+                id="pushdown",
+            ),
+        ],
+    )
+    def test_it_refuses_a_partitioned_read_it_cannot_run(
+        self, fields: dict[str, object], message: str
+    ) -> None:
+        """Ensure a split read names a column and a count, of a table read locally."""
+        with pytest.raises(ValidationError, match=message):
+            DatabaseConfig.model_validate({"uri": "postgresql://db.internal/sales", **fields})
+
+    @pytest.mark.parametrize(
+        ("partitions", "message"),
+        [
+            pytest.param(1, "greater than or equal to 2", id="one"),
+            pytest.param("4", "valid integer", id="text"),
+            pytest.param(4.0, "valid integer", id="float"),
+            pytest.param(True, "valid integer", id="boolean"),
+        ],
+    )
+    def test_it_takes_partitions_as_a_whole_number_of_at_least_two(
+        self, partitions: object, message: str
+    ) -> None:
+        """Ensure a quoted or fractional count is refused rather than coerced."""
+        with pytest.raises(ValidationError, match=message):
+            DatabaseConfig.model_validate(
+                {
+                    "uri": "postgresql://db.internal/sales",
+                    "table": "t",
+                    "partition_on": "id",
+                    "partitions": partitions,
+                }
+            )
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            pytest.param("order id", id="space"),
+            pytest.param("orders.id", id="dotted"),
+            pytest.param('"id"', id="quoted"),
+            pytest.param("id; DROP TABLE t", id="statement"),
+        ],
+    )
+    def test_it_rejects_a_partition_column_outside_the_allowlist(self, column: str) -> None:
+        """Ensure the column, which ConnectorX writes into SQL unquoted, carries no SQL."""
+        with pytest.raises(ValidationError, match="should match pattern"):
+            DatabaseConfig(
+                uri="postgresql://db.internal/sales", table="t", partition_on=column, partitions=2
+            )
+
     def test_it_takes_pushdown_as_a_real_boolean(self) -> None:
         """Ensure a quoted `"true"` is not quietly read as a switch."""
         with pytest.raises(ValidationError, match="valid boolean"):

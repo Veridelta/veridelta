@@ -19,9 +19,9 @@ from psycopg import sql
 
 from tests.integration.duckdb_harness import PARITY_BACKEND
 from tests.integration.postgres_harness import database_source, loaded_tables
-from veridelta.engine import DiffEngine
+from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConnectorError
-from veridelta.models import DiffConfig, DiffResult, DiffRule
+from veridelta.models import DatabaseConfig, DiffConfig, DiffResult, DiffRule
 
 pytestmark = [
     pytest.mark.integration,
@@ -135,3 +135,26 @@ class TestPostgresPushdownRouting:
                 DiffEngine.run_from_configs(
                     DiffConfig(primary_keys=["id"]), source, database_source(target_table)
                 )
+
+
+class TestPostgresPartitionedReads:
+    """Validate a partitioned `table` read against a live Postgres."""
+
+    def test_it_splits_the_read_that_keeps_declared_scale(self) -> None:
+        """Ensure every range reads `numeric(10, 2)` as text and casts it back at that scale."""
+        frame = pl.DataFrame(
+            {"id": list(range(1, 11)), "val": [Decimal(f"{index}.25") for index in range(1, 11)]},
+            schema={"id": pl.Int64(), "val": pl.Decimal(10, 2)},
+        )
+
+        with loaded_tables(frame, frame) as (table, _):
+            whole = database_source(table)
+            split = DatabaseConfig.model_validate(
+                whole.model_dump() | {"partition_on": "id", "partitions": 3}
+            )
+            read_whole = LoaderFactory.load(whole).collect()
+            read_split = LoaderFactory.load(split).collect()
+
+        assert read_split.schema == pl.Schema({"id": pl.Int64(), "val": pl.Decimal(10, 2)})
+        assert read_split.sort("id").equals(read_whole.sort("id"))
+        assert read_split.sort("id").equals(frame)
