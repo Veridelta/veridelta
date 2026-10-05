@@ -586,60 +586,45 @@ class TestEngineConnectorRouting:
         assert summary.column_mismatches == {}
         assert connector.execute_pushdown.call_count == 9
 
-    def test_it_raises_connector_error_when_the_tally_returns_multiple_rows(
-        self, mocker: MockerFixture
+    @pytest.mark.parametrize(
+        ("broken", "result", "match"),
+        [
+            # A malformed aggregate fails loudly instead of reporting partial drift.
+            pytest.param(
+                "columns",
+                pl.DataFrame({"amount": [1, 2]}).lazy(),
+                "did not return exactly one row",
+                id="tally-with-two-rows",
+            ),
+            # A malformed count fails loudly instead of skewing the ratio.
+            pytest.param(
+                "count",
+                _frame_with_ids(2),
+                "did not return a single value",
+                id="count-with-two-rows",
+            ),
+            pytest.param(
+                "count",
+                pl.DataFrame({COUNT_ALIAS: ["many"]}).lazy(),
+                "returned a non-numeric value",
+                id="text-count",
+            ),
+        ],
+    )
+    def test_it_raises_connector_error_for_a_malformed_result(
+        self, mocker: MockerFixture, broken: str, result: pl.LazyFrame, match: str
     ) -> None:
-        """Ensure a malformed aggregate fails loudly instead of reporting partial drift."""
+        """Ensure a malformed result is rejected rather than coerced."""
         connector = _configure_warehouse_compiler(mocker).return_value
 
-        def _multi_row_tally(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
-            if query_type == "columns":
-                return pl.DataFrame({"amount": [1, 2]}).lazy()
+        def _malformed(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == broken:
+                return result
             return _pushdown_by_query_type(statement, query_type)
 
-        connector.execute_pushdown.side_effect = _multi_row_tally
+        connector.execute_pushdown.side_effect = _malformed
 
-        with pytest.raises(ConnectorError, match="did not return exactly one row"):
-            DiffEngine.run_from_configs(
-                DiffConfig(primary_keys=["id"]),
-                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
-                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
-            )
-
-    def test_it_raises_connector_error_when_row_count_is_not_a_single_value(
-        self, mocker: MockerFixture
-    ) -> None:
-        """Ensure a malformed count result fails loudly instead of skewing the ratio."""
-        connector = _configure_warehouse_compiler(mocker).return_value
-
-        def _multi_row_count(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
-            if query_type == "count":
-                return _frame_with_ids(2)
-            return _pushdown_by_query_type(statement, query_type)
-
-        connector.execute_pushdown.side_effect = _multi_row_count
-
-        with pytest.raises(ConnectorError, match="did not return a single value"):
-            DiffEngine.run_from_configs(
-                DiffConfig(primary_keys=["id"]),
-                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
-                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
-            )
-
-    def test_it_raises_connector_error_when_row_count_is_not_numeric(
-        self, mocker: MockerFixture
-    ) -> None:
-        """Ensure a non-numeric count scalar is rejected rather than coerced."""
-        connector = _configure_warehouse_compiler(mocker).return_value
-
-        def _text_count(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
-            if query_type == "count":
-                return pl.DataFrame({COUNT_ALIAS: ["many"]}).lazy()
-            return _pushdown_by_query_type(statement, query_type)
-
-        connector.execute_pushdown.side_effect = _text_count
-
-        with pytest.raises(ConnectorError, match="returned a non-numeric value"):
+        with pytest.raises(ConnectorError, match=match):
             DiffEngine.run_from_configs(
                 DiffConfig(primary_keys=["id"]),
                 _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
