@@ -228,8 +228,8 @@ def write_otlp_metrics(
 ) -> Path:
     """Write a comparison's OTLP/JSON metrics export to disk.
 
-    The file holds one line, ending in a newline, so it can be sent as is to
-    an OTLP/HTTP endpoint or read by the Collector's `otlpjsonfile` receiver.
+    The file holds one line, ending in a newline, so it can be sent as is to an
+    OTLP/HTTP endpoint or read by the Collector's `otlpjsonfile` receiver.
 
     Args:
         result (DiffResult): Completed comparison.
@@ -241,6 +241,24 @@ def write_otlp_metrics(
 
     Returns:
         Path: The file that was written.
+
+    Examples:
+        >>> import polars as pl
+        >>> from veridelta.engine import DiffEngine
+        >>> from veridelta.models import DiffConfig
+        >>> source = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 20.0]})
+        >>> target = pl.LazyFrame({"id": [1, 2], "amount": [10.0, 21.5]})
+        >>> result = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+        >>> import json
+        >>> export = json.loads(render_otlp_metrics(result, time_unix_nano=0))
+        >>> [
+        ...     metric["name"]
+        ...     for metric in export["resourceMetrics"][0]["scopeMetrics"][0]["metrics"]
+        ... ]
+        ['veridelta.dataset.rows', 'veridelta.diff.rows',
+         'veridelta.column.mismatched_rows', 'veridelta.diff.mismatch_ratio',
+         'veridelta.diff.match']
+        >>> path = write_otlp_metrics(result, "metrics.json")  # doctest: +SKIP
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)

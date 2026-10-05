@@ -1,10 +1,10 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Configuration parsing and validation from YAML files.
+"""Configuration files: loading, checking, and their JSON Schema.
 
-This module acts as the bridge between user-defined YAML configurations
-and the strict Pydantic models required by the execution engine.
+`load_config` reads a YAML file into the models the engine runs on, and
+`config_json_schema` describes the same files for editors and validators.
 """
 
 import os
@@ -210,17 +210,17 @@ def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -
 def load_config(
     path: str | Path, *, unset_env: list[str] | None = None
 ) -> tuple[DiffConfig, SourceRef, SourceRef]:
-    """Loads and validates a Veridelta configuration from a YAML file.
+    """Load and validate a configuration file.
 
-    The parser extracts the explicit `source` and `target` definition blocks,
-    then evaluates all remaining root-level YAML parameters as the master
-    `DiffConfig`. File sources may omit `type` (defaults to `file`).
+    The `source` and `target` blocks become source configurations, and every other
+    root key belongs to the `DiffConfig`. A file source may omit `type`, which
+    defaults to `file`.
 
-    Strings inside `source` and `target` may reference environment variables
-    as `${NAME}`, or `${NAME:-default}` to fall back when the variable is
-    unset or empty, so credentials can stay out of the file. `$${` writes a
-    literal `${`. Root settings and rules are read verbatim, which keeps a
-    `${1}` in a regex replacement intact.
+    Strings inside `source` and `target` may reference environment variables as
+    `${NAME}`, or `${NAME:-default}` to fall back when the variable is unset or
+    empty, so credentials can stay out of the file. `$${` writes a literal `${`.
+    Root settings and rules are read verbatim, which keeps a `${1}` in a regex
+    replacement intact.
 
     Passing a list as `unset_env` checks a file without its secrets: an unset
     variable with no default then reads as its own name, so `${TABLE}` becomes
@@ -228,19 +228,29 @@ def load_config(
     validation after such a guess says which variables it guessed.
 
     Args:
-        path (str | Path): The file system path to the YAML configuration.
-        unset_env (list[str] | None): Collects unset variables instead of
-            raising for them. None, the default, raises.
+        path (str | Path): Path to the YAML file.
+        unset_env (list[str] | None): Collects unset variables instead of raising
+            for them. None, the default, raises.
 
     Returns:
-        tuple[DiffConfig, SourceRef, SourceRef]: Master configuration plus
-            validated source and target references.
+        tuple[DiffConfig, SourceRef, SourceRef]: The comparison settings, then the
+            source and the target.
 
     Raises:
-        ConfigError: If the file cannot be located, contains invalid YAML syntax,
-            lacks the mandatory source/target blocks, references an unset
-            environment variable or holds a malformed reference, or violates
-            the strict Pydantic schema definitions.
+        ConfigError: If the file is missing or not valid YAML, lacks a `source` or
+            `target` block, references an unset environment variable, holds a
+            malformed reference, or fails validation.
+
+    Examples:
+        >>> from pathlib import Path
+        >>> from tempfile import TemporaryDirectory
+        >>> text = "{primary_keys: [id], source: {path: a.csv}, target: {path: b.csv}}"
+        >>> with TemporaryDirectory() as folder:
+        ...     path = Path(folder, "veridelta.yaml")
+        ...     _ = path.write_text(text)
+        ...     diff, source, target = load_config(path)
+        >>> diff.primary_keys, source.path
+        (['id'], 'a.csv')
     """
     file_path = Path(path)
 

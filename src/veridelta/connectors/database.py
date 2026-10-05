@@ -87,8 +87,8 @@ class DatabaseConnector(VerideltaConnector):
 
         Args:
             config (DatabaseConfig): Frozen URI, credentials, and table or query.
-            probe (bool): Read the table's columns and no rows, for a schema
-                check. Only a `table` can be probed.
+            probe (bool): Whether to read the table's columns and no rows, for a
+                schema check. Only a `table` can be probed.
         """
         self._config = config
         self._probe = probe
