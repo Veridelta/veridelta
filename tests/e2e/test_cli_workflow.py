@@ -125,7 +125,7 @@ output_format: parquet
         assert changed_df.item(0, "val_is_match") is False
 
     def test_e2e_otel_metrics_describe_the_run(self, tmp_path: Path) -> None:
-        """Ensure `--otel` writes an OTLP export a collector accepts, alongside `--json`."""
+        """Ensure `--otel` writes an OTLP export a collector accepts, tagged from the environment."""
         src_file = tmp_path / "source.csv"
         pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]}).write_csv(src_file)
         tgt_file = tmp_path / "target.csv"
@@ -145,6 +145,11 @@ primary_keys: [id]
             capture_output=True,
             text=True,
             check=False,
+            env={
+                **os.environ,
+                "OTEL_SERVICE_NAME": "orders-migration",
+                "OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=ci,team=data%20platform",
+            },
         )
 
         assert result.returncode == 1, result.stderr
@@ -155,6 +160,9 @@ primary_keys: [id]
         )
         (resource_metrics,) = request.resource_metrics
         attributes = {a.key: a.value.string_value for a in resource_metrics.resource.attributes}
+        assert attributes["service.name"] == "orders-migration"
+        assert attributes["deployment.environment"] == "ci"
+        assert attributes["team"] == "data platform"
         assert attributes["veridelta.config.path"] == str(config_file)
         assert attributes["veridelta.source.name"] == str(src_file)
         metrics = {m.name: m for m in resource_metrics.scope_metrics[0].metrics}

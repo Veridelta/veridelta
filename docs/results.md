@@ -87,7 +87,7 @@ Every metric is a gauge stamped with the time the file is written, so each run a
 
 Resource attributes say which comparison ran:
 
-- `service.name`, which is `veridelta`, and `service.version`;
+- `service.name`, which is `veridelta` unless the environment renames it, and `service.version`;
 - `veridelta.config.path`, the configuration file;
 - `veridelta.source.type` and `veridelta.target.type`, such as `file` or `snowflake`;
 - `veridelta.source.name` and `veridelta.target.name`: the table, or the file or lakehouse path.
@@ -96,14 +96,23 @@ A URL keeps only its scheme, host, and path, so a token in its user part or a si
 
 Like the Markdown summary, the file holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file.
 
-Veridelta does not read `OTEL_RESOURCE_ATTRIBUTES`. To tag runs with an environment or a team, add attributes in the Collector, such as with its `resource` processor.
-
 The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file exporter format](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/file-exporter.md) specifies. The Collector's OTLP JSON file receiver, in its contrib distribution, can read it. The same line is the body an OTLP/HTTP endpoint accepts:
 
 ```bash
 curl --fail -X POST -H "Content-Type: application/json" \
   --data-binary @otel-metrics.json "$OTLP_ENDPOINT/v1/metrics"
 ```
+
+### Attributes from the environment
+
+The standard OpenTelemetry variables add resource attributes, so a run can carry its environment or its team:
+
+- `OTEL_RESOURCE_ATTRIBUTES` holds comma-separated `key=value` items, such as `deployment.environment=prod,team=data`. Percent-encode a comma, an equals sign, or a percent sign inside a key or value.
+- `OTEL_SERVICE_NAME` replaces `service.name`. It wins over a `service.name` in `OTEL_RESOURCE_ATTRIBUTES`, as the OpenTelemetry specification requires.
+
+When the environment sets a key that Veridelta also sets, Veridelta's value wins, except for `service.name`. The instrumentation scope stays `veridelta`. The values are exported as written, so keep secrets out of them.
+
+A malformed `OTEL_RESOURCE_ATTRIBUTES`, such as an item without `=` or a `%` that starts no valid escape, is ignored whole, as the specification recommends. The `veridelta.telemetry` logger then warns without repeating the value. The command line configures no logging, so there the variable is dropped silently.
 
 ## Artifacts
 
