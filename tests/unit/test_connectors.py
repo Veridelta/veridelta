@@ -36,6 +36,8 @@ from veridelta.connectors import (
 from veridelta.connectors.sql import compile_postgres_columns_query
 from veridelta.exceptions import ConfigError, ConnectorError
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 
 def _snowflake_config() -> SnowflakeConfig:
     """Build a minimal valid Snowflake configuration."""
@@ -73,8 +75,6 @@ def _sample_lazy_frame() -> pl.LazyFrame:
     return pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.0]}).lazy()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestConnectorConfigValidation:
     """Validate frozen, extra-forbid credential models."""
 
@@ -125,8 +125,6 @@ class TestConnectorConfigValidation:
             iceberg.table_uri = "s3://other"  # type: ignore[misc]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestConnectorInterface:
     """Validate ABC instantiation and warehouse stubs."""
 
@@ -164,8 +162,6 @@ class TestConnectorInterface:
             connector.fetch_schema()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestLakehouseConnectors:
     """Validate lazy Delta and Iceberg scan wiring without optional extras."""
 
@@ -389,8 +385,6 @@ class TestLakehouseConnectors:
             connector.lazyframe()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestConnectorLifecycleDefaults:
     """Validate the lifecycle members every connector inherits from the ABC."""
 
@@ -454,8 +448,6 @@ def _read_database(
     return read
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDatabaseConnector:
     """Validate the connector that reads a database table or query into Polars."""
 
@@ -708,8 +700,6 @@ class TestDatabaseConnector:
             connector.lazyframe()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDatabaseSchemaProbe:
     """Validate `DatabaseConnector(..., probe=True)`, which reads a table's columns only."""
 
@@ -741,8 +731,6 @@ _NUMERIC_10_2 = 655366
 """Postgres `atttypmod` of a `numeric(10, 2)` column: (10 << 16 | 2) + 4."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestPostgresDeclaredScale:
     """Validate that a Postgres table's `numeric` columns keep their declared precision and scale.
 
@@ -859,8 +847,6 @@ def _setting(value: str) -> pl.DataFrame:
     return pl.DataFrame({"value": [value]})
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestPostgresPushdownSession:
     """Validate the session that runs compiled comparison SQL inside Postgres."""
 

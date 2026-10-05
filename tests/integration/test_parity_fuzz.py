@@ -29,6 +29,8 @@ from tests.integration.parity_strategies import comparison_cases
 from veridelta.exceptions import ConnectorError, VerideltaError
 from veridelta.models import DiffConfig, DiffResult
 
+pytestmark = [pytest.mark.integration]
+
 settings.register_profile(
     "ci",
     max_examples=60,
@@ -74,7 +76,6 @@ def _outcome(run: Callable[[], DiffResult]) -> Outcome:
     )
 
 
-@pytest.mark.integration
 @pytest.mark.property
 class TestFuzzedParity:
     """Validate that drawn comparisons reach one verdict on both engines."""

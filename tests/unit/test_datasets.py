@@ -16,9 +16,9 @@ from pytest_mock import MockerFixture
 from veridelta.datasets import _get_cache_dir, load_nyc_taxi  # pyright: ignore[reportPrivateUsage]
 from veridelta.exceptions import DatasetError, VerideltaError
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
-@pytest.mark.unit
-@pytest.mark.fast
+
 class TestDatasetCacheManagement:
     """Validate secure downloading, file system caching, and network fallbacks."""
 

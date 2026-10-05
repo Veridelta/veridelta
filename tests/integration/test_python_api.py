@@ -10,8 +10,9 @@ from veridelta.engine import DiffEngine
 from veridelta.exceptions import DataIntegrityError
 from veridelta.models import DiffConfig, DiffRule
 
+pytestmark = [pytest.mark.integration]
 
-@pytest.mark.integration
+
 class TestEnginePythonAPI:
     """Validate the DiffEngine executes flawlessly in pure Python environments (e.g. Airflow/Jupyter)."""
 

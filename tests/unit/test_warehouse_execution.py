@@ -16,6 +16,8 @@ from veridelta.connectors.sql import SQLDialect
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DatabricksConfig, DiffRule, SnowflakeConfig
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 
 def _snowflake_config() -> SnowflakeConfig:
     """Build a minimal valid Snowflake configuration."""
@@ -88,8 +90,6 @@ def _patch_databricks_session(mocker: MockerFixture, table: Any) -> tuple[Any, A
     return session, cursor
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestSnowflakeExecution:
     """Validate Snowflake connect, pushdown, and schema over mocked Arrow."""
 
@@ -398,8 +398,6 @@ class TestSnowflakeExecution:
         cursor.close.assert_called_once()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDatabricksExecution:
     """Validate Databricks connect, pushdown, and schema over mocked Arrow."""
 

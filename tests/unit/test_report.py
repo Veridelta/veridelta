@@ -15,6 +15,8 @@ from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, DiffResult, DiffSummary
 from veridelta.report import render_html, render_markdown, write_html, write_markdown
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 
 def _result() -> DiffResult:
     """Run a comparison with drift in one column.
@@ -64,8 +66,6 @@ def _changed_only(changed: pl.DataFrame) -> DiffResult:
     )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestHTMLReport:
     """Validate the rendered document and its self-contained guarantee."""
 
@@ -311,8 +311,6 @@ def _with_summary(summary: DiffSummary, *, keys_only: bool = False) -> DiffResul
     )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestMarkdownSummary:
     """Validate the Markdown summary CI posts to job summaries and pull requests."""
 

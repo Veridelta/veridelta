@@ -21,6 +21,8 @@ from typing import NamedTuple
 
 import pytest
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 _RULES = "See 'Writing documentation' in CONTRIBUTING.md."
@@ -151,8 +153,6 @@ def _violations(pattern: re.Pattern[str], *, prose_only: bool) -> list[str]:
     return found
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDocumentationStyle:
     """Keep user-facing text free of the habits the writing rules forbid."""
 

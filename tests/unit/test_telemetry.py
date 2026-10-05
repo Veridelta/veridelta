@@ -33,6 +33,8 @@ from veridelta.models import (
 )
 from veridelta.telemetry import render_otlp_metrics, write_otlp_metrics
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _SECRET = "hunter2-do-not-export"
 
 _OBSERVED = 1_790_000_000_123_456_789
@@ -129,8 +131,6 @@ def _resource(text: str) -> dict[str, str]:
     return {attribute.key: attribute.value.string_value for attribute in attributes}
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestOTLPShape:
     """Validate that the export is an OTLP/JSON metrics request a collector accepts."""
 
@@ -208,8 +208,6 @@ class TestOTLPShape:
         assert all(metric["description"] for metric in metrics.values())
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestOTLPValues:
     """Validate the counts, column drift, and verdict the export carries."""
 
@@ -281,8 +279,6 @@ class TestOTLPValues:
         assert _points(text, "veridelta.diff.match") == {None: verdict}
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestOTLPResource:
     """Validate the resource attributes that say which comparison ran."""
 
@@ -499,8 +495,6 @@ class TestOTLPResource:
         assert "db.internal" not in text
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestWriteOTLPMetrics:
     """Validate the file a collector or an HTTP request reads."""
 

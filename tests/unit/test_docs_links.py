@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _ROOT = Path(__file__).resolve().parents[2]
 _DOCS = _ROOT / "docs"
 
@@ -122,8 +124,6 @@ def _site_links() -> list[tuple[str, str, str | None]]:
     ]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDocumentationLinks:
     """Keep links outside the strict build pointing at real pages and headings."""
 

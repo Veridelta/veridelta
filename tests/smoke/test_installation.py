@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [pytest.mark.smoke, pytest.mark.fast]
 
-@pytest.mark.smoke
-@pytest.mark.fast
+
 class TestInstallationAndBoot:
     """Validate the environment plumbing and CLI entry points."""
 
