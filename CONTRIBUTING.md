@@ -4,69 +4,78 @@ Contributions are welcome. Every change passes the same typing, formatting, and 
 
 Everyone who takes part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-## 1. Development Environment
+## Development environment
 
-Veridelta uses [uv](https://docs.astral.sh/uv/) to manage its environment and dependencies. Docker is optional, and a native setup is recommended.
+Veridelta uses [uv](https://docs.astral.sh/uv/) for its environment and dependencies. A native setup is recommended. A Dev Container gives an isolated one.
 
-### Option A: Native Setup (Recommended)
-Provides native execution performance across macOS, Linux, and Windows.
+### Native setup
 
-1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) following the official instructions for your operating system.
-2. Clone the repository and navigate into it.
-3. Install dependencies and arm the local Git hooks using the Makefile:
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/).
+2. Clone the repository and open its folder.
+3. Install the dependencies and the Git hooks:
+
    ```bash
    make install
    ```
-*(Note: `make install` automatically provisions the virtual environment and installs the `pre-commit` hooks that enforce formatting, licensing, and commit conventions).*
 
-### Option B: Dev Container (Optional)
-For an isolated, containerized workflow, we provide a pre-configured Dev Container.
+`make install` creates the virtual environment and installs the `pre-commit` hooks, which check formatting, license headers, and commit messages.
 
-1. Ensure Docker and VS Code are installed.
+### Dev Container
+
+1. Install Docker and VS Code.
 2. Clone the repository.
-3. Open the folder in VS Code and select **"Reopen in Container"** when prompted. The environment, dependencies, and Git hooks will configure automatically.
+3. Open the folder in VS Code and choose **Reopen in Container**. The container sets up the environment, the dependencies, and the Git hooks.
 
-## 2. Development Workflow
+## Development workflow
 
-We strictly follow Trunk-Based Development. **Never commit directly to `main`.**
+Work on a short-lived branch, and never commit to `main` directly:
 
-1. Create a feature branch: `git checkout -b feat/your-feature-name`
-2. Write your code and tests.
-3. Verify your changes locally using the Makefile:
+1. Create a branch, such as `git checkout -b feat/your-feature-name`.
+2. Write the code and its tests.
+3. Run the checks CI runs:
+
    ```bash
-   make all  # Runs formatting, linting, strict type-checking, and tests
+   make all  # formatting, linting, strict type checks, tests, and a strict docs build
    ```
-   The tests include the tutorial notebooks in `docs/examples/`: each one is executed, and every `# Output:` comment must match what its cell prints. Run `make notebooks` to check just those after editing a tutorial. After changing a configuration model, run `make schema` to regenerate the JSON Schema that editors read, `docs/schema/veridelta.schema.json`; a test fails while it is stale.
 
-   `make all` checks that pushdown SQL reaches the local engine's verdicts by running it in DuckDB. After changing the SQL compiler, also run the same parity suite inside a live Postgres with `make postgres`. It loads each case into the server named by `VERIDELTA_POSTGRES_URI`, compares the tables there and locally, and drops them. A disposable server works:
-   ```bash
-   docker run --rm -d --name veridelta-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
-   export VERIDELTA_POSTGRES_URI=postgresql://postgres:postgres@localhost:5432/postgres
-   make postgres
-   ```
-   Cases that Postgres pushdown refuses, or whose data Postgres cannot store, carry the `duckdb_only` marker with the reason, and `make postgres` leaves them out. CI runs the suite against a `postgres:16` service on every pull request.
+The tests run each tutorial notebook in `docs/examples/` and require every `# Output:` comment to match what its cell prints. After editing a tutorial, `make notebooks` runs only those. After changing a configuration model, run `make schema` to regenerate `docs/schema/veridelta.schema.json`, the JSON Schema editors read. A test fails while it is stale.
 
-## 3. Commit Standards
+### Pushdown parity
 
-We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/). Our `commit-msg` hook will automatically reject any commit that does not follow this structure:
-* `feat:` A new feature.
-* `fix:` A bug fix.
-* `docs:` Documentation changes.
-* `test:` Adding or updating tests.
-* `chore:` Tooling or CI updates.
-* `refactor:` Code changes that neither fix a bug nor add a feature.
+Pushdown must reach the same verdict as a local run. A differential harness runs both engines over the same frames and compares the results. It runs the compiled SQL in DuckDB, which catches semantic errors such as NULL propagation, three-valued logic, and operator precedence, but not differences between vendors. Snowflake, Databricks, and BigQuery spellings are pinned by assertions on the emitted SQL. DuckDB's `levenshtein` counts bytes, not characters, so edit distance parity is checked on ASCII text, where the two agree. A property test also draws random configurations and data, from integers at the edges of their types to NULLs, NaN, and text timestamps, and requires both engines to reach the same counts on each.
 
-The commit hooks also format the code and add the Apache-2.0 license header. If a hook changes a file or fails, stage the changes and run `git commit` again.
+`make all` runs the parity suite in DuckDB. After changing the SQL compiler, also run it inside a live Postgres with `make postgres`. It loads each case into the server that `VERIDELTA_POSTGRES_URI` names, compares the tables there and locally, and drops them. A disposable server works:
 
-## 4. Pull Requests
+```bash
+docker run --rm -d --name veridelta-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+export VERIDELTA_POSTGRES_URI=postgresql://postgres:postgres@localhost:5432/postgres
+make postgres
+```
 
-1. Ensure `make all` passes locally.
-2. Open a PR against the `main` branch. Ensure your PR title also follows the Conventional Commits format (e.g., `feat: added semantic parser`).
-3. **The CI Pipeline is the final gatekeeper.** It will automatically test your PR across multiple operating systems and Python versions. If the static analysis or test matrix fails, the PR cannot be merged.
-4. CI runs on every pull request, whatever its base branch, so a PR stacked on another one is checked too. Merge the base PR first and delete its branch: GitHub then retargets the stacked PR to `main`. Merging a stacked PR while its base branch still exists lands it on that branch instead of `main`.
-5. Workflows and `action.yml` run third-party actions pinned to a commit, with the release in a comment (`actions/checkout@<sha> # v5.1.0`), so a moved tag upstream cannot change what CI runs or what a release publishes. Pin any action you add the same way; `tests/unit/test_ci_integrations.py` checks it. Dependabot proposes newer pins and a refreshed `uv.lock` once a week, never higher floors in `pyproject.toml`.
+Cases that Postgres pushdown refuses, or whose data Postgres cannot store, carry the `duckdb_only` marker with the reason, and `make postgres` leaves them out. CI runs the suite against a `postgres:16` service on every pull request.
 
-## 5. Releasing
+## Commit messages
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), and the `commit-msg` hook rejects any other form:
+
+- `feat:` a new feature.
+- `fix:` a bug fix.
+- `docs:` documentation.
+- `test:` tests.
+- `chore:` tooling or CI.
+- `refactor:` a change that neither fixes a bug nor adds a feature.
+
+The hooks also format the code and add the Apache-2.0 license header. If a hook changes a file or fails, stage the changes and run `git commit` again.
+
+## Pull requests
+
+1. Run `make all` before opening a pull request.
+2. Open it against `main`, with a title in the Conventional Commits form, such as `feat: read Avro files`.
+3. CI tests the pull request on several operating systems and Python versions. A pull request is merged only after every check passes.
+4. CI runs on every pull request, whatever its base branch, so a pull request stacked on another one is checked too. Merge the base pull request first and delete its branch: GitHub then retargets the stacked one to `main`. Merging a stacked pull request while its base branch still exists lands it on that branch instead of `main`.
+5. Workflows and `action.yml` run third-party actions pinned to a commit, with the release in a comment (`actions/checkout@<sha> # v5.1.0`). A moved tag upstream then cannot change what CI runs or what a release publishes. Pin any action you add the same way; `tests/unit/test_ci_integrations.py` checks it. Dependabot proposes newer pins and a refreshed `uv.lock` once a week, never higher floors in `pyproject.toml`.
+
+## Releasing
 
 A release is a pull request that changes the version. Merging it does the rest.
 
@@ -78,7 +87,7 @@ A merge that lands while a release waits for approval leaves the tag where it is
 
 If a release stops partway, re-run the failed jobs, or run the workflow by hand on the tag. A rerun uploads only the files PyPI lacks, so it never fails on a version PyPI already has, and it leaves an existing release page as it is. Pushing a version tag by hand still publishes, but the workflow refuses a tag whose name differs from the version in that commit.
 
-## 6. Writing documentation
+## Writing documentation
 
 The [Polars documentation](https://docs.pola.rs/) is the model: short declarative sentences, one topic per page, and examples that run. These rules apply to the docs, the README, the tutorials, docstrings, CLI help, and commit and pull request text.
 

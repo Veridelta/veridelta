@@ -1,0 +1,241 @@
+# Sources
+
+A source block describes one side of a comparison: a file, a lakehouse table, a database table or query, or a warehouse table. Its `type` selects the connector, and a block without a `type` is a file.
+
+## Connection fields
+
+Each connector accepts the fields below and rejects any other key:
+
+| `type` | Required | Optional |
+| :--- | :--- | :--- |
+| `file` (default) | `path` | `format` (default `csv`), `options` |
+| `snowflake` | `table`, `account`, `user`, `warehouse`, `database`, `schema_name` | `password`, `role` |
+| `databricks` | `table`, `server_hostname`, `http_path` | `access_token`, `catalog`, `schema_name` |
+| `bigquery` | `table`, `project` | `dataset`, `location`, `credentials_path`, `maximum_bytes_billed` |
+| `delta` | `table_uri` | `version`, `storage_options` |
+| `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
+| `database` | `uri`, and exactly one of `table` or `query` | `password`, `pushdown` |
+
+`version` and `snapshot_id` must be non-negative integers, and `maximum_bytes_billed` a positive one. A quoted number is rejected, not converted, because each value goes straight to a scan or a job. Warehouse, lakehouse, and database blocks cannot be changed once loaded.
+
+## Extras
+
+The core package reads files. Every other connector, and Excel files, needs an optional extra:
+
+```bash
+uv add 'veridelta[snowflake]'
+uv add 'veridelta[databricks]'
+uv add 'veridelta[bigquery]'
+uv add 'veridelta[delta]'
+uv add 'veridelta[iceberg]'
+uv add 'veridelta[database]'
+uv add 'veridelta[excel]'
+uv add 'veridelta[all]'
+```
+
+## Files
+
+A file source reads `path` in one of these formats: `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, or `excel`. Any other `format` is rejected when the configuration loads.
+
+`options` go to the matching Polars reader. `{"separator": ";"}` reaches `scan_csv`, and `{"sheet_name": "Q3"}` reaches `read_excel`.
+
+Most formats are read lazily, in streaming batches. Three are read whole into memory, because Polars has no lazy reader for them:
+
+- `json`: a JSON document is one array, which cannot be parsed in parts. Prefer `ndjson` for anything large.
+- `excel`: a spreadsheet is a random-access container. Reading one needs the `excel` extra.
+- `avro`: Polars reads Avro eagerly.
+
+Avro columns keep the types in the file's schema. Its `options` take `columns` and `n_rows`. The Avro reader takes a local path only; copy a file from object storage, such as `s3://`, before reading it.
+
+## Lakehouse tables
+
+A Delta Lake or Iceberg table is scanned lazily, as an unevaluated Polars `LazyFrame`. Install the `delta` or `iceberg` extra. This pair compares version 12 of a Delta table with one snapshot of an Iceberg table:
+
+```yaml
+source:
+  type: delta
+  table_uri: s3://lake/legacy_events
+  version: 12
+  storage_options:
+    AWS_REGION: us-east-1
+
+target:
+  type: iceberg
+  table_uri: s3://lake/iceberg/modern_events
+  snapshot_id: 883142
+  storage_options:
+    AWS_REGION: us-east-1
+
+primary_keys: ["event_id"]
+```
+
+`storage_options` is a map of strings passed to the scanner, such as credentials, the region, and other object store settings.
+
+## Databases
+
+A `database` source reads a table, or the result of a query, from an operational database through [ConnectorX](https://github.com/sfu-db/connector-x). Install the `database` extra. The rows are compared locally. A database pairs with a file, a lakehouse table, or another database, and `crosswalk` reads it too. This pair compares a Postgres table with the result of a MySQL query:
+
+```yaml
+source:
+  type: database
+  uri: postgresql://analyst@legacy-db.internal:5432/sales
+  password: ${LEGACY_DB_PASSWORD}
+  table: public.orders
+
+target:
+  type: database
+  uri: mysql://analyst@modern-db.internal:3306/sales
+  password: ${MODERN_DB_PASSWORD}
+  query: SELECT order_id, total, status FROM orders WHERE placed >= '2024-01-01'
+
+primary_keys: ["order_id"]
+```
+
+Two Postgres tables on one server can instead be compared inside Postgres; see [Postgres](pushdown.md#postgres).
+
+### Connection string
+
+`uri` is a ConnectorX connection string that starts with `postgresql://`, `mysql://` (MariaDB too), `mssql://`, `oracle://`, `redshift://`, `clickhouse://`, or `sqlite://`.
+
+A SQLite URI is followed by a file path, as in `sqlite:///srv/data/legacy.db`, or `sqlite://C:/data/legacy.db` on Windows. The path must name an existing file. Veridelta refuses a missing one, which ConnectorX would otherwise create as an empty database.
+
+### Table or query
+
+Set exactly one of `table` and `query`:
+
+- `table` is one to three identifier segments, such as `public.orders`. Each segment is quoted for its database: double quotes for Postgres, Redshift, Oracle, and SQLite, backticks for MySQL and ClickHouse, and brackets for SQL Server. Quoting keeps case: write names as they are stored. Any other scheme needs `query`.
+- `query` is sent to the database as written. Veridelta cannot tell a read from a write: connect with a role that can only read. A `query` is expanded like any other `source` string. Write a literal `${` in it as `$${`.
+
+### Password
+
+`password` is percent-encoded into the URI. It can contain `@`, `:`, `/`, or any other character, and needs a user name in `uri`.
+
+A password written into `uri` itself must already be percent-encoded, which an expanded `${VAR}` is not. Setting both fails when the file loads. Credentials passed as URI parameters, such as `?password=`, are not masked in logs or errors. Use `password` instead.
+
+### Reading and types
+
+The rows are read into memory once, before the comparison starts, because Polars has no lazy database reader. Select columns and filter rows in `query` instead of reading a whole table.
+
+Column types come from the database driver. For SQLite, that means the declared types:
+
+| Declared type | Polars type |
+| :--- | :--- |
+| `INTEGER` | `Int64` |
+| `REAL` | `Float64` |
+| `TEXT` | `String` |
+| `DATE` | `Date` |
+| `DATETIME` | `Datetime` |
+| `BOOLEAN` | `Boolean` |
+| `NUMERIC` | `Float64` |
+
+A SQLite column declared without a type cannot be typed when its first rows are NULL, and the read fails.
+
+Every Postgres `numeric` arrives as `Decimal(38, 10)`, whatever its declared precision and scale. Values are rounded to ten decimal places, and a value with more than 18 digits before the decimal point fails the read.
+
+## Warehouses
+
+A Snowflake, Databricks, or BigQuery source names a `table` in that warehouse. Two tables on one connection are compared inside the warehouse, and a warehouse table pairs with nothing else; see [Pushdown](pushdown.md).
+
+For Snowflake and Databricks, `table` is one to three unquoted identifier segments: `EVENTS`, `schema.table`, or `catalog.schema.table`. This pair compares two Snowflake tables:
+
+```yaml
+source:
+  type: snowflake
+  table: ANALYTICS.PUBLIC.LEGACY_EVENTS
+  account: xy12345
+  user: analyst
+  warehouse: COMPUTE_WH
+  database: ANALYTICS
+  schema_name: PUBLIC
+
+target:
+  type: snowflake
+  table: ANALYTICS.PUBLIC.MODERN_EVENTS
+  account: xy12345
+  user: analyst
+  warehouse: COMPUTE_WH
+  database: ANALYTICS
+  schema_name: PUBLIC
+
+primary_keys: ["event_id"]
+```
+
+This pair compares two Databricks tables:
+
+```yaml
+source:
+  type: databricks
+  table: main.default.legacy_events
+  server_hostname: adb.azuredatabricks.net
+  http_path: /sql/1.0/warehouses/abc
+  catalog: main
+  schema_name: default
+
+target:
+  type: databricks
+  table: main.default.modern_events
+  server_hostname: adb.azuredatabricks.net
+  http_path: /sql/1.0/warehouses/abc
+  catalog: main
+  schema_name: default
+
+primary_keys: ["event_id"]
+```
+
+### BigQuery
+
+A `bigquery` source names a `project` and a `table`. The project runs the queries and holds the data. It never appears in SQL, so a project id with hyphens works. The table is `dataset.table`, or `table` alone when `dataset` names the default dataset:
+
+```yaml
+source:
+  type: bigquery
+  project: analytics-prod
+  table: legacy.events
+  location: US
+  maximum_bytes_billed: 50000000000
+
+target:
+  type: bigquery
+  project: analytics-prod
+  table: modern.events
+  location: US
+  maximum_bytes_billed: 50000000000
+
+primary_keys: ["event_id"]
+```
+
+Credentials come from Application Default Credentials, such as `gcloud auth application-default login` on a workstation or the attached service account on Google Cloud. Set `credentials_path` to a service account key file to use that instead.
+
+`maximum_bytes_billed` makes BigQuery refuse any statement that would bill more bytes, which caps what a run can cost.
+
+Project ids follow Google's rules: six to thirty lowercase letters, digits, or hyphens. Older domain-scoped ids, such as `example.com:project`, are refused.
+
+## Credentials
+
+Do not commit a `password` or an `access_token` in YAML, a database `password` included. Write `${NAME}` so the loader reads the value from the environment; see [Environment variables](configuration.md#environment-variables). Or build the connection in Python, as in `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`, and pass it to `DiffEngine.run_from_configs`.
+
+Printing a connection config, or formatting one into a log line, leaves out its credentials:
+
+- `password`, for Snowflake and databases;
+- `access_token`, for Databricks;
+- `credentials_path`, for BigQuery;
+- `storage_options`, for Delta Lake and Iceberg;
+- a `storage_options` map inside a file source's `options`. The other reader options still print.
+
+A password written inside a database `uri` prints as `***`, and the rest of the URI prints as written. The credentials stay readable as attributes and in `model_dump()`, because the connectors and readers need them. Remove them before logging a dump.
+
+## Logging
+
+Connectors log under `veridelta.connectors.warehouse`, `veridelta.connectors.lakehouse`, and `veridelta.connectors.database`. Each logger has a `NullHandler` and prints nothing until you configure logging:
+
+```python
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("veridelta.connectors").setLevel(logging.DEBUG)
+```
+
+- `INFO` records a session or scan opening and closing. It also records each database read, Postgres pushdown statements included, with its row count and the URI with its password masked.
+- `DEBUG` records each pushdown statement by its kind, with its duration. The kinds are `schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`, and `samples`.
+
+Log lines never contain SQL text, row values, `storage_options`, passwords, or tokens. A warehouse session closes when the run finishes, whether the run succeeded or raised.

@@ -4,15 +4,17 @@ render_macros: false
 
 # CI integrations
 
-Veridelta ships a GitHub Action and a GitLab CI template. Both run `veridelta run`, then report the result:
+The GitHub Action and the GitLab CI template run `veridelta run` in a pipeline, then report the result:
 
-- they post its Markdown summary where reviewers look;
+- they post the Markdown summary where reviewers look;
 - they keep the JSON summary, the HTML report, and the OpenTelemetry metrics as artifacts;
 - they fail the job on drift or on an error.
 
-Both are available from the release after 0.10.0; the examples pin `v0.12.0`.
+The examples pin `v0.12.0`.
 
 ## GitHub Actions
+
+This workflow compares the datasets on every pull request and comments with the summary:
 
 ```yaml
 name: Data parity
@@ -37,15 +39,15 @@ jobs:
 
 **Version.** Pin the action to a release tag such as `v0.12.0`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
 
-**Credentials.** Pass credentials as step environment variables, as above, and reference them from the configuration as `${SNOWFLAKE_PASSWORD}` (see [Environment variables](configuration.md#environment-variables)).
+**Credentials.** Pass credentials as step environment variables, as above, and reference them from the configuration as `${SNOWFLAKE_PASSWORD}`. See [Environment variables](configuration.md#environment-variables).
 
-**What it does:**
+**What it does.** The action:
 
-- Appends the summary to the job summary.
-- Uploads `summary.json`, `summary.md`, `report.html`, and `otel-metrics.json` as one artifact.
-- On `pull_request` and `pull_request_target` events, keeps one comment on the pull request up to date, one per configuration.
+- appends the summary to the job summary;
+- uploads `summary.json`, `summary.md`, `report.html`, and `otel-metrics.json` as one artifact;
+- on `pull_request` and `pull_request_target` events, keeps one comment per configuration up to date on the pull request.
 
-**Fork PRs.** Pull requests from forks get a read-only token, so the comment step logs a warning instead of failing.
+**Forks.** A pull request from a fork gets a read-only token, so the comment step logs a warning instead of failing.
 
 ### Inputs
 
@@ -71,13 +73,13 @@ jobs:
 | `is-match` | `true` when the comparison matched within its threshold. |
 | `exit-code` | Exit code of `veridelta run`. |
 | `summary-json`, `summary-markdown`, `report-html` | Paths to the reports. Empty when the run did not finish. |
-| `otel-metrics` | Path to the run's [OpenTelemetry metrics](configuration.md#opentelemetry-metrics). Empty when the run did not finish. |
+| `otel-metrics` | Path to the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). Empty when the run did not finish. |
 
 To act on drift in a later step instead of failing, set `fail-on-mismatch: false` and read `status`.
 
 ### Sending metrics to an observability backend
 
-From 0.12.0, the action also writes the run's [OpenTelemetry metrics](configuration.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
+The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
 
 ```yaml
       - uses: Veridelta/veridelta@v0.12.0
@@ -98,6 +100,8 @@ Add any header your backend requires, such as an API key, from a secret.
 
 ## GitLab CI
 
+Include the template from a release tag, with its inputs:
+
 ```yaml
 include:
   - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.12.0/ci/gitlab/veridelta.yml
@@ -108,7 +112,7 @@ include:
 
 The template defines one job, named `veridelta` by default, which:
 
-- installs the release the template ships with, so include it from a release tag;
+- installs the release the template ships with;
 - prints the summary to the job log;
 - keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above.
 
@@ -130,7 +134,7 @@ The template defines one job, named `veridelta` by default, which:
 - run: uvx veridelta@0.12.0 validate -c veridelta.yaml --allow-missing-env
 ```
 
-`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.12.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](configuration.md#checking-a-configuration).
+`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.12.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](cli.md#checking-a-configuration).
 
 ## Exit codes and statuses
 

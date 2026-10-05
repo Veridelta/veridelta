@@ -46,6 +46,11 @@ _NOT_PARAGRAPH = re.compile(r"\s|#|\||>|<|---|([-*+]|\d+\.) ")
 quotes, HTML, rules, and list items."""
 
 
+def _label(path: Path) -> str:
+    """Name a file relative to the repository root, with forward slashes on every OS."""
+    return path.relative_to(_ROOT).as_posix()
+
+
 class _Text(NamedTuple):
     """A piece of user-facing text and where it comes from."""
 
@@ -68,13 +73,13 @@ def _notebook_cells() -> Iterator[_Text]:
         for index, cell in enumerate(cells):
             if cell["cell_type"] == "markdown":
                 body = "".join(cell["source"])
-                yield _Text(f"{notebook.relative_to(_ROOT)} cell {index}", body, markdown=True)
+                yield _Text(f"{_label(notebook)} cell {index}", body, markdown=True)
 
 
 def _python_text() -> Iterator[_Text]:
     """Yield docstrings and the `help=` and `description=` strings users read."""
     for module in sorted((_ROOT / "src" / "veridelta").rglob("*.py")):
-        where = module.relative_to(_ROOT)
+        where = _label(module)
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
@@ -93,14 +98,14 @@ def _template_text() -> Iterator[_Text]:
     names = ["action.yml", "ci/gitlab/veridelta.yml", "pyproject.toml", "mkdocs.yml"]
     forms = sorted((_ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.yml"))
     for path in [*(_ROOT / name for name in names), *forms]:
-        where = str(path.relative_to(_ROOT))
+        where = _label(path)
         yield _Text(where, path.read_text(encoding="utf-8"), markdown=False)
 
 
 def _all_text() -> Iterator[_Text]:
     """Yield every piece of user-facing text in scope."""
     for page in _markdown_files():
-        yield _Text(str(page.relative_to(_ROOT)), page.read_text(encoding="utf-8"), markdown=True)
+        yield _Text(_label(page), page.read_text(encoding="utf-8"), markdown=True)
     yield from _notebook_cells()
     yield from _python_text()
     yield from _template_text()
@@ -184,7 +189,7 @@ class TestDocumentationStyle:
         """
         found: list[str] = []
         for page in sorted((_ROOT / "docs").rglob("*.md")):
-            text = _Text(str(page.relative_to(_ROOT)), page.read_text(encoding="utf-8"), True)
+            text = _Text(_label(page), page.read_text(encoding="utf-8"), True)
             previous = ""
             for number, line in _prose_lines(text):
                 if _LIST_ITEM.match(line) and previous and not _NOT_PARAGRAPH.match(previous):
