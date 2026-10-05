@@ -4,7 +4,7 @@
 """Unit tests for `DiffEngine.check_configs`, the offline half of `veridelta validate`."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 from unittest.mock import MagicMock, call
 
 import polars as pl
@@ -16,7 +16,7 @@ from veridelta.connectors.sql import (
     SQLPushdownCompiler,
     compile_postgres_columns_query,
 )
-from veridelta.engine import DiffEngine
+from veridelta.engine import _EXTRA_PROBES, DiffEngine
 from veridelta.models import (
     ConfigFinding,
     DatabaseConfig,
@@ -140,6 +140,12 @@ class TestConfigChecks:
                 f"installed. Install it with: uv add 'veridelta[{extra}]'",
             )
         ]
+
+    def test_it_knows_the_extra_of_every_connection_type(self) -> None:
+        """Ensure each source type but a file names its extra, so a new one cannot fail mid-check."""
+        union, _ = get_args(SourceRef)
+
+        assert set(_EXTRA_PROBES) == set(get_args(union)) - {SourceConfig}
 
     @pytest.mark.parametrize(
         ("source", "module", "extra"),
