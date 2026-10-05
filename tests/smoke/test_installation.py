@@ -39,7 +39,7 @@ class TestInstallationAndBoot:
         assert result.returncode == 0
 
         assert "veridelta" in result.stdout.lower()
-        assert "Semantic diffing" in result.stdout
+        assert "Compare two datasets under declared rules" in result.stdout
 
     def test_it_exports_every_name_it_advertises(self) -> None:
         """Ensure `__all__` resolves and stays sorted.

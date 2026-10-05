@@ -1,7 +1,7 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Veridelta: Semantic diffing for mission-critical data pipelines."""
+"""Compare two datasets under declared rules, locally or inside the warehouse."""
 
 from veridelta import datasets
 from veridelta.config import load_config

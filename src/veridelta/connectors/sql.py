@@ -3,7 +3,7 @@
 
 """Zero-dependency SQL pushdown compiler for warehouse dialects.
 
-Translates `DiffRule` models into Snowflake, Databricks, and BigQuery SQL predicates and
+Translates `DiffRule` models into Snowflake, Databricks, BigQuery, and Postgres SQL predicates and
 assembles inner-join mismatch queries, per-column mismatch tallies, anti-join
 queries for added and removed rows, row counts, and column probes without
 extracting source tables. It also compiles the one statement a database source
@@ -1761,9 +1761,9 @@ class SQLPushdownCompiler:
     def _literal(self, value: str) -> str:
         """Render a single-quoted SQL string literal for the active dialect.
 
-        Every configured string that reaches SQL as data -- regex patterns and
-        replacements, crosswalk keys and values, text sentinels, and translated
-        datetime formats -- passes through here, so this is where configuration
+        Every configured string that reaches SQL as data passes through here:
+        regex patterns and replacements, crosswalk keys and values, text
+        sentinels, and translated datetime formats. This is where configuration
         text is kept from becoming statement text.
 
         Args:

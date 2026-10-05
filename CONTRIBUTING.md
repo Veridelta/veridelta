@@ -1,10 +1,10 @@
 # Contributing to Veridelta
 
-We welcome contributions to Veridelta. To maintain an enterprise-grade standard, all code must adhere to strict architectural, typing, and formatting guidelines. 
+Contributions are welcome. Every change passes the same typing, formatting, and test checks that CI runs.
 
 ## 1. Development Environment
 
-We rely on [uv](https://docs.astral.sh/uv/) for deterministic, high-performance environment management. You do not need Docker to contribute; native execution is the recommended path.
+Veridelta uses [uv](https://docs.astral.sh/uv/) to manage its environment and dependencies. Docker is optional, and a native setup is recommended.
 
 ### Option A: Native Setup (Recommended)
 Provides native execution performance across macOS, Linux, and Windows.
@@ -54,7 +54,7 @@ We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/)
 * `chore:` Tooling or CI updates.
 * `refactor:` Code changes that neither fix a bug nor add a feature.
 
-*Note: During the commit phase, our hooks will also format your code and inject the required Apache-2.0 license headers. If a hook modifies a file or fails, simply stage the updated changes and run `git commit` again.*
+The commit hooks also format the code and add the Apache-2.0 license header. If a hook changes a file or fails, stage the changes and run `git commit` again.
 
 ## 4. Pull Requests
 
@@ -75,3 +75,18 @@ A release is a pull request that changes the version. Merging it does the rest.
 A merge that lands while a release waits for approval leaves the tag where it is, so the tagged commit is still the one released, and that merge's run ends without asking for a second approval. If the release's run was rejected or cancelled, the next merge to `main` starts it again; to abandon a version instead, release the next one.
 
 If a release stops partway, re-run the failed jobs, or run the workflow by hand on the tag. A rerun uploads only the files PyPI lacks, so it never fails on a version PyPI already has, and it leaves an existing release page as it is. Pushing a version tag by hand still publishes, but the workflow refuses a tag whose name differs from the version in that commit.
+
+## 6. Writing documentation
+
+The [Polars documentation](https://docs.pola.rs/) is the model: short declarative sentences, one topic per page, and examples that run. These rules apply to the docs, the README, the tutorials, docstrings, CLI help, and commit and pull request text.
+
+- Open a page by defining its subject in one sentence. Introduce each code block with a sentence that ends in a colon.
+- Use sentence case for headings, with code names in backticks.
+- Describe behavior in the present tense and the active voice: "returns", "is compared", never "will".
+- Write no em dashes, en dashes, or double hyphens as dashes. Use a colon or a period, and "to" for a range.
+- Describe behavior; do not praise it. Leave out filler such as `simply`, `just`, and `note that`, and marketing such as `powerful` or `seamless`.
+- Keep sentences to about 25 words, with one idea each. State a limitation plainly, next to the feature it limits.
+- Keep test methodology and change history out of reference pages.
+- Write docstrings in Google style: a one-line imperative summary that ends in a period, then `Args`, `Returns`, `Raises`, and `Examples` as needed.
+
+`tests/unit/test_docs_style.py` checks the dash, wording, and list rules across the docs, the README, the tutorials, docstrings, CLI help, and the CI templates.

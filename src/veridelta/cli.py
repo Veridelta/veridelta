@@ -464,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="veridelta",
-        description="Semantic diffing for mission-critical data pipelines.",
+        description="Compare two datasets under declared rules, locally or inside the warehouse.",
     )
     parser.add_argument(
         "-V",
@@ -481,7 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=str,
         default="veridelta.yaml",
-        help="Path to the YAML configuration file (default: veridelta.yaml)",
+        help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
     run_parser.add_argument(
         "--json",
@@ -532,7 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=str,
         default="veridelta.yaml",
-        help="Path to the YAML configuration file (default: veridelta.yaml)",
+        help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
     crosswalk_parser.add_argument(
         "--min-confidence",
@@ -578,7 +578,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--config",
         type=str,
         default="veridelta.yaml",
-        help="Path to the YAML configuration file (default: veridelta.yaml)",
+        help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
     validate_parser.add_argument(
         "--schemas",
@@ -615,12 +615,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    """Main entry point for the Veridelta CLI.
-
-    Parses arguments and dispatches to the appropriate command handler.
-    Exits the system with the returned status code to integrate seamlessly
-    with pipeline orchestrators.
-    """
+    """Run the command named on the command line and exit with its status code."""
     args = build_parser().parse_args()
 
     # Built at call time, so a patched handler is the one dispatched.

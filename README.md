@@ -5,7 +5,7 @@
 [![PyPI version](https://badge.fury.io/py/veridelta.svg)](https://pypi.org/project/veridelta/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Veridelta compares two datasets on their keys and reports exactly what changed after applying the variance you declared as expected. It is built for system modernizations, model retrains, and pipeline migrations — anywhere "equal" has to be defined, not assumed.
+Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
 Powered by [Polars](https://pola.rs/). **[Documentation](https://veridelta.github.io/veridelta)**
 
@@ -56,7 +56,7 @@ File, lakehouse, and database sources load through `LoaderFactory` into a local 
 
 ## Quick start
 
-Python — `DiffEngine` consumes `LazyFrame`s:
+In Python, `DiffEngine` compares two `LazyFrame`s:
 
 ```python
 import polars as pl
@@ -75,7 +75,7 @@ if not result.summary.is_match:
     raise SystemExit(f"{result.summary.changed_count} rows differ")
 ```
 
-YAML — the same comparison for CI:
+The same comparison as a YAML file, for the CLI and CI:
 
 ```yaml
 # veridelta.yaml
@@ -100,15 +100,15 @@ veridelta run -c veridelta.yaml
 
 ## Where next
 
-- [1. Core Concepts](https://veridelta.github.io/veridelta/examples/01_core_concepts/) — Python API, `DiffResult`, rules.
-- [2. YAML and CLI](https://veridelta.github.io/veridelta/examples/02_yaml_and_cli/) — pipeline automation, `--json`, artifacts.
-- [3. Advanced Rules](https://veridelta.github.io/veridelta/examples/03_advanced_rules/) — drift resolution on real data.
-- [4. HTML Reports](https://veridelta.github.io/veridelta/examples/04_html_reports/) — audit and compliance hand-off.
-- [5. Validate and CI](https://veridelta.github.io/veridelta/examples/05_validate_and_ci/) — a database source, `veridelta validate`, and the GitHub Action.
-- [CI integrations](https://veridelta.github.io/veridelta/ci/) — GitHub Action and GitLab CI template that comment on pull requests.
-- [Configuration](https://veridelta.github.io/veridelta/configuration/) — fields, formats, extras, warehouse, lakehouse, and database routing.
-- [API Reference](https://veridelta.github.io/veridelta/api/) — public Python surface.
-- [Roadmap](https://veridelta.github.io/veridelta/roadmap/) — work that is not built yet.
+- [1. Core Concepts](https://veridelta.github.io/veridelta/examples/01_core_concepts/): Python API, `DiffResult`, rules.
+- [2. YAML and CLI](https://veridelta.github.io/veridelta/examples/02_yaml_and_cli/): pipeline automation, `--json`, artifacts.
+- [3. Advanced Rules](https://veridelta.github.io/veridelta/examples/03_advanced_rules/): drift resolution on real data.
+- [4. HTML Reports](https://veridelta.github.io/veridelta/examples/04_html_reports/): audit and compliance hand-off.
+- [5. Validate and CI](https://veridelta.github.io/veridelta/examples/05_validate_and_ci/): a database source, `veridelta validate`, and the GitHub Action.
+- [CI integrations](https://veridelta.github.io/veridelta/ci/): GitHub Action and GitLab CI template that comment on pull requests.
+- [Configuration](https://veridelta.github.io/veridelta/configuration/): fields, formats, extras, warehouse, lakehouse, and database routing.
+- [API Reference](https://veridelta.github.io/veridelta/api/): public Python surface.
+- [Roadmap](https://veridelta.github.io/veridelta/roadmap/): work that is not built yet.
 
 ## License
 
