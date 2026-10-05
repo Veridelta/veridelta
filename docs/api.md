@@ -50,6 +50,14 @@ Standalone, air-gapped HTML dashboards rendered from a `DiffResult`.
       show_root_heading: false
       show_source: true
 
+## OpenTelemetry Metrics
+Writes a comparison's counts, column drift, and verdict as an OTLP/JSON metrics export, for an OpenTelemetry Collector or any OTLP/HTTP endpoint.
+
+::: veridelta.telemetry
+    options:
+      show_root_heading: false
+      show_source: true
+
 ## Datasets
 Built-in data utilities with network-resilient caching for testing, onboarding, and tutorials.
 
