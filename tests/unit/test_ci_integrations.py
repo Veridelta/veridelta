@@ -240,16 +240,35 @@ class TestReleaseWorkflow:
         assert re.search(r"^\s*404\) ;;", script, re.MULTILINE)
         assert re.search(r"^\s*\*\)[^\n]*exit 1", script, re.MULTILINE)
 
-    def test_it_tags_the_merged_commit_or_refuses_a_tag_elsewhere(self) -> None:
+    def test_it_tags_the_merged_commit_and_never_moves_a_tag(self) -> None:
         """Ensure an annotated tag lands on the commit that carries the version.
 
-        A tag of the same name on another commit fails the job instead of
-        being moved.
+        A merge that lands while the version still awaits its release finds the
+        tag on the earlier commit. That commit is the one released, so the job
+        notes it and carries on rather than moving the tag or failing: the only
+        failure left is PyPI answering something other than 200 or 404.
         """
         script = _release_script("tag")
 
         assert 'git tag -a "$tag" -m "$tag" "$GITHUB_SHA"' in script
         assert '!= "$GITHUB_SHA"' in script
+        assert "::notice::${tag} is on ${existing}" in script
+        assert not re.search(r"git (tag|push)\b[^\n]*\s(-f|--force)\b", script)
+        assert script.count("exit 1") == 1
+
+    def test_it_starts_a_release_run_only_when_none_is_under_way(self) -> None:
+        """Ensure the tag's release is started once, and again if it was stopped.
+
+        A run waiting for the `pypi` approval counts as under way, so a later
+        merge never asks for a second approval. A run that was rejected or
+        cancelled does not, so the next merge starts the tag's release again.
+        """
+        script = _release_script("tag")
+        listing = f'gh run list --workflow {_RELEASE.name} --branch "$tag"'
+
+        assert listing in script
+        assert 'select(.status != "completed")' in script
+        assert script.index(listing) < script.index(f"gh workflow run {_RELEASE.name}")
 
     def test_it_starts_the_publish_run_on_the_new_tag(self) -> None:
         """Ensure the tag is published although a token-pushed tag starts no workflow.
@@ -273,9 +292,27 @@ class TestReleaseWorkflow:
         assert '"v${version}" != "$GITHUB_REF_NAME"' in script
         assert script.index("GITHUB_REF_NAME") < script.index("uv publish")
 
-    def test_a_rerun_skips_files_pypi_already_has(self) -> None:
-        """Ensure re-running a half-finished release does not fail on uploaded files."""
-        assert "uv publish --check-url https://pypi.org/simple/" in _release_script("publish")
+    def test_it_uploads_only_files_pypi_lacks(self) -> None:
+        """Ensure a release never fails by uploading a file PyPI already has.
+
+        PyPI refuses a file name it has seen, even with new content, and a
+        rebuilt sdist rarely matches the uploaded one byte for byte. So the
+        built files PyPI already lists are left out before uploading, and the
+        upload is skipped when none are left.
+        """
+        steps = {step["name"]: step for step in _release_job("publish")["steps"]}
+        names = list(steps)
+        script = steps["Leave Out Files PyPI Already Has"]["run"]
+
+        assert names.index("Build Sdist and Wheel") < names.index(
+            "Leave Out Files PyPI Already Has"
+        )
+        assert names.index("Leave Out Files PyPI Already Has") < names.index("Publish to PyPI")
+        assert '"https://pypi.org/pypi/veridelta/${version}/json"' in script
+        assert 'rm "dist/${name}"' in script
+        assert 'echo "files=${left}" >> "$GITHUB_OUTPUT"' in script
+        assert steps["Publish to PyPI"]["if"] == "steps.upload.outputs.files != '0'"
+        assert "uv publish --check-url https://pypi.org/simple/" in steps["Publish to PyPI"]["run"]
 
     def test_it_creates_the_release_page_after_publishing(self) -> None:
         """Ensure the GitHub Release appears only once the package is on PyPI."""
@@ -283,8 +320,25 @@ class TestReleaseWorkflow:
         script = _release_script("github-release")
 
         assert release["needs"] == "publish"
-        assert 'gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"' in script
+        assert (
+            'gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" '
+            '--latest="$latest"'
+        ) in script
         assert 'gh release view "$TAG"' in script
+
+    def test_it_marks_the_newest_version_latest(self) -> None:
+        """Ensure the newest version's release is Latest, and only that one.
+
+        Latest goes to the highest full version tag, so a rerun on an older
+        tag cannot take it from a newer release, and an existing release of
+        the newest version is marked Latest too.
+        """
+        script = _release_script("github-release")
+
+        assert "matching-refs/tags/v" in script
+        assert "grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$'" in script
+        assert "sort -V" in script
+        assert 'gh release edit "$TAG" --latest' in script
 
     def test_each_job_gets_only_the_permissions_it_needs(self) -> None:
         """Ensure write access is granted per job, never to the whole workflow."""

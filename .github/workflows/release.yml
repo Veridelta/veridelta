@@ -3,9 +3,11 @@ name: Publish to PyPI
 # Merging a `chore(release): X.Y.Z` pull request releases X.Y.Z. The push to
 # main tags the version when PyPI does not have it yet and starts a run on that
 # tag, which builds, publishes once the `pypi` environment approves, and
-# creates the GitHub Release. A version tag pushed by hand publishes the same
-# way. PyPI's trusted publisher is bound to this file's name and to that
-# environment, so rename neither without updating PyPI first.
+# creates the GitHub Release, marked Latest when it is the newest version. A
+# merge that lands before that run finishes leaves the tag where it is; it
+# starts the tag's run again only if none is under way. A version tag pushed by
+# hand publishes the same way. PyPI's trusted publisher is bound to this file's
+# name and to that environment, so rename neither without updating PyPI first.
 
 on:
   push:
@@ -64,8 +66,19 @@ jobs:
             git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
             git push origin "refs/tags/${tag}"
           elif [ "$existing" != "$GITHUB_SHA" ]; then
-            echo "::error::${tag} already points at ${existing}, not ${GITHUB_SHA}."
-            exit 1
+            # A merge that lands before the release finishes keeps the version,
+            # so the tag still names what is released, and it is never moved.
+            echo "::notice::${tag} is on ${existing}, so that commit is released as ${version}."
+          fi
+
+          # The tag's own run releases it, and one waiting for the pypi approval
+          # is still under way. Start one only when none is, so an approval is
+          # never asked twice and a rejected or cancelled release starts again.
+          active=$(gh run list --workflow release.yml --branch "$tag" --json status \
+            --jq '[.[] | select(.status != "completed")] | length')
+          if [ "$active" -gt 0 ]; then
+            echo "A release run for ${tag} is already under way."
+            exit 0
           fi
 
           # A tag pushed with this job's token starts no workflow, but a
@@ -108,8 +121,37 @@ jobs:
       - name: Build Sdist and Wheel
         run: uv build
 
+      - name: Leave Out Files PyPI Already Has
+        id: upload
+        run: |
+          set -euo pipefail
+          # PyPI refuses a file name it has seen, even with new content, and a
+          # rebuilt sdist rarely matches the uploaded one byte for byte. So only
+          # what PyPI lacks is uploaded: everything for a new version, the rest
+          # after a release that stopped partway, and nothing on a rerun.
+          version="${GITHUB_REF_NAME#v}"
+          status=$(curl --silent --output pypi.json --write-out '%{http_code}' --retry 3 \
+            "https://pypi.org/pypi/veridelta/${version}/json")
+          case "$status" in
+            200) ;;
+            404) echo '{"urls": []}' > pypi.json ;;
+            *) echo "::error::PyPI answered HTTP ${status} for ${version}."; exit 1 ;;
+          esac
+          for name in $(python3 -c 'import json; print(" ".join(u["filename"] for u in json.load(open("pypi.json"))["urls"]))'); do
+            if [ -e "dist/${name}" ]; then
+              echo "PyPI already has ${name}."
+              rm "dist/${name}"
+            fi
+          done
+          left=$(find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l | tr -d ' ')
+          echo "files=${left}" >> "$GITHUB_OUTPUT"
+          if [ "$left" -eq 0 ]; then
+            echo "::notice::PyPI already has every file of ${version}, so there is nothing to upload."
+          fi
+
       - name: Publish to PyPI
-        # A rerun skips the files PyPI already has instead of failing on them.
+        if: steps.upload.outputs.files != '0'
+        # Skips anything uploaded since the check above instead of failing on it.
         run: uv publish --check-url https://pypi.org/simple/
 
   github-release:
@@ -127,8 +169,20 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          # Latest goes to the highest full version tag only, so a rerun on an
+          # older tag cannot take it from a newer release.
+          newest=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
+            | sed 's#^refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          latest=false
+          if [ "$TAG" = "$newest" ]; then
+            latest=true
+          fi
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "${TAG} already has a release."
+            if [ "$latest" = true ]; then
+              gh release edit "$TAG" --latest
+            fi
           else
-            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --latest="$latest"
           fi
