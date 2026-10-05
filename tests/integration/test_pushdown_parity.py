@@ -754,6 +754,54 @@ class TestTimezoneParity:
         with pytest.raises(ConfigError, match="not a"):
             run_pushdown(config, frame, frame)
 
+    @_REFUSED_PARSE
+    def test_it_agrees_on_text_parsed_with_an_offset(self) -> None:
+        """Ensure a zone rule applies to text that `datetime_format` makes aware.
+
+        Pushdown used to check the stored type, so it refused a text column the
+        local engine parses with `%z` before converting.
+        """
+        src = pl.DataFrame(
+            {"id": [1, 2], "ts": ["2026-01-02T02:30:00+0000", "2026-07-02T15:30:00+0000"]}
+        )
+        tgt = pl.DataFrame(
+            {"id": [1, 2], "ts": ["2026-01-01T21:30:00-0500", "2026-07-02T12:30:00-0400"]}
+        )
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["ts"],
+                    datetime_format="%Y-%m-%dT%H:%M:%S%z",
+                    timezone="America/New_York",
+                )
+            ],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
+    @_REFUSED_PARSE
+    def test_it_rejects_text_parsed_without_an_offset_on_both_paths(self) -> None:
+        """Ensure text parsed into naive timestamps meets the zone rule's refusal."""
+        frame = pl.DataFrame({"id": [1], "ts": ["2026-01-02 02:30:00"]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(
+                    column_names=["ts"],
+                    datetime_format="%Y-%m-%d %H:%M:%S",
+                    timezone="America/New_York",
+                )
+            ],
+        )
+
+        with pytest.raises(ConfigError, match="timezone-naive"):
+            run_local(config, frame, frame)
+        with pytest.raises(ConfigError, match="timezone-naive"):
+            run_pushdown(config, frame, frame)
+
 
 @pytest.mark.integration
 @pytest.mark.slow
