@@ -13,6 +13,7 @@ from veridelta.connectors.sql import (
     _LITERAL_ESCAPES,
     _REGEX_REPLACE_FLAGS,
     _SAMPLE_HASH_FUNCTIONS,
+    _WHITESPACE_CHARACTERS,
     _WIDE_INTEGER_TYPES,
     COUNT_ALIAS,
     SAMPLE_BUCKETS,
@@ -625,8 +626,9 @@ class TestKeyNormalization:
             target_types=self._TEXT_TYPES,
         )
 
-        assert 'LOWER(TRIM("src"."id")) AS "id"' in sql
-        assert 'LOWER(TRIM("tgt"."id")) AS "id"' in sql
+        whitespace = f"'{_WHITESPACE_CHARACTERS}'"
+        assert f'LOWER(TRIM("src"."id", {whitespace})) AS "id"' in sql
+        assert f'LOWER(TRIM("tgt"."id", {whitespace})) AS "id"' in sql
         assert 'ON "src"."id" = "tgt"."id"' in sql
 
     def test_it_reads_a_renamed_key_under_its_stored_name(self) -> None:
@@ -1443,6 +1445,91 @@ class TestDatabaseSelect:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestWhitespaceTrim:
+    """Validate that `whitespace_mode` trims the characters Polars strips, in every dialect.
+
+    A bare SQL `TRIM` removes only spaces on Snowflake, Databricks, and DuckDB,
+    while Polars' `strip_chars` removes every Unicode whitespace character, so
+    each dialect is handed the set explicitly.
+    """
+
+    def test_its_characters_are_the_ones_polars_strips(self) -> None:
+        """Ensure the set is exactly what `strip_chars` removes on the installed Polars.
+
+        The candidates are everything Python calls a space, plus the format
+        characters that are often mistaken for one, which Polars keeps.
+        """
+        candidates = [
+            *(chr(code) for code in range(0x110000) if chr(code).isspace()),
+            "\u180e",
+            "\u200b",
+            "\ufeff",
+        ]
+        stripped = pl.Series([f"{char}a{char}" for char in candidates]).str.strip_chars()
+
+        removed = [char for char, value in zip(candidates, stripped, strict=True) if value == "a"]
+
+        assert "".join(removed) == _WHITESPACE_CHARACTERS
+
+    @pytest.mark.parametrize(
+        ("mode", "function"),
+        [("left", "LTRIM"), ("right", "RTRIM"), ("both", "TRIM")],
+    )
+    @pytest.mark.parametrize(
+        "dialect", [SQLDialect.SNOWFLAKE, SQLDialect.DUCKDB, SQLDialect.BIGQUERY]
+    )
+    def test_it_hands_the_characters_to_the_trim_function(
+        self, dialect: SQLDialect, mode: str, function: str
+    ) -> None:
+        """Ensure `LTRIM`, `RTRIM`, and `TRIM` get the set as their second argument.
+
+        The set is decoded with the dialect's own literal rules, so BigQuery's
+        escaped line breaks count as the characters they stand for.
+        """
+        rule = DiffRule(column_names=["name"], whitespace_mode=mode)  # type: ignore[arg-type]
+        compiler = SQLPushdownCompiler(dialect)
+
+        sql = compiler._apply_whitespace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        prefix = f"{function}(x, "
+        assert sql.startswith(prefix)
+        characters, rest = _read_literal(sql[len(prefix) :], dialect)
+        assert characters == _WHITESPACE_CHARACTERS
+        assert rest == ")"
+
+    @pytest.mark.parametrize(
+        ("mode", "side"),
+        [("left", "LEADING"), ("right", "TRAILING"), ("both", "BOTH")],
+    )
+    def test_it_names_the_side_on_databricks(self, mode: str, side: str) -> None:
+        """Ensure Databricks gets the standard `TRIM(side chars FROM x)` form.
+
+        Its two-argument `ltrim` and `rtrim` read their arguments in the
+        opposite order and are deprecated, so the standard form is unambiguous.
+        """
+        rule = DiffRule(column_names=["name"], whitespace_mode=mode)  # type: ignore[arg-type]
+        compiler = SQLPushdownCompiler(SQLDialect.DATABRICKS)
+
+        sql = compiler._apply_whitespace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        prefix = f"TRIM({side} "
+        assert sql.startswith(prefix)
+        characters, rest = _read_literal(sql[len(prefix) :], SQLDialect.DATABRICKS)
+        assert characters == _WHITESPACE_CHARACTERS
+        assert rest == " FROM x)"
+
+    @pytest.mark.parametrize("mode", [None, "none"])
+    def test_it_leaves_the_value_alone_without_a_mode(self, mode: str | None) -> None:
+        """Ensure an unset or `none` mode emits no trim at all."""
+        rule = DiffRule(column_names=["name"], whitespace_mode=mode)  # type: ignore[arg-type]
+
+        sql = _snowflake()._apply_whitespace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        assert sql == "x"
+
+
+@pytest.mark.unit
+@pytest.mark.fast
 class TestRegexReplaceEveryMatch:
     """Validate that `regex_replace` replaces every match in every dialect, as Polars does."""
 
@@ -1473,6 +1560,101 @@ class TestRegexReplaceEveryMatch:
         sql = SQLPushdownCompiler(dialect).compile_column_predicate(rule, "phone")
 
         assert expected in sql
+
+
+_BACKSLASH_REFERENCE_DIALECTS = [SQLDialect.SNOWFLAKE, SQLDialect.DUCKDB, SQLDialect.BIGQUERY]
+r"""Dialects whose `REGEXP_REPLACE` reads a group reference as `\N`."""
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestRegexReplacementReferences:
+    r"""Validate that replacements are written the way each warehouse reads them.
+
+    Polars reads `$1`, `${1}`, and `$0` as group references, `$$` as a dollar
+    sign, and a backslash as plain text. Snowflake, BigQuery, and DuckDB write a
+    reference as `\1` and read `$` as plain text; Databricks follows Java, where
+    `$1` is a reference and a backslash escapes the next character.
+    """
+
+    @pytest.mark.parametrize(
+        ("replacement", "backslash_form", "databricks_form"),
+        [
+            pytest.param("$2$1", r"\2\1", "$2$1", id="numbered"),
+            pytest.param("${1}0", r"\10", r"$1\0", id="braced-before-a-digit"),
+            pytest.param("$0", r"\0", "$0", id="whole-match"),
+            pytest.param("$01", r"\1", "$1", id="leading-zero"),
+            pytest.param("$$5", "$5", r"\$5", id="escaped-dollar"),
+            pytest.param("$!", "$!", r"\$!", id="dollar-before-punctuation"),
+            pytest.param("x$", "x$", r"x\$", id="trailing-dollar"),
+            pytest.param("${1", "${1", r"\${1", id="unclosed-brace"),
+            pytest.param(r"a\b", r"a\\b", r"a\\b", id="backslash"),
+        ],
+    )
+    def test_it_rewrites_a_polars_replacement_for_each_dialect(
+        self, replacement: str, backslash_form: str, databricks_form: str
+    ) -> None:
+        """Ensure each dialect's regex engine reads what Polars reads."""
+        for dialect in _BACKSLASH_REFERENCE_DIALECTS:
+            compiler = SQLPushdownCompiler(dialect)
+            written = compiler._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
+            assert written == backslash_form, dialect
+
+        databricks = SQLPushdownCompiler(SQLDialect.DATABRICKS)
+        written = databricks._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
+        assert written == databricks_form
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            pytest.param("$first", id="named"),
+            pytest.param("${first}", id="braced-name"),
+            pytest.param("$1a", id="number-run-into-text"),
+            pytest.param("$_", id="underscore"),
+            pytest.param("${}", id="empty-braces"),
+        ],
+    )
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_it_refuses_a_reference_by_name(self, dialect: SQLDialect, replacement: str) -> None:
+        """Ensure a named reference fails loudly rather than reading as text.
+
+        No warehouse refers to a group by name in a replacement. Polars reads
+        `$1a` as the group named `1a`, so it is refused too, with the braced
+        spelling as the fix.
+        """
+        compiler = SQLPushdownCompiler(dialect)
+
+        with pytest.raises(ConfigError, match=r"refers to a group by name.*\$\{1\}a"):
+            compiler._regex_replacement("(?P<first>a)", replacement)  # pyright: ignore[reportPrivateUsage]
+
+    @pytest.mark.parametrize("replacement", ["$10", "${12}"])
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_it_refuses_a_group_above_nine(self, dialect: SQLDialect, replacement: str) -> None:
+        """Ensure a two-digit reference is refused, since warehouses read one digit."""
+        compiler = SQLPushdownCompiler(dialect)
+
+        with pytest.raises(ConfigError, match="groups 0 through 9"):
+            compiler._regex_replacement("(a)", replacement)  # pyright: ignore[reportPrivateUsage]
+
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_it_quotes_the_rewritten_replacement_as_a_literal(self, dialect: SQLDialect) -> None:
+        """Ensure the rewritten replacement reaches `REGEXP_REPLACE` intact.
+
+        The reference lexer decodes the third argument with the dialect's own
+        literal rules, so a backslash doubled for the literal is undone first.
+        """
+        compiler = SQLPushdownCompiler(dialect)
+        rule = DiffRule(column_names=["phone"], regex_replace={r"(\d{3})-(\d{4})": "$1$2"})
+
+        sql = compiler._apply_regex_replace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        pattern = compiler._literal(r"(\d{3})-(\d{4})")  # pyright: ignore[reportPrivateUsage]
+        prefix = f"REGEXP_REPLACE(x, {pattern}, "
+        assert sql.startswith(prefix)
+        replacement, rest = _read_literal(sql[len(prefix) :], dialect)
+        expected = "$1$2" if dialect is SQLDialect.DATABRICKS else r"\1\2"
+        assert replacement == expected
+        assert rest == f"{_REGEX_REPLACE_FLAGS[dialect]})"
 
 
 @pytest.mark.unit

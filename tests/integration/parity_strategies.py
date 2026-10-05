@@ -8,8 +8,8 @@ mutating, and nulling rows, and a configuration whose rules are drawn from a
 menu that fits each column's type. Inputs where the two engines are documented
 to differ are left out on purpose, so a failure is a real divergence:
 
-- text is ASCII, with plain spaces as its only whitespace: DuckDB's `TRIM` and
-  case folding differ from Polars' on tabs and Unicode;
+- text is ASCII: DuckDB folds case differently on other scripts, and its
+  `levenshtein` counts bytes rather than characters;
 - regular expressions avoid `\d`, `\w`, and look-around, whose meaning varies
   by engine;
 - no column is cast between float and text, or cast leniently, since each
@@ -33,8 +33,9 @@ from hypothesis import strategies as st
 
 from veridelta.models import DiffConfig, DiffRule
 
-_TEXT_ALPHABET = "ABab01 _$.-"
-"""ASCII letters in both cases, digits, a space, and the characters the regex menu targets."""
+_TEXT_ALPHABET = "ABab01 \t_$.-"
+"""ASCII letters in both cases, digits, a space and a tab, and the characters the regex menu
+targets."""
 
 _INT8_RANGE = (-128, 127)
 
@@ -94,6 +95,8 @@ def _text_drift(draw: st.DrawFn, value: Any) -> Any:
         text.lower(),
         f" {text}",
         f"{text} ",
+        f"\t{text}",
+        f"{text}\r\n",
         f"{text}-",
         f"{text}x",
         text[1:],
@@ -139,7 +142,16 @@ def _text_rules(draw: st.DrawFn) -> dict[str, Any]:
     fields: dict[str, Any] = {}
     if draw(st.booleans()):
         fields["regex_replace"] = draw(
-            st.sampled_from([{"-": ""}, {"[^A-Za-z0-9]": ""}, {"\\$": ""}, {"a+": "a"}])
+            st.sampled_from(
+                [
+                    {"-": ""},
+                    {"[^A-Za-z0-9]": ""},
+                    {"\\$": ""},
+                    {"a+": "a"},
+                    {"(A)(b)": "$2$1"},
+                    {"([01])": "${1}$$"},
+                ]
+            )
         )
     if draw(st.booleans()):
         fields["whitespace_mode"] = draw(st.sampled_from(["left", "right", "both"]))

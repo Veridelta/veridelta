@@ -1845,8 +1845,10 @@ def _collect_pushdown_summary(
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
             primary key, or a rule asks for what the warehouse cannot reproduce:
-            `min_jaro_winkler_similarity` on a column compared as text, or a
-            `datetime_format` directive with no SQL spelling.
+            `min_jaro_winkler_similarity` on a column compared as text, a
+            `datetime_format` directive with no SQL spelling, or a
+            `regex_replace` replacement that refers to a group by name or
+            above 9.
         DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If the warehouse returns a malformed aggregate.
     """
@@ -2334,6 +2336,7 @@ def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFin
                 "datetime_format",
                 DiffRule(column_names=["probe"], datetime_format=rule.datetime_format),
             ),
+            ("regex_replace", DiffRule(column_names=["probe"], regex_replace=rule.regex_replace)),
             (
                 "max_levenshtein_distance",
                 DiffRule(

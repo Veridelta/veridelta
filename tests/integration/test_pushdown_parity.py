@@ -870,6 +870,75 @@ class TestEdgeCaseParity:
 
         assert summary.changed_count == expected_changed
 
+    @pytest.mark.parametrize(
+        ("pattern", "replacement", "source", "target", "expected_changed"),
+        [
+            pytest.param(r"(\d{3})-(\d{4})", "$1$2", "555-1234", "5551234", 0, id="numbered"),
+            pytest.param(
+                r"([a-z]+)@([a-z]+)", "$2.$1", "ada@lovelace", "lovelace.ada", 0, id="swap"
+            ),
+            pytest.param("-([0-9])", "${1}0", "x-1", "x10", 0, id="braced-before-a-digit"),
+            pytest.param("[0-9]+", "<$0>", "a12b", "a34b", 1, id="whole-match"),
+            pytest.param("-", "$$", "1-2", "1$2", 0, id="escaped-dollar"),
+            pytest.param("x", "\\", "axb", "a\\b", 0, id="backslash"),
+        ],
+    )
+    def test_it_agrees_on_group_references_in_replacements(
+        self, pattern: str, replacement: str, source: str, target: str, expected_changed: int
+    ) -> None:
+        """Ensure a replacement written for Polars means the same in a warehouse.
+
+        The rule rewrites both sides, so each case only comes out as expected
+        when the reference is read as Polars reads it. Pushdown used to pass the
+        replacement through as written, so DuckDB, Snowflake, and BigQuery read
+        `$1` and `$0` as text, and a lone backslash as the start of a reference.
+        """
+        src = pl.DataFrame({"id": [1], "value": [source]})
+        tgt = pl.DataFrame({"id": [1], "value": [target]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["value"], regex_replace={pattern: replacement})],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+    @pytest.mark.parametrize(
+        ("mode", "expected_changed"),
+        [
+            pytest.param("left", 3, id="left"),
+            pytest.param("right", 3, id="right"),
+            pytest.param("both", 0, id="both"),
+        ],
+    )
+    def test_it_strips_tabs_line_breaks_and_unicode_spaces_as_polars_does(
+        self, mode: str, expected_changed: int
+    ) -> None:
+        """Ensure a warehouse trims every character Polars' `strip_chars` removes.
+
+        A bare SQL `TRIM` removes only spaces on Snowflake, Databricks, and
+        DuckDB, so a tab, a line break, or a no-break space used to survive
+        pushdown and count as drift that a local run stripped away.
+        """
+        src = pl.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "name": ["\tada", "grace\r\n", "\u00a0linus\u3000", "\u2028guido\x85"],
+            }
+        )
+        tgt = pl.DataFrame({"id": [1, 2, 3, 4], "name": ["ada", "grace", "linus", "guido"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], whitespace_mode=mode)],  # type: ignore[arg-type]
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
     def test_it_agrees_on_apostrophes_inside_data_literals(self) -> None:
         """Ensure `'` inside sentinels, crosswalks, and regexes survives SQL quoting.
 
@@ -1143,6 +1212,19 @@ class TestKeyNormalizationParity:
         """Ensure a global default reaches key columns, not only compared ones."""
         src = pl.DataFrame({"id": ["  A", "B "], "val": [1, 2]})
         tgt = pl.DataFrame({"id": ["A", "B"], "val": [1, 3]})
+
+        summary = assert_parity(
+            DiffConfig(primary_keys=["id"], default_whitespace_mode="both"), src, tgt
+        )
+
+        assert summary.added_count == 0
+        assert summary.removed_count == 0
+        assert summary.changed_count == 1
+
+    def test_it_strips_tabs_and_unicode_spaces_from_keys(self) -> None:
+        """Ensure keys padded with more than spaces still join in a warehouse."""
+        src = pl.DataFrame({"id": ["\tA", "B\u00a0", "\x0bC\r\n"], "val": [1, 2, 3]})
+        tgt = pl.DataFrame({"id": ["A", "B", "C"], "val": [1, 2, 4]})
 
         summary = assert_parity(
             DiffConfig(primary_keys=["id"], default_whitespace_mode="both"), src, tgt

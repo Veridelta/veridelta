@@ -1,24 +1,88 @@
 name: Publish to PyPI
 
+# Merging a `chore(release): X.Y.Z` pull request releases X.Y.Z. The push to
+# main tags the version when PyPI does not have it yet and starts a run on that
+# tag, which builds, publishes once the `pypi` environment approves, and
+# creates the GitHub Release. A version tag pushed by hand publishes the same
+# way. PyPI's trusted publisher is bound to this file's name and to that
+# environment, so rename neither without updating PyPI first.
+
 on:
   push:
+    branches: ["main"]
     tags:
       # Only a full version tag (e.g., v0.10.0) publishes. GitHub's filter
       # treats `+` as "one or more", so a floating action tag such as `v1`
       # cannot trigger a release by matching a looser `v*`.
       - "v[0-9]+.[0-9]+.[0-9]+"
+  # Run on a version tag to retry a release that stopped partway.
+  workflow_dispatch:
+
+# Two runs for one tag, such as a hand-pushed tag and a dispatched one, take
+# turns, and the second finds the files already uploaded.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  build-and-publish:
-    name: Build and Publish Artifacts
+  tag:
+    name: Tag a New Version
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    
+
+    permissions:
+      contents: write # push the version tag
+      actions: write # start this workflow on that tag
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v5
+
+      - name: Tag the Version When PyPI Lacks It
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          tag="v${version}"
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' --retry 3 \
+            "https://pypi.org/pypi/veridelta/${version}/json")
+          case "$status" in
+            200) echo "${version} is already on PyPI, so there is nothing to release."; exit 0 ;;
+            404) ;;
+            *) echo "::error::PyPI answered HTTP ${status} for ${version}."; exit 1 ;;
+          esac
+
+          # The last line is the peeled commit of an annotated tag.
+          existing=$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}" | tail -n 1 | cut -f 1)
+          if [ -z "$existing" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/${tag}"
+          elif [ "$existing" != "$GITHUB_SHA" ]; then
+            echo "::error::${tag} already points at ${existing}, not ${GITHUB_SHA}."
+            exit 1
+          fi
+
+          # A tag pushed with this job's token starts no workflow, but a
+          # dispatch does, so start the publishing run on the tag.
+          gh workflow run release.yml --ref "$tag"
+
+  publish:
+    name: Build and Publish Artifacts
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
     environment:
       name: pypi
       url: https://pypi.org/project/veridelta/
-      
+
     permissions:
-      id-token: write 
+      id-token: write
       contents: read
 
     steps:
@@ -33,8 +97,38 @@ jobs:
           enable-cache: false
           python-version: "3.12"
 
+      - name: Check the Tag Names This Version
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          if [ "v${version}" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is on a commit whose version is ${version}."
+            exit 1
+          fi
+
       - name: Build Sdist and Wheel
         run: uv build
 
       - name: Publish to PyPI
-        run: uv publish
+        # A rerun skips the files PyPI already has instead of failing on them.
+        run: uv publish --check-url https://pypi.org/simple/
+
+  github-release:
+    name: Create the GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Create the Release with Generated Notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "${TAG} already has a release."
+          else
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+          fi

@@ -62,3 +62,13 @@ We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/)
 2. Open a PR against the `main` branch. Ensure your PR title also follows the Conventional Commits format (e.g., `feat: added semantic parser`).
 3. **The CI Pipeline is the final gatekeeper.** It will automatically test your PR across multiple operating systems and Python versions. If the static analysis or test matrix fails, the PR cannot be merged.
 4. CI runs on every pull request, whatever its base branch, so a PR stacked on another one is checked too. Merge the base PR first and delete its branch: GitHub then retargets the stacked PR to `main`. Merging a stacked PR while its base branch still exists lands it on that branch instead of `main`.
+
+## 5. Releasing
+
+A release is a pull request that changes the version. Merging it does the rest.
+
+1. On a branch from `main`, run `uv run cz bump --version-files-only --yes`. It writes the new version into `pyproject.toml`, `src/veridelta/__init__.py`, `mkdocs.yml`, and the GitLab template, and prepends a generated block to `CHANGELOG.md`. Run `uv lock` to sync the lockfile, rewrite the generated block in the style of the earlier entries, and open a pull request titled `chore(release): X.Y.Z`.
+2. Merge it once CI passes. The release workflow sees a version PyPI does not have, tags the merge commit `vX.Y.Z`, and starts a publishing run on that tag.
+3. A maintainer approves that run's `pypi` deployment. It then builds and uploads the package and creates the GitHub Release with generated notes.
+
+If a release stops partway, re-run the failed jobs, or run the workflow by hand on the tag: a rerun skips the files PyPI already has and the release page if it exists. Pushing a version tag by hand still publishes, but the workflow refuses a tag whose name differs from the version in that commit.

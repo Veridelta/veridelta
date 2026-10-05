@@ -247,6 +247,16 @@ class TestConfigChecks:
         assert severity == "warning"
         assert "warehouse's own regular expression engine" in message
 
+    def test_it_warns_about_a_replacement_a_warehouse_cannot_write(self) -> None:
+        """Ensure a group named in a replacement is flagged before a warehouse run refuses it."""
+        rules = [DiffRule(column_names=["NAME"], regex_replace={"(?P<first>[A-Z])": "$first"})]
+
+        [(severity, message)] = _check(_snowflake("SRC"), _snowflake("TGT"), rules=rules)
+
+        assert severity == "warning"
+        assert message.startswith("rules[0] regex_replace has no Snowflake spelling")
+        assert "'$first'" in message
+
     def test_it_warns_about_settings_a_warehouse_refuses_by_column_type(self) -> None:
         """Ensure refusals that depend on stored names and types are warnings, in order."""
         rules = [
