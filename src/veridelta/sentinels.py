@@ -33,15 +33,7 @@ def is_text_dtype(dtype: pl.DataType) -> bool:
 
 
 def _sentinel_matches(value: SentinelValue, dtype: pl.DataType) -> bool:
-    """Return whether one sentinel can be compared against a column dtype.
-
-    Args:
-        value (SentinelValue): Configured sentinel.
-        dtype (pl.DataType): Column dtype to compare it against.
-
-    Returns:
-        bool: True when the comparison is well-defined.
-    """
+    """Return whether one sentinel can be compared against a column dtype."""
     # bool is checked first because isinstance(False, int) is True in Python,
     # and Polars refuses booleans against numeric columns in both directions.
     if isinstance(value, bool):
