@@ -11,7 +11,7 @@ Powered by [Polars](https://pola.rs/).
 - **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
 - **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report, `--markdown` a summary for pull requests. Artifacts for added, removed, and changed rows.
 - **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
-- **Connectors.** Snowflake, Databricks, and BigQuery SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
+- **Connectors.** Snowflake, Databricks, BigQuery, and opt-in Postgres SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
 
 ## Install
 
@@ -35,6 +35,7 @@ flowchart LR
   lakehouse --> loader
   databases --> loader
   warehouse --> compiler[SQLPushdownCompiler]
+  databases -. pushdown .-> compiler
   loader --> engine["DiffEngine"]
   engine --> result[DiffResult]
   compiler --> warehouseSql[Warehouse SQL]
@@ -44,7 +45,7 @@ flowchart LR
   result --> exitCode[Exit code]
 ```
 
-File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs compile to SQL and execute in place. Both paths return a `DiffResult`.
+File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs, and two Postgres tables that set `pushdown`, compile to SQL and execute in place. Both paths return a `DiffResult`.
 
 ## Quick start
 
