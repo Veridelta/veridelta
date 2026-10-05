@@ -5,10 +5,11 @@
 
 The rules are in CONTRIBUTING.md, under "Writing documentation". This module
 checks four of them across the docs, the README, the tutorials, docstrings, CLI
-help, schema descriptions, and the CI templates: no dash characters, no spaced
-double hyphen used as a dash, no marketing words, and no list that Python
-Markdown would render as part of a paragraph. CHANGELOG.md is history and is
-left as written.
+help, schema descriptions, the CI templates, and the issue and pull request
+templates: no dash characters, no spaced double hyphen used as a dash, no
+marketing words, and no list that Python Markdown would render as part of a
+paragraph. CHANGELOG.md is history, and CODE_OF_CONDUCT.md is the Contributor
+Covenant as published. Both are left as written.
 """
 
 import ast
@@ -56,7 +57,8 @@ class _Text(NamedTuple):
 def _markdown_files() -> list[Path]:
     """Return the Markdown pages in scope."""
     pages = sorted((_ROOT / "docs").rglob("*.md"))
-    return [_ROOT / "README.md", _ROOT / "CONTRIBUTING.md", _ROOT / "SECURITY.md", *pages]
+    root = [_ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md")]
+    return [*root, _ROOT / ".github" / "pull_request_template.md", *pages]
 
 
 def _notebook_cells() -> Iterator[_Text]:
@@ -87,9 +89,12 @@ def _python_text() -> Iterator[_Text]:
 
 
 def _template_text() -> Iterator[_Text]:
-    """Yield the CI templates and the package metadata whole."""
-    for name in ("action.yml", "ci/gitlab/veridelta.yml", "pyproject.toml", "mkdocs.yml"):
-        yield _Text(name, (_ROOT / name).read_text(encoding="utf-8"), markdown=False)
+    """Yield the CI templates, the issue forms, and the package metadata whole."""
+    names = ["action.yml", "ci/gitlab/veridelta.yml", "pyproject.toml", "mkdocs.yml"]
+    forms = sorted((_ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.yml"))
+    for path in [*(_ROOT / name for name in names), *forms]:
+        where = str(path.relative_to(_ROOT))
+        yield _Text(where, path.read_text(encoding="utf-8"), markdown=False)
 
 
 def _all_text() -> Iterator[_Text]:

@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a wrong result, an error, or a crash.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Report a security vulnerability by email, as the
+        [security policy](https://github.com/Veridelta/veridelta/security/policy)
+        describes, not in an issue.
+  - type: input
+    id: version
+    attributes:
+      label: Veridelta version
+      description: The output of `veridelta --version`.
+      placeholder: veridelta 0.12.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Python version, operating system, and the extras you installed.
+      placeholder: "Python 3.12, Ubuntu 24.04, extras: database, fuzzy"
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: The command or Python code you ran, and what it did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Configuration
+      description: >-
+        The smallest configuration that shows the problem. Remove passwords,
+        tokens, and host names first.
+      render: yaml
+  - type: textarea
+    id: data
+    attributes:
+      label: Data
+      description: A few rows that reproduce the problem, with made-up values in place of real ones.
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The full error, or the summary from `veridelta run --json`.
+      render: text
