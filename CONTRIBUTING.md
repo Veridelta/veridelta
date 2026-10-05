@@ -2,6 +2,8 @@
 
 Contributions are welcome. Every change passes the same typing, formatting, and test checks that CI runs.
 
+Everyone who takes part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## 1. Development Environment
 
 Veridelta uses [uv](https://docs.astral.sh/uv/) to manage its environment and dependencies. Docker is optional, and a native setup is recommended.

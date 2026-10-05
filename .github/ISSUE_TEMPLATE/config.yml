@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question
+    url: https://github.com/Veridelta/veridelta/discussions
+    about: Ask how to configure or run a comparison.
+  - name: Security vulnerability
+    url: https://github.com/Veridelta/veridelta/security/policy
+    about: Report a vulnerability privately, as the security policy describes.
