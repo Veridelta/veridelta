@@ -68,13 +68,21 @@ By default, `validate` connects to nothing. It checks that:
 - a database `table` uses a URI scheme Veridelta can quote;
 - each `regex_replace` pattern compiles in Polars, whose regular expressions have no look-around and no backreferences, unlike Python's `re`.
 
-On a warehouse pair, it also warns about settings the warehouse refuses only for some stored names or types: `normalize_column_names`, `min_jaro_winkler_similarity`, a `datetime_format` with no SQL spelling, and a `regex_replace` replacement that refers to a group by name. A pattern Polars rejects is only a warning there, since the warehouse runs it with its own engine.
+On a pair compared in place, such as two warehouse tables, it also warns about settings the backend refuses only for some stored names or types:
+
+- `normalize_column_names`;
+- `min_jaro_winkler_similarity`;
+- a `datetime_format` the backend cannot parse with, such as any `datetime_format` on Postgres;
+- `max_levenshtein_distance` on Postgres and DuckDB;
+- a `regex_replace` replacement that refers to a group by name.
+
+A pattern Polars rejects is only a warning there, since the backend runs it with its own engine.
 
 With `--schemas`, `validate` also connects and checks the rules against each side's columns:
 
 - Files and lakehouse tables are opened as a run opens them, then checked with `DiffEngine.validate_rules`. JSON, Excel, and Avro files have no lazy reader, so they are read whole.
-- A database `table` is read as a run reads it, with `WHERE 1 = 0` added, so no row is fetched. SQLite reports a `NUMERIC` column as text in that probe, although a full read returns numbers. A `query` is not run, and that side is reported as unchecked.
-- A warehouse pair runs the column probes a run starts with, then compiles every comparison statement without running it. That settles each warning above one way or the other.
+- A database `table` is read as a run reads it, with `WHERE 1 = 0` added, so no row is fetched. SQLite reports a `NUMERIC` column as text in that probe, although a full read returns numbers. A `query` is not run. If either side reads one, the rules are checked against neither side, and a warning names each `query` side.
+- A pair compared in place runs the column probes a run starts with, then compiles every comparison statement without running it. That settles each warning above one way or the other.
 
 Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, and `warnings`. The verdict goes to stderr.
 

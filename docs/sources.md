@@ -97,7 +97,7 @@ Two Postgres tables on one server can instead be compared inside Postgres; see [
 
 ### Connection string
 
-`uri` is a ConnectorX connection string that starts with `postgresql://`, `mysql://` (MariaDB too), `mssql://`, `oracle://`, `redshift://`, `clickhouse://`, or `sqlite://`.
+`uri` is a ConnectorX connection string that starts with `postgresql://` or `postgres://`, `mysql://` (MariaDB too), `mssql://`, `oracle://`, `redshift://`, `clickhouse://`, or `sqlite://`.
 
 A SQLite URI is followed by a file path, as in `sqlite:///srv/data/legacy.db`, or `sqlite://C:/data/legacy.db` on Windows. The path must name an existing file. Veridelta refuses a missing one, which ConnectorX would otherwise create as an empty database.
 
@@ -175,7 +175,7 @@ target:
 primary_keys: ["order_id"]
 ```
 
-`database` is a file path, which resolves from the working directory, or a MotherDuck database written as `md:name`. Set exactly one of `table` and `query`:
+`database` is a file path, which resolves from the working directory, or a MotherDuck database written as `md:name` or `motherduck:name`. Set exactly one of `table` and `query`:
 
 - `table` is one to three identifier segments, such as `main.orders` or `warehouse.main.orders`. Each segment is double-quoted, which keeps its case.
 - `query` is sent to DuckDB as written, so it can also read files, as in `SELECT * FROM read_parquet('orders/*.parquet')`. A statement that returns no rows, such as `SET`, fails the read.

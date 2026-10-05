@@ -1276,12 +1276,12 @@ class DuckDBConfig(BaseModel):
     Attributes:
         type (Literal["duckdb"]): Source kind, which selects this model.
         database (str): Path to a DuckDB file, which opens read-only, or a
-            MotherDuck database written as `md:name`.
+            MotherDuck database written as `md:name` or `motherduck:name`.
         table (str | None): Table or view to read whole, as one to three
             unquoted identifier segments, such as `main.orders`.
         query (str | None): SQL statement to run instead, sent to DuckDB
             exactly as written. Set exactly one of `table` and `query`.
-        motherduck_token (str | None): MotherDuck token for an `md:` database.
+        motherduck_token (str | None): Token for a MotherDuck database.
             When unset, the `MOTHERDUCK_TOKEN` environment variable supplies
             it, then `motherduck_token`. Left out when the config is printed,
             but kept by `model_dump()`.
@@ -1298,7 +1298,7 @@ class DuckDBConfig(BaseModel):
     database: str = Field(
         ...,
         min_length=1,
-        description="DuckDB file path, or md:name for a MotherDuck database.",
+        description="DuckDB file path, or md:name or motherduck:name for a MotherDuck database.",
     )
     table: str | None = Field(
         default=None,
@@ -1313,7 +1313,7 @@ class DuckDBConfig(BaseModel):
     motherduck_token: str | None = Field(
         default=None,
         repr=False,
-        description="MotherDuck token for an md: database. Defaults to MOTHERDUCK_TOKEN.",
+        description="Token for a MotherDuck database. Defaults to MOTHERDUCK_TOKEN.",
     )
     pushdown: bool = Field(
         default=False,
