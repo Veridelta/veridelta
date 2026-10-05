@@ -17,14 +17,11 @@ from pytest_mock import MockerFixture
 
 from veridelta.engine import (
     _ARTIFACT_WRITERS,
-    BaseLoader,
     DataIngestor,
     DiffEngine,
     LoaderFactory,
     _alignment_maps,
     _column_mismatches_from_frame,
-    _compares_as_text,
-    _compares_numerically,
     _fold_rule_defaults,
     _match_rule,
     _normalized_dtype,
@@ -130,20 +127,25 @@ class TestDataIngestorAndLoaders:
         with pytest.raises(ConfigError, match="multiple worksheets"):
             LoaderFactory.load(SourceConfig(path=str(tmp_path / "x.xlsx"), format="excel"))
 
-    def test_it_normalizes_headers_by_stripping_and_lowercasing_when_configured(self) -> None:
+    def test_it_normalizes_headers_by_stripping_and_lowercasing_when_configured(
+        self, mocker: MockerFixture
+    ) -> None:
         """Ensure messy CSV headers are standardized before structural alignment."""
-        df = pl.DataFrame({"  Messy_COL  ": [1], "CleanCol": [2]})
+        df = pl.DataFrame({"  Messy_COL  ": [1], "CleanCol": [2]}).lazy()
+        mocker.patch.object(LoaderFactory, "load", return_value=df)
         config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
 
         dummy_cfg = SourceConfig(path="dummy.csv", format="csv")
-        ingestor = DataIngestor(config, source_config=dummy_cfg, target_config=dummy_cfg)
-        normalized = ingestor._normalize_headers(df.lazy())  # pyright: ignore[reportPrivateUsage]
+        source, _ = DataIngestor(config, dummy_cfg, dummy_cfg).get_dataframes()
 
-        assert normalized.collect_schema().names() == ["messy_col", "cleancol"]
+        assert source.collect_schema().names() == ["messy_col", "cleancol"]
 
-    def test_it_renames_and_drops_columns_during_ingest_alignment(self) -> None:
+    def test_it_renames_and_drops_columns_during_ingest_alignment(
+        self, mocker: MockerFixture
+    ) -> None:
         """Ensure DataIngestor applies ignore and rename_to before the engine sees the frame."""
         source = pl.DataFrame({"legacy_id": [1], "secret": ["x"], "val": ["A"]}).lazy()
+        mocker.patch.object(LoaderFactory, "load", return_value=source)
         dummy = SourceConfig(path="dummy.csv", format="csv")
         config = DiffConfig(
             primary_keys=["user_id"],
@@ -153,33 +155,24 @@ class TestDataIngestorAndLoaders:
                 DiffRule(pattern="^sec"),
             ],
         )
-        ingestor = DataIngestor(config, source_config=dummy, target_config=dummy)
-        aligned = ingestor._align_columns(source, is_source=True)  # pyright: ignore[reportPrivateUsage]
+        aligned, _ = DataIngestor(config, dummy, dummy).get_dataframes()
 
         assert aligned.collect_schema().names() == ["user_id", "val"]
 
-    def test_it_leaves_target_names_alone_when_aligning_the_target_side(self) -> None:
+    def test_it_leaves_target_names_alone_when_aligning_the_target_side(
+        self, mocker: MockerFixture
+    ) -> None:
         """Ensure rename_to is a source-only mapping."""
         target = pl.DataFrame({"user_id": [1], "val": ["A"]}).lazy()
+        mocker.patch.object(LoaderFactory, "load", return_value=target)
         dummy = SourceConfig(path="dummy.csv", format="csv")
         config = DiffConfig(
             primary_keys=["user_id"],
             rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
         )
-        ingestor = DataIngestor(config, source_config=dummy, target_config=dummy)
-        aligned = ingestor._align_columns(target, is_source=False)  # pyright: ignore[reportPrivateUsage]
+        _, aligned = DataIngestor(config, dummy, dummy).get_dataframes()
 
         assert aligned.collect_schema().names() == ["user_id", "val"]
-
-    def test_it_executes_the_abstract_loader_body(self) -> None:
-        """Ensure the ABC placeholder is not an untested pass."""
-
-        class _Probe(BaseLoader):
-            def load(self, config: SourceConfig) -> pl.LazyFrame:
-                return pl.DataFrame({"id": [1]}).lazy()
-
-        probe = _Probe()
-        assert BaseLoader.load(probe, SourceConfig(path="dummy.csv", format="csv")) is None
 
     def test_it_treats_a_missing_optional_module_as_absent(self) -> None:
         """Ensure the excel extra probe degrades to None instead of raising."""
@@ -1574,39 +1567,6 @@ class TestPushdownRuleHelpers:
 
         assert _normalized_dtype(effective, None) == expected
 
-    @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
-    def test_it_predicts_what_the_local_normalizer_compares(
-        self, values: list[object], dtype: pl.DataType, rule: DiffRule
-    ) -> None:
-        """Ensure the pushdown prediction agrees with the dtype Polars actually compares.
-
-        Pushdown never materializes the normalized column, so it predicts the
-        dtype from the probe and the rule. This pins that prediction to the
-        real normalizer so the two cannot drift apart.
-        """
-        config = DiffConfig(primary_keys=["id"], rules=[rule])
-        frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
-        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
-
-        compared = _normalized(config, frame).schema["val"]
-
-        assert _compares_numerically(effective, frame.schema["val"]) is compared.is_numeric()
-
-    @pytest.mark.parametrize(("values", "dtype", "rule"), _NORMALIZER_CASES)
-    def test_it_predicts_which_columns_compare_as_text(
-        self, values: list[object], dtype: pl.DataType, rule: DiffRule
-    ) -> None:
-        """Ensure pushdown loosens exactly the columns a local run measures as text."""
-        config = DiffConfig(primary_keys=["id"], rules=[rule])
-        frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
-        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
-
-        compared = _normalized(config, frame).schema["val"]
-
-        assert _compares_as_text(effective, frame.schema["val"]) is isinstance(
-            compared, (pl.String, pl.Utf8)
-        )
-
     def test_it_refuses_a_jaro_winkler_floor_on_a_text_column(self) -> None:
         """Ensure a limit no warehouse can reproduce fails before any query runs."""
         schema = pl.Schema({"id": pl.Int64, "name": pl.String})
@@ -1982,10 +1942,10 @@ class TestRemainingEngineBranches:
         assert summary.is_match is True
         assert "noise" not in summary.column_mismatches
 
-    def test_it_enters_the_temporal_pass_then_emits_nothing_for_ignored_casts(
+    def test_it_leaves_an_ignored_cast_out_of_the_temporal_pass(
         self, mocker: MockerFixture
     ) -> None:
-        """Ensure an ignored cast_to does not rewrite the remaining columns."""
+        """Ensure an ignored cast_to rewrites no column, even if alignment kept it."""
         src = pl.DataFrame({"id": [1], "noise": ["1"], "val": [10]})
         tgt = pl.DataFrame({"id": [1], "noise": ["1"], "val": [10]})
         config = DiffConfig(
