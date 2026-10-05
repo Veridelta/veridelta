@@ -14,6 +14,7 @@ from google.protobuf import json_format
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
 )
+from opentelemetry.proto.metrics.v1.metrics_pb2 import MetricsData
 
 from veridelta import __version__
 from veridelta.engine import DiffEngine
@@ -142,6 +143,16 @@ class TestOTLPShape:
         assert scope_metrics.scope.name == "veridelta"
         assert scope_metrics.scope.version == __version__
         assert [metric.name for metric in scope_metrics.metrics] == _METRIC_NAMES
+
+    def test_it_is_a_line_of_the_file_exporter_format(self) -> None:
+        """Ensure the export is also a `MetricsData`, the object each line of an OTLP file holds."""
+        text = render_otlp_metrics(_drift(), time_unix_nano=_OBSERVED)
+
+        data = json_format.Parse(text, MetricsData())
+
+        assert [metric.name for metric in data.resource_metrics[0].scope_metrics[0].metrics] == (
+            _METRIC_NAMES
+        )
 
     def test_it_reports_every_metric_as_a_gauge(self) -> None:
         """Ensure each value is a snapshot of this run, not a sum to accumulate."""
