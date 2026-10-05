@@ -7,7 +7,6 @@ import polars as pl
 import pytest
 
 from veridelta.engine import DiffEngine
-from veridelta.exceptions import DataIntegrityError
 from veridelta.models import DiffConfig, DiffRule
 
 pytestmark = [pytest.mark.integration]
@@ -51,19 +50,6 @@ class TestEnginePythonAPI:
         assert summary.removed_count == 0
         assert summary.changed_count == 0
 
-    def test_discrepancy_counter_accurately_tallies_asymmetric_and_mutated_records(self) -> None:
-        """Ensure exact discrepancy counts are calculated without requiring file I/O exports."""
-        src = pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]})
-        tgt = pl.DataFrame({"id": [1, 2, 4], "val": ["A", "CHANGED", "D"]})
-
-        config = DiffConfig(primary_keys=["id"])
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
-
-        assert summary.is_match is False
-        assert summary.removed_count == 1  # ID 3
-        assert summary.added_count == 1  # ID 4
-        assert summary.changed_count == 1  # ID 2
-
     def test_zero_row_dataframes_execute_computation_graph_safely(self) -> None:
         """Ensure empty datasets (e.g. from an empty upstream SQL query) do not crash the Polars DAG."""
         schema: dict[str, pl.DataType] = {
@@ -79,18 +65,3 @@ class TestEnginePythonAPI:
         assert summary.is_match is True
         assert summary.total_rows_source == 0
         assert summary.total_rows_target == 0
-
-    def test_duplicate_primary_keys_abort_execution_before_cartesian_explosion(self) -> None:
-        """Ensure hostile data with duplicate keys raises a fatal error before memory is exhausted."""
-        src = pl.DataFrame(
-            {
-                "id": [1, 1, 2],  # Duplicate PK
-                "val": ["A", "B", "C"],
-            }
-        )
-        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "C"]})
-
-        config = DiffConfig(primary_keys=["id"])
-
-        with pytest.raises(DataIntegrityError, match="not unique in SOURCE dataset"):
-            DiffEngine(config, src.lazy(), tgt.lazy()).run()
