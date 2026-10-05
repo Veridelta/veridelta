@@ -69,6 +69,8 @@ A release is a pull request that changes the version. Merging it does the rest.
 
 1. On a branch from `main`, run `uv run cz bump --version-files-only --yes`. It writes the new version into `pyproject.toml`, `src/veridelta/__init__.py`, `mkdocs.yml`, and the GitLab template, and prepends a generated block to `CHANGELOG.md`. Run `uv lock` to sync the lockfile, rewrite the generated block in the style of the earlier entries, and open a pull request titled `chore(release): X.Y.Z`.
 2. Merge it once CI passes. The release workflow sees a version PyPI does not have, tags the merge commit `vX.Y.Z`, and starts a publishing run on that tag.
-3. A maintainer approves that run's `pypi` deployment. It then builds and uploads the package and creates the GitHub Release with generated notes.
+3. A maintainer approves that run's `pypi` deployment. It then builds the tagged commit, uploads the package, and creates the GitHub Release with generated notes, marked Latest when it is the newest version.
 
-If a release stops partway, re-run the failed jobs, or run the workflow by hand on the tag: a rerun skips the files PyPI already has and the release page if it exists. Pushing a version tag by hand still publishes, but the workflow refuses a tag whose name differs from the version in that commit.
+A merge that lands while a release waits for approval leaves the tag where it is, so the tagged commit is still the one released, and that merge's run ends without asking for a second approval. If the release's run was rejected or cancelled, the next merge to `main` starts it again; to abandon a version instead, release the next one.
+
+If a release stops partway, re-run the failed jobs, or run the workflow by hand on the tag. A rerun uploads only the files PyPI lacks, so it never fails on a version PyPI already has, and it leaves an existing release page as it is. Pushing a version tag by hand still publishes, but the workflow refuses a tag whose name differs from the version in that commit.
