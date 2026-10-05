@@ -41,44 +41,26 @@ __all__ = [
     "load_config",
 ]
 
+# The blocks carry credentials, and an unknown `type` fails before `SourceRef` picks a
+# model, so no model's own `hide_input_in_errors` applies.
 _SOURCE_REF_ADAPTER: TypeAdapter[SourceRef] = TypeAdapter(
     SourceRef, config=ConfigDict(hide_input_in_errors=True)
 )
-"""Validator for `source` and `target` blocks. It hides the raw input in errors,
-because the blocks carry credentials and an unknown `type` fails before any
-model, and its own `hide_input_in_errors`, is chosen."""
+"""Validator for `source` and `target` blocks."""
 
 
 _ENV_REFERENCE = re.compile(
     r"(?P<escape>\$\$\{)"
+    # A default cannot hold `}` or `${`, so a nested reference is malformed, not half-expanded.
     r"|\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>(?:[^$}]|\$(?!\{))*))?\}"
     r"|(?P<malformed>\$\{)"
 )
-"""An escaped `$${`, a `${NAME}` or `${NAME:-default}` reference, or any other
-`${`, tried in that order. A default cannot contain `}` or `${`, so a nested
-reference is reported as malformed rather than half-expanded."""
+"""An escaped `$${`, a `${NAME}` or `${NAME:-default}` reference, or any other `${`."""
 
 
 def _substitute(match: re.Match[str], location: str, unset: list[str] | None) -> str:
-    """Resolve one `_ENV_REFERENCE` match.
-
-    Errors name the variable and where it is used, never the surrounding text,
-    which may be a literal credential.
-
-    Args:
-        match (re.Match[str]): Match inside a string of a `source` or `target` block.
-        location (str): Path to that string, used in error messages.
-        unset (list[str] | None): When a list, an unset variable without a
-            default reads as its own name and is recorded here once.
-
-    Returns:
-        str: A literal `${`, the variable's value, the reference's default, or
-            the variable's name.
-
-    Raises:
-        ConfigError: If the reference is malformed, or names an unset variable
-            with no default while `unset` is None.
-    """
+    """Resolve one `_ENV_REFERENCE` match."""
+    # Errors never quote the surrounding text, which may be a literal credential.
     if match["escape"]:
         return "${"
     name = match["name"]
@@ -106,31 +88,12 @@ def _substitute(match: re.Match[str], location: str, unset: list[str] | None) ->
 def _expand_env(
     value: Any, location: str, parents: tuple[int, ...] = (), unset: list[str] | None = None
 ) -> Any:
-    """Expand environment references in the strings of a `source` or `target` block.
-
-    Mapping keys and non-string values are returned as they are, and substituted
-    text is never scanned again, so a secret containing `${` arrives intact. New
-    containers are built rather than the parsed YAML edited, because a YAML
-    anchor can share one mapping between both blocks.
-
-    Args:
-        value (Any): Parsed YAML value.
-        location (str): Path to `value`, such as `source -> password`.
-        parents (tuple[int, ...]): Ids of the containers enclosing `value`.
-        unset (list[str] | None): Collects unset variables read as their names,
-            instead of raising for them.
-
-    Returns:
-        Any: `value` with every reference replaced.
-
-    Raises:
-        ConfigError: If a reference is malformed or names an unset variable
-            without a default, or a YAML alias makes a container hold itself.
-    """
+    """Expand environment references in the strings of a `source` or `target` block."""
     if id(value) in parents:
         raise ConfigError(
             f"The YAML alias at {location} refers to a mapping or list that contains it."
         )
+    # A YAML anchor can share one mapping between both blocks, so an in-place edit reaches both.
     if isinstance(value, dict):
         mapping = cast("dict[object, object]", value)
         inner = (*parents, id(mapping))
@@ -146,6 +109,7 @@ def _expand_env(
             for index, item in enumerate(items)
         ]
     if isinstance(value, str):
+        # `sub` never rescans substituted text, so a secret holding `${` arrives intact.
         return _ENV_REFERENCE.sub(lambda match: _substitute(match, location, unset), value)
     return value
 
@@ -168,14 +132,7 @@ class _RootConfig(DiffConfig):
 
 
 def _accept_env_reference(prop: dict[str, Any]) -> dict[str, Any]:
-    """Let a constrained string field also hold a `${NAME}` reference.
-
-    Args:
-        prop (dict[str, Any]): Property schema with a `pattern` or `enum`.
-
-    Returns:
-        dict[str, Any]: The same constraint, or any string with a reference.
-    """
+    """Let a constrained string field also hold a `${NAME}` reference."""
     outer = {key: prop[key] for key in _ANNOTATIONS if key in prop}
     inner = {key: value for key, value in prop.items() if key not in _ANNOTATIONS}
     return {**outer, "anyOf": [inner, _ENV_REFERENCE_SCHEMA]}
@@ -221,16 +178,7 @@ def config_json_schema() -> dict[str, Any]:
 
 
 def _validation_failure(error: ValidationError, unset: Sequence[str] = ()) -> ConfigError:
-    """Format a Pydantic failure as the loader's `ConfigError`.
-
-    Args:
-        error (ValidationError): Failure from one block or the root settings.
-        unset (Sequence[str]): Unset variables the failing block read as their
-            names, which may themselves be the cause.
-
-    Returns:
-        ConfigError: One line per failure, plus a note naming `unset`.
-    """
+    """Format a Pydantic failure as the loader's `ConfigError`."""
     message = "Configuration Validation Failed:\n"
     for validation_error in error.errors():
         location = " -> ".join(str(loc) for loc in validation_error["loc"])
@@ -245,23 +193,7 @@ def _validation_failure(error: ValidationError, unset: Sequence[str] = ()) -> Co
 
 
 def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -> SourceRef:
-    """Validate a YAML source/target block as a discriminated `SourceRef`.
-
-    Environment references in the block's strings are expanded first.
-
-    Args:
-        raw (Any): Parsed YAML mapping for the block.
-        label (str): `source` or `target`, used in error messages.
-        unset (list[str] | None): Collects unset variables read as their names,
-            instead of raising for them.
-
-    Returns:
-        SourceRef: File, warehouse, or lakehouse configuration.
-
-    Raises:
-        ConfigError: If the block is not a mapping, an environment reference in
-            it is malformed or names an unset variable, or it fails validation.
-    """
+    """Validate a YAML source/target block as a discriminated `SourceRef`."""
     if not isinstance(raw, dict):
         raise ConfigError(f"The '{label}' block must be a mapping.")
     guessed: list[str] | None = None if unset is None else []

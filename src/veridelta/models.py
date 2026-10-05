@@ -178,17 +178,7 @@ class SourceConfig(BaseModel):
 
 
 def _reject_non_finite_sentinels(values: Iterable[SentinelValue] | None) -> None:
-    """Reject NaN and infinity in a sentinel list.
-
-    Neither can do the job: NaN never equals itself, so it could never match a
-    value, and infinities have no portable SQL literal.
-
-    Args:
-        values (Iterable[SentinelValue] | None): Configured sentinels, if any.
-
-    Raises:
-        ValueError: If any entry is a non-finite float.
-    """
+    """Reject NaN and infinity in a sentinel list."""
     for value in values or ():
         if isinstance(value, float) and not math.isfinite(value):
             raise ValueError(
@@ -1003,7 +993,6 @@ class DatabricksConfig(BaseModel):
         schema_name (str | None): Optional default schema name.
     """
 
-    # Credentials pass through here, and Pydantic quotes raw input in its errors.
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["databricks"] = Field("databricks", description="Discriminator for Databricks.")
@@ -1040,7 +1029,6 @@ class BigQueryConfig(BaseModel):
             more bytes than this, instead of running it.
     """
 
-    # Credentials pass through here, and Pydantic quotes raw input in its errors.
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["bigquery"] = Field("bigquery", description="Discriminator for BigQuery.")
@@ -1104,7 +1092,6 @@ class DeltaLakeConfig(BaseModel):
             which the scanner needs.
     """
 
-    # Credentials pass through here, and Pydantic quotes raw input in its errors.
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["delta"] = Field("delta", description="Discriminator for Delta Lake.")
@@ -1134,7 +1121,6 @@ class IcebergConfig(BaseModel):
             which the scanner needs.
     """
 
-    # Credentials pass through here, and Pydantic quotes raw input in its errors.
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["iceberg"] = Field("iceberg", description="Discriminator for Apache Iceberg.")
@@ -1183,7 +1169,6 @@ class DatabaseConfig(BaseModel):
             rows. Postgres `table` sources only, and both sides must set it.
     """
 
-    # Credentials pass through here, and Pydantic quotes raw input in its errors.
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["database"] = Field("database", description="Discriminator for databases.")

@@ -37,36 +37,18 @@ _JSONObject = dict[str, object]
 
 
 def _attribute(key: str, value: str) -> _JSONObject:
-    """Build one OTLP key-value attribute holding a string.
-
-    Args:
-        key (str): Attribute name.
-        value (str): Attribute value.
-
-    Returns:
-        _JSONObject: The attribute in OTLP/JSON form.
-    """
+    """Build one OTLP key-value attribute holding a string."""
     return {"key": key, "value": {"stringValue": value}}
 
 
 def _point(
     value: int | float, observed: int, attributes: dict[str, str] | None = None
 ) -> _JSONObject:
-    """Build one gauge data point.
-
-    Args:
-        value (int | float): The measurement. An `int` becomes `asInt`, written
-            as a string as the JSON mapping requires; a `float` becomes `asDouble`.
-        observed (int): Observation time, in nanoseconds since the epoch.
-        attributes (dict[str, str] | None): Attributes that tell this point
-            apart from the metric's others.
-
-    Returns:
-        _JSONObject: The data point in OTLP/JSON form.
-    """
+    """Build one gauge data point."""
     point: _JSONObject = {}
     if attributes:
         point["attributes"] = [_attribute(key, item) for key, item in attributes.items()]
+    # The OTLP JSON mapping writes 64-bit integers, such as `asInt`, as strings.
     point["timeUnixNano"] = str(observed)
     if isinstance(value, int):
         point["asInt"] = str(value)
@@ -76,17 +58,7 @@ def _point(
 
 
 def _gauge(name: str, description: str, unit: str, points: list[_JSONObject]) -> _JSONObject:
-    """Build one gauge metric.
-
-    Args:
-        name (str): Metric name.
-        description (str): What the metric measures.
-        unit (str): UCUM unit, or empty for none.
-        points (list[_JSONObject]): The metric's data points.
-
-    Returns:
-        _JSONObject: The metric in OTLP/JSON form.
-    """
+    """Build one gauge metric."""
     metric: _JSONObject = {"name": name, "description": description}
     if unit:
         metric["unit"] = unit
@@ -95,29 +67,15 @@ def _gauge(name: str, description: str, unit: str, points: list[_JSONObject]) ->
 
 
 def _locator(text: str) -> str | None:
-    """Reduce a path or URL to what may leave the run.
-
-    A URL can carry a credential in its user part, such as a token used as
-    the user name, and a signature in its query, as a pre-signed object-store
-    link does. Only its scheme, host, port, and path are kept. Azure's
-    `abfss://container@account` puts the container where a user goes, so
-    there it is kept too, unless it holds a `:` and so reads as a password.
-    Anything without a host, such as a local or Windows path, is kept as
-    written.
-
-    Args:
-        text (str): Path or URL from a source configuration.
-
-    Returns:
-        str | None: The reduced locator, or None when the text cannot be
-            parsed as a URL and so cannot be reduced safely.
-    """
+    """Reduce a path or URL to what may leave the run."""
     try:
         parts = urlsplit(text)
     except ValueError:
         return None
     if not (parts.scheme and parts.netloc):
         return text
+    # The user part can hold a credential, such as a token, and a pre-signed object-store
+    # link carries a signature in its query.
     user, _, host = parts.netloc.rpartition("@")
     if user and parts.scheme in _CONTAINER_SCHEMES and ":" not in user:
         host = f"{user}@{host}"
@@ -125,39 +83,20 @@ def _locator(text: str) -> str | None:
 
 
 def _side_name(side: SourceRef) -> str | None:
-    """Name a source by its table or path, without anything secret.
-
-    Warehouse and database tables are validated identifiers, so they are kept
-    as configured. A database `query` is the user's own SQL, which is never
-    exported, and a database `uri` names a server and a login, so a query
-    source has no name.
-
-    Args:
-        side (SourceRef): Source or target configuration.
-
-    Returns:
-        str | None: The name to export, or None when there is none to give.
-    """
+    """Name a source by its table or path, without anything secret."""
     if isinstance(side, SourceConfig):
         return _locator(side.path)
     if isinstance(side, (DeltaLakeConfig, IcebergConfig)):
         return _locator(side.table_uri)
+    # Warehouse and database tables are validated identifiers, safe to export as configured.
+    # A database `query` has no table, so neither its SQL nor its `uri` leaves the run.
     return side.table
 
 
 def _resource_attributes(
     config_path: str | Path | None, source: SourceRef | None, target: SourceRef | None
 ) -> list[_JSONObject]:
-    """Describe which comparison ran.
-
-    Args:
-        config_path (str | Path | None): Configuration file the run used.
-        source (SourceRef | None): Source configuration.
-        target (SourceRef | None): Target configuration.
-
-    Returns:
-        list[_JSONObject]: Resource attributes in OTLP/JSON form.
-    """
+    """Describe which comparison ran."""
     attributes = [
         _attribute("service.name", SERVICE_NAME),
         _attribute("service.version", __version__),
@@ -175,15 +114,7 @@ def _resource_attributes(
 
 
 def _metrics(result: DiffResult, observed: int) -> list[_JSONObject]:
-    """Measure one comparison.
-
-    Args:
-        result (DiffResult): Completed comparison.
-        observed (int): Observation time, in nanoseconds since the epoch.
-
-    Returns:
-        list[_JSONObject]: Gauge metrics in OTLP/JSON form.
-    """
+    """Measure one comparison."""
     summary = result.summary
     metrics = [
         _gauge(
