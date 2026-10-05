@@ -1,8 +1,8 @@
 # Configuration
 
-Veridelta is driven by a declarative YAML configuration file or Python object. This specification defines data ingestion parameters, schema alignment constraints, and the semantic rules for engine evaluation.
+A configuration file declares the two datasets to compare, the primary keys that pair their rows, and the rules that decide when two values match. In Python, the same settings are the fields of `DiffConfig`.
 
-Execution parameters and datasets are defined at the root level of the configuration. The engine requires deterministic identifiers to perform record alignment.
+The smallest file names a source, a target, and the primary keys:
 
 ```yaml
 source:
@@ -13,35 +13,42 @@ target:
   path: "modern_system.parquet"
   format: "parquet"
 
-# Mandatory alignment key
 primary_keys: ["user_id"]
 ```
 
+A source without a `type` is a file, read from `path` in the given `format` with optional reader `options`. Set `type` to read a lakehouse table, a database, or a warehouse table instead; see [Sources](sources.md). To change how particular columns are compared, add `rules`; see [Rules](rules.md).
+
 ## Primary keys
 
-`primary_keys` must name at least one column, and together the keys must be unique on each side.
+`primary_keys` names the columns that pair each source row with its target row. It must name at least one column, and the keys together must be unique on each side. A key that repeats raises `DataIntegrityError` before any values are compared.
 
-File sources may omit `type` (it defaults to `file`) and continue to use `path`, `format`, and optional `options`.
+Rules on key columns apply before rows are paired: a `case_insensitive` key pairs `ABC` with `abc`. See [Transform order](rules.md#transform-order). Write a renamed key with its target name; see [Renaming columns](rules.md#renaming-columns).
 
 ## Settings
 
-Global directives control the strictness of the underlying Polars evaluation engine.
+Every setting except `primary_keys` is optional:
 
-| Directive | Description |
-| :--- | :--- |
-| `schema_mode` | Enforces column structure constraints. Options: `intersection` (default, compares common columns only), `exact`, `allow_additions`, `allow_removals`. |
-| `strict_types` | If `false` (default), a column stored as different types on the two sides is still compared. Two numeric types compare by value, so an integer `10` and a float `10.7` differ, and a `Float32` `0.1` differs slightly from a `Float64` `0.1`; add a tolerance to forgive precision gaps. Any other pair soft-casts the target to the source type, so text `"10"` matches an integer `10`. If `true`, a column whose two sides hold different types after normalization fails every row, so a `cast_to` or `datetime_format` that brings both sides to one type keeps the column comparable. Under `treat_null_as_equal`, two NULLs still match. |
-| `normalize_column_names`| If `true`, strips whitespace and lowercases all column headers prior to schema alignment, on every entry point including `DiffEngine(...).run()` and `validate_schemas`. Configured `primary_keys`, `column_names`, and `rename_to` are normalized the same way; a `pattern` is not, so write it against the lowercase names. Headers that collide once normalized raise `ConfigError`. |
-| `threshold` | The allowable mismatch ratio (0.0 to 1.0) before the pipeline exits with a failure code. |
-| `default_absolute_tolerance` | Global absolute numeric tolerance. A column without its own `absolute_tolerance` inherits this. Columns that are not numeric after normalization are compared exactly. |
-| `default_relative_tolerance` | Global relative numeric tolerance. A column without its own `relative_tolerance` inherits this. Columns that are not numeric after normalization are compared exactly. |
-| `default_treat_null_as_equal` | Global `NULL == NULL` policy. Defaults to `true`. A column rule can override it. |
-| `default_whitespace_mode` | Global whitespace stripping: `none` (default), `left`, `right`, or `both`. |
-| `default_null_values` | Global sentinel list. Applied only to columns whose type can hold each value. |
-| `report_top_columns_limit` | How many drifted columns to list in `report_summary`. `0` hides the section. |
-| `pushdown_sample_rows` | Pushdown only. Fetch up to this many changed rows with both sides' values, so the HTML report and the result show values rather than primary keys alone. `0` (default) fetches none, so no value leaves the warehouse. Local runs ignore it, since they hold every row. See [Row samples](pushdown.md#row-samples). |
-| `output_path` | Directory to write discrepancy artifacts. Omitted means no files are written. |
-| `output_format` | Artifact format: `parquet` (default), `csv`, `json`, `ndjson`, or `arrow`. |
+| Setting | Default | Description |
+| :--- | :--- | :--- |
+| `primary_keys` | required | Columns that pair rows. See [Primary keys](#primary-keys). |
+| `schema_mode` | `intersection` | Which columns both sides must have. See [Schema mode](#schema-mode). |
+| `strict_types` | `false` | Whether a column stored as two different types fails. See [Column types](#column-types). |
+| `normalize_column_names` | `false` | Whether to strip and lowercase column names before the sides are aligned. See [Column names](#column-names). |
+| `threshold` | `0.0` | Largest mismatch ratio, from 0.0 to 1.0, that still counts as a match. The ratio is added, removed, and changed rows over source rows. |
+| `default_absolute_tolerance` | `0.0` | Absolute tolerance for each numeric column without its own `absolute_tolerance`. |
+| `default_relative_tolerance` | `0.0` | Relative tolerance for each numeric column without its own `relative_tolerance`. |
+| `default_treat_null_as_equal` | `true` | Whether two NULLs match, for each column without its own `treat_null_as_equal`. |
+| `default_whitespace_mode` | `none` | Whitespace to strip from each text column without its own `whitespace_mode`: `none`, `left`, `right`, or `both`. |
+| `default_null_values` | `[]` | Values to read as NULL. Each applies only to columns whose type can hold it. |
+| `rules` | `[]` | Rules for particular columns. See [Rules](rules.md). |
+| `report_top_columns_limit` | `5` | Drifting columns to list in `report_summary`. `0` hides the list. |
+| `pushdown_sample_rows` | `0` | Pushdown only. Changed rows to fetch with their values. `0` fetches none, and no value leaves the warehouse. Local runs ignore it, since they hold every row. See [Row samples](pushdown.md#row-samples). |
+| `output_path` | none | Directory for discrepancy files. Without it, no files are written. See [Artifacts](results.md#artifacts). |
+| `output_format` | `parquet` | Format of the discrepancy files: `parquet`, `csv`, `json`, `ndjson`, or `arrow`. |
+
+A `default_*` setting fills in for every column whose rule leaves that field unset. The tolerances loosen only columns that are numeric after normalization; every other column is compared exactly.
+
+This file passes when at most 1% of rows differ, forgives numeric differences up to 0.01, and writes the differing rows to `./artifacts`:
 
 ```yaml
 primary_keys: ["user_id"]
@@ -54,9 +61,37 @@ output_path: "./artifacts"
 output_format: parquet
 ```
 
+### Schema mode
+
+`schema_mode` sets which columns the two sides must share. Every mode compares only the columns both sides have, and every mode requires the primary keys on both sides.
+
+| Mode | Passes when |
+| :--- | :--- |
+| `intersection` | Always. Columns on one side only are left out. |
+| `exact` | Both sides have the same set of columns. Column order is not compared. |
+| `allow_additions` | The target has every source column. It may add more. |
+| `allow_removals` | The target adds no column. It may drop source columns. |
+
+A violation raises `ConfigError` before any rows are read.
+
+### Column types
+
+With `strict_types: false`, a column stored as different types on the two sides is still compared:
+
+- Two numeric types compare by value. An integer `10` and a float `10.7` differ, and a `Float32` `0.1` differs slightly from a `Float64` `0.1`. Add a tolerance to forgive precision gaps.
+- Any other pair casts the target to the source type: the text `"10"` matches the integer `10`.
+
+With `strict_types: true`, a column whose two sides hold different types after normalization fails every row. A `cast_to` or `datetime_format` that brings both sides to one type keeps such a column comparable. Under `treat_null_as_equal`, two NULLs still match.
+
+### Column names
+
+`normalize_column_names: true` strips whitespace from every column name and lowercases it before the two sides are aligned. It applies on every entry point, `DiffEngine(...).run()` and `validate_schemas` included.
+
+The names in `primary_keys`, `column_names`, and `rename_to` are normalized the same way. A `pattern` is not: write it against the lowercase names. Two names that become equal once normalized raise `ConfigError`. Pushdown refuses the setting when it would rename a stored column; see [Columns](pushdown.md#columns).
+
 ## Environment variables
 
-Any string inside `source` or `target` can read an environment variable, so credentials and per-environment paths stay out of the file:
+Any string inside `source` or `target` can read an environment variable, which keeps credentials and per-environment paths out of the file:
 
 ```yaml
 source: &warehouse
@@ -77,21 +112,24 @@ target:
 primary_keys: ["event_id"]
 ```
 
-- `${NAME}` is replaced by the variable's value, and can sit inside longer text, as in `s3://${LAKE_BUCKET}/events`. A variable that is set but empty gives empty text.
-- `${NAME:-default}` uses `default` when the variable is unset or empty. The default is literal text, and cannot contain `}` or another reference.
-- `$${` writes a literal `${`, so a value that should contain `${` must be written this way.
-- Values read from the environment are never expanded again, so a secret containing `$` or `${` arrives intact.
-- Nested values such as `storage_options` and file `options` are expanded too, but keys, numbers, and booleans are not. Root settings and `rules` are read verbatim, so a `${1}` in a `regex_replace` replacement is left alone.
+- `${NAME}` is replaced by the variable's value. It can sit inside longer text, as in `s3://${LAKE_BUCKET}/events`. A variable that is set but empty gives empty text.
+- `${NAME:-default}` uses `default` when the variable is unset or empty. The default is literal text and cannot contain `}` or another reference.
+- `$${` writes a literal `${`. Write any value that contains `${` this way.
+- A value read from the environment is never expanded again. A secret that contains `$` or `${` arrives intact.
+- Nested values such as `storage_options` and file `options` are expanded too. Keys, numbers, and booleans are not.
+- Root settings and `rules` are read as written. A `${1}` in a `regex_replace` replacement stays as it is.
 
-A reference to an unset variable without a default, or a malformed one (`${1}`, `${NAME`, `${NAME-x}`, or a nested `${A:-${B}}`), raises `ConfigError` when the file loads. The error names the field, such as `source -> password`, and the variable when there is one, but never repeats a value; validation errors for `source` and `target` omit their input for the same reason.
+A reference to an unset variable without a default raises `ConfigError` when the file loads. So does a malformed reference: `${1}`, `${NAME`, `${NAME-x}`, or a nested `${A:-${B}}`. The error names the field, such as `source -> password`, and the variable, but never a value. Validation errors for `source` and `target` leave out their input for the same reason.
 
-A database `password` is percent-encoded when it joins the URI, but a `${VAR}` expanded inside `uri` is not, so keep database passwords in `password`.
+Expanded values are text:
 
-Expanded values are text. `version` and `snapshot_id` accept only YAML integers, so write those literally, and file `options` reach the reader as they are, so an expanded option arrives as a string.
+- `version` and `snapshot_id` accept only YAML integers. Write them literally.
+- File `options` reach the reader as they are: an expanded option arrives as a string.
+- A database `password` is percent-encoded when it joins the URI, but a `${VAR}` expanded inside `uri` is not. Keep database passwords in `password`.
 
 ## Loading a file in Python
 
-From Python, load YAML then route through the same path the CLI uses:
+`load_config` reads a file into the three objects a run needs, and `DiffEngine.run_from_configs` runs them through the same path as the CLI:
 
 ```python
 from veridelta import DiffEngine, load_config
@@ -101,9 +139,11 @@ result = DiffEngine.run_from_configs(diff, source, target)
 summary = result.summary
 ```
 
+`DiffEngine(config, source_frame, target_frame).run()` compares two Polars frames you have already loaded.
+
 ## Schema checks
 
-`schema_mode` and primary-key presence can be enforced without reading any rows. `DiffEngine.validate_schemas` runs alignment and the schema check on metadata alone, so it accepts zero-row frames or unevaluated scans and is cheap enough to gate a deployment:
+`DiffEngine.validate_schemas` checks `schema_mode` and the primary keys against two schemas without reading any rows. It accepts zero-row frames and unevaluated scans, which makes it cheap enough to gate a deployment:
 
 ```python
 import polars as pl
@@ -119,11 +159,15 @@ except ConfigError as exc:
 
 It raises `ConfigError` on a violation and returns nothing otherwise.
 
-`DiffEngine.validate_rules` takes the same arguments and goes one step further. It resolves every rule against the aligned columns and builds each column's comparison, still without reading a row, and returns the columns a run would compare. A rule the run could not honor fails here, such as a null sentinel the column's type cannot hold, or a similarity limit without the `fuzzy` extra. Repeated keys and invalid regular expressions only surface once rows are read.
+`DiffEngine.validate_rules` takes the same arguments and goes one step further. It resolves every rule against the aligned columns and builds each column's comparison, still without reading a row, then returns the columns a run would compare. A rule the run could not honor fails here, such as a null sentinel the column's type cannot hold, or a similarity limit without the `fuzzy` extra. Repeated keys and invalid regular expressions surface only once rows are read.
+
+To check a whole configuration file from the command line, use `veridelta validate`; see [Checking a configuration](cli.md#checking-a-configuration).
 
 ## Editor support
 
-Veridelta publishes a JSON Schema for configuration files. Editors that use the YAML language server, such as VS Code with the Red Hat YAML extension, then complete keys, show each field's description, and flag a typo such as `primary_key` or `absolute_tolerence` as you type. Point a file at the schema with a comment on its first line:
+Veridelta publishes a JSON Schema for configuration files. An editor that uses the YAML language server, such as VS Code with the Red Hat YAML extension, then completes keys, shows each field's description, and flags a typo such as `primary_key` or `absolute_tolerence` as you type.
+
+Point a file at the schema with a comment on its first line:
 
 ```yaml
 # yaml-language-server: $schema=https://veridelta.github.io/veridelta/schema/veridelta.schema.json
@@ -137,12 +181,12 @@ target:
 primary_keys: ["user_id"]
 ```
 
-A `$schema:` key does not work: the loader rejects keys it does not know.
+A `$schema:` key does not work, because the loader rejects keys it does not know.
 
-The site's copy follows the main branch. To pin the schema to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.12.0/docs/schema/veridelta.schema.json`, or print the installed version's schema and point at the file:
+The site's copy of the schema follows the main branch. To pin it to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.12.0/docs/schema/veridelta.schema.json`. Or print the installed version's schema to a file and point at that:
 
 ```bash
 veridelta schema > veridelta.schema.json
 ```
 
-The schema is a little stricter than the loader. The loader converts `threshold: "0.1"` to a number, while the schema flags the quotes. In `source` and `target`, every text field accepts a `${NAME}` reference (see [Environment variables](#environment-variables)).
+The schema is slightly stricter than the loader. The loader converts `threshold: "0.1"` to a number, and the schema flags the quotes. In `source` and `target`, every text field also accepts a `${NAME}` reference.

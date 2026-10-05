@@ -36,6 +36,8 @@ We strictly follow Trunk-Based Development. **Never commit directly to `main`.**
    ```
    The tests include the tutorial notebooks in `docs/examples/`: each one is executed, and every `# Output:` comment must match what its cell prints. Run `make notebooks` to check just those after editing a tutorial. After changing a configuration model, run `make schema` to regenerate the JSON Schema that editors read, `docs/schema/veridelta.schema.json`; a test fails while it is stale.
 
+   Pushdown must reach the same verdict as a local run. A differential harness runs both engines over the same frames and compares the results. It runs the compiled SQL in DuckDB, which catches semantic errors such as NULL propagation, three-valued logic, and operator precedence, but not differences between vendors. Snowflake, Databricks, and BigQuery spellings are pinned by assertions on the emitted SQL. DuckDB's `levenshtein` counts bytes, not characters, so edit distance parity is checked on ASCII text, where the two agree. A property test also draws random configurations and data, from integers at the edges of their types to NULLs, NaN, and text timestamps, and requires both engines to reach the same counts on each.
+
    `make all` checks that pushdown SQL reaches the local engine's verdicts by running it in DuckDB. After changing the SQL compiler, also run the same parity suite inside a live Postgres with `make postgres`. It loads each case into the server named by `VERIDELTA_POSTGRES_URI`, compares the tables there and locally, and drops them. A disposable server works:
    ```bash
    docker run --rm -d --name veridelta-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
