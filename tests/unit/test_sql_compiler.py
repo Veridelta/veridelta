@@ -13,6 +13,7 @@ from veridelta.connectors.sql import (
     _LITERAL_ESCAPES,
     _REGEX_REPLACE_FLAGS,
     _SAMPLE_HASH_FUNCTIONS,
+    _WHITESPACE_CHARACTERS,
     _WIDE_INTEGER_TYPES,
     COUNT_ALIAS,
     SAMPLE_BUCKETS,
@@ -618,8 +619,9 @@ class TestKeyNormalization:
             target_types=self._TEXT_TYPES,
         )
 
-        assert 'LOWER(TRIM("src"."id")) AS "id"' in sql
-        assert 'LOWER(TRIM("tgt"."id")) AS "id"' in sql
+        whitespace = f"'{_WHITESPACE_CHARACTERS}'"
+        assert f'LOWER(TRIM("src"."id", {whitespace})) AS "id"' in sql
+        assert f'LOWER(TRIM("tgt"."id", {whitespace})) AS "id"' in sql
         assert 'ON "src"."id" = "tgt"."id"' in sql
 
     def test_it_reads_a_renamed_key_under_its_stored_name(self) -> None:
@@ -1428,6 +1430,91 @@ class TestDatabaseSelect:
         """Ensure a table name reaching the compiler directly can never carry SQL."""
         with pytest.raises(ConnectorError, match=message):
             compile_database_select("postgresql", table)
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestWhitespaceTrim:
+    """Validate that `whitespace_mode` trims the characters Polars strips, in every dialect.
+
+    A bare SQL `TRIM` removes only spaces on Snowflake, Databricks, and DuckDB,
+    while Polars' `strip_chars` removes every Unicode whitespace character, so
+    each dialect is handed the set explicitly.
+    """
+
+    def test_its_characters_are_the_ones_polars_strips(self) -> None:
+        """Ensure the set is exactly what `strip_chars` removes on the installed Polars.
+
+        The candidates are everything Python calls a space, plus the format
+        characters that are often mistaken for one, which Polars keeps.
+        """
+        candidates = [
+            *(chr(code) for code in range(0x110000) if chr(code).isspace()),
+            "\u180e",
+            "\u200b",
+            "\ufeff",
+        ]
+        stripped = pl.Series([f"{char}a{char}" for char in candidates]).str.strip_chars()
+
+        removed = [char for char, value in zip(candidates, stripped, strict=True) if value == "a"]
+
+        assert "".join(removed) == _WHITESPACE_CHARACTERS
+
+    @pytest.mark.parametrize(
+        ("mode", "function"),
+        [("left", "LTRIM"), ("right", "RTRIM"), ("both", "TRIM")],
+    )
+    @pytest.mark.parametrize(
+        "dialect", [SQLDialect.SNOWFLAKE, SQLDialect.DUCKDB, SQLDialect.BIGQUERY]
+    )
+    def test_it_hands_the_characters_to_the_trim_function(
+        self, dialect: SQLDialect, mode: str, function: str
+    ) -> None:
+        """Ensure `LTRIM`, `RTRIM`, and `TRIM` get the set as their second argument.
+
+        The set is decoded with the dialect's own literal rules, so BigQuery's
+        escaped line breaks count as the characters they stand for.
+        """
+        rule = DiffRule(column_names=["name"], whitespace_mode=mode)  # type: ignore[arg-type]
+        compiler = SQLPushdownCompiler(dialect)
+
+        sql = compiler._apply_whitespace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        prefix = f"{function}(x, "
+        assert sql.startswith(prefix)
+        characters, rest = _read_literal(sql[len(prefix) :], dialect)
+        assert characters == _WHITESPACE_CHARACTERS
+        assert rest == ")"
+
+    @pytest.mark.parametrize(
+        ("mode", "side"),
+        [("left", "LEADING"), ("right", "TRAILING"), ("both", "BOTH")],
+    )
+    def test_it_names_the_side_on_databricks(self, mode: str, side: str) -> None:
+        """Ensure Databricks gets the standard `TRIM(side chars FROM x)` form.
+
+        Its two-argument `ltrim` and `rtrim` read their arguments in the
+        opposite order and are deprecated, so the standard form is unambiguous.
+        """
+        rule = DiffRule(column_names=["name"], whitespace_mode=mode)  # type: ignore[arg-type]
+        compiler = SQLPushdownCompiler(SQLDialect.DATABRICKS)
+
+        sql = compiler._apply_whitespace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        prefix = f"TRIM({side} "
+        assert sql.startswith(prefix)
+        characters, rest = _read_literal(sql[len(prefix) :], SQLDialect.DATABRICKS)
+        assert characters == _WHITESPACE_CHARACTERS
+        assert rest == " FROM x)"
+
+    @pytest.mark.parametrize("mode", [None, "none"])
+    def test_it_leaves_the_value_alone_without_a_mode(self, mode: str | None) -> None:
+        """Ensure an unset or `none` mode emits no trim at all."""
+        rule = DiffRule(column_names=["name"], whitespace_mode=mode)  # type: ignore[arg-type]
+
+        sql = _snowflake()._apply_whitespace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        assert sql == "x"
 
 
 @pytest.mark.unit

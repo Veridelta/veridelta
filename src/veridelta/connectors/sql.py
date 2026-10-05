@@ -387,6 +387,24 @@ def _group_number(pattern: str, replacement: str, name: str) -> int:
     return number
 
 
+_WHITESPACE_CHARACTERS: Final = (
+    "\t\n\x0b\x0c\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006"
+    "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+"""The characters Polars' `strip_chars` removes: Unicode's `White_Space` set.
+
+A bare `TRIM` removes only spaces on Snowflake, Databricks, and DuckDB, so every
+dialect is handed this set, and a tab, a line break, or a no-break space is
+stripped from the same values in a warehouse as in a local run. Zero-width
+spaces and byte-order marks are not whitespace to Polars, so they stay."""
+
+_TRIM_FUNCTIONS: Final[dict[str, str]] = {"left": "LTRIM", "right": "RTRIM", "both": "TRIM"}
+"""The trim function for each `whitespace_mode` that strips something."""
+
+_TRIM_SIDES: Final[dict[str, str]] = {"left": "LEADING", "right": "TRAILING", "both": "BOTH"}
+"""The side keyword of the standard `TRIM(side characters FROM value)` form, by mode."""
+
+
 _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: "NUMBER(38, 0)",
     SQLDialect.DATABRICKS: "DECIMAL(38, 0)",
@@ -1687,7 +1705,11 @@ class SQLPushdownCompiler:
         return "".join(written)
 
     def _apply_whitespace(self, expr: str, rule: DiffRule) -> str:
-        """Apply dialect-neutral trim functions for `whitespace_mode`.
+        """Trim the characters Polars strips, from the side `whitespace_mode` names.
+
+        Databricks gets the standard `TRIM(side characters FROM value)` form:
+        its two-argument `ltrim` and `rtrim` take the characters first and are
+        deprecated. The other dialects take the characters as a second argument.
 
         Args:
             expr (str): SQL expression to trim.
@@ -1697,13 +1719,12 @@ class SQLPushdownCompiler:
             str: Trimmed expression, or `expr` when mode is unset/`none`.
         """
         mode = rule.whitespace_mode
-        if mode == "left":
-            return f"LTRIM({expr})"
-        if mode == "right":
-            return f"RTRIM({expr})"
-        if mode == "both":
-            return f"TRIM({expr})"
-        return expr
+        if mode is None or mode not in _TRIM_FUNCTIONS:
+            return expr
+        characters = self._literal(_WHITESPACE_CHARACTERS)
+        if self.dialect is SQLDialect.DATABRICKS:
+            return f"TRIM({_TRIM_SIDES[mode]} {characters} FROM {expr})"
+        return f"{_TRIM_FUNCTIONS[mode]}({expr}, {characters})"
 
     def _apply_case(self, expr: str, rule: DiffRule) -> str:
         """Lowercase an expression when `case_insensitive` is enabled.

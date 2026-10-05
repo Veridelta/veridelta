@@ -894,6 +894,40 @@ class TestEdgeCaseParity:
 
         assert summary.changed_count == expected_changed
 
+    @pytest.mark.parametrize(
+        ("mode", "expected_changed"),
+        [
+            pytest.param("left", 3, id="left"),
+            pytest.param("right", 3, id="right"),
+            pytest.param("both", 0, id="both"),
+        ],
+    )
+    def test_it_strips_tabs_line_breaks_and_unicode_spaces_as_polars_does(
+        self, mode: str, expected_changed: int
+    ) -> None:
+        """Ensure a warehouse trims every character Polars' `strip_chars` removes.
+
+        A bare SQL `TRIM` removes only spaces on Snowflake, Databricks, and
+        DuckDB, so a tab, a line break, or a no-break space used to survive
+        pushdown and count as drift that a local run stripped away.
+        """
+        src = pl.DataFrame(
+            {
+                "id": [1, 2, 3, 4],
+                "name": ["\tada", "grace\r\n", "\u00a0linus\u3000", "\u2028guido\x85"],
+            }
+        )
+        tgt = pl.DataFrame({"id": [1, 2, 3, 4], "name": ["ada", "grace", "linus", "guido"]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["name"], whitespace_mode=mode)],  # type: ignore[arg-type]
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
     def test_it_agrees_on_apostrophes_inside_data_literals(self) -> None:
         """Ensure `'` inside sentinels, crosswalks, and regexes survives SQL quoting.
 
@@ -1167,6 +1201,19 @@ class TestKeyNormalizationParity:
         """Ensure a global default reaches key columns, not only compared ones."""
         src = pl.DataFrame({"id": ["  A", "B "], "val": [1, 2]})
         tgt = pl.DataFrame({"id": ["A", "B"], "val": [1, 3]})
+
+        summary = assert_parity(
+            DiffConfig(primary_keys=["id"], default_whitespace_mode="both"), src, tgt
+        )
+
+        assert summary.added_count == 0
+        assert summary.removed_count == 0
+        assert summary.changed_count == 1
+
+    def test_it_strips_tabs_and_unicode_spaces_from_keys(self) -> None:
+        """Ensure keys padded with more than spaces still join in a warehouse."""
+        src = pl.DataFrame({"id": ["\tA", "B\u00a0", "\x0bC\r\n"], "val": [1, 2, 3]})
+        tgt = pl.DataFrame({"id": ["A", "B", "C"], "val": [1, 2, 4]})
 
         summary = assert_parity(
             DiffConfig(primary_keys=["id"], default_whitespace_mode="both"), src, tgt
