@@ -17,7 +17,7 @@ spec:
       default: veridelta.yaml
     version:
       description: Veridelta version to install from PyPI.
-      default: "0.11.0" # veridelta-version: bumped with each release
+      default: "0.11.1" # veridelta-version: bumped with each release
     extras:
       description: Comma-separated optional extras, such as "snowflake" or "database,fuzzy".
       default: ""
