@@ -1069,3 +1069,87 @@ class TestEngineConnectorRouting:
         assert result.summary.changed_count == 1
         assert result.summary.column_mismatches == {"amount": 1}
         assert result.changed["amount_target"].to_list() == [25.0]
+
+
+_POSTGRES_URI = "postgresql://analyst@db.internal:5432/sales"
+
+
+def _postgres_config(
+    *,
+    table: str,
+    uri: str = _POSTGRES_URI,
+    pushdown: bool = True,
+    password: str | None = None,
+) -> DatabaseConfig:
+    """Build a Postgres table source, opted into pushdown unless told otherwise."""
+    return DatabaseConfig(uri=uri, table=table, pushdown=pushdown, password=password)
+
+
+@pytest.mark.integration
+class TestPostgresPushdownRouting:
+    """Validate how two database sources that set `pushdown` are routed."""
+
+    def test_it_compares_two_opted_in_tables_inside_postgres(self, mocker: MockerFixture) -> None:
+        """Ensure the pair runs through one Postgres session and no row is read locally."""
+        session_cls = mocker.patch("veridelta.engine.PostgresPushdownSession")
+        session: Any = session_cls.return_value
+        _configure_warehouse_compiler(session)
+        load = mocker.patch.object(LoaderFactory, "load")
+        source = _postgres_config(table="public.src")
+        target = _postgres_config(table="public.tgt")
+
+        result = DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        session_cls.assert_called_once_with(source)
+        session.connect.assert_called_once()
+        session.close.assert_called_once()
+        load.assert_not_called()
+        assert result.keys_only is True
+        assert result.summary.total_rows_source == SOURCE_TOTAL
+        assert result.summary.total_rows_target == TARGET_TOTAL
+
+    @pytest.mark.parametrize("opted_in", ["source", "target"])
+    def test_it_asks_for_pushdown_on_both_sides(self, mocker: MockerFixture, opted_in: str) -> None:
+        """Ensure a pair that half opts in names the fix instead of reading one side."""
+        session_cls = mocker.patch("veridelta.engine.PostgresPushdownSession")
+        source = _postgres_config(table="src", pushdown=opted_in == "source")
+        target = _postgres_config(table="tgt", pushdown=opted_in == "target")
+
+        with pytest.raises(ConfigError, match="Set pushdown on both database sources"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        session_cls.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(
+                _postgres_config(table="tgt", uri="postgresql://analyst@db.internal:5432/archive"),
+                id="other-database",
+            ),
+            pytest.param(_postgres_config(table="tgt", password="other"), id="other-password"),
+        ],
+    )
+    def test_it_needs_one_connection(self, target: DatabaseConfig) -> None:
+        """Ensure two tables are compared in place only when one connection reaches both."""
+        source = _postgres_config(table="src")
+
+        with pytest.raises(ConnectorError, match="Postgres connections must match"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+    def test_it_refuses_to_compare_a_table_with_itself(self) -> None:
+        """Ensure a copy-pasted side cannot turn into a run that always matches."""
+        source = _postgres_config(table="public.orders")
+
+        with pytest.raises(ConfigError, match="same table"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, source)
+
+    def test_it_refuses_a_postgres_table_paired_with_a_warehouse(self) -> None:
+        """Ensure two engines are never asked to share one statement."""
+        source = _postgres_config(table="src")
+        target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT")
+
+        with pytest.raises(
+            ConnectorError, match="the source is Postgres and the target is Snowflake"
+        ):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
