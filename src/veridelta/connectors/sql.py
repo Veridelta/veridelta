@@ -667,11 +667,15 @@ class SQLPushdownCompiler:
         """Compile a boolean match predicate for one source/target column pair.
 
         Follows the canonical transform order documented on `DiffRule`, which is
-        the single source of truth shared with the local engine. All nine stages
-        compile, so a pushdown run and a local run evaluate the same pipeline
-        rather than differing by whatever the warehouse happened to support. The
-        one setting refused is `min_jaro_winkler_similarity`, which no supported
-        warehouse scores the way the local engine does.
+        the single source of truth shared with the local engine. So a pushdown
+        run and a local run evaluate the same pipeline. A setting a dialect
+        cannot reproduce raises `ConfigError` instead of compiling to something
+        that differs:
+
+        - `min_jaro_winkler_similarity`, on every dialect;
+        - `max_levenshtein_distance`, on Postgres and DuckDB;
+        - `datetime_format` on Postgres, or with a directive the dialect lacks;
+        - a `regex_replace` replacement that refers to a group by name.
 
         Args:
             rule (DiffRule): Semantic comparison overrides for the column.
@@ -690,8 +694,8 @@ class SQLPushdownCompiler:
             str: Boolean SQL expression that is true when the column values match.
 
         Raises:
-            ConfigError: If `datetime_format` uses a directive this dialect
-                cannot express, or the rule sets `min_jaro_winkler_similarity`.
+            ConfigError: If the rule sets one of the settings listed above that
+                this dialect refuses.
             ConnectorError: If identifiers are empty or not allowlisted.
         """
         tgt_name = target_column if target_column is not None else source_column

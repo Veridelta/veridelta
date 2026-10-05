@@ -16,10 +16,8 @@ to differ are left out on purpose, so a failure is a real divergence:
 - no Categorical, Enum, Duration, Null, nanosecond, or non-UTC timezone dtypes,
   which the DuckDB harness cannot round-trip faithfully;
 - no rule field the backend's pushdown refuses, such as `datetime_format` on
-  Postgres or `max_levenshtein_distance` on both backends, and no `pad_zeros`
-  on a dtype the backend writes as different text on its two sides, such as a
-  `UInt64` Postgres stores as `numeric`, both of which `comparison_cases` drops
-  when told to.
+  Postgres or `max_levenshtein_distance` on both backends, which
+  `comparison_cases` drops when told to.
 """
 
 from collections.abc import Callable
