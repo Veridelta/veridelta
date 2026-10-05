@@ -7,7 +7,7 @@ install:
 
 format:
 	uv run ruff format src/ tests/
-	uv run ruff check src/ tests/ --fix --select I
+	uv run ruff check src/ tests/ --select I
 
 lint:
 	uv run ruff check src/ tests/
@@ -15,7 +15,7 @@ lint:
 	uv run pyright src/
 
 test:
-	uv run pytest tests/ --cov=src/veridelta --cov-report=term-missing
+	uv run pytest tests/
 	uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py' --fail-under=100
 
 notebooks:
