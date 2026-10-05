@@ -1820,8 +1820,10 @@ def _collect_pushdown_summary(
     Raises:
         ConfigError: If the probed relations violate `schema_mode` or omit a
             primary key, or a rule asks for what the warehouse cannot reproduce:
-            `min_jaro_winkler_similarity` on a column compared as text, or a
-            `datetime_format` directive with no SQL spelling.
+            `min_jaro_winkler_similarity` on a column compared as text, a
+            `datetime_format` directive with no SQL spelling, or a
+            `regex_replace` replacement that refers to a group by name or
+            above 9.
         DataIntegrityError: If either relation repeats a normalized primary key.
         ConnectorError: If the warehouse returns a malformed aggregate.
     """
@@ -2279,20 +2281,41 @@ def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFin
                     "which compiles to SQL, or compare local copies of the tables."
                 )
             )
-        if rule.datetime_format:
-            probe = DiffRule(column_names=["probe"], datetime_format=rule.datetime_format)
-            try:
-                compiler.compile_column_predicate(
-                    probe, "probe", source_dtype=pl.String(), target_dtype=pl.String()
-                )
-            except ConfigError as exc:
+        for setting, probe in (
+            (
+                "datetime_format",
+                DiffRule(column_names=["probe"], datetime_format=rule.datetime_format),
+            ),
+            ("regex_replace", DiffRule(column_names=["probe"], regex_replace=rule.regex_replace)),
+        ):
+            reason = _text_probe_refusal(compiler, probe)
+            if reason is not None:
                 findings.append(
                     _warning(
-                        f"rules[{index}] datetime_format has no {name} spelling, so a run "
-                        f"refuses it on any column stored as text: {exc}"
+                        f"rules[{index}] {setting} has no {name} spelling, so a run "
+                        f"refuses it on any column stored as text: {reason}"
                     )
                 )
     return findings
+
+
+def _text_probe_refusal(compiler: SQLPushdownCompiler, probe: DiffRule) -> str | None:
+    """Return why a warehouse refuses a rule on a text column, if it does.
+
+    Args:
+        compiler (SQLPushdownCompiler): Compiler for the warehouse's dialect.
+        probe (DiffRule): A rule carrying the one setting to check.
+
+    Returns:
+        str | None: The compiler's refusal, or None when the rule compiles.
+    """
+    try:
+        compiler.compile_column_predicate(
+            probe, "probe", source_dtype=pl.String(), target_dtype=pl.String()
+        )
+    except ConfigError as exc:
+        return str(exc)
+    return None
 
 
 def _schema_frame(config: SourceRef) -> pl.LazyFrame:

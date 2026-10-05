@@ -860,6 +860,41 @@ class TestEdgeCaseParity:
         assert summary.changed_count == expected_changed
 
     @pytest.mark.parametrize(
+        ("pattern", "replacement", "source", "target", "expected_changed"),
+        [
+            pytest.param(r"(\d{3})-(\d{4})", "$1$2", "555-1234", "5551234", 0, id="numbered"),
+            pytest.param(
+                r"([a-z]+)@([a-z]+)", "$2.$1", "ada@lovelace", "lovelace.ada", 0, id="swap"
+            ),
+            pytest.param("-([0-9])", "${1}0", "x-1", "x10", 0, id="braced-before-a-digit"),
+            pytest.param("[0-9]+", "<$0>", "a12b", "a34b", 1, id="whole-match"),
+            pytest.param("-", "$$", "1-2", "1$2", 0, id="escaped-dollar"),
+            pytest.param("x", "\\", "axb", "a\\b", 0, id="backslash"),
+        ],
+    )
+    def test_it_agrees_on_group_references_in_replacements(
+        self, pattern: str, replacement: str, source: str, target: str, expected_changed: int
+    ) -> None:
+        """Ensure a replacement written for Polars means the same in a warehouse.
+
+        The rule rewrites both sides, so each case only comes out as expected
+        when the reference is read as Polars reads it. Pushdown used to pass the
+        replacement through as written, so DuckDB, Snowflake, and BigQuery read
+        `$1` and `$0` as text, and a lone backslash as the start of a reference.
+        """
+        src = pl.DataFrame({"id": [1], "value": [source]})
+        tgt = pl.DataFrame({"id": [1], "value": [target]})
+
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["value"], regex_replace={pattern: replacement})],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == expected_changed
+
+    @pytest.mark.parametrize(
         ("mode", "expected_changed"),
         [
             pytest.param("left", 3, id="left"),

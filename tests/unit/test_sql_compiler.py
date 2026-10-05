@@ -1551,6 +1551,101 @@ class TestRegexReplaceEveryMatch:
         assert expected in sql
 
 
+_BACKSLASH_REFERENCE_DIALECTS = [SQLDialect.SNOWFLAKE, SQLDialect.DUCKDB, SQLDialect.BIGQUERY]
+r"""Dialects whose `REGEXP_REPLACE` reads a group reference as `\N`."""
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestRegexReplacementReferences:
+    r"""Validate that replacements are written the way each warehouse reads them.
+
+    Polars reads `$1`, `${1}`, and `$0` as group references, `$$` as a dollar
+    sign, and a backslash as plain text. Snowflake, BigQuery, and DuckDB write a
+    reference as `\1` and read `$` as plain text; Databricks follows Java, where
+    `$1` is a reference and a backslash escapes the next character.
+    """
+
+    @pytest.mark.parametrize(
+        ("replacement", "backslash_form", "databricks_form"),
+        [
+            pytest.param("$2$1", r"\2\1", "$2$1", id="numbered"),
+            pytest.param("${1}0", r"\10", r"$1\0", id="braced-before-a-digit"),
+            pytest.param("$0", r"\0", "$0", id="whole-match"),
+            pytest.param("$01", r"\1", "$1", id="leading-zero"),
+            pytest.param("$$5", "$5", r"\$5", id="escaped-dollar"),
+            pytest.param("$!", "$!", r"\$!", id="dollar-before-punctuation"),
+            pytest.param("x$", "x$", r"x\$", id="trailing-dollar"),
+            pytest.param("${1", "${1", r"\${1", id="unclosed-brace"),
+            pytest.param(r"a\b", r"a\\b", r"a\\b", id="backslash"),
+        ],
+    )
+    def test_it_rewrites_a_polars_replacement_for_each_dialect(
+        self, replacement: str, backslash_form: str, databricks_form: str
+    ) -> None:
+        """Ensure each dialect's regex engine reads what Polars reads."""
+        for dialect in _BACKSLASH_REFERENCE_DIALECTS:
+            compiler = SQLPushdownCompiler(dialect)
+            written = compiler._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
+            assert written == backslash_form, dialect
+
+        databricks = SQLPushdownCompiler(SQLDialect.DATABRICKS)
+        written = databricks._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
+        assert written == databricks_form
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            pytest.param("$first", id="named"),
+            pytest.param("${first}", id="braced-name"),
+            pytest.param("$1a", id="number-run-into-text"),
+            pytest.param("$_", id="underscore"),
+            pytest.param("${}", id="empty-braces"),
+        ],
+    )
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_it_refuses_a_reference_by_name(self, dialect: SQLDialect, replacement: str) -> None:
+        """Ensure a named reference fails loudly rather than reading as text.
+
+        No warehouse refers to a group by name in a replacement. Polars reads
+        `$1a` as the group named `1a`, so it is refused too, with the braced
+        spelling as the fix.
+        """
+        compiler = SQLPushdownCompiler(dialect)
+
+        with pytest.raises(ConfigError, match=r"refers to a group by name.*\$\{1\}a"):
+            compiler._regex_replacement("(?P<first>a)", replacement)  # pyright: ignore[reportPrivateUsage]
+
+    @pytest.mark.parametrize("replacement", ["$10", "${12}"])
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_it_refuses_a_group_above_nine(self, dialect: SQLDialect, replacement: str) -> None:
+        """Ensure a two-digit reference is refused, since warehouses read one digit."""
+        compiler = SQLPushdownCompiler(dialect)
+
+        with pytest.raises(ConfigError, match="groups 0 through 9"):
+            compiler._regex_replacement("(a)", replacement)  # pyright: ignore[reportPrivateUsage]
+
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_it_quotes_the_rewritten_replacement_as_a_literal(self, dialect: SQLDialect) -> None:
+        """Ensure the rewritten replacement reaches `REGEXP_REPLACE` intact.
+
+        The reference lexer decodes the third argument with the dialect's own
+        literal rules, so a backslash doubled for the literal is undone first.
+        """
+        compiler = SQLPushdownCompiler(dialect)
+        rule = DiffRule(column_names=["phone"], regex_replace={r"(\d{3})-(\d{4})": "$1$2"})
+
+        sql = compiler._apply_regex_replace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        pattern = compiler._literal(r"(\d{3})-(\d{4})")  # pyright: ignore[reportPrivateUsage]
+        prefix = f"REGEXP_REPLACE(x, {pattern}, "
+        assert sql.startswith(prefix)
+        replacement, rest = _read_literal(sql[len(prefix) :], dialect)
+        expected = "$1$2" if dialect is SQLDialect.DATABRICKS else r"\1\2"
+        assert replacement == expected
+        assert rest == f"{_REGEX_REPLACE_FLAGS[dialect]})"
+
+
 @pytest.mark.unit
 @pytest.mark.fast
 class TestWideIntegerTolerances:
