@@ -1269,7 +1269,9 @@ class DuckDBConfig(BaseModel):
     The rows are read through DuckDB into Polars and compared by the local
     engine, so a DuckDB source pairs with files, lakehouse tables, databases,
     or another DuckDB source. Requires the `duckdb` extra
-    (`uv add 'veridelta[duckdb]'`).
+    (`uv add 'veridelta[duckdb]'`). Two tables in one database can instead be
+    compared inside DuckDB, without reading their rows, when both sides set
+    `pushdown`.
 
     Attributes:
         type (Literal["duckdb"]): Source kind, which selects this model.
@@ -1283,6 +1285,9 @@ class DuckDBConfig(BaseModel):
             When unset, the `MOTHERDUCK_TOKEN` environment variable supplies
             it, then `motherduck_token`. Left out when the config is printed,
             but kept by `model_dump()`.
+        pushdown (bool): Whether to compare inside DuckDB instead of reading
+            the rows. `table` sources only, and both sides must set it.
+            Defaults to False.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
@@ -1310,6 +1315,13 @@ class DuckDBConfig(BaseModel):
         repr=False,
         description="MotherDuck token for an md: database. Defaults to MOTHERDUCK_TOKEN.",
     )
+    pushdown: bool = Field(
+        default=False,
+        strict=True,
+        description=(
+            "Compare inside DuckDB instead of reading the rows. Tables only; set it on both sides."
+        ),
+    )
 
     @property
     def is_motherduck(self) -> bool:
@@ -1329,11 +1341,13 @@ class DuckDBConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set,
-                `database` is in memory or holds a token, or a token is set
-                for a file.
+                `database` is in memory or holds a token, a token is set for a
+                file, or `pushdown` is set on a `query`.
         """
         if (self.table is None) == (self.query is None):
             raise ValueError("A DuckDB source reads a 'table' or runs a 'query'; set exactly one.")
+        if self.pushdown and self.table is None:
+            raise ValueError("'pushdown' compares two tables, so set 'table' rather than 'query'.")
         # Messages never repeat `database`, which may hold the token they refuse.
         if self.database.lower().startswith(":memory:"):
             raise ValueError(

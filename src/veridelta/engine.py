@@ -38,7 +38,7 @@ from veridelta.connectors import duckdb as duckdb_connectors
 from veridelta.connectors import warehouse as warehouse_connectors
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
-from veridelta.connectors.duckdb import DuckDBConnector
+from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import (
     SAMPLE_BUCKETS,
@@ -423,7 +423,9 @@ class LoaderFactory:
 
 _T = TypeVar("_T")
 
-_WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig | BigQueryConfig | DatabaseConfig
+_WarehouseConfig: TypeAlias = (
+    SnowflakeConfig | DatabricksConfig | BigQueryConfig | DatabaseConfig | DuckDBConfig
+)
 """Connection configs whose comparisons compile to SQL and run in place."""
 
 
@@ -464,12 +466,17 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
         SQLDialect.BIGQUERY,
         lambda config: BigQueryConnector(config),
     ),
-    # Only a database source that sets `pushdown` is routed here; its model
-    # allows that on a Postgres table alone.
+    # Only a database or DuckDB source that sets `pushdown` is routed here; the
+    # database model allows that on a Postgres table alone.
     DatabaseConfig: _Warehouse(
         "Postgres",
         SQLDialect.POSTGRES,
         lambda config: PostgresPushdownSession(config),
+    ),
+    DuckDBConfig: _Warehouse(
+        "DuckDB",
+        SQLDialect.DUCKDB,
+        lambda config: DuckDBPushdownSession(config),
     ),
 }
 """Every warehouse the engine pushes comparisons down to, keyed by config type."""
@@ -477,7 +484,7 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
 
 def _is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
     """Return whether a source reference is a warehouse connection."""
-    if isinstance(config, DatabaseConfig):
+    if isinstance(config, (DatabaseConfig, DuckDBConfig)):
         return config.pushdown
     return type(config) in _WAREHOUSES
 
@@ -1297,14 +1304,14 @@ def _collect_changed_sample(
 _MIXED_BACKENDS: Final = "Mixed file/lakehouse/database and warehouse backends are unsupported."
 
 _HALF_PUSHDOWN: Final = (
-    "Set pushdown on both database sources to compare the tables inside Postgres, "
+    "Set pushdown on both sides to compare the tables where they are stored, "
     "or on neither to read them and compare locally."
 )
 
 
 def _table_name(config: _WarehouseConfig) -> str:
     """Return the table a pushdown side names."""
-    # `DatabaseConfig` requires a `table` whenever it sets `pushdown`.
+    # `DatabaseConfig` and `DuckDBConfig` require a `table` whenever they set `pushdown`.
     return cast("str", config.table)
 
 
@@ -1328,11 +1335,8 @@ class _WarehousePair:
 
 def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePair | None:
     """Refuse a pair no engine can compare, without connecting to anything."""
-    if (
-        isinstance(source, DatabaseConfig)
-        and isinstance(target, DatabaseConfig)
-        and source.pushdown != target.pushdown
-    ):
+    # Two sides of one kind disagree only when a database or DuckDB pair half sets `pushdown`.
+    if type(source) is type(target) and _is_warehouse(source) != _is_warehouse(target):
         raise ConfigError(_HALF_PUSHDOWN)
     if not _is_warehouse(source):
         if _is_warehouse(target):

@@ -810,6 +810,18 @@ class TestDuckDBConfig:
         with pytest.raises(ValidationError, match="should match pattern"):
             DuckDBConfig(database="warehouse.duckdb", table=table)
 
+    def test_it_reads_rows_locally_unless_told_to_push_down(self) -> None:
+        """Ensure a DuckDB source compares in Polars until it opts in, on a table only."""
+        assert DuckDBConfig(database="warehouse.duckdb", table="t").pushdown is False
+        assert DuckDBConfig(database="md:sales", table="t", pushdown=True).pushdown is True
+        with pytest.raises(ValidationError, match="set 'table' rather than 'query'"):
+            DuckDBConfig(database="warehouse.duckdb", query="SELECT 1 AS id", pushdown=True)
+
+    def test_it_takes_pushdown_as_a_real_boolean(self) -> None:
+        """Ensure a quoted `"true"` is not quietly read as a switch."""
+        with pytest.raises(ValidationError, match="valid boolean"):
+            DuckDBConfig(database="warehouse.duckdb", table="t", pushdown="true")  # type: ignore[arg-type]
+
     def test_it_is_frozen_and_forbids_unknown_fields(self) -> None:
         """Ensure a typo fails at load time and a loaded source cannot change."""
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):

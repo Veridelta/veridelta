@@ -8,15 +8,19 @@ and once through `SQLPushdownCompiler` output executed by DuckDB. Divergence in
 null propagation, three-valued logic, or transform semantics surfaces as a
 summary mismatch rather than as a silently different answer in production.
 
-DuckDB stands in for the warehouse, not for a specific vendor. It validates that
-the compiled SQL is semantically correct, but it cannot validate dialect-specific
-behavior: Snowflake's `TRY_TO_TIMESTAMP` format language, Databricks' Java
-format patterns, and vendor cast quirks are unreachable from here and must be
-covered by string assertions in `tests/unit/test_sql_compiler.py`.
+Each case writes its frames into a temporary DuckDB file and runs pushdown
+through `DuckDBPushdownSession`, the session a `pushdown: true` DuckDB pair
+opens, so the shipped connection code runs too. DuckDB also stands in for the
+warehouses: it validates that the compiled SQL is semantically correct, but it
+cannot validate dialect-specific behavior. Snowflake's `TRY_TO_TIMESTAMP`
+format language, Databricks' Java format patterns, and vendor cast quirks are
+unreachable from here and must be covered by string assertions in
+`tests/unit/test_sql_compiler.py`.
 
-DuckDB's `levenshtein` also counts UTF-8 bytes where Snowflake, Databricks,
-and the local engine count characters, so edit-distance parity cases use ASCII
-text, on which the two agree.
+DuckDB pushdown refuses `max_levenshtein_distance`, because its `levenshtein`
+counts UTF-8 bytes. The edit-distance parity cases restore the function and
+use ASCII text, on which bytes and characters agree, so DuckDB still checks
+the SQL the warehouses that count characters run.
 
 Setting `VERIDELTA_PARITY_BACKEND=postgres` runs the same cases against a live
 Postgres through `postgres_harness` instead: the comparison runs inside
@@ -26,26 +30,31 @@ Postgres, and the local engine reads the same tables back.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import duckdb
-import polars as pl
 
 from tests.integration import postgres_harness
-from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
+from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.engine import DiffEngine, _collect_pushdown_summary, _collect_value_map_proposals
-from veridelta.exceptions import ConnectorError
+from veridelta.models import DuckDBConfig
 
 if TYPE_CHECKING:
-    from types import TracebackType
+    from collections.abc import Iterator
 
+    import polars as pl
+
+    from veridelta.connectors.base import PushdownQueryType
     from veridelta.models import DiffConfig, DiffResult, DiffSummary, ValueMapProposal
 
 SOURCE_TABLE = "src_data"
-"""Relation name the harness registers the source frame under."""
+"""Table the harness writes the source frame to."""
 
 TARGET_TABLE = "tgt_data"
-"""Relation name the harness registers the target frame under."""
+"""Table the harness writes the target frame to."""
 
 PARITY_BACKEND = os.environ.get("VERIDELTA_PARITY_BACKEND", "duckdb")
 """Database the pushdown side runs in: `duckdb`, or `postgres` for a live server."""
@@ -55,101 +64,48 @@ if PARITY_BACKEND not in {"duckdb", "postgres"}:
         f"VERIDELTA_PARITY_BACKEND must be duckdb or postgres, not {PARITY_BACKEND!r}."
     )
 
-REFUSED_RULES = postgres_harness.REFUSED_RULES if PARITY_BACKEND == "postgres" else frozenset()
+REFUSED_RULES = (
+    postgres_harness.REFUSED_RULES
+    if PARITY_BACKEND == "postgres"
+    else frozenset({"max_levenshtein_distance"})
+)
 """Rule fields the selected backend's pushdown refuses before running any query."""
 
 
-class DuckDBPushdownSession:
-    """A `PushdownSession` backed by an in-memory DuckDB database.
+class _RecordingSession(DuckDBPushdownSession):
+    """The shipped DuckDB session, keeping each statement for failure messages."""
 
-    Structurally satisfies the protocol the engine's pushdown path depends on,
-    so parity tests exercise the real `_collect_pushdown_summary` code rather
-    than a reimplementation of it.
-    """
-
-    def __init__(self, source: pl.DataFrame, target: pl.DataFrame) -> None:
-        """Register the two frames as queryable relations.
-
-        Args:
-            source (pl.DataFrame): Rows to expose as `SOURCE_TABLE`.
-            target (pl.DataFrame): Rows to expose as `TARGET_TABLE`.
-        """
-        self.compiler = SQLPushdownCompiler(SQLDialect.DUCKDB)
+    def __init__(self, config: DuckDBConfig) -> None:
+        super().__init__(config)
         self.statements: list[str] = []
-        self._connection = duckdb.connect(":memory:")
-        # ICU ships with the Python wheel and backs `timezone(...)`, which the
-        # compiler emits for the `timezone` rule.
-        self._connection.execute("SET TimeZone = 'UTC'")
-        self._connection.register(SOURCE_TABLE, source.to_arrow())
-        self._connection.register(TARGET_TABLE, target.to_arrow())
 
-    def connect(self) -> None:
-        """Satisfy the connector lifecycle. The database opens on construction."""
-
-    def execute_pushdown(self, statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
-        """Execute compiled SQL and wrap the Arrow result lazily.
-
-        Mirrors the warehouse connectors: fetch Arrow, then hand it to Polars
-        without touching dtypes, so the probed schema the compiler reasons about
-        is the schema the executing engine actually reports.
-
-        Args:
-            statement (str): SQL produced by the compiler.
-            query_type (str): Which comparison round-trip this represents.
-
-        Returns:
-            pl.LazyFrame: Unevaluated frame over the Arrow result.
-
-        Raises:
-            ConnectorError: If DuckDB rejects the statement.
-        """
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
         self.statements.append(statement)
-        try:
-            table: Any = self._connection.execute(statement).to_arrow_table()
-        except Exception as exc:  # pragma: no cover - surfaced as a test failure
-            raise ConnectorError(f"DuckDB rejected pushdown SQL: {exc}\n{statement}") from exc
-        frame = pl.from_arrow(table)
-        if not isinstance(frame, pl.DataFrame):  # pragma: no cover - defensive
-            raise ConnectorError("DuckDB did not return a tabular Arrow result.")
-        return frame.lazy()
+        return super().execute_pushdown(statement, query_type)
 
-    def fetch_schema(self) -> pl.Schema:
-        """Report the source relation's schema.
 
-        Returns:
-            pl.Schema: Column names and dtypes as DuckDB reports them.
-        """
-        probe = self.execute_pushdown(
-            self.compiler.compile_schema_probe_query(SOURCE_TABLE), query_type="schema"
+@contextmanager
+def _duckdb_session(source: pl.DataFrame, target: pl.DataFrame) -> Iterator[_RecordingSession]:
+    """Write both frames into a temporary DuckDB file and open the shipped session on it."""
+    with tempfile.TemporaryDirectory() as folder:
+        database = str(Path(folder, "parity.duckdb"))
+        # The writer closes first, since the session opens the file read-only.
+        with duckdb.connect(database) as writer:
+            writer.register("source_frame", source.to_arrow())
+            writer.register("target_frame", target.to_arrow())
+            writer.execute(f"CREATE TABLE {SOURCE_TABLE} AS SELECT * FROM source_frame")
+            writer.execute(f"CREATE TABLE {TARGET_TABLE} AS SELECT * FROM target_frame")
+        session = _RecordingSession(
+            DuckDBConfig(database=database, table=SOURCE_TABLE, pushdown=True)
         )
-        return probe.collect_schema()
-
-    def close(self) -> None:
-        """Release the in-memory database."""
-        self._connection.close()
-
-    def __enter__(self) -> DuckDBPushdownSession:
-        """Enter a context that closes the database on exit.
-
-        Returns:
-            DuckDBPushdownSession: This session.
-        """
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Close the database when leaving the context.
-
-        Args:
-            exc_type (type[BaseException] | None): Pending exception type.
-            exc (BaseException | None): Pending exception.
-            traceback (TracebackType | None): Pending traceback.
-        """
-        self.close()
+        session.connect()
+        try:
+            yield session
+        finally:
+            # Windows cannot delete a file a connection still holds.
+            session.close()
 
 
 def run_pushdown(
@@ -168,7 +124,7 @@ def run_pushdown(
     """
     if PARITY_BACKEND == "postgres":
         return postgres_harness.run_pushdown(config, source, target)
-    with DuckDBPushdownSession(source, target) as session:
+    with _duckdb_session(source, target) as session:
         result = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
         return result, list(session.statements)
 
@@ -205,7 +161,7 @@ def run_value_map_pushdown(
             min_support=min_support,
             sample_fraction=sample_fraction,
         )
-    with DuckDBPushdownSession(source, target) as session:
+    with _duckdb_session(source, target) as session:
         proposals = _collect_value_map_proposals(
             session,
             SOURCE_TABLE,

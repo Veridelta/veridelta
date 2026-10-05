@@ -16,9 +16,9 @@ import duckdb
 import polars as pl
 import pytest
 
-from veridelta.connectors import DuckDBConnector
+from veridelta.connectors import DuckDBConnector, DuckDBPushdownSession
 from veridelta.engine import DiffEngine, LoaderFactory
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffConfig, DiffRule, DuckDBConfig, SourceConfig
 
 pytestmark = [pytest.mark.integration]
@@ -277,3 +277,123 @@ class TestDuckDBSchemaChecks:
 
         assert finding.severity == "warning"
         assert "The source reads a query, which validate does not run" in finding.message
+
+
+def _pair(path: Path) -> str:
+    """Create `legacy` and `modern` tables that differ by one added, removed, and changed row."""
+    return _duckdb(
+        path,
+        "CREATE TABLE legacy AS SELECT * FROM (VALUES (1, 'gold', 10.0), (2, 'silver', 20.0), "
+        "(3, 'bronze', 30.0)) AS t(id, tier, balance)",
+        "CREATE TABLE modern AS SELECT * FROM (VALUES (1, 'gold', 10.0), (2, 'platinum', 20.0), "
+        "(4, 'bronze', 5.0)) AS t(id, tier, balance)",
+    )
+
+
+def _sides(database: str, *, pushdown: bool) -> tuple[DuckDBConfig, DuckDBConfig]:
+    """Name the two tables of `_pair`, compared in DuckDB or read into Polars."""
+    return (
+        DuckDBConfig(database=database, table="legacy", pushdown=pushdown),
+        DuckDBConfig(database=database, table="modern", pushdown=pushdown),
+    )
+
+
+class TestDuckDBPushdown:
+    """Validate two DuckDB tables compared inside DuckDB, against a local run of the same tables."""
+
+    def test_it_reaches_the_local_verdict_inside_duckdb(self, tmp_path: Path) -> None:
+        """Ensure pushdown runs in the database and counts what a local run counts."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        config = DiffConfig(primary_keys=["id"])
+
+        pushdown = DiffEngine.run_from_configs(config, *_sides(database, pushdown=True))
+        local = DiffEngine.run_from_configs(config, *_sides(database, pushdown=False))
+
+        assert pushdown.keys_only is True
+        assert local.keys_only is False
+        assert pushdown.summary.model_dump() == local.summary.model_dump()
+        assert pushdown.summary.column_mismatches == {"tier": 1}
+
+    def test_it_fetches_a_row_sample_with_values(self, tmp_path: Path) -> None:
+        """Ensure `pushdown_sample_rows` brings back the changed row's values."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        config = DiffConfig(primary_keys=["id"], pushdown_sample_rows=5)
+
+        result = DiffEngine.run_from_configs(config, *_sides(database, pushdown=True))
+
+        assert result.changed_sample is not None
+        assert result.changed_sample.select("id", "tier_source", "tier_target").rows() == [
+            (2, "silver", "platinum")
+        ]
+
+    def test_it_refuses_an_edit_distance_before_comparing(self, tmp_path: Path) -> None:
+        """Ensure the shipped session never runs a distance that counts bytes."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["tier"], max_levenshtein_distance=1)],
+        )
+
+        with pytest.raises(ConfigError, match="counts UTF-8 bytes"):
+            DiffEngine.run_from_configs(config, *_sides(database, pushdown=True))
+
+    def test_it_proposes_value_maps_inside_duckdb(self, tmp_path: Path) -> None:
+        """Ensure `crosswalk` on a pushdown pair counts its evidence in the database."""
+        database = _duckdb(
+            tmp_path / "warehouse.duckdb",
+            "CREATE TABLE legacy AS SELECT range AS id, CASE WHEN range % 2 = 0 THEN 'M' "
+            "ELSE 'F' END AS gender FROM range(20)",
+            "CREATE TABLE modern AS SELECT range AS id, CASE WHEN range % 2 = 0 THEN 'Male' "
+            "ELSE 'Female' END AS gender FROM range(20)",
+        )
+
+        [proposal] = DiffEngine.propose_value_maps_from_configs(
+            DiffConfig(primary_keys=["id"]), *_sides(database, pushdown=True)
+        )
+
+        assert proposal.value_map == {"M": "Male", "F": "Female"}
+
+    def test_it_checks_a_pushdown_pair_without_comparing(self, tmp_path: Path) -> None:
+        """Ensure `validate --schemas` probes both tables and compiles the statements."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        source, target = _sides(database, pushdown=True)
+
+        assert (
+            DiffEngine.check_configs(DiffConfig(primary_keys=["id"]), source, target, schemas=True)
+            == []
+        )
+
+    def test_it_reads_time_in_utc(self, tmp_path: Path) -> None:
+        """Ensure each session sets UTC, whatever zone the machine runs in."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        session = DuckDBPushdownSession(_sides(database, pushdown=True)[0])
+        session.connect()
+        try:
+            zone = session.execute_pushdown("SELECT current_setting('TimeZone') AS zone")
+            assert zone.collect().item() == "UTC"
+        finally:
+            session.close()
+
+    def test_it_compares_a_view_that_casts_what_polars_cannot_read(self, tmp_path: Path) -> None:
+        """Ensure an INTERVAL column fails the probe by name, and a casting view compares."""
+        database = _duckdb(
+            tmp_path / "warehouse.duckdb",
+            "CREATE TABLE legacy AS SELECT range AS id, to_days(range::INTEGER) AS span "
+            "FROM range(3)",
+            "CREATE TABLE modern AS SELECT * FROM legacy",
+            "CREATE VIEW legacy_text AS SELECT id, CAST(span AS VARCHAR) AS span FROM legacy",
+            "CREATE VIEW modern_text AS SELECT id, CAST(span AS VARCHAR) AS span FROM modern",
+        )
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["span"], ignore=True)]
+        )
+
+        with pytest.raises(ConnectorError, match=r"Column 'span' .* INTERVAL.* view"):
+            DiffEngine.run_from_configs(config, *_sides(database, pushdown=True))
+        result = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]),
+            DuckDBConfig(database=database, table="legacy_text", pushdown=True),
+            DuckDBConfig(database=database, table="modern_text", pushdown=True),
+        )
+        assert result.summary.is_match is True
+        assert result.compared_columns == ("span",)

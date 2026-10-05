@@ -31,6 +31,7 @@ from veridelta.models import (
     DiffConfig,
     DiffResult,
     DiffRule,
+    DuckDBConfig,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -947,7 +948,7 @@ class TestPostgresPushdownRouting:
         source = _postgres_config(table="src", pushdown=opted_in == "source")
         target = _postgres_config(table="tgt", pushdown=opted_in == "target")
 
-        with pytest.raises(ConfigError, match="Set pushdown on both database sources"):
+        with pytest.raises(ConfigError, match="Set pushdown on both sides"):
             DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 
         session_cls.assert_not_called()
@@ -1020,6 +1021,77 @@ class TestPostgresPushdownRouting:
 
         assert source == pl.Schema({"id": pl.Int64(), "amount": pl.Decimal(10, 2)})
         assert target == pl.Schema({"id": pl.Int64(), "amount": pl.Decimal(12, 4)})
+
+
+def _duckdb_config(*, table: str, pushdown: bool = True, **fields: object) -> DuckDBConfig:
+    """Build a DuckDB side in one shared file, opted into pushdown unless told otherwise."""
+    return DuckDBConfig.model_validate(
+        {"database": "warehouse.duckdb", "table": table, "pushdown": pushdown} | fields
+    )
+
+
+class TestDuckDBPushdownRouting:
+    """Validate how two DuckDB tables that set `pushdown` are routed."""
+
+    def test_it_compares_two_opted_in_tables_inside_duckdb(self, mocker: MockerFixture) -> None:
+        """Ensure the pair runs through one DuckDB session and no row is read locally."""
+        session_cls = _configure_warehouse_compiler(mocker, "DuckDBPushdownSession")
+        session = session_cls.return_value
+        load = mocker.patch.object(LoaderFactory, "load")
+        source = _duckdb_config(table="main.src")
+        target = _duckdb_config(table="main.tgt")
+
+        result = DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        session_cls.assert_called_once_with(source)
+        session.connect.assert_called_once()
+        session.close.assert_called_once()
+        load.assert_not_called()
+        assert result.keys_only is True
+        assert result.summary.total_rows_source == SOURCE_TOTAL
+
+    def test_it_reads_two_tables_locally_unless_both_opt_in(self, mocker: MockerFixture) -> None:
+        """Ensure DuckDB tables without `pushdown` keep comparing in Polars."""
+        session_cls = mocker.patch("veridelta.engine.DuckDBPushdownSession")
+        load = mocker.patch.object(
+            LoaderFactory, "load", return_value=pl.LazyFrame({"id": [1], "amount": [1.0]})
+        )
+        source = _duckdb_config(table="src", pushdown=False)
+        target = _duckdb_config(table="tgt", pushdown=False)
+
+        result = DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        session_cls.assert_not_called()
+        assert load.call_count == 2
+        assert result.keys_only is False
+
+    @pytest.mark.parametrize("opted_in", ["source", "target"])
+    def test_it_asks_for_pushdown_on_both_sides(self, mocker: MockerFixture, opted_in: str) -> None:
+        """Ensure a pair that half opts in names the fix instead of reading one side."""
+        session_cls = mocker.patch("veridelta.engine.DuckDBPushdownSession")
+        source = _duckdb_config(table="src", pushdown=opted_in == "source")
+        target = _duckdb_config(table="tgt", pushdown=opted_in == "target")
+
+        with pytest.raises(ConfigError, match="Set pushdown on both sides"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        session_cls.assert_not_called()
+
+    def test_it_needs_one_database(self) -> None:
+        """Ensure two tables are compared in place only when one connection reaches both."""
+        source = _duckdb_config(table="src")
+        target = _duckdb_config(table="tgt", database="archive.duckdb")
+
+        with pytest.raises(ConnectorError, match="DuckDB connections must match"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+    def test_it_refuses_a_duckdb_table_paired_with_postgres(self) -> None:
+        """Ensure two engines are never asked to share one statement."""
+        source = _duckdb_config(table="src")
+        target = _postgres_config(table="tgt")
+
+        with pytest.raises(ConnectorError, match="the source is DuckDB and the target is Postgres"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 
 
 _SAMPLE = SampleQuery(

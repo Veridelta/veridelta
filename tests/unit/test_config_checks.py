@@ -312,16 +312,41 @@ class TestConfigChecks:
         )
         assert "pushdown: false" in findings[1][1]
 
-    def test_it_reports_a_database_pair_that_half_opts_into_pushdown(self) -> None:
-        """Ensure a pair with pushdown on one side only fails here, not at run time."""
-        uri = "postgresql://analyst@db.internal/sales"
-        source = DatabaseConfig(uri=uri, table="src", pushdown=True)
-        target = DatabaseConfig(uri=uri, table="tgt")
+    def test_it_warns_about_edit_distances_duckdb_cannot_push_down(self) -> None:
+        """Ensure a DuckDB pair hears that its run would refuse an edit distance, and why."""
+        source = DuckDBConfig(database="warehouse.duckdb", table="src", pushdown=True)
+        target = DuckDBConfig(database="warehouse.duckdb", table="tgt", pushdown=True)
+        rules = [DiffRule(column_names=["name"], max_levenshtein_distance=1)]
 
+        [(severity, message)] = _check(source, target, rules=rules)
+
+        assert severity == "warning"
+        assert message.startswith("rules[0] max_levenshtein_distance has no DuckDB spelling")
+        assert "counts UTF-8 bytes" in message
+
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(
+                DatabaseConfig(uri="postgresql://db.internal/sales", table="src", pushdown=True),
+                DatabaseConfig(uri="postgresql://db.internal/sales", table="tgt"),
+                id="database",
+            ),
+            pytest.param(
+                DuckDBConfig(database="warehouse.duckdb", table="src"),
+                DuckDBConfig(database="warehouse.duckdb", table="tgt", pushdown=True),
+                id="duckdb",
+            ),
+        ],
+    )
+    def test_it_reports_a_pair_that_half_opts_into_pushdown(
+        self, source: SourceRef, target: SourceRef
+    ) -> None:
+        """Ensure a pair with pushdown on one side only fails here, not at run time."""
         [(severity, message)] = _check(source, target)
 
         assert severity == "error"
-        assert "Set pushdown on both database sources" in message
+        assert "Set pushdown on both sides" in message
 
     def test_it_reports_a_database_table_it_cannot_quote(self) -> None:
         """Ensure an unknown scheme with `table` fails here, and `query` is left alone."""

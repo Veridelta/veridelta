@@ -9,6 +9,10 @@ database, reads the configured `table` or `query` once through DuckDB's own
 Polars export, and closes the connection. Requires the `duckdb` extra
 (`uv add 'veridelta[duckdb]'`).
 
+Two tables in one database that both opt into `pushdown` are compared inside
+DuckDB instead: `DuckDBPushdownSession` runs each compiled statement on one
+connection and reads back only counts and keys.
+
 A file opens read-only, so the read can never change it. A MotherDuck database
 opens read-write, because a read-only connection needs a read-scaling token.
 Each session reads time in UTC, so a timestamp with a time zone, or a date cast
@@ -27,7 +31,7 @@ from typing import Any, Final, cast
 import polars as pl
 
 from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
-from veridelta.connectors.sql import compile_duckdb_select
+from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_duckdb_select
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
 
@@ -47,6 +51,8 @@ else:  # pragma: no cover
 
 _DUCKDB_EXTRA = "DuckDB extra is not installed. Install it with: uv add 'veridelta[duckdb]'"
 _UNCONNECTED = "DuckDB connector is not connected. Call connect() first."
+_SESSION_UNCONNECTED = "DuckDB pushdown session is not connected. Call connect() first."
+_NO_STATEMENT = "No pushdown statement has run yet, so there is no result to describe."
 _PUSHDOWN_UNSUPPORTED = (
     "DuckDB sources are compared locally; they have no SQL pushdown. "
     "Call connect() and read the frame instead."
@@ -119,9 +125,9 @@ class DuckDBConnector(VerideltaConnector):
                 self._config.database,
                 time.perf_counter() - started,
             )
-            detail = str(exc) if token is None else str(exc).replace(token, "***")
             raise ConnectorError(
-                f"DuckDB read of {self._subject} from '{self._config.database}' failed: {detail}"
+                f"DuckDB read of {self._subject} from '{self._config.database}' failed: "
+                f"{_scrubbed(str(exc), token)}"
             ) from None
         logger.info(
             "Read %d rows of %s from %s in %.3fs",
@@ -198,6 +204,129 @@ class DuckDBConnector(VerideltaConnector):
         return "the configured query"
 
 
+class DuckDBPushdownSession(VerideltaConnector):
+    """Run compiled comparison SQL inside DuckDB or MotherDuck.
+
+    Opened for two tables in one database that both set `pushdown`. It holds
+    one connection from `connect()` to `close()`, opened as a read opens it:
+    a file read-only, MotherDuck read-write with its token, both in UTC. Only
+    counts and keys come back, and a row sample when one is asked for.
+    """
+
+    def __init__(self, config: DuckDBConfig) -> None:
+        """Initialize the session for one side's connection settings.
+
+        Args:
+            config (DuckDBConfig): A DuckDB table that sets `pushdown`.
+        """
+        self._config = config
+        self.compiler = SQLPushdownCompiler(SQLDialect.DUCKDB)
+        self._connection: Any = None
+        self._token: str | None = None
+        self._last_statement: str | None = None
+
+    def connect(self) -> None:
+        """Open the database for the statements to come.
+
+        Raises:
+            ConnectorError: If the `duckdb` extra is missing, a MotherDuck
+                database has no token, or the database cannot be opened.
+        """
+        if duckdb is None:
+            raise ConnectorError(_DUCKDB_EXTRA)
+        token = _token(self._config)
+        try:
+            connection = _open(self._config, token)
+            connection.execute("SET TimeZone = 'UTC'")
+        except Exception as exc:
+            logger.warning("DuckDB connection to %s failed", self._config.database)
+            raise ConnectorError(
+                f"DuckDB connection to '{self._config.database}' failed: "
+                f"{_scrubbed(str(exc), token)}"
+            ) from None
+        logger.info("Connected to DuckDB database %s", self._config.database)
+        self._connection, self._token = connection, token
+
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
+        """Run one compiled statement and return its rows lazily.
+
+        Args:
+            statement (str): SQL from the DuckDB compiler.
+            query_type (PushdownQueryType): Which round-trip this is, for logs
+                and errors.
+
+        Returns:
+            pl.LazyFrame: The statement's result.
+
+        Raises:
+            ConnectorError: If the session is not connected, a result column
+                has no Polars type, or the statement fails.
+        """
+        frame = self._run(statement, query_type)
+        self._last_statement = statement
+        return frame.lazy()
+
+    def fetch_schema(self) -> pl.Schema:
+        """Describe the last statement's result by running it wrapped to return no rows.
+
+        Returns:
+            pl.Schema: Column names and dtypes.
+
+        Raises:
+            ConnectorError: If the session is not connected or nothing has run yet.
+        """
+        if self._last_statement is None:
+            raise ConnectorError(_NO_STATEMENT)
+        probe = self.compiler.compile_result_schema_query(self._last_statement)
+        return self._run(probe, "schema").schema
+
+    def close(self) -> None:
+        """Close the connection. Idempotent; `connect()` opens it again."""
+        if self._connection is not None:
+            self._connection.close()
+            logger.info("Closed DuckDB database %s", self._config.database)
+        self._connection = None
+        self._last_statement = None
+
+    def _run(self, statement: str, query_type: str) -> pl.DataFrame:
+        """Run a statement on the open connection, logging and reporting without secrets."""
+        if self._connection is None:
+            raise ConnectorError(_SESSION_UNCONNECTED)
+        started = time.perf_counter()
+        try:
+            frame = _read(self._connection, statement, f"the {query_type} statement")
+        except ConnectorError:
+            raise
+        except ImportError:
+            raise ConnectorError(_DUCKDB_EXTRA) from None
+        except Exception as exc:
+            logger.warning(
+                "DuckDB %s statement on %s failed after %.3fs",
+                query_type,
+                self._config.database,
+                time.perf_counter() - started,
+            )
+            raise ConnectorError(
+                f"DuckDB {query_type} statement on '{self._config.database}' failed: "
+                f"{_scrubbed(str(exc), self._token)}"
+            ) from None
+        logger.info(
+            "Ran DuckDB %s statement on %s in %.3fs, %d rows",
+            query_type,
+            self._config.database,
+            time.perf_counter() - started,
+            frame.height,
+        )
+        return frame
+
+
+def _scrubbed(text: str, token: str | None) -> str:
+    """Replace the MotherDuck token, if there is one, in driver output."""
+    return text if token is None else text.replace(token, "***")
+
+
 def _token(config: DuckDBConfig) -> str | None:
     """Return the MotherDuck token to connect with: the field's, then the environment's."""
     if not config.is_motherduck:
@@ -236,7 +365,7 @@ def _read(connection: Any, statement: str, subject: str) -> pl.DataFrame:
         if _unreadable(kind):
             raise ConnectorError(
                 f"Column '{name}' of {subject} holds {kind}, which Polars cannot read. "
-                "Cast it in a 'query', such as to VARCHAR."
+                "Cast it in a view or a 'query', such as to VARCHAR."
             )
     return cast("pl.DataFrame", relation.pl())
 
