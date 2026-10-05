@@ -99,6 +99,7 @@ Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_fo
 - [**2. YAML and CLI**](examples/02_yaml_and_cli.ipynb): pipeline automation, `--json`, artifacts.
 - [**3. Advanced Rules**](examples/03_advanced_rules.ipynb): drift resolution on real data.
 - [**4. HTML Reports**](examples/04_html_reports.ipynb): audit and compliance hand-off.
+- [**5. Validate and CI**](examples/05_validate_and_ci.ipynb): a database source, `veridelta validate`, and the GitHub Action.
 - [**CI Integrations**](ci.md): GitHub Action and GitLab CI template that comment on pull requests.
 - [**Configuration Guide**](configuration.md): fields, formats, extras, CLI flags, warehouse, lakehouse, and database routing.
 - [**API Reference**](api.md): public Python surface.
