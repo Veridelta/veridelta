@@ -30,7 +30,7 @@ from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import write_otlp_metrics
 
 if TYPE_CHECKING:
-    from veridelta.models import DiffConfig, DiffRule, SourceRef, ValueMapProposal
+    from veridelta.models import DiffRule, ValueMapProposal
 
 EXIT_MATCH = 0
 """Datasets agreed within `threshold`."""
@@ -156,24 +156,22 @@ def _report_failure(exc: Exception) -> int:
         int: `EXIT_MISMATCH`, since CI treats a failure like drift.
     """
     if isinstance(exc, ConfigError):
-        print(f"\nConfiguration Error\n{exc}", file=sys.stderr)
-        print(
-            "\nThis is a problem with the configuration file, not with the data. "
-            "Correct the setting above and run again.",
-            file=sys.stderr,
+        message = (
+            f"\nConfiguration Error\n{exc}\n\nThis is a problem with the configuration "
+            "file, not with the data. Correct the setting above and run again."
         )
     elif isinstance(exc, VerideltaError):
-        print(f"\n{type(exc).__name__}\n{exc}", file=sys.stderr)
+        message = f"\n{type(exc).__name__}\n{exc}"
     else:
         # Anything reaching here came from Polars or a driver, where the message
         # alone rarely says what the user should do about it.
-        print(f"\nUnexpected System Error\n{type(exc).__name__}: {exc}", file=sys.stderr)
-        print(
-            "\nThis is a bug or an unsupported input. Please report it at "
-            "https://github.com/Veridelta/veridelta/issues with the configuration "
-            "file and this message.",
-            file=sys.stderr,
+        message = (
+            f"\nUnexpected System Error\n{type(exc).__name__}: {exc}\n\nThis is a bug or "
+            "an unsupported input. Please report it at "
+            "https://github.com/Veridelta/veridelta/issues with the configuration file "
+            "and this message."
         )
+    print(message, file=sys.stderr)
     return EXIT_MISMATCH
 
 
@@ -194,9 +192,6 @@ def run(args: argparse.Namespace) -> int:
 
     try:
         _progress(f"Loading configuration from {args.config}...", quiet=quiet)
-        diff_config: DiffConfig
-        source_config: SourceRef
-        target_config: SourceRef
         diff_config, source_config, target_config = load_config(args.config)
 
         _progress("Executing semantic diff...", quiet=quiet)
@@ -235,24 +230,6 @@ def run(args: argparse.Namespace) -> int:
 
     except Exception as exc:
         return _report_failure(exc)
-
-
-def _proposal_yaml(proposals: Sequence["ValueMapProposal"]) -> str:
-    """Render proposals as a `rules:` block to paste into a configuration.
-
-    Args:
-        proposals (Sequence[ValueMapProposal]): Proposals to render.
-
-    Returns:
-        str: YAML whose `rules` hold one rule per proposed column. Values that
-            YAML would read as another type, such as `Y` or `1`, are quoted.
-    """
-    rules = [
-        proposal.to_rule().model_dump(mode="json", exclude_none=True, exclude_defaults=True)
-        for proposal in proposals
-    ]
-    rendered: str = yaml.safe_dump({"rules": rules}, sort_keys=False)
-    return rendered
 
 
 def _merge_advice(rule: "DiffRule", column: str) -> str:
@@ -353,7 +330,12 @@ def crosswalk(args: argparse.Namespace) -> int:
 
     _report_proposals(proposals, diff_config.rules, quiet=quiet)
     if proposals:
-        print(_proposal_yaml(proposals), end="")
+        rules = [
+            proposal.to_rule().model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+            for proposal in proposals
+        ]
+        # YAML quotes any value it would read as another type, such as `Y` or `1`.
+        print(yaml.safe_dump({"rules": rules}, sort_keys=False), end="")
     return EXIT_MATCH
 
 
@@ -369,27 +351,6 @@ def schema(args: argparse.Namespace) -> int:
     _ = args
     print(json.dumps(config_json_schema(), indent=2))
     return EXIT_MATCH
-
-
-def _unset_findings(names: Sequence[str]) -> list[ConfigFinding]:
-    """Warn about each unset variable `--allow-missing-env` read as its name.
-
-    Args:
-        names (Sequence[str]): Unset variables, in the order they were met.
-
-    Returns:
-        list[ConfigFinding]: One warning per variable.
-    """
-    return [
-        ConfigFinding(
-            severity="warning",
-            message=(
-                f"Environment variable '{name}' is not set, so its references were checked "
-                f"as the text '{name}'."
-            ),
-        )
-        for name in names
-    ]
 
 
 def _plural(count: int, noun: str) -> str:
@@ -430,7 +391,17 @@ def validate(args: argparse.Namespace) -> int:
         findings = [ConfigFinding(severity="error", message=str(exc).strip())]
     except Exception as exc:
         return _report_failure(exc)
-    findings = [*_unset_findings(unset or []), *findings]
+    unset_findings = [
+        ConfigFinding(
+            severity="warning",
+            message=(
+                f"Environment variable '{name}' is not set, so its references were checked "
+                f"as the text '{name}'."
+            ),
+        )
+        for name in unset or []
+    ]
+    findings = [*unset_findings, *findings]
 
     errors = [finding.message for finding in findings if finding.severity == "error"]
     warnings = [finding.message for finding in findings if finding.severity == "warning"]
@@ -474,15 +445,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    run_parser = subparsers.add_parser("run", help="Run a Veridelta comparison.")
-    run_parser.add_argument(
+    # Every command but `schema` reads a configuration file.
+    config = argparse.ArgumentParser(add_help=False)
+    config.add_argument(
         "-c",
         "--config",
-        type=str,
         default="veridelta.yaml",
         help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
+
+    run_parser = subparsers.add_parser("run", parents=[config], help="Run a Veridelta comparison.")
     run_parser.add_argument(
         "--json",
         action="store_true",
@@ -496,8 +468,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--html",
-        type=str,
-        default=None,
         metavar="PATH",
         help="Also write a standalone HTML report to PATH.",
     )
@@ -510,29 +480,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument(
         "--markdown",
-        type=str,
-        default=None,
         metavar="PATH",
         help="Also write a short Markdown summary to PATH, for CI job summaries and PR comments.",
     )
     run_parser.add_argument(
         "--otel",
-        type=str,
-        default=None,
         metavar="PATH",
         help="Also write the run's metrics to PATH as OTLP/JSON, for an OpenTelemetry collector.",
     )
 
     crosswalk_parser = subparsers.add_parser(
         "crosswalk",
+        parents=[config],
         help="Propose value_map rules from how source and target values line up.",
-    )
-    crosswalk_parser.add_argument(
-        "-c",
-        "--config",
-        type=str,
-        default="veridelta.yaml",
-        help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
     crosswalk_parser.add_argument(
         "--min-confidence",
@@ -571,14 +531,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_parser = subparsers.add_parser(
         "validate",
+        parents=[config],
         help="Check a configuration for what would stop a run, without reading any rows.",
-    )
-    validate_parser.add_argument(
-        "-c",
-        "--config",
-        type=str,
-        default="veridelta.yaml",
-        help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
     validate_parser.add_argument(
         "--schemas",
