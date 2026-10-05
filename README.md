@@ -104,6 +104,7 @@ veridelta run -c veridelta.yaml
 - [2. YAML and CLI](https://veridelta.github.io/veridelta/examples/02_yaml_and_cli/) — pipeline automation, `--json`, artifacts.
 - [3. Advanced Rules](https://veridelta.github.io/veridelta/examples/03_advanced_rules/) — drift resolution on real data.
 - [4. HTML Reports](https://veridelta.github.io/veridelta/examples/04_html_reports/) — audit and compliance hand-off.
+- [5. Validate and CI](https://veridelta.github.io/veridelta/examples/05_validate_and_ci/) — a database source, `veridelta validate`, and the GitHub Action.
 - [CI integrations](https://veridelta.github.io/veridelta/ci/) — GitHub Action and GitLab CI template that comment on pull requests.
 - [Configuration](https://veridelta.github.io/veridelta/configuration/) — fields, formats, extras, warehouse, lakehouse, and database routing.
 - [API Reference](https://veridelta.github.io/veridelta/api/) — public Python surface.

@@ -1,3 +1,7 @@
+---
+render_macros: true
+---
+
 # Veridelta Roadmap
 
 Veridelta is currently in **v{{ config.extra.version }}**. The core execution engine is stable. The following roadmap outlines the strategic expansion of the framework's ecosystem and developer tooling.
