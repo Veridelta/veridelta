@@ -1123,6 +1123,12 @@ class DatabaseConfig(BaseModel):
         pushdown (bool): Whether to compare inside the database instead of
             reading the rows. Postgres `table` sources only, and both sides must
             set it. Defaults to False.
+        partition_on (str | None): Integer column to split a `table` read on,
+            so ConnectorX reads its ranges over several connections at once.
+            Set it with `partitions`. The column may hold no NULL, since a
+            range read leaves those rows out, so the read checks it first.
+        partitions (int | None): How many ranges to split the read into: 2
+            or more. Set it with `partition_on`.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
@@ -1153,6 +1159,20 @@ class DatabaseConfig(BaseModel):
             "Compare inside the database instead of reading the rows. Postgres tables "
             "only; set it on both sides."
         ),
+    )
+    partition_on: str | None = Field(
+        default=None,
+        pattern=SQL_IDENTIFIER_SEGMENT_PATTERN,
+        description=(
+            "Integer column to split a table read on, so ConnectorX reads its ranges in "
+            "parallel. Set it with partitions."
+        ),
+    )
+    partitions: int | None = Field(
+        default=None,
+        ge=2,
+        strict=True,
+        description="How many ranges to split the read into, 2 or more. Set it with partition_on.",
     )
 
     @model_validator(mode="after")
@@ -1189,6 +1209,27 @@ class DatabaseConfig(BaseModel):
                     "'password' needs a user name in 'uri', as in "
                     "postgresql://analyst@db.internal/sales."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_partitions(self) -> "DatabaseConfig":
+        """Reject a split read that names half its settings or has nothing to split.
+
+        Returns:
+            DatabaseConfig: The validated instance.
+
+        Raises:
+            ValueError: If only one of `partition_on` and `partitions` is set,
+                or they are set on a `query` or with `pushdown`.
+        """
+        if (self.partition_on is None) != (self.partitions is None):
+            raise ValueError("Set 'partition_on' and 'partitions' together.")
+        if self.partition_on is not None and self.table is None:
+            raise ValueError(
+                "A partitioned read can only split a 'table'; a 'query' runs as written."
+            )
+        if self.partition_on is not None and self.pushdown:
+            raise ValueError("'pushdown' reads no rows, so there is no read to partition.")
         return self
 
     @property

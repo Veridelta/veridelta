@@ -456,6 +456,31 @@ def _quoted_database_relation(scheme: str, table: str) -> str:
     return ".".join(f"{opening}{part}{closing}" for part in _relation_segments(table))
 
 
+def compile_database_null_count(scheme: str, table: str, column: str) -> str:
+    """Compile a count of a database table's rows whose partition column is NULL.
+
+    ConnectorX writes the partition column into each range's statement without
+    quotes, so the count names it the same way, after the same allowlist. The
+    database then resolves it as ConnectorX's ranges will, folding its case.
+
+    Args:
+        scheme (str): Lowercase URI scheme, such as `postgresql`.
+        table (str): One to three dotted identifier segments.
+        column (str): One identifier segment.
+
+    Returns:
+        str: The count of the table's rows whose `column` is NULL, as `null_rows`.
+
+    Raises:
+        ConfigError: If Veridelta has no quoting for the scheme.
+        ConnectorError: If the table or column name falls outside the allowlist.
+    """
+    relation = _quoted_database_relation(scheme, table)
+    if SQL_IDENTIFIER_SEGMENT.fullmatch(column) is None:
+        raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
+    return f"SELECT COUNT(*) AS null_rows FROM {relation} WHERE {column} IS NULL"
+
+
 def compile_duckdb_select(table: str, *, probe: bool = False) -> str:
     """Compile the statement that reads a DuckDB source's `table`, or only its columns.
 

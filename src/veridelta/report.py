@@ -9,13 +9,15 @@ often air-gapped, where a report that fetches a stylesheet from the internet
 renders as unstyled text at exactly the moment someone needs to read it.
 
 The Markdown summary is the short form CI posts to a job summary or a pull
-request comment: the verdict, the counts, and the columns that drifted.
+request comment: the verdict, the counts, and the columns that drifted. It
+lists changed values only when asked.
 """
 
 import html
 import json
 import math
 import re
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, cast
@@ -301,10 +303,19 @@ def write_html(result: DiffResult, path: str | Path, *, max_rows: int = DEFAULT_
 _BACKTICK_RUN = re.compile(r"`+")
 """A run of backticks, whose length sets the fence of a Markdown code span."""
 
+_MARKDOWN_BUDGET: Final[int] = 60_000
+"""UTF-8 bytes a Markdown summary may reach while it lists changed values.
+
+GitHub refuses a comment over 65,536 characters, and the Action adds a marker line.
+"""
+
+_MARKDOWN_VALUE_WIDTH: Final[int] = 60
+"""Characters of a key or value the Markdown summary shows before cutting it."""
+
 
 def _markdown_code(name: str) -> str:
-    """Render a column name as literal text inside a Markdown table cell."""
-    # Column names come from the data, and a code span keeps one from opening an HTML
+    """Render a column name or a value as literal text inside a Markdown table cell."""
+    # Names and values come from the data, and a code span keeps one from opening an HTML
     # comment that can spoof the sticky-comment marker.
     flat = " ".join(name.splitlines())
     longest = max((len(run) for run in _BACKTICK_RUN.findall(flat)), default=0)
@@ -313,16 +324,25 @@ def _markdown_code(name: str) -> str:
     return f"{fence}{pad}{flat}{pad}{fence}".replace("|", "\\|")
 
 
-def render_markdown(result: DiffResult) -> str:
+def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
     """Render a comparison result as a short Markdown summary.
 
     Args:
         result (DiffResult): Completed comparison.
+        max_rows (int): Changed values to list, lowest keys first. 0, the
+            default, lists none, since CI posts the summary where more people
+            may read it than may read the data.
 
     Returns:
         str: The verdict, a table of counts, and the top drifting columns,
-            limited to the configured `report_top_columns_limit`.
+            limited to the configured `report_top_columns_limit`, then any
+            changed values asked for.
+
+    Raises:
+        ConfigError: If `max_rows` is negative.
     """
+    if max_rows < 0:
+        raise ConfigError(f"max_rows must be zero or more, got {max_rows}.")
     summary = result.summary
     verdict = "PASSED" if summary.is_match else "FAILED"
     perfect = " (Perfect Match)" if summary.is_perfect_match else ""
@@ -348,6 +368,10 @@ def render_markdown(result: DiffResult) -> str:
     if summary.report_limit > 0:
         lines += ["", "#### Column-level drift", ""]
         lines += _drift_lines(summary.column_mismatches, summary.report_limit)
+    if max_rows > 0 and summary.changed_count > 0:
+        lines += ["", "#### Changed values", ""]
+        used = len("\n".join(lines).encode()) + 1
+        lines += _value_lines(result, max_rows, _MARKDOWN_BUDGET - used)
     return "\n".join(lines) + "\n"
 
 
@@ -363,15 +387,77 @@ def _drift_lines(mismatches: dict[str, int], limit: int) -> list[str]:
     return lines
 
 
-def write_markdown(result: DiffResult, path: str | Path) -> Path:
+def _markdown_row(cells: list[str]) -> str:
+    """Join rendered cells into one Markdown table row."""
+    return "| " + " | ".join(cells) + " |"
+
+
+def _markdown_value(value: object) -> str:
+    """Render one key or value as literal text, quoting text so its whitespace shows."""
+    if value is None:
+        return "_null_"
+    text = repr(value) if isinstance(value, str) else str(value)
+    if len(text) > _MARKDOWN_VALUE_WIDTH:
+        text = text[:_MARKDOWN_VALUE_WIDTH] + "..."
+    return _markdown_code(text)
+
+
+def _differing_values(
+    rows: pl.DataFrame, keys: list[str], columns: tuple[str, ...]
+) -> Iterator[list[str]]:
+    """Yield the rendered cells of each differing value, row by row."""
+    for record in rows.iter_rows(named=True):
+        for column in columns:
+            # A NULL flag is not a mismatch, as the column counts treat it.
+            if record[f"{column}_is_match"] is False:
+                yield [
+                    *(_markdown_value(record[key]) for key in keys),
+                    _markdown_code(column),
+                    _markdown_value(record[f"{column}_source"]),
+                    _markdown_value(record[f"{column}_target"]),
+                ]
+
+
+def _value_lines(result: DiffResult, max_rows: int, budget: int) -> list[str]:
+    """List changed values as a Markdown table, within `max_rows` rows and `budget` bytes."""
+    changed = result.changed_sample if result.keys_only else result.changed
+    if changed is None:
+        return ["Set `pushdown_sample_rows` to list values here."]
+    keys = list(result.primary_keys)
+    lines = [
+        _markdown_row([*map(_markdown_code, keys), "Column", "Source", "Target"]),
+        _markdown_row([":---"] * (len(keys) + 3)),
+    ]
+    total = sum(result.summary.column_mismatches.values())
+    closing = f"_Showing {total:,} of {total:,} changed values._"
+    budget -= sum(len(line.encode()) + 1 for line in lines) + len(closing) + 2
+    shown = 0
+    rows = changed.lazy().sort(keys).head(max_rows).collect()
+    for cells in _differing_values(rows, keys, result.compared_columns):
+        line = _markdown_row(cells)
+        budget -= len(line.encode()) + 1
+        if shown == max_rows or budget < 0:
+            break
+        lines.append(line)
+        shown += 1
+    if shown < total:
+        lines += ["", f"_Showing {shown:,} of {total:,} changed values._"]
+    return lines
+
+
+def write_markdown(result: DiffResult, path: str | Path, *, max_rows: int = 0) -> Path:
     """Write the Markdown summary to disk.
 
     Args:
         result (DiffResult): Completed comparison.
         path (str | Path): Destination file. Parent directories are created.
+        max_rows (int): Changed values to list, as for `render_markdown`.
 
     Returns:
         Path: The file that was written.
+
+    Raises:
+        ConfigError: If `max_rows` is negative.
 
     Examples:
         >>> import polars as pl
@@ -386,7 +472,7 @@ def write_markdown(result: DiffResult, path: str | Path) -> Path:
     """
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(render_markdown(result), encoding="utf-8")
+    destination.write_text(render_markdown(result, max_rows=max_rows), encoding="utf-8")
     return destination
 
 

@@ -218,3 +218,91 @@ class TestDatabaseSources:
 
         assert finding.severity == "error"
         assert "Column 'paid' has type Boolean, which cannot hold" in finding.message
+
+
+def _numbered(path: Path) -> str:
+    """Create a ten-row `orders` table, an empty one, and one with a NULL key."""
+    insert = "INSERT INTO orders VALUES (?, ?, ?)"
+    return _sqlite(
+        path,
+        "CREATE TABLE orders (id INTEGER, code TEXT, amount REAL)",
+        "CREATE TABLE empty (id INTEGER, code TEXT)",
+        "CREATE TABLE holes (id INTEGER, code TEXT)",
+        rows=[
+            *((insert, (index, f"c{index}", index * 1.5)) for index in range(1, 11)),
+            ("INSERT INTO holes VALUES (?, ?)", (1, "a")),
+            ("INSERT INTO holes VALUES (?, ?)", (None, "b")),
+        ],
+    )
+
+
+class TestPartitionedDatabaseReads:
+    """Validate reads that ConnectorX splits across connections, against real SQLite files."""
+
+    def test_it_reads_the_rows_a_single_read_does(self, tmp_path: Path) -> None:
+        """Ensure the ranges together hold every row, once."""
+        uri = _numbered(tmp_path / "legacy.db")
+
+        whole = LoaderFactory.load(DatabaseConfig(uri=uri, table="orders")).collect()
+        split = LoaderFactory.load(
+            DatabaseConfig(uri=uri, table="orders", partition_on="id", partitions=3)
+        ).collect()
+
+        assert split.height == 10
+        assert split.sort("id").equals(whole.sort("id"))
+
+    def test_it_compares_a_partitioned_source_as_it_compares_a_whole_one(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure splitting the read changes no count of the comparison."""
+        uri = _numbered(tmp_path / "legacy.db")
+        target_file = tmp_path / "modern.parquet"
+        (
+            pl.read_database_uri("SELECT * FROM orders", uri)
+            .with_columns(amount=pl.when(pl.col("id") == 4).then(0.0).otherwise(pl.col("amount")))
+            .filter(pl.col("id") != 9)
+            .write_parquet(target_file)
+        )
+        target = SourceConfig(path=str(target_file), format="parquet")
+        config = DiffConfig(primary_keys=["id"])
+
+        whole = DiffEngine.run_from_configs(
+            config, DatabaseConfig(uri=uri, table="orders"), target
+        ).summary
+        split = DiffEngine.run_from_configs(
+            config, DatabaseConfig(uri=uri, table="orders", partition_on="id", partitions=4), target
+        ).summary
+
+        assert (split.removed_count, split.changed_count) == (1, 1)
+        assert split.model_dump() == whole.model_dump()
+
+    def test_it_explains_a_column_it_cannot_split_on(self, tmp_path: Path) -> None:
+        """Ensure a text column fails with ConnectorX's reason and the table named."""
+        uri = _numbered(tmp_path / "legacy.db")
+
+        with pytest.raises(ConnectorError, match="Database read of table 'orders'") as info:
+            LoaderFactory.load(
+                DatabaseConfig(uri=uri, table="orders", partition_on="code", partitions=2)
+            )
+
+        assert "Partition can only be done on integer columns" in str(info.value)
+
+    def test_it_keeps_the_schema_of_an_empty_table(self, tmp_path: Path) -> None:
+        """Ensure a table with no rows still reads with its columns and types."""
+        uri = _numbered(tmp_path / "legacy.db")
+
+        frame = LoaderFactory.load(
+            DatabaseConfig(uri=uri, table="empty", partition_on="id", partitions=3)
+        ).collect()
+
+        assert frame.is_empty()
+        assert frame.schema == pl.Schema({"id": pl.Int64(), "code": pl.String()})
+
+    def test_it_refuses_rows_ranges_would_leave_out(self, tmp_path: Path) -> None:
+        """Ensure a NULL partition key fails the read rather than vanishing from it."""
+        uri = _numbered(tmp_path / "legacy.db")
+
+        with pytest.raises(ConnectorError, match="'id' of table 'holes' is NULL in 1 of its rows"):
+            LoaderFactory.load(
+                DatabaseConfig(uri=uri, table="holes", partition_on="id", partitions=2)
+            )

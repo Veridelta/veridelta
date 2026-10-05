@@ -14,7 +14,7 @@ Each connector accepts the fields below and rejects any other key:
 | `bigquery` | `table`, `project` | `dataset`, `location`, `credentials_path`, `maximum_bytes_billed` |
 | `delta` | `table_uri` | `version`, `storage_options` |
 | `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
-| `database` | `uri`, and exactly one of `table` or `query` | `password`, `pushdown` |
+| `database` | `uri`, and exactly one of `table` or `query` | `password`, `pushdown`, `partition_on`, `partitions` |
 | `duckdb` | `database`, and exactly one of `table` or `query` | `motherduck_token` |
 
 `version` and `snapshot_id` must be non-negative integers, and `maximum_bytes_billed` a positive one. A quoted number is rejected, not converted, because each value goes straight to a scan or a job. Warehouse, lakehouse, database, and DuckDB blocks cannot be changed once loaded.
@@ -135,6 +135,28 @@ A SQLite column declared without a type cannot be typed when its first rows are 
 A Postgres `table` keeps the declared precision and scale of each `numeric` column, so `numeric(10, 2)` arrives as `Decimal(10, 2)` with every stored digit. Veridelta reads the declarations from the `pg_attribute` catalog before the rows, so a Postgres-compatible server without that catalog needs a `query`. A `NaN` has no decimal form and fails the read; leave it out with a `query`.
 
 Any other Postgres `numeric` arrives as `Decimal(38, 10)`. Its values are rounded to ten decimal places, and a value with more than 18 digits before the decimal point fails the read. That applies to every column of a `query`, to a `numeric` declared without a precision, and to one with a precision above 38 or a negative scale.
+
+### Parallel reads
+
+A large `table` reads faster in ranges, each over its own connection. Name an integer column to split on, and how many ranges to read:
+
+```yaml
+source:
+  type: database
+  uri: postgresql://analyst@legacy-db.internal:5432/sales
+  password: ${LEGACY_DB_PASSWORD}
+  table: public.orders
+  partition_on: order_id
+  partitions: 4
+```
+
+ConnectorX reads the column's lowest and highest values, splits that span into `partitions` ranges, and reads the ranges in parallel. Each range opens its own connection, so the database must accept that many more.
+
+The column must hold integers and no NULL. A NULL falls in no range, so ConnectorX would leave its row out. Veridelta counts the column's NULLs first and fails the read if it finds any, which costs one more scan of the table.
+
+ConnectorX writes the column name into each range's statement without quotes, so the database folds its case as it does for any unquoted name. On Postgres, partition on a column whose name is all lowercase.
+
+Only a `table` read splits. A `query` runs as written, and a `pushdown` table reads no rows. A schema check with `validate --schemas` reads the columns in one statement.
 
 ## DuckDB and MotherDuck
 

@@ -414,18 +414,24 @@ def _read_database(
     return_value: object = None,
     side_effect: object = None,
     catalog: pl.DataFrame | None = None,
+    nulls: int = 0,
 ) -> MagicMock:
     """Patch the extra probe and Polars' reader, returning the reader mock.
 
     A Postgres `table` read asks the catalog for its `numeric` columns first.
     `catalog` answers that query, by default with no `numeric` columns, and
-    every other statement returns the mock's `return_value`.
+    `nulls` answers the NULL count a partitioned read sends first. Every
+    other statement returns the mock's `return_value`.
     """
     mocker.patch("veridelta.connectors.database.connectorx", object())
     answers = _catalog() if catalog is None else catalog
 
-    def _answer(statement: str, uri: str) -> object:
-        return answers if statement.startswith("SELECT attname") else DEFAULT
+    def _answer(statement: str, uri: str, **partitions: object) -> object:
+        if statement.startswith("SELECT attname"):
+            return answers
+        if statement.startswith("SELECT COUNT(*) AS null_rows"):
+            return pl.DataFrame({"null_rows": [nulls]})
+        return DEFAULT
 
     read = MagicMock(
         return_value=return_value, side_effect=_answer if side_effect is None else side_effect
@@ -831,6 +837,75 @@ def _postgres_session(password: str | None = None) -> PostgresPushdownSession:
 def _setting(value: str) -> pl.DataFrame:
     """Return the one-row result of the literal-rules check."""
     return pl.DataFrame({"value": [value]})
+
+
+class TestPartitionedDatabaseRead:
+    """Validate a `table` read that ConnectorX splits across parallel connections."""
+
+    _URI = "mysql://analyst@db.internal/sales"
+
+    def _config(self, **fields: object) -> DatabaseConfig:
+        return DatabaseConfig.model_validate(
+            {"uri": self._URI, "table": "orders", "partition_on": "order_id", "partitions": 4}
+            | fields
+        )
+
+    def test_it_counts_nulls_then_splits_the_read(self, mocker: MockerFixture) -> None:
+        """Ensure the read checks the partition column, then hands ConnectorX the split."""
+        frame = pl.DataFrame({"order_id": [1, 2]})
+        read = _read_database(mocker, return_value=frame)
+
+        with DatabaseConnector(self._config()) as connector:
+            connector.connect()
+            assert connector.lazyframe().collect().equals(frame)
+
+        assert read.call_args_list == [
+            call("SELECT COUNT(*) AS null_rows FROM `orders` WHERE order_id IS NULL", self._URI),
+            call("SELECT * FROM `orders`", self._URI, partition_on="order_id", partition_num=4),
+        ]
+
+    def test_it_refuses_a_partition_column_holding_nulls(self, mocker: MockerFixture) -> None:
+        """Ensure rows ConnectorX would leave out fail the read instead of vanishing."""
+        read = _read_database(mocker, return_value=pl.DataFrame(), nulls=3)
+
+        with pytest.raises(
+            ConnectorError, match="Column 'order_id' of table 'orders' is NULL in 3 of its rows"
+        ):
+            DatabaseConnector(self._config()).connect()
+
+        assert read.call_count == 1
+
+    def test_it_splits_the_postgres_read_that_keeps_declared_scale(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure the text select that keeps each `numeric` column's scale is what is split."""
+        catalog = _catalog(("order_id", -1, False), ("amount", _NUMERIC_10_2, True))
+        as_text = pl.DataFrame({"order_id": [1], "amount": ["1.50"]})
+        read = _read_database(mocker, return_value=as_text, catalog=catalog)
+        uri = "postgresql://analyst@db.internal/sales"
+
+        with DatabaseConnector(self._config(uri=uri, partitions=2)) as connector:
+            connector.connect()
+            frame = connector.lazyframe().collect()
+
+        assert read.call_args_list[1:] == [
+            call('SELECT COUNT(*) AS null_rows FROM "orders" WHERE order_id IS NULL', uri),
+            call(
+                'SELECT "order_id", CAST("amount" AS TEXT) AS "amount" FROM "orders"',
+                uri,
+                partition_on="order_id",
+                partition_num=2,
+            ),
+        ]
+        assert frame.schema == pl.Schema({"order_id": pl.Int64(), "amount": pl.Decimal(10, 2)})
+
+    def test_it_probes_a_partitioned_table_in_one_read(self, mocker: MockerFixture) -> None:
+        """Ensure `validate --schemas`, which reads no rows, neither counts nor splits."""
+        read = _read_database(mocker, return_value=pl.DataFrame(schema={"order_id": pl.Int64}))
+
+        DatabaseConnector(self._config(), probe=True).connect()
+
+        read.assert_called_once_with("SELECT * FROM `orders` WHERE 1 = 0", self._URI)
 
 
 class TestPostgresPushdownSession:

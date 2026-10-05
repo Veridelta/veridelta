@@ -114,7 +114,7 @@
     },
     "DatabaseConfig": {
       "additionalProperties": false,
-      "description": "Immutable settings for reading a database table or query into a local comparison.\n\nThe rows are read through ConnectorX into Polars and compared by the local\nengine, so a database pairs with files, lakehouse tables, or another\ndatabase. Requires the `database` extra (`uv add 'veridelta[database]'`).\nTwo Postgres tables on one connection can instead be compared inside the\ndatabase, without reading their rows, when both sides set `pushdown`.\n\nAttributes:\n    type (Literal[\"database\"]): Source kind, which selects this model.\n    uri (str): ConnectorX connection URI, such as\n        `postgresql://analyst@db.internal:5432/sales` or\n        `sqlite:///srv/data/legacy.db`. A password written inside it is\n        masked when the config is printed, but kept by `model_dump()`,\n        which the connector needs.\n    password (str | None): Optional password, percent-encoded into the\n        URI's user information when the connector reads. Left out when the\n        config is printed, but kept by `model_dump()`.\n    table (str | None): Table or view to read whole, as one to three\n        unquoted identifier segments.\n    query (str | None): SQL statement to run instead, sent to the database\n        exactly as written. Set exactly one of `table` and `query`.\n    pushdown (bool): Whether to compare inside the database instead of\n        reading the rows. Postgres `table` sources only, and both sides must\n        set it. Defaults to False.",
+      "description": "Immutable settings for reading a database table or query into a local comparison.\n\nThe rows are read through ConnectorX into Polars and compared by the local\nengine, so a database pairs with files, lakehouse tables, or another\ndatabase. Requires the `database` extra (`uv add 'veridelta[database]'`).\nTwo Postgres tables on one connection can instead be compared inside the\ndatabase, without reading their rows, when both sides set `pushdown`.\n\nAttributes:\n    type (Literal[\"database\"]): Source kind, which selects this model.\n    uri (str): ConnectorX connection URI, such as\n        `postgresql://analyst@db.internal:5432/sales` or\n        `sqlite:///srv/data/legacy.db`. A password written inside it is\n        masked when the config is printed, but kept by `model_dump()`,\n        which the connector needs.\n    password (str | None): Optional password, percent-encoded into the\n        URI's user information when the connector reads. Left out when the\n        config is printed, but kept by `model_dump()`.\n    table (str | None): Table or view to read whole, as one to three\n        unquoted identifier segments.\n    query (str | None): SQL statement to run instead, sent to the database\n        exactly as written. Set exactly one of `table` and `query`.\n    pushdown (bool): Whether to compare inside the database instead of\n        reading the rows. Postgres `table` sources only, and both sides must\n        set it. Defaults to False.\n    partition_on (str | None): Integer column to split a `table` read on,\n        so ConnectorX reads its ranges over several connections at once.\n        Set it with `partitions`. The column may hold no NULL, since a\n        range read leaves those rows out, so the read checks it first.\n    partitions (int | None): How many ranges to split the read into: 2\n        or more. Set it with `partition_on`.",
       "properties": {
         "type": {
           "const": "database",
@@ -182,6 +182,42 @@
           "description": "Compare inside the database instead of reading the rows. Postgres tables only; set it on both sides.",
           "title": "Pushdown",
           "type": "boolean"
+        },
+        "partition_on": {
+          "title": "Partition On",
+          "description": "Integer column to split a table read on, so ConnectorX reads its ranges in parallel. Set it with partitions.",
+          "default": null,
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "\\$\\{"
+            }
+          ]
+        },
+        "partitions": {
+          "anyOf": [
+            {
+              "minimum": 2,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "How many ranges to split the read into, 2 or more. Set it with partition_on.",
+          "title": "Partitions"
         }
       },
       "required": [

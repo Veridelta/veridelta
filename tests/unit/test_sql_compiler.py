@@ -24,6 +24,7 @@ from veridelta.connectors.sql import (
     VALUE_MAP_SOURCE_ALIAS,
     VALUE_MAP_TARGET_ALIAS,
     SampleQuery,
+    compile_database_null_count,
     compile_database_probe,
     compile_database_select,
     compile_duckdb_select,
@@ -1487,6 +1488,41 @@ class TestDatabaseSelect:
         """Ensure a table name reaching the compiler directly can never carry SQL."""
         with pytest.raises(ConnectorError, match=message):
             compile_database_select("postgresql", table)
+
+    @pytest.mark.parametrize(
+        ("scheme", "expected"),
+        [
+            pytest.param(
+                "postgresql",
+                'SELECT COUNT(*) AS null_rows FROM "sales"."orders" WHERE order_id IS NULL',
+                id="postgres",
+            ),
+            pytest.param(
+                "mysql",
+                "SELECT COUNT(*) AS null_rows FROM `sales`.`orders` WHERE order_id IS NULL",
+                id="mysql",
+            ),
+        ],
+    )
+    def test_it_counts_the_nulls_a_partitioned_read_would_drop(
+        self, scheme: str, expected: str
+    ) -> None:
+        """Ensure the column is written unquoted, as ConnectorX writes it into each range."""
+        assert compile_database_null_count(scheme, "sales.orders", "order_id") == expected
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            pytest.param("order id", id="space"),
+            pytest.param("orders.id", id="dotted"),
+            pytest.param('"id"', id="quoted"),
+            pytest.param("id) OR (1 = 1", id="predicate"),
+        ],
+    )
+    def test_it_fails_closed_on_a_partition_column_outside_the_allowlist(self, column: str) -> None:
+        """Ensure a column reaching the compiler directly can never carry SQL."""
+        with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
+            compile_database_null_count("postgresql", "orders", column)
 
 
 class TestDuckDBSelect:

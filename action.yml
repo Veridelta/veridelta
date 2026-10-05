@@ -24,6 +24,9 @@ inputs:
   html-max-rows:
     description: Rows to embed per table in the HTML report.
     default: "1000"
+  markdown-max-rows:
+    description: Changed values to list in the Markdown summary, which reaches the job summary and the pull request comment. 0 lists none.
+    default: "0"
   fail-on-mismatch:
     description: Fail the step when the comparison finds drift. A configuration or runtime error always fails it.
     default: "true"
@@ -83,6 +86,7 @@ runs:
         VERIDELTA_EXTRAS: ${{ inputs.extras }}
         VERIDELTA_VERSION: ${{ inputs.version }}
         VERIDELTA_HTML_MAX_ROWS: ${{ inputs.html-max-rows }}
+        VERIDELTA_MARKDOWN_MAX_ROWS: ${{ inputs.markdown-max-rows }}
         VERIDELTA_ARTIFACT_NAME: ${{ inputs.artifact-name }}
         VERIDELTA_ACTION_PATH: ${{ github.action_path }}
         VERIDELTA_OUT: ${{ runner.temp }}/veridelta
@@ -99,7 +103,7 @@ runs:
           spec="veridelta${extras:+[$extras]} @ $source_url"
         fi
 
-        uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --otel "$out/otel-metrics.json" > "$out/summary.json"
+        uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel "$out/otel-metrics.json" > "$out/summary.json"
         code=$?
 
         if [ "$code" -eq 0 ]; then

@@ -13,16 +13,25 @@ Every value is a gauge: a snapshot of one run, which a backend graphs over
 time rather than adds up. The export carries counts, column names, and what
 was compared, never row values, connection URIs, credentials, or query text,
 since metrics usually end up in a third-party backend.
+
+The standard `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` variables add
+resource attributes, as they do for an OpenTelemetry SDK.
 """
 
 import json
+import logging
+import os
+import re
 import time
 from pathlib import Path
 from typing import Final
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote_to_bytes, urlsplit, urlunsplit
 
 from veridelta import __version__
 from veridelta.models import DeltaLakeConfig, DiffResult, IcebergConfig, SourceConfig, SourceRef
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 SERVICE_NAME: Final[str] = "veridelta"
 """`service.name` resource attribute and instrumentation scope name."""
@@ -32,6 +41,9 @@ _ROW_UNIT: Final[str] = "{row}"
 
 _CONTAINER_SCHEMES: Final[frozenset[str]] = frozenset({"abfs", "abfss", "wasb", "wasbs"})
 """Azure schemes whose `container@account` user part names a container, not a login."""
+
+_BAD_ESCAPE: Final[re.Pattern[str]] = re.compile(r"%(?![0-9A-Fa-f]{2})")
+"""A `%` that does not start a two-digit hexadecimal escape."""
 
 _JSONObject = dict[str, object]
 
@@ -93,24 +105,58 @@ def _side_name(side: SourceRef) -> str | None:
     return side.table
 
 
+def _decoded(text: str) -> str:
+    """Trim and percent-decode one key or value, raising ValueError if it is malformed."""
+    text = text.strip()
+    if _BAD_ESCAPE.search(text):
+        raise ValueError
+    return unquote_to_bytes(text).decode()
+
+
+def _parsed_attributes(text: str) -> dict[str, str]:
+    """Parse comma-separated `key=value` items, raising ValueError on any malformed one."""
+    attributes: dict[str, str] = {}
+    for item in filter(str.strip, text.split(",")):
+        key, separator, value = item.partition("=")
+        if not separator or not key.strip():
+            raise ValueError
+        attributes[_decoded(key)] = _decoded(value)
+    return attributes
+
+
+def _environment_attributes() -> dict[str, str]:
+    """Read the resource attributes the OpenTelemetry environment variables set."""
+    try:
+        attributes = _parsed_attributes(os.environ.get("OTEL_RESOURCE_ATTRIBUTES", ""))
+    except ValueError:
+        # The specification asks to discard the whole variable, and the value may hold a secret.
+        logger.warning(
+            "Ignoring OTEL_RESOURCE_ATTRIBUTES: it must hold comma-separated key=value items, "
+            "percent-encoded as UTF-8."
+        )
+        attributes = {}
+    if service_name := os.environ.get("OTEL_SERVICE_NAME"):
+        attributes["service.name"] = service_name
+    return attributes
+
+
 def _resource_attributes(
     config_path: str | Path | None, source: SourceRef | None, target: SourceRef | None
 ) -> list[_JSONObject]:
-    """Describe which comparison ran."""
-    attributes = [
-        _attribute("service.name", SERVICE_NAME),
-        _attribute("service.version", __version__),
-    ]
+    """Describe which comparison ran, after any attributes the environment sets."""
+    # The environment may rename the service, but Veridelta's own attributes win.
+    attributes = {"service.name": SERVICE_NAME, **_environment_attributes()}
+    attributes["service.version"] = __version__
     if config_path is not None:
-        attributes.append(_attribute("veridelta.config.path", str(config_path)))
+        attributes["veridelta.config.path"] = str(config_path)
     for role, side in (("source", source), ("target", target)):
         if side is None:
             continue
-        attributes.append(_attribute(f"veridelta.{role}.type", side.type))
+        attributes[f"veridelta.{role}.type"] = side.type
         name = _side_name(side)
         if name is not None:
-            attributes.append(_attribute(f"veridelta.{role}.name", name))
-    return attributes
+            attributes[f"veridelta.{role}.name"] = name
+    return [_attribute(key, value) for key, value in attributes.items()]
 
 
 def _metrics(result: DiffResult, observed: int) -> list[_JSONObject]:

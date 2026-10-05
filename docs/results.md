@@ -63,6 +63,18 @@ write_markdown(result, "reports/summary.md")
 
 `write_markdown` writes the short summary that CI posts to a job summary or a pull request, and `render_markdown` returns it as text. It holds the verdict, a table of counts, and the drifting columns, up to `report_top_columns_limit`. Column names are written as code, so a name from the data cannot break the table or the page it lands on.
 
+The summary lists no values unless asked. With `max_rows` above 0, or `--markdown-max-rows` on the command line, a "Changed values" table follows the drift table. It has one row per differing value: the primary keys, the column, and the source and target values, lowest keys first. From Python:
+
+```python
+from veridelta.report import write_markdown
+
+write_markdown(result, "summary.md", max_rows=20)
+```
+
+Each value is written as code. Text is quoted, so a trailing space or an empty string shows, and NULL reads as _null_. A value longer than 60 characters is cut and ends in `...`. The table stops at `max_rows` values, or before the summary reaches 60,000 bytes, which keeps a pull request comment under GitHub's limit. A last line then says how many values it showed. A pushdown run lists the values of its [row sample](pushdown.md#row-samples), so it needs `pushdown_sample_rows` too.
+
+CI posts the summary where more people may read it than may read the data. Ask for values only where every reader of the job summary and the pull request may see them.
+
 ## OpenTelemetry metrics
 
 `veridelta run --otel otel-metrics.json` writes the run's metrics for an observability backend, such as Datadog or Grafana, through an OpenTelemetry Collector or any OTLP/HTTP endpoint. It needs no OpenTelemetry package. From Python:
@@ -87,16 +99,14 @@ Every metric is a gauge stamped with the time the file is written, so each run a
 
 Resource attributes say which comparison ran:
 
-- `service.name`, which is `veridelta`, and `service.version`;
+- `service.name`, which is `veridelta` unless the environment renames it, and `service.version`;
 - `veridelta.config.path`, the configuration file;
 - `veridelta.source.type` and `veridelta.target.type`, such as `file` or `snowflake`;
 - `veridelta.source.name` and `veridelta.target.name`: the table, or the file or lakehouse path.
 
 A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run. An Azure `abfss://container@account` path keeps its container, which sits where a user would. A database `query` source has no name.
 
-Like the Markdown summary, the file holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file.
-
-Veridelta does not read `OTEL_RESOURCE_ATTRIBUTES`. To tag runs with an environment or a team, add attributes in the Collector, such as with its `resource` processor.
+Like the Markdown summary by default, the file holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file.
 
 The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file exporter format](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/file-exporter.md) specifies. The Collector's OTLP JSON file receiver, in its contrib distribution, can read it. The same line is the body an OTLP/HTTP endpoint accepts:
 
@@ -104,6 +114,17 @@ The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file
 curl --fail -X POST -H "Content-Type: application/json" \
   --data-binary @otel-metrics.json "$OTLP_ENDPOINT/v1/metrics"
 ```
+
+### Attributes from the environment
+
+The standard OpenTelemetry variables add resource attributes, so a run can carry its environment or its team:
+
+- `OTEL_RESOURCE_ATTRIBUTES` holds comma-separated `key=value` items, such as `deployment.environment=prod,team=data`. Percent-encode a comma, an equals sign, or a percent sign inside a key or value.
+- `OTEL_SERVICE_NAME` replaces `service.name`. It wins over a `service.name` in `OTEL_RESOURCE_ATTRIBUTES`, as the OpenTelemetry specification requires.
+
+When the environment sets a key that Veridelta also sets, Veridelta's value wins, except for `service.name`. The instrumentation scope stays `veridelta`. The values are exported as written, so keep secrets out of them.
+
+A malformed `OTEL_RESOURCE_ATTRIBUTES`, such as an item without `=` or a `%` that starts no valid escape, is ignored whole, as the specification recommends. The `veridelta.telemetry` logger then warns without repeating the value. The command line configures no logging, so there the variable is dropped silently.
 
 ## Artifacts
 

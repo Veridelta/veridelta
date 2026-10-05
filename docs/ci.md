@@ -59,6 +59,7 @@ jobs:
 | `version` | empty | Install this version from PyPI instead of the action's own ref. |
 | `python-version` | `3.12` | Python to run Veridelta with. |
 | `html-max-rows` | `1000` | Rows per table in the HTML report. |
+| `markdown-max-rows` | `0` | Changed values to list in the summary. See [Values in the summary](#values-in-the-summary). |
 | `fail-on-mismatch` | `true` | Fail the step on drift. An error always fails it. |
 | `comment` | `true` | Keep a summary comment on the pull request. |
 | `github-token` | `github.token` | Token used to comment. |
@@ -77,6 +78,10 @@ jobs:
 
 To act on drift in a later step instead of failing, set `fail-on-mismatch: false` and read `status`.
 
+### Values in the summary
+
+The summary lists counts and column names, never values, unless `markdown-max-rows` is above `0`. It then lists up to that many [changed values](results.md#markdown-summary), lowest keys first. They appear in the job summary and the pull request comment, where anyone who can read the pull request can read them. Set it only where every such reader may see the data.
+
 ### Sending metrics to an observability backend
 
 The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
@@ -84,6 +89,8 @@ The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetr
 ```yaml
       - uses: Veridelta/veridelta@v0.12.1
         id: veridelta
+        env:
+          OTEL_RESOURCE_ATTRIBUTES: deployment.environment=ci,team=data
         with:
           config: veridelta.yaml
       - name: Send the metrics
@@ -96,7 +103,7 @@ The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetr
           --data-binary "@$METRICS" "$OTLP_ENDPOINT/v1/metrics"
 ```
 
-Add any header your backend requires, such as an API key, from a secret.
+The step's `env` tags the run with [attributes from the environment](results.md#attributes-from-the-environment). Add any header your backend requires, such as an API key, from a secret.
 
 ## GitLab CI
 
@@ -114,13 +121,13 @@ The template defines one job, named `veridelta` by default, which:
 
 - installs the release the template ships with;
 - prints the summary to the job log;
-- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above.
+- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above. The job's `variables` can set the same OpenTelemetry variables.
 
 **Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports.
 
 **Inputs:**
 
-- `config`, `version`, `extras`, `html-max-rows`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action.
+- `config`, `version`, `extras`, `html-max-rows`, `markdown-max-rows`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action. With `markdown-max-rows` above `0`, values appear in the job log and the merge request note.
 - `stage`, `job-name`, and `image` place the job in your pipeline.
 
 **Credentials.** Set them as masked CI/CD variables; the configuration reads them as `${NAME}`.
