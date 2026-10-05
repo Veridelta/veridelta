@@ -57,6 +57,12 @@ database = [
     "connectorx>=0.4.5",
     "pyarrow>=14.0.1",
 ]
+# 1.5.0 is the release the parity suite runs on, and DuckDB's Polars export
+# reads its results through pyarrow.
+duckdb = [
+    "duckdb>=1.5.0",
+    "pyarrow>=14.0.1",
+]
 bigquery = [
     # 3.11.0 is the first release with every API the connector uses:
     # `RowIterator.to_arrow_iterable`, and `Client(location=...)` through
@@ -73,6 +79,7 @@ all = [
     "veridelta[excel]",
     "veridelta[fuzzy]",
     "veridelta[database]",
+    "veridelta[duckdb]",
 ]
 
 [dependency-groups]

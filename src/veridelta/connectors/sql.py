@@ -456,6 +456,25 @@ def _quoted_database_relation(scheme: str, table: str) -> str:
     return ".".join(f"{opening}{part}{closing}" for part in _relation_segments(table))
 
 
+def compile_duckdb_select(table: str, *, probe: bool = False) -> str:
+    """Compile the statement that reads a DuckDB source's `table`, or only its columns.
+
+    Args:
+        table (str): One to three dotted identifier segments.
+        probe (bool): Whether to return no rows, for a schema check.
+
+    Returns:
+        str: `SELECT * FROM` the table, each segment quoted as the DuckDB dialect quotes it.
+
+    Raises:
+        ConnectorError: If the table name falls outside the identifier allowlist.
+    """
+    quote = _IDENTIFIER_QUOTES[SQLDialect.DUCKDB]
+    relation = ".".join(f"{quote}{part}{quote}" for part in _relation_segments(table))
+    read = f"SELECT * FROM {relation}"
+    return f"{read} WHERE 1 = 0" if probe else read
+
+
 def compile_postgres_columns_query(table: str) -> str:
     """Compile a catalog query for a Postgres table's columns and numeric declarations.
 

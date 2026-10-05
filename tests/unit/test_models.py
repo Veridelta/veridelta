@@ -18,6 +18,7 @@ from veridelta.models import (
     DiffResult,
     DiffRule,
     DiffSummary,
+    DuckDBConfig,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -366,6 +367,16 @@ class TestModelStrictness:
                 {"uri": "postgresql://analyst@db.internal/sales", "password": _SECRET},
                 id="database-password",
             ),
+            pytest.param(
+                DuckDBConfig,
+                {"database": "md:sales", "motherduck_token": _SECRET},
+                id="duckdb-token",
+            ),
+            pytest.param(
+                DuckDBConfig,
+                {"database": f"md:sales?motherduck_token={_SECRET}", "table": "orders"},
+                id="duckdb-database",
+            ),
         ],
     )
     def test_it_keeps_credentials_out_of_validation_errors(
@@ -436,6 +447,13 @@ class TestModelStrictness:
                 _SECRET,
                 "another-secret",
                 id="database-password",
+            ),
+            pytest.param(
+                DuckDBConfig(database="md:sales", table="orders", motherduck_token=_SECRET),
+                "motherduck_token",
+                _SECRET,
+                "another-secret",
+                id="duckdb-token",
             ),
         ],
     )
@@ -630,6 +648,100 @@ class TestDatabaseConfig:
 
         assert config.redacted_uri == uri
         assert f"uri='{uri}'" in repr(config)
+
+
+class TestDuckDBConfig:
+    """Validate the settings a DuckDB or MotherDuck source reads a table or query with."""
+
+    def test_it_reads_a_table_or_runs_a_query(self) -> None:
+        """Ensure either way of naming the rows is accepted on its own."""
+        by_table = DuckDBConfig(database="warehouse.duckdb", table="main.orders")
+        by_query = DuckDBConfig(database="md:sales", query="SELECT * FROM orders")
+
+        assert by_table.type == "duckdb"
+        assert (by_table.table, by_table.query) == ("main.orders", None)
+        assert (by_query.table, by_query.query) == (None, "SELECT * FROM orders")
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            pytest.param({}, id="neither"),
+            pytest.param({"table": "orders", "query": "SELECT 1"}, id="both"),
+        ],
+    )
+    def test_it_requires_exactly_one_of_table_or_query(self, fields: dict[str, str]) -> None:
+        """Ensure a source never leaves open which rows it reads."""
+        with pytest.raises(ValidationError, match="set exactly one"):
+            DuckDBConfig.model_validate({"database": "warehouse.duckdb", **fields})
+
+    @pytest.mark.parametrize(
+        ("database", "motherduck"),
+        [
+            pytest.param("md:sales", True, id="md"),
+            pytest.param("MD:sales", True, id="md-uppercase"),
+            pytest.param("motherduck:sales", True, id="motherduck"),
+            pytest.param("md:", True, id="default-database"),
+            pytest.param("warehouse.duckdb", False, id="file"),
+            pytest.param("data/md.duckdb", False, id="file-named-md"),
+        ],
+    )
+    def test_it_tells_motherduck_from_a_file(self, database: str, motherduck: bool) -> None:
+        """Ensure only the `md:` and `motherduck:` prefixes name a MotherDuck database."""
+        assert DuckDBConfig(database=database, table="t").is_motherduck is motherduck
+
+    def test_it_takes_a_token_for_motherduck_only(self) -> None:
+        """Ensure a token set on a file is refused rather than silently unused."""
+        with pytest.raises(ValidationError, match="for an md: database"):
+            DuckDBConfig(database="warehouse.duckdb", table="t", motherduck_token=_SECRET)
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("md:sales?motherduck_token=abc123", id="motherduck-token"),
+            pytest.param("md:sales?token=abc123", id="token"),
+            pytest.param("MotherDuck:sales?MotherDuck_Token=abc123", id="mixed-case"),
+        ],
+    )
+    def test_it_refuses_a_token_inside_the_database_string(self, database: str) -> None:
+        """Ensure a token never sits in `database`, which is printed and logged, nor in the error."""
+        with pytest.raises(ValidationError, match="rather than in 'database'") as exc_info:
+            DuckDBConfig(database=database, table="t")
+
+        assert "abc123" not in str(exc_info.value)
+
+    def test_it_accepts_a_file_whose_name_mentions_a_token(self) -> None:
+        """Ensure the token check reads a MotherDuck string's parameters, not every path."""
+        assert DuckDBConfig(database="data/tokens.duckdb", table="t").database == (
+            "data/tokens.duckdb"
+        )
+
+    @pytest.mark.parametrize("database", [":memory:", ":memory:scratch", ":MEMORY:"])
+    def test_it_refuses_an_in_memory_database(self, database: str) -> None:
+        """Ensure a new, empty database is not mistaken for one that holds the rows."""
+        with pytest.raises(ValidationError, match="new, empty database"):
+            DuckDBConfig(database=database, query="SELECT 1 AS id")
+
+    @pytest.mark.parametrize(
+        "table",
+        [
+            pytest.param("orders; DROP TABLE orders", id="statement"),
+            pytest.param("a.b.c.d", id="four-segments"),
+            pytest.param('"orders"', id="quoted"),
+        ],
+    )
+    def test_it_rejects_a_table_outside_the_allowlist(self, table: str) -> None:
+        """Ensure a table name can never carry SQL of its own."""
+        with pytest.raises(ValidationError, match="should match pattern"):
+            DuckDBConfig(database="warehouse.duckdb", table=table)
+
+    def test_it_is_frozen_and_forbids_unknown_fields(self) -> None:
+        """Ensure a typo fails at load time and a loaded source cannot change."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            DuckDBConfig(database="warehouse.duckdb", table="t", tabel="t")  # type: ignore[call-arg]
+
+        config = DuckDBConfig(database="warehouse.duckdb", table="t")
+        with pytest.raises(ValidationError, match="frozen"):
+            config.table = "other"  # type: ignore[misc]
 
 
 class TestDiffSummaryCalculations:

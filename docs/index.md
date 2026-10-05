@@ -2,13 +2,13 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
-Files, lakehouse tables, and databases are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, and only counts and keys come back.
+Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, and only counts and keys come back.
 
 ## Install
 
 ```bash
 uv add veridelta                # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, excel, fuzzy, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, duckdb, excel, fuzzy, all
 ```
 
 ## Where to start
@@ -24,7 +24,7 @@ The tutorials build a comparison step by step:
 The user guide is the reference:
 
 - [Configuration](configuration.md): the file, its settings, and environment variables.
-- [Sources](sources.md): files, lakehouse tables, databases, and warehouses.
+- [Sources](sources.md): files, lakehouse tables, databases, DuckDB, and warehouses.
 - [Rules](rules.md): what counts as a match, column by column.
 - [Pushdown](pushdown.md): comparing two tables inside the warehouse that stores them.
 - [Results](results.md): the summary, reports, metrics, and files a run produces.
@@ -39,11 +39,13 @@ flowchart LR
     files[Files]
     lakehouse[Delta Iceberg]
     databases[Postgres MySQL SQLite]
+    duckdb[DuckDB MotherDuck]
     warehouse[Snowflake Databricks BigQuery]
   end
   files --> loader[LoaderFactory]
   lakehouse --> loader
   databases --> loader
+  duckdb --> loader
   warehouse --> compiler[SQLPushdownCompiler]
   databases -. pushdown .-> compiler
   loader --> engine["DiffEngine"]
@@ -55,4 +57,4 @@ flowchart LR
   result --> exitCode[Exit code]
 ```
 
-File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. A pair of tables in one warehouse, or two Postgres tables that set `pushdown`, compiles to SQL and runs in place. Both paths return a `DiffResult`.
+File, lakehouse, database, and DuckDB sources load through `LoaderFactory` into a local `DiffEngine` run. A pair of tables in one warehouse, or two Postgres tables that set `pushdown`, compiles to SQL and runs in place. Both paths return a `DiffResult`.

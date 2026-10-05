@@ -24,6 +24,7 @@ from veridelta.models import (
     DeltaLakeConfig,
     DiffConfig,
     DiffRule,
+    DuckDBConfig,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -124,6 +125,12 @@ class TestConfigChecks:
                 "veridelta.connectors.database.connectorx",
                 "database",
                 id="database",
+            ),
+            pytest.param(
+                DuckDBConfig(database="warehouse.duckdb", table="orders"),
+                "veridelta.connectors.duckdb.duckdb",
+                "duckdb",
+                id="duckdb",
             ),
         ],
     )

@@ -26,6 +26,7 @@ from veridelta.connectors.sql import (
     SampleQuery,
     compile_database_probe,
     compile_database_select,
+    compile_duckdb_select,
     compile_postgres_columns_query,
     compile_postgres_text_select,
 )
@@ -1486,6 +1487,36 @@ class TestDatabaseSelect:
         """Ensure a table name reaching the compiler directly can never carry SQL."""
         with pytest.raises(ConnectorError, match=message):
             compile_database_select("postgresql", table)
+
+
+class TestDuckDBSelect:
+    """Validate the statements a DuckDB source reads a `table` with."""
+
+    @pytest.mark.parametrize(
+        ("table", "probe", "expected"),
+        [
+            pytest.param("orders", False, 'SELECT * FROM "orders"', id="table"),
+            pytest.param(
+                "warehouse.main.Orders",
+                False,
+                'SELECT * FROM "warehouse"."main"."Orders"',
+                id="three-segments",
+            ),
+            pytest.param(
+                "main.orders", True, 'SELECT * FROM "main"."orders" WHERE 1 = 0', id="probe"
+            ),
+        ],
+    )
+    def test_it_quotes_each_segment_with_double_quotes(
+        self, table: str, probe: bool, expected: str
+    ) -> None:
+        """Ensure a table keeps its stored case, and a probe reads no rows."""
+        assert compile_duckdb_select(table, probe=probe) == expected
+
+    def test_it_fails_closed_on_a_table_outside_the_allowlist(self) -> None:
+        """Ensure a table name reaching the compiler directly can never carry SQL."""
+        with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
+            compile_duckdb_select('orders"; DROP TABLE orders; --')
 
 
 class TestWhitespaceTrim:

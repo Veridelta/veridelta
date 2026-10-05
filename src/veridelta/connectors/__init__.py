@@ -1,10 +1,11 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Warehouse pushdown, lakehouse-native, and database connector abstractions."""
+"""Warehouse pushdown, lakehouse-native, database, and DuckDB connector abstractions."""
 
 from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
+from veridelta.connectors.duckdb import DuckDBConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.connectors.warehouse import (
@@ -18,6 +19,7 @@ __all__ = [
     "DatabaseConnector",
     "DatabricksConnector",
     "DeltaLakeConnector",
+    "DuckDBConnector",
     "IcebergConnector",
     "PostgresPushdownSession",
     "PushdownQueryType",

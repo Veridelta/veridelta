@@ -1218,6 +1218,97 @@ class DatabaseConfig(BaseModel):
             yield (name, self.redacted_uri) if name == "uri" else (name, value)
 
 
+_MOTHERDUCK_PREFIXES: Final = ("md:", "motherduck:")
+"""Prefixes that make a DuckDB `database` a MotherDuck database rather than a file."""
+
+
+class DuckDBConfig(BaseModel):
+    """Immutable settings for reading a DuckDB or MotherDuck table or query into a local comparison.
+
+    The rows are read through DuckDB into Polars and compared by the local
+    engine, so a DuckDB source pairs with files, lakehouse tables, databases,
+    or another DuckDB source. Requires the `duckdb` extra
+    (`uv add 'veridelta[duckdb]'`).
+
+    Attributes:
+        type (Literal["duckdb"]): Source kind, which selects this model.
+        database (str): Path to a DuckDB file, which opens read-only, or a
+            MotherDuck database written as `md:name`.
+        table (str | None): Table or view to read whole, as one to three
+            unquoted identifier segments, such as `main.orders`.
+        query (str | None): SQL statement to run instead, sent to DuckDB
+            exactly as written. Set exactly one of `table` and `query`.
+        motherduck_token (str | None): MotherDuck token for an `md:` database.
+            When unset, the `MOTHERDUCK_TOKEN` environment variable supplies
+            it, then `motherduck_token`. Left out when the config is printed,
+            but kept by `model_dump()`.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    type: Literal["duckdb"] = Field(
+        "duckdb", description="Discriminator for DuckDB and MotherDuck."
+    )
+    database: str = Field(
+        ...,
+        min_length=1,
+        description="DuckDB file path, or md:name for a MotherDuck database.",
+    )
+    table: str | None = Field(
+        default=None,
+        pattern=SQL_RELATION_PATTERN,
+        description="Table or view to read whole.",
+    )
+    query: str | None = Field(
+        default=None,
+        min_length=1,
+        description="SQL statement to run instead of reading a table, sent as written.",
+    )
+    motherduck_token: str | None = Field(
+        default=None,
+        repr=False,
+        description="MotherDuck token for an md: database. Defaults to MOTHERDUCK_TOKEN.",
+    )
+
+    @property
+    def is_motherduck(self) -> bool:
+        """Return whether `database` names a MotherDuck database rather than a file.
+
+        Returns:
+            bool: Whether `database` starts with `md:` or `motherduck:`, in any case.
+        """
+        return self.database.lower().startswith(_MOTHERDUCK_PREFIXES)
+
+    @model_validator(mode="after")
+    def validate_connection(self) -> "DuckDBConfig":
+        """Reject a source that is ambiguous about its rows or would expose its token.
+
+        Returns:
+            DuckDBConfig: The validated instance.
+
+        Raises:
+            ValueError: If both or neither of `table` and `query` are set,
+                `database` is in memory or holds a token, or a token is set
+                for a file.
+        """
+        if (self.table is None) == (self.query is None):
+            raise ValueError("A DuckDB source reads a 'table' or runs a 'query'; set exactly one.")
+        # Messages never repeat `database`, which may hold the token they refuse.
+        if self.database.lower().startswith(":memory:"):
+            raise ValueError(
+                "':memory:' opens a new, empty database. Point 'database' at a DuckDB "
+                "file or an md: database."
+            )
+        if self.is_motherduck and "token" in self.database.partition("?")[2].lower():
+            raise ValueError(
+                "Set the MotherDuck token in 'motherduck_token' or MOTHERDUCK_TOKEN rather "
+                "than in 'database', which is printed and logged."
+            )
+        if self.motherduck_token is not None and not self.is_motherduck:
+            raise ValueError("'motherduck_token' is for an md: database; a DuckDB file has none.")
+        return self
+
+
 SourceRef = Annotated[
     SourceConfig
     | SnowflakeConfig
@@ -1225,7 +1316,8 @@ SourceRef = Annotated[
     | BigQueryConfig
     | DeltaLakeConfig
     | IcebergConfig
-    | DatabaseConfig,
+    | DatabaseConfig
+    | DuckDBConfig,
     Field(discriminator="type"),
 ]
-"""YAML/Python source or target: file, warehouse, lakehouse, or database."""
+"""YAML/Python source or target: file, warehouse, lakehouse, database, or DuckDB."""

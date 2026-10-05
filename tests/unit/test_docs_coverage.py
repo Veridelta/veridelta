@@ -15,6 +15,7 @@ from veridelta.models import (
     DeltaLakeConfig,
     DiffConfig,
     DiffRule,
+    DuckDBConfig,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -35,6 +36,7 @@ _PAGES: dict[str, tuple[type[BaseModel], ...]] = {
         DeltaLakeConfig,
         IcebergConfig,
         DatabaseConfig,
+        DuckDBConfig,
     ),
 }
 """Each guide page and the models whose every field it must name."""

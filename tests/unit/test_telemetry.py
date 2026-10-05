@@ -26,6 +26,7 @@ from veridelta.models import (
     DiffConfig,
     DiffResult,
     DiffSummary,
+    DuckDBConfig,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -345,6 +346,18 @@ class TestOTLPResource:
                 None,
                 id="database-query",
             ),
+            pytest.param(
+                DuckDBConfig(database="warehouse.duckdb", table="main.orders"),
+                "duckdb",
+                "main.orders",
+                id="duckdb",
+            ),
+            pytest.param(
+                DuckDBConfig(database="md:sales", query="SELECT * FROM orders"),
+                "duckdb",
+                None,
+                id="duckdb-query",
+            ),
         ],
     )
     def test_it_names_each_kind_of_source(
@@ -483,6 +496,17 @@ class TestOTLPResource:
                     query=f"SELECT * FROM orders WHERE note = '{_SECRET}'",
                 ),
                 id="database-query",
+            ),
+            pytest.param(
+                DuckDBConfig(database="md:db.internal", table="orders", motherduck_token=_SECRET),
+                id="duckdb-token",
+            ),
+            pytest.param(
+                DuckDBConfig(
+                    database="/srv/db.internal/warehouse.duckdb",
+                    query=f"SELECT * FROM orders WHERE note = '{_SECRET}'",
+                ),
+                id="duckdb-query",
             ),
         ],
     )

@@ -13,7 +13,7 @@ It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelt
 
 - **Declared rules.** Tolerances, null sentinels, regular expressions, value maps, date parsing, casts, and fuzzy text matching apply in nine fixed stages. Nothing is forgiven unless a rule says so, and `strict_types` fails a column whose type drifts.
 - **The same verdict in the warehouse.** Two tables in Snowflake, Databricks, BigQuery, or Postgres are compared where they are stored. The rules compile to SQL, and only counts and keys come back.
-- **Many sources.** CSV, Parquet, JSON, Arrow, Avro, and Excel files, Delta Lake and Iceberg tables, and Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases. Files and tables are scanned lazily where Polars can.
+- **Many sources.** CSV, Parquet, JSON, Arrow, Avro, and Excel files, Delta Lake and Iceberg tables, DuckDB files and MotherDuck databases, and Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases. Files and tables are scanned lazily where Polars can.
 - **Built for CI.** Exit codes, a JSON summary, a standalone HTML report, a Markdown summary for pull requests, OpenTelemetry metrics, and files of the rows that differ. A GitHub Action and a GitLab CI template post the summary on each pull request.
 - **Checks before a run.** `veridelta validate` reports what would stop a run without reading any rows, and a JSON Schema gives editors completion for configuration files.
 
@@ -21,7 +21,7 @@ It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelt
 
 ```bash
 uv add veridelta                # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, excel, fuzzy, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, duckdb, excel, fuzzy, all
 ```
 
 ## Quick start
