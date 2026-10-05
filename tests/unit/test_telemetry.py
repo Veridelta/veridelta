@@ -385,6 +385,34 @@ class TestOTLPResource:
 
         assert attributes["veridelta.target.name"] == name
 
+    @pytest.mark.parametrize(
+        ("path", "name"),
+        [
+            pytest.param(
+                "abfss://events@lake.dfs.core.windows.net/raw/orders?sv=2024-11-04&sig=abc",
+                "abfss://events@lake.dfs.core.windows.net/raw/orders",
+                id="abfss",
+            ),
+            pytest.param(
+                "wasbs://events@lake.blob.core.windows.net/raw/orders",
+                "wasbs://events@lake.blob.core.windows.net/raw/orders",
+                id="wasbs",
+            ),
+            pytest.param(
+                "abfss://events:hunter2@lake.dfs.core.windows.net/raw/orders",
+                "abfss://lake.dfs.core.windows.net/raw/orders",
+                id="password-in-user-part",
+            ),
+        ],
+    )
+    def test_it_keeps_an_azure_container_but_never_a_password(self, path: str, name: str) -> None:
+        """Ensure `container@account` keeps its container, which Azure puts where a user goes."""
+        side = DeltaLakeConfig(table_uri=path)
+
+        attributes = _resource(render_otlp_metrics(_drift(), source=side))
+
+        assert attributes["veridelta.source.name"] == name
+
     def test_it_leaves_out_a_name_that_does_not_parse_as_a_url(self) -> None:
         """Ensure a path the URL parser rejects is dropped rather than exported raw."""
         side = DeltaLakeConfig(table_uri="https://[::1/lake/events?sig=abc")
