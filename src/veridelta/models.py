@@ -489,6 +489,10 @@ class DiffConfig(BaseModel):
             flag evaluates to False.
         report_top_columns_limit (int): Max number of drifted columns to display
             in the generated markdown report summary.
+        pushdown_sample_rows (int): Warehouse pushdown only. Fetch up to this many
+            changed rows with both sides' values, so the HTML report and the
+            result can show values rather than keys. 0 (default) fetches none,
+            so no value leaves the warehouse. Local runs hold every row already.
         output_path (str | None): Optional path to save the resulting diff report
             and artifacts (added, removed, and changed rows).
         output_format (ArtifactFormat): The file format for exported discrepancy
@@ -554,6 +558,16 @@ class DiffConfig(BaseModel):
         default=5,
         ge=0,
         description="Max number of top drifted columns to show in the report summary.",
+    )
+
+    pushdown_sample_rows: int = Field(
+        default=0,
+        ge=0,
+        strict=True,
+        description=(
+            "Warehouse pushdown only: fetch up to this many changed rows with both "
+            "sides' values. 0 fetches none, so no value leaves the warehouse."
+        ),
     )
 
     output_path: str | None = Field(

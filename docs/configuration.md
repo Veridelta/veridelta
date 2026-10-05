@@ -429,6 +429,7 @@ Global directives control the strictness of the underlying Polars evaluation eng
 | `default_whitespace_mode` | Global whitespace stripping: `none` (default), `left`, `right`, or `both`. |
 | `default_null_values` | Global sentinel list. Applied only to columns whose type can hold each value. |
 | `report_top_columns_limit` | How many drifted columns to list in `report_summary`. `0` hides the section. |
+| `pushdown_sample_rows` | Warehouse pushdown only. Fetch up to this many changed rows with both sides' values, so the HTML report and the result show values rather than primary keys alone. `0` (default) fetches none, so no value leaves the warehouse. Local runs ignore it, since they hold every row. |
 | `output_path` | Directory to write discrepancy artifacts. Omitted means no files are written. |
 | `output_format` | Artifact format: `parquet` (default), `csv`, `json`, `ndjson`, or `arrow`. |
 

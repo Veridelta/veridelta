@@ -893,6 +893,13 @@
       "title": "Report Top Columns Limit",
       "type": "integer"
     },
+    "pushdown_sample_rows": {
+      "default": 0,
+      "description": "Warehouse pushdown only: fetch up to this many changed rows with both sides' values. 0 fetches none, so no value leaves the warehouse.",
+      "minimum": 0,
+      "title": "Pushdown Sample Rows",
+      "type": "integer"
+    },
     "output_path": {
       "anyOf": [
         {

@@ -303,6 +303,31 @@ class TestModelStrictness:
         with pytest.raises(ValidationError, match="Input should be greater than or equal to 0"):
             DiffConfig(primary_keys=["id"], threshold=-0.1)
 
+    def test_it_samples_no_pushdown_rows_unless_asked(self) -> None:
+        """Ensure no value leaves a warehouse by default, and a sample size is kept."""
+        assert DiffConfig(primary_keys=["id"]).pushdown_sample_rows == 0
+        assert DiffConfig(primary_keys=["id"], pushdown_sample_rows=25).pushdown_sample_rows == 25
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            pytest.param(-1, "greater than or equal to 0", id="negative"),
+            pytest.param(True, "valid integer", id="boolean"),
+            pytest.param("5", "valid integer", id="quoted"),
+            pytest.param(5.0, "valid integer", id="float"),
+        ],
+    )
+    def test_it_rejects_a_sample_size_that_is_not_a_whole_count(
+        self, value: object, message: str
+    ) -> None:
+        """Ensure a negative, boolean, quoted, or float sample size fails when the file loads.
+
+        The count reaches SQL as a `LIMIT`, so it is checked strictly rather
+        than coerced.
+        """
+        with pytest.raises(ValidationError, match=message):
+            DiffConfig(primary_keys=["id"], pushdown_sample_rows=value)  # type: ignore[arg-type]
+
     def test_it_rejects_invalid_schema_modes_and_source_formats(self) -> None:
         """Ensure Literal types catch typos and unsupported configurations."""
         with pytest.raises(ValidationError, match="Input should be"):
