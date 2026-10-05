@@ -22,7 +22,6 @@ from hypothesis import HealthCheck, given, settings
 
 from tests.integration.duckdb_harness import (
     REFUSED_RULES,
-    UNPADDED_DTYPES,
     run_local,
     run_pushdown,
 )
@@ -81,7 +80,7 @@ class TestFuzzedParity:
     """Validate that drawn comparisons reach one verdict on both engines."""
 
     @_PROFILE
-    @given(comparison_cases(refused=REFUSED_RULES, unpadded=UNPADDED_DTYPES))
+    @given(comparison_cases(refused=REFUSED_RULES))
     def test_both_engines_reach_the_same_verdict(
         self, case: tuple[DiffConfig, pl.DataFrame, pl.DataFrame]
     ) -> None:

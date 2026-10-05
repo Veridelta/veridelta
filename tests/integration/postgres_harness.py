@@ -17,9 +17,10 @@ on one database, rather than Polars types against Postgres ones.
 Each dtype is stored as the nearest Postgres type. Postgres has no one-byte or
 unsigned integers, so `Int8` and `UInt8` become `smallint`, `UInt16` becomes
 `integer`, `UInt32` becomes `bigint`, and `UInt64` becomes `numeric(20, 0)`.
-ConnectorX reads every `numeric` back as `Decimal(38, 10)`. A dtype with no
-counterpart, or a column name past Postgres' 63-byte identifier limit, raises
-`NotImplementedError`; the tests that need one carry the `duckdb_only` marker.
+A local run reads each `numeric` back at its declared precision and scale. A
+dtype with no counterpart, or a column name past Postgres' 63-byte identifier
+limit, raises `NotImplementedError`; the tests that need one carry the
+`duckdb_only` marker.
 """
 
 from __future__ import annotations
@@ -49,14 +50,6 @@ URI_VARIABLE = "VERIDELTA_POSTGRES_URI"
 
 REFUSED_RULES = frozenset({"datetime_format", "max_levenshtein_distance"})
 """Rule fields Postgres pushdown refuses with a `ConfigError` before any query."""
-
-NUMERIC_DTYPES: frozenset[type[pl.DataType]] = frozenset({pl.UInt64, pl.Decimal})
-"""Dtypes stored as `numeric`, which a local run reads back as `Decimal(38, 10)`.
-
-A local run therefore writes them as text with ten decimal places, where
-Postgres writes the stored scale, so the two settings disagree on `pad_zeros`.
-`test_postgres_pushdown` pins that difference.
-"""
 
 _IDENTIFIER_BYTES = 63
 """Longest identifier Postgres keeps; it silently truncates anything longer."""

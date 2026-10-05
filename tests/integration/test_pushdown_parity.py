@@ -625,9 +625,6 @@ class TestStrictTypesParity:
                 False,
                 2,
                 id="decimal-scales",
-                marks=pytest.mark.duckdb_only(
-                    reason="ConnectorX reads every Postgres numeric as Decimal(38, 10)."
-                ),
             ),
             pytest.param(
                 pl.Series("val", ["abc", "10"]),

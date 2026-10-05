@@ -289,9 +289,7 @@ def _target_cell(draw: st.DrawFn, kind: _Kind, value: Any) -> Any:
 
 @st.composite
 def comparison_cases(
-    draw: st.DrawFn,
-    refused: frozenset[str] = frozenset(),
-    unpadded: frozenset[type[pl.DataType]] = frozenset(),
+    draw: st.DrawFn, refused: frozenset[str] = frozenset()
 ) -> tuple[DiffConfig, pl.DataFrame, pl.DataFrame]:
     """Draw a configuration and a source and target both engines should agree on.
 
@@ -299,9 +297,6 @@ def comparison_cases(
         draw (st.DrawFn): Hypothesis' draw function.
         refused (frozenset[str]): Rule fields to leave out of every rule,
             because the pushdown side would refuse them.
-        unpadded (frozenset[type[pl.DataType]]): Dtypes never given
-            `pad_zeros`, because the backend writes them as different text on
-            its two sides.
 
     Returns:
         tuple[DiffConfig, pl.DataFrame, pl.DataFrame]: Keys on a unique `id`,
@@ -340,8 +335,6 @@ def comparison_cases(
         if not draw(st.booleans()):
             continue
         fields = {field: value for field, value in draw(kind.rules).items() if field not in refused}
-        if {type(schema[column]), type(target_schema[column])} & unpadded:
-            fields.pop("pad_zeros", None)
         rules.append(DiffRule(column_names=[column], **fields))
     config = DiffConfig(
         primary_keys=["id"],
