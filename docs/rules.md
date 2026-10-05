@@ -291,7 +291,7 @@ Equal values still match outright. A NULL is never similar to anything, so `trea
 
 A rule sets at most one of the two limits, and neither has a global default. Loosening every text column would also forgive identifiers and codes that must match exactly. Without the extra, a run that needs a score raises `ConfigError` with the install command before comparing any rows.
 
-Pushdown compiles `max_levenshtein_distance` for Snowflake, Databricks, and BigQuery, and refuses `min_jaro_winkler_similarity`; see [Rules in SQL](pushdown.md#rules-in-sql).
+Pushdown compiles `max_levenshtein_distance` for Snowflake, Databricks, and BigQuery, while Postgres and DuckDB refuse it. Every warehouse refuses `min_jaro_winkler_similarity`; see [Rules in SQL](pushdown.md#rules-in-sql).
 
 ## Null equality
 

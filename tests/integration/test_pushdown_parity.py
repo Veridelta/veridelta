@@ -10,6 +10,7 @@ from typing import Any
 
 import polars as pl
 import pytest
+from pytest_mock import MockerFixture
 
 from tests.integration.duckdb_harness import (
     assert_parity,
@@ -17,6 +18,7 @@ from tests.integration.duckdb_harness import (
     run_pushdown,
     run_value_map_pushdown,
 )
+from veridelta.connectors.sql import _EDIT_DISTANCE_FUNCTIONS, SQLDialect
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, DataIntegrityError
 from veridelta.models import DiffConfig, DiffRule, ValueMapProposal
@@ -1438,6 +1440,16 @@ class TestNumericComparisonParity:
 class TestSimilarityParity:
     """Validate text similarity limits on both engines."""
 
+    @pytest.fixture(autouse=True)
+    def _count_edits_on_duckdb(self, mocker: MockerFixture) -> None:
+        """Let DuckDB compute edit distances, as the warehouses that count characters do.
+
+        DuckDB pushdown refuses the rule, because `levenshtein` counts UTF-8
+        bytes. On the ASCII text below, bytes and characters agree, so DuckDB
+        stands in for Snowflake, Databricks, and BigQuery.
+        """
+        mocker.patch.dict(_EDIT_DISTANCE_FUNCTIONS, {SQLDialect.DUCKDB: "levenshtein"})
+
     def test_it_runs_jaro_winkler_locally_and_refuses_it_in_a_warehouse(self) -> None:
         """Ensure a limit SQL cannot reproduce is refused rather than approximated."""
         src = pl.DataFrame({"id": [1], "name": ["MARTHA"]})
@@ -1582,12 +1594,13 @@ class TestSimilarityParity:
 
     @pytest.mark.duckdb_only(reason="It pins how DuckDB itself counts edits.")
     def test_it_counts_bytes_on_the_duckdb_stand_in(self) -> None:
-        """Pin the harness's one known divergence, which no supported warehouse shares.
+        """Pin why DuckDB pushdown refuses edit distances.
 
         DuckDB's `levenshtein` counts UTF-8 bytes, so `café` and `cafe` are two
-        edits apart there and one apart locally, as in Snowflake and Databricks,
-        which count characters. That is why the parity data above is ASCII. If
-        this starts failing, DuckDB counts characters and the restriction can go.
+        edits apart there and one apart locally, as in Snowflake, Databricks,
+        and BigQuery, which count characters. That is why DuckDB pushdown
+        refuses `max_levenshtein_distance`, and why the parity data above is
+        ASCII. If this starts failing, DuckDB counts characters, and both can go.
         """
         src = pl.DataFrame({"id": [1], "name": ["café"]})
         tgt = pl.DataFrame({"id": [1], "name": ["cafe"]})

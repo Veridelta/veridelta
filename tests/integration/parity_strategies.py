@@ -8,8 +8,7 @@ mutating, and nulling rows, and a configuration whose rules are drawn from a
 menu that fits each column's type. Inputs where the two engines are documented
 to differ are left out on purpose, so a failure is a real divergence:
 
-- text is ASCII: DuckDB folds case differently on other scripts, and its
-  `levenshtein` counts bytes rather than characters;
+- text is ASCII: DuckDB folds case differently on other scripts;
 - regular expressions avoid `\d`, `\w`, and look-around, whose meaning varies
   by engine;
 - no column is cast between float and text, or cast leniently, since each
@@ -17,9 +16,10 @@ to differ are left out on purpose, so a failure is a real divergence:
 - no Categorical, Enum, Duration, Null, nanosecond, or non-UTC timezone dtypes,
   which the DuckDB harness cannot round-trip faithfully;
 - no rule field the backend's pushdown refuses, such as `datetime_format` on
-  Postgres, and no `pad_zeros` on a dtype the backend writes as different text
-  on its two sides, such as a `UInt64` Postgres stores as `numeric`, both of
-  which `comparison_cases` drops when told to.
+  Postgres or `max_levenshtein_distance` on both backends, and no `pad_zeros`
+  on a dtype the backend writes as different text on its two sides, such as a
+  `UInt64` Postgres stores as `numeric`, both of which `comparison_cases` drops
+  when told to.
 """
 
 from collections.abc import Callable

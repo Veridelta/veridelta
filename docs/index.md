@@ -2,7 +2,7 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
-Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, and only counts and keys come back.
+Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, as are two Postgres or DuckDB tables that set `pushdown`. Only counts and keys come back.
 
 ## Install
 
@@ -48,6 +48,7 @@ flowchart LR
   duckdb --> loader
   warehouse --> compiler[SQLPushdownCompiler]
   databases -. pushdown .-> compiler
+  duckdb -. pushdown .-> compiler
   loader --> engine["DiffEngine"]
   engine --> result[DiffResult]
   compiler --> warehouseSql[Warehouse SQL]
@@ -57,4 +58,4 @@ flowchart LR
   result --> exitCode[Exit code]
 ```
 
-File, lakehouse, database, and DuckDB sources load through `LoaderFactory` into a local `DiffEngine` run. A pair of tables in one warehouse, or two Postgres tables that set `pushdown`, compiles to SQL and runs in place. Both paths return a `DiffResult`.
+File, lakehouse, database, and DuckDB sources load through `LoaderFactory` into a local `DiffEngine` run. A pair of tables in one warehouse, or two Postgres or DuckDB tables that set `pushdown`, compiles to SQL and runs in place. Both paths return a `DiffResult`.

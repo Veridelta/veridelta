@@ -5,7 +5,7 @@
 
 from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
-from veridelta.connectors.duckdb import DuckDBConnector
+from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.connectors.warehouse import (
@@ -20,6 +20,7 @@ __all__ = [
     "DatabricksConnector",
     "DeltaLakeConnector",
     "DuckDBConnector",
+    "DuckDBPushdownSession",
     "IcebergConnector",
     "PostgresPushdownSession",
     "PushdownQueryType",

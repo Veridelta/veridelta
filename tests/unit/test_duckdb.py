@@ -11,7 +11,8 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
-from veridelta.connectors.duckdb import DuckDBConnector
+from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
+from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
 
@@ -290,3 +291,163 @@ class TestDuckDBConnectorLifecycle:
         """Ensure a DuckDB source is never asked to run comparison SQL."""
         with pytest.raises(ConnectorError, match="compared locally"):
             DuckDBConnector(_FILE).execute_pushdown("SELECT 1")
+
+
+_PUSHDOWN = DuckDBConfig(database="warehouse.duckdb", table="src", pushdown=True)
+
+
+class TestDuckDBPushdownSession:
+    """Validate the session that runs compiled comparison SQL inside DuckDB."""
+
+    def test_it_runs_every_statement_on_one_connection(self, mocker: MockerFixture) -> None:
+        """Ensure the database opens once, read-only and in UTC, and closes once."""
+        frame = pl.DataFrame({"id": [1, 2]})
+        driver = _driver(mocker, frame)
+        connection = driver.connect.return_value
+        session = DuckDBPushdownSession(_PUSHDOWN)
+
+        session.connect()
+        first = session.execute_pushdown("SELECT 1", query_type="count")
+        session.execute_pushdown("SELECT 2")
+        session.close()
+        session.close()
+
+        driver.connect.assert_called_once_with("warehouse.duckdb", read_only=True)
+        assert connection.mock_calls[0] == call.execute("SET TimeZone = 'UTC'")
+        assert connection.sql.call_args_list == [call("SELECT 1"), call("SELECT 2")]
+        assert first.collect().equals(frame)
+        connection.close.assert_called_once_with()
+
+    def test_it_compiles_for_the_duckdb_dialect(self) -> None:
+        """Ensure the engine asks this session for DuckDB SQL."""
+        assert DuckDBPushdownSession(_PUSHDOWN).compiler.dialect is SQLDialect.DUCKDB
+
+    def test_it_describes_the_last_result_without_its_rows(self, mocker: MockerFixture) -> None:
+        """Ensure the schema of a result comes from the statement, wrapped to return nothing."""
+        frame = pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Decimal(10, 2)})
+        connection = _driver(mocker, frame).connect.return_value
+        session = DuckDBPushdownSession(_PUSHDOWN)
+        session.connect()
+        session.execute_pushdown("SELECT id, amount FROM src")
+
+        schema = session.fetch_schema()
+
+        probe = SQLPushdownCompiler(SQLDialect.DUCKDB).compile_result_schema_query(
+            "SELECT id, amount FROM src"
+        )
+        assert connection.sql.call_args_list[-1] == call(probe)
+        assert schema == frame.schema
+
+    def test_it_needs_a_statement_before_it_can_describe_one(self, mocker: MockerFixture) -> None:
+        """Ensure there is no schema to report before any statement has run."""
+        _driver(mocker)
+        session = DuckDBPushdownSession(_PUSHDOWN)
+        session.connect()
+
+        with pytest.raises(ConnectorError, match="No pushdown statement has run yet"):
+            session.fetch_schema()
+
+    def test_it_refuses_work_until_connected_and_after_closing(self, mocker: MockerFixture) -> None:
+        """Ensure a statement never runs without an open connection."""
+        _driver(mocker)
+        session = DuckDBPushdownSession(_PUSHDOWN)
+
+        with pytest.raises(ConnectorError, match="not connected"):
+            session.execute_pushdown("SELECT 1")
+        session.connect()
+        session.close()
+        with pytest.raises(ConnectorError, match="not connected"):
+            session.execute_pushdown("SELECT 1")
+
+    def test_it_opens_motherduck_with_its_token(self, mocker: MockerFixture) -> None:
+        """Ensure a MotherDuck pair connects as a MotherDuck read does."""
+        driver = _driver(mocker)
+        config = DuckDBConfig(
+            database="md:sales", table="src", motherduck_token=_SECRET, pushdown=True
+        )
+
+        DuckDBPushdownSession(config).connect()
+
+        driver.connect.assert_called_once_with("md:sales", config={"motherduck_token": _SECRET})
+
+    def test_it_refuses_motherduck_without_a_token(self, mocker: MockerFixture) -> None:
+        """Ensure no session starts the browser sign-in a CI job cannot finish."""
+        driver = _driver(mocker)
+        config = DuckDBConfig(database="md:sales", table="src", pushdown=True)
+
+        with pytest.raises(ConnectorError, match="needs a token"):
+            DuckDBPushdownSession(config).connect()
+
+        driver.connect.assert_not_called()
+
+    def test_it_keeps_the_token_out_of_failures(self, mocker: MockerFixture) -> None:
+        """Ensure a failed connection or statement is reported without the token or its cause."""
+        driver = _driver(mocker)
+        config = DuckDBConfig(
+            database="md:sales", table="src", motherduck_token=_SECRET, pushdown=True
+        )
+        driver.connect.side_effect = RuntimeError(f"refused token {_SECRET}")
+
+        with pytest.raises(ConnectorError) as connecting:
+            DuckDBPushdownSession(config).connect()
+        driver.connect.side_effect = None
+        driver.connect.return_value.sql.side_effect = RuntimeError(f"expired token {_SECRET}")
+        session = DuckDBPushdownSession(config)
+        session.connect()
+        with pytest.raises(ConnectorError) as running:
+            session.execute_pushdown("SELECT 1", query_type="mismatch")
+
+        assert str(connecting.value) == (
+            "DuckDB connection to 'md:sales' failed: refused token ***"
+        )
+        assert str(running.value) == (
+            "DuckDB mismatch statement on 'md:sales' failed: expired token ***"
+        )
+        for error in (connecting.value, running.value):
+            assert error.__cause__ is None
+            assert _SECRET not in "".join(traceback.format_exception(error))
+
+    def test_it_logs_statements_by_kind_without_their_sql(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure each statement is logged by its kind, never by its text."""
+        driver = _driver(mocker, pl.DataFrame({"n": [1, 2, 3]}))
+        session = DuckDBPushdownSession(_PUSHDOWN)
+
+        with caplog.at_level(logging.INFO, logger="veridelta.connectors.duckdb"):
+            session.connect()
+            session.execute_pushdown("SELECT secret_column FROM src", query_type="count")
+            driver.connect.return_value.sql.side_effect = RuntimeError("down")
+            with pytest.raises(ConnectorError):
+                session.execute_pushdown("SELECT secret_column FROM src", query_type="added")
+            session.close()
+
+        assert "Connected to DuckDB database warehouse.duckdb" in caplog.text
+        assert "Ran DuckDB count statement on warehouse.duckdb" in caplog.text
+        assert "DuckDB added statement on warehouse.duckdb failed" in caplog.text
+        assert "Closed DuckDB database warehouse.duckdb" in caplog.text
+        assert "secret_column" not in caplog.text
+
+    def test_it_explains_missing_extras(self, mocker: MockerFixture) -> None:
+        """Ensure a missing `duckdb` or `pyarrow` names the extra to install."""
+        mocker.patch("veridelta.connectors.duckdb.duckdb", None)
+        with pytest.raises(ConnectorError, match=r"veridelta\[duckdb\]"):
+            DuckDBPushdownSession(_PUSHDOWN).connect()
+
+        driver = _driver(mocker)
+        driver.connect.return_value.sql.return_value.pl.side_effect = ModuleNotFoundError("pyarrow")
+        session = DuckDBPushdownSession(_PUSHDOWN)
+        session.connect()
+        with pytest.raises(ConnectorError, match=r"veridelta\[duckdb\]"):
+            session.execute_pushdown("SELECT 1")
+
+    def test_it_names_a_result_column_polars_cannot_read(self, mocker: MockerFixture) -> None:
+        """Ensure a sample holding an INTERVAL fails by name instead of panicking."""
+        _driver(mocker, pl.DataFrame({"span_source": [None]}), types=["INTERVAL"])
+        session = DuckDBPushdownSession(_PUSHDOWN)
+        session.connect()
+
+        with pytest.raises(
+            ConnectorError, match="Column 'span_source' of the samples statement holds INTERVAL"
+        ):
+            session.execute_pushdown("SELECT sample", query_type="samples")

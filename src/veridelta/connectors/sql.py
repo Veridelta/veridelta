@@ -3,11 +3,12 @@
 
 """Zero-dependency SQL pushdown compiler for warehouse dialects.
 
-Translates `DiffRule` models into Snowflake, Databricks, BigQuery, and Postgres SQL predicates and
-assembles inner-join mismatch queries, per-column mismatch tallies, anti-join
-queries for added and removed rows, row counts, and column probes without
-extracting source tables. It also compiles the one statement a database source
-reads its `table` with, so every SQL string Veridelta builds is assembled here.
+Translates `DiffRule` models into Snowflake, Databricks, BigQuery, Postgres,
+and DuckDB SQL predicates and assembles inner-join mismatch queries, per-column
+mismatch tallies, anti-join queries for added and removed rows, row counts, and
+column probes without extracting source tables. It also compiles the statements
+database and DuckDB sources read their `table` with, so every SQL string
+Veridelta builds is assembled here.
 
 Every dialect-specific spelling lives in a table at module scope rather than in
 the method that needs it. Adding a dialect is then a matter of filling in the
@@ -97,10 +98,10 @@ _Projection = tuple[str, str, DiffRule | None]
 class SQLDialect(StrEnum):
     """Warehouse SQL dialects supported by the pushdown compiler.
 
-    `DUCKDB` has no connector or config model. It exists so the differential
-    test harness can execute real compiler output instead of a rewritten
-    approximation of it. `POSTGRES` runs where two database sources on one
-    Postgres connection opt into pushdown.
+    `POSTGRES` runs where two database sources on one Postgres connection opt
+    into pushdown, and `DUCKDB` where two DuckDB tables in one database do.
+    The differential test harness also runs `DUCKDB` output, so the compiled
+    SQL itself, not a rewrite of it, is checked against the local engine.
     """
 
     SNOWFLAKE = "snowflake"
@@ -273,11 +274,21 @@ _EDIT_DISTANCE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     # and needs Runtime 13.3, so neither is portable.
     SQLDialect.SNOWFLAKE: "EDITDISTANCE",
     SQLDialect.DATABRICKS: "levenshtein",
-    # DuckDB counts UTF-8 bytes, not characters, so the parity tests compare ASCII text.
-    SQLDialect.DUCKDB: "levenshtein",
     SQLDialect.BIGQUERY: "EDIT_DISTANCE",
 }
 """Each dialect's Levenshtein distance, always called with two arguments."""
+
+_EDIT_DISTANCE_REFUSALS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.POSTGRES: (
+        "its levenshtein needs the fuzzystrmatch extension and refuses text longer than "
+        "255 characters"
+    ),
+    SQLDialect.DUCKDB: (
+        "its levenshtein counts UTF-8 bytes, not characters, so an accented letter counts "
+        "as two edits"
+    ),
+}
+"""Why each dialect without an edit distance function refuses `max_levenshtein_distance`."""
 
 
 _REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
@@ -1815,9 +1826,9 @@ class SQLPushdownCompiler:
         distance = _EDIT_DISTANCE_FUNCTIONS.get(self.dialect)
         if distance is None:
             raise ConfigError(
-                f"max_levenshtein_distance cannot be pushed down to {self.dialect.value}: its "
-                "levenshtein needs the fuzzystrmatch extension and refuses text longer than "
-                "255 characters. Compare locally instead (pushdown: false)."
+                f"max_levenshtein_distance cannot be pushed down to {self.dialect.value}: "
+                f"{_EDIT_DISTANCE_REFUSALS[self.dialect]}. Compare locally instead "
+                "(pushdown: false)."
             )
         return f"({src_expr} = {tgt_expr} OR {distance}({src_expr}, {tgt_expr}) <= {limit!r})"
 

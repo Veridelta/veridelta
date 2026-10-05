@@ -10,6 +10,7 @@ from veridelta.connectors import SQLDialect, SQLPushdownCompiler
 from veridelta.connectors.sql import (
     _DATABASE_IDENTIFIER_QUOTES,
     _EDIT_DISTANCE_FUNCTIONS,
+    _EDIT_DISTANCE_REFUSALS,
     _LITERAL_ESCAPES,
     _REGEX_REPLACE_FLAGS,
     _SAMPLE_HASH_FUNCTIONS,
@@ -1346,13 +1347,36 @@ class TestCTENormalization:
 class TestEditDistanceCompilation:
     """Validate stage 8's text similarity limits across the dialect table."""
 
-    def test_it_names_an_edit_distance_function_for_every_dialect_but_postgres(self) -> None:
-        """Ensure a new dialect cannot inherit another's function name.
+    def test_it_names_a_function_or_a_refusal_for_every_dialect(self) -> None:
+        """Ensure each dialect either computes an edit distance or says why it refuses to.
 
-        Postgres is left out on purpose: its `levenshtein` needs an extension
-        and refuses text over 255 characters, so the compiler refuses the rule.
+        Postgres' `levenshtein` needs an extension and refuses text over 255
+        characters, and DuckDB's counts bytes rather than characters.
         """
-        assert set(_EDIT_DISTANCE_FUNCTIONS) == set(SQLDialect) - {SQLDialect.POSTGRES}
+        functions, refusals = set(_EDIT_DISTANCE_FUNCTIONS), set(_EDIT_DISTANCE_REFUSALS)
+
+        assert functions | refusals == set(SQLDialect)
+        assert functions & refusals == set()
+        assert refusals == {SQLDialect.POSTGRES, SQLDialect.DUCKDB}
+
+    @pytest.mark.parametrize(
+        ("dialect", "reason"),
+        [
+            pytest.param(SQLDialect.POSTGRES, "fuzzystrmatch", id="postgres"),
+            pytest.param(SQLDialect.DUCKDB, "counts UTF-8 bytes", id="duckdb"),
+        ],
+    )
+    def test_it_refuses_an_edit_distance_with_its_reason(
+        self, dialect: SQLDialect, reason: str
+    ) -> None:
+        """Ensure a refusing dialect names why, and how to compare instead."""
+        rule = DiffRule(column_names=["name"], max_levenshtein_distance=2)
+
+        with pytest.raises(ConfigError, match=f"cannot be pushed down to {dialect.value}") as info:
+            SQLPushdownCompiler(dialect).compile_column_predicate(rule, "name")
+
+        assert reason in str(info.value)
+        assert "pushdown: false" in str(info.value)
 
     @pytest.mark.parametrize(
         ("compiler", "expected"),
@@ -1366,11 +1390,6 @@ class TestEditDistanceCompilation:
                 _databricks(),
                 "(`src`.`name` = `tgt`.`name` OR levenshtein(`src`.`name`, `tgt`.`name`) <= 2)",
                 id="databricks",
-            ),
-            pytest.param(
-                _duckdb(),
-                '("src"."name" = "tgt"."name" OR levenshtein("src"."name", "tgt"."name") <= 2)',
-                id="duckdb",
             ),
         ],
     )

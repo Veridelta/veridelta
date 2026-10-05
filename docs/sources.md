@@ -15,7 +15,7 @@ Each connector accepts the fields below and rejects any other key:
 | `delta` | `table_uri` | `version`, `storage_options` |
 | `iceberg` | `table_uri` | `snapshot_id`, `storage_options` |
 | `database` | `uri`, and exactly one of `table` or `query` | `password`, `pushdown`, `partition_on`, `partitions` |
-| `duckdb` | `database`, and exactly one of `table` or `query` | `motherduck_token` |
+| `duckdb` | `database`, and exactly one of `table` or `query` | `motherduck_token`, `pushdown` |
 
 `version` and `snapshot_id` must be non-negative integers, and `maximum_bytes_billed` a positive one. A quoted number is rejected, not converted, because each value goes straight to a scan or a job. Warehouse, lakehouse, database, and DuckDB blocks cannot be changed once loaded.
 
@@ -160,7 +160,7 @@ Only a `table` read splits. A `query` runs as written, and a `pushdown` table re
 
 ## DuckDB and MotherDuck
 
-A `duckdb` source reads a table, or the result of a query, from a DuckDB file or a MotherDuck database. Install the `duckdb` extra. The rows are compared locally, so a DuckDB source pairs with any source but a warehouse. This pair compares a DuckDB file with a Parquet export:
+A `duckdb` source reads a table, or the result of a query, from a DuckDB file or a MotherDuck database. Install the `duckdb` extra. The rows are compared locally, so a DuckDB source pairs with any source but a warehouse. Two tables in one database can instead be compared inside DuckDB; see [DuckDB and MotherDuck](pushdown.md#duckdb-and-motherduck). This pair compares a DuckDB file with a Parquet export:
 
 ```yaml
 source:
@@ -198,7 +198,7 @@ Connecting downloads MotherDuck's DuckDB extension, so the machine needs network
 
 Column types come from DuckDB: `INTEGER` arrives as `Int32`, `DECIMAL(10, 2)` as `Decimal(10, 2)`, and `TIMESTAMPTZ` as a `Datetime` in UTC. The session reads time in UTC, so a timestamp with a time zone, or a date cast in a `query`, does not depend on the machine.
 
-Polars has no type for `INTERVAL` or `UNION`, alone or inside a `STRUCT`, list, or map. A column holding one fails the read with its name. Cast it in a `query`, as in `CAST(span AS VARCHAR)`.
+Polars has no type for `INTERVAL` or `UNION`, alone or inside a `STRUCT`, list, or map. A column holding one fails the read with its name. Cast it in a `query`, as in `CAST(span AS VARCHAR)`, or in a view when the source sets `pushdown`.
 
 ## Warehouses
 
@@ -304,7 +304,7 @@ logging.basicConfig(level=logging.DEBUG)
 logging.getLogger("veridelta.connectors").setLevel(logging.DEBUG)
 ```
 
-- `INFO` records a session or scan opening and closing. It also records each database read, Postgres pushdown statements included, with its row count and the URI with its password masked, and each DuckDB read with its row count and `database`.
+- `INFO` records a session or scan opening and closing. It also records each database read, Postgres pushdown statements included, with its row count and the URI with its password masked. Each DuckDB read, pushdown statements included, is recorded with its row count and `database`.
 - `DEBUG` records each pushdown statement by its kind, with its duration. The kinds are `schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`, and `samples`.
 
 Log lines never contain SQL text, row values, `storage_options`, passwords, or tokens. A warehouse session closes when the run finishes, whether the run succeeded or raised.

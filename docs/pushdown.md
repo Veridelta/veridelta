@@ -16,7 +16,7 @@ A pair of warehouse tables is always compared in place. Both sides must use the 
 
 Naming the same table on both sides raises `ConfigError`, since a table compared with itself always matches. A warehouse paired with a file, a lakehouse table, or a database, or with a different warehouse, raises `ConnectorError`.
 
-Database sources are read into memory and compared locally, unless both are Postgres tables that set `pushdown`; see [Postgres](#postgres).
+Database and DuckDB sources are read into memory and compared locally. Two Postgres tables on one server, or two tables in one DuckDB database, are compared in place when both set `pushdown`; see [Postgres](#postgres) and [DuckDB and MotherDuck](#duckdb-and-motherduck).
 
 ## Statements
 
@@ -41,11 +41,11 @@ Probed names are compared exactly as the compiler quotes them, with no case fold
 
 ## Rules in SQL
 
-All nine transform stages compile for compared columns, and stages 1 to 7 for primary keys. One setting is refused everywhere: `min_jaro_winkler_similarity` raises `ConfigError` before any comparison runs. Snowflake's `JAROWINKLER_SIMILARITY` ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function. Neither can reproduce a local verdict. Postgres also refuses `datetime_format` and `max_levenshtein_distance`; see [Postgres](#postgres).
+All nine transform stages compile for compared columns, and stages 1 to 7 for primary keys. One setting is refused everywhere: `min_jaro_winkler_similarity` raises `ConfigError` before any comparison runs. Snowflake's `JAROWINKLER_SIMILARITY` ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function. Neither can reproduce a local verdict. Postgres also refuses `datetime_format` and `max_levenshtein_distance`, and DuckDB refuses `max_levenshtein_distance`; see [Postgres](#postgres) and [DuckDB and MotherDuck](#duckdb-and-motherduck).
 
 ### Edit distance
 
-`max_levenshtein_distance` compiles to Snowflake's `EDITDISTANCE`, Databricks' `levenshtein`, or BigQuery's `EDIT_DISTANCE`, which count characters as a local run does. A warehouse run needs no `fuzzy` extra.
+`max_levenshtein_distance` compiles to Snowflake's `EDITDISTANCE`, Databricks' `levenshtein`, or BigQuery's `EDIT_DISTANCE`, which count characters as a local run does. A warehouse run needs no `fuzzy` extra. Postgres and DuckDB refuse the setting, each for its own reason.
 
 ### Text in SQL
 
@@ -109,6 +109,35 @@ Veridelta then runs each statement inside Postgres through ConnectorX, as in a w
 - After the column probes, one catalog query per table reads the declared precision and scale of each `numeric` column, which a local read also keeps. `strict_types` tells `numeric(10, 2)` from `numeric(12, 4)`, and `pad_zeros` or `cast_to: String` writes seven in a `numeric(20, 0)` column as `7` with or without `pushdown`.
 - A `numeric` declared without a precision, with one above 38, or with a negative scale has the type ConnectorX reads it as: `Decimal(38, 10)`. Turned into text, seven in such a column is `7` with `pushdown` and `7.0000000000` without it.
 - Primary keys and row samples come back through ConnectorX too. A `numeric` value among them is rounded to ten decimal places, and one with more than 18 digits before the decimal point fails the statement.
+
+## DuckDB and MotherDuck
+
+Two tables in one DuckDB file or MotherDuck database can be compared inside DuckDB, instead of being read into memory. Set `pushdown: true` on both sides:
+
+```yaml
+source:
+  type: duckdb
+  database: warehouse.duckdb
+  table: legacy.orders
+  pushdown: true
+
+target:
+  type: duckdb
+  database: warehouse.duckdb
+  table: modern.orders
+  pushdown: true
+
+primary_keys: ["order_id"]
+```
+
+Veridelta opens one connection, as a read opens it, and runs each statement there. A file opens read-only, and every session reads time in UTC; see [DuckDB and MotherDuck](sources.md#duckdb-and-motherduck). Everything above applies, with these additions:
+
+- Both sides name a `table`, and their `database` and `motherduck_token` values match, so one connection reaches both tables. Write `database` the same way on both sides, since `./warehouse.duckdb` and `warehouse.duckdb` count as different. A `query` cannot be compared in place.
+- Set `pushdown` on both sides or on neither. A pair where only one side sets it raises `ConfigError` instead of reading both.
+- `max_levenshtein_distance` raises `ConfigError` before any statement runs. DuckDB's `levenshtein` counts UTF-8 bytes, not characters, so `é` against `e` is two edits where a local run counts one. Leave `pushdown` off to compare such columns locally; `veridelta validate` warns about it.
+- `case_insensitive` lowercases with DuckDB's `lower`, which differs from Polars for a few letters. `İ` becomes `i` rather than `i̇`, and a final `Σ` becomes `σ` rather than `ς`.
+- The column probe reads the type of every column, ignored ones included. A column that Polars cannot read, such as an `INTERVAL`, fails the probe. Compare a view that casts it, such as to `VARCHAR`.
+- MotherDuck pushdown is tested with a stand-in for the driver, not against a live account, as MotherDuck reads are.
 
 ## Row samples
 

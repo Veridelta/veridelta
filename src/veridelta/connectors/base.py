@@ -68,13 +68,14 @@ class VerideltaConnector(ABC):
     - Lakehouse connectors (`DeltaLakeConnector`, `IcebergConnector`) open a
       Polars `scan_*` handle and expose it through `lazyframe()`. The diff then
       runs in the local engine; their `execute_pushdown` always raises.
-    - The database connector (`DatabaseConnector`) reads one table or query
-      through ConnectorX when it connects and exposes the rows through
-      `lazyframe()`. The diff runs in the local engine, as for a lakehouse.
-    - The Postgres pushdown session (`PostgresPushdownSession`) runs compiled
-      SQL inside Postgres through ConnectorX, for two database sources that
-      set `pushdown`. Like a warehouse connector, it satisfies
-      `PushdownSession`.
+    - The database and DuckDB connectors (`DatabaseConnector`,
+      `DuckDBConnector`) read one table or query when they connect, through
+      ConnectorX or DuckDB, and expose the rows through `lazyframe()`. The
+      diff runs in the local engine, as for a lakehouse.
+    - The pushdown sessions (`PostgresPushdownSession`,
+      `DuckDBPushdownSession`) run compiled SQL inside Postgres or DuckDB, for
+      two tables that both set `pushdown`. Like a warehouse connector, each
+      satisfies `PushdownSession`.
 
     Call `connect()` before anything else and `close()` when finished; the
     connector is also a context manager whose exit calls `close()`. After
@@ -83,10 +84,11 @@ class VerideltaConnector(ABC):
 
     `fetch_schema()` reads column metadata without collecting rows, but what
     it describes depends on the family: the scanned table for lakehouse
-    connectors, the rows read for the database connector, and the result of the
-    most recent `execute_pushdown` statement for warehouse connectors. The engine itself probes warehouse columns
-    through `SQLPushdownCompiler.compile_schema_probe_query` rather than this
-    method.
+    connectors, the rows read for the database and DuckDB connectors, and the
+    result of the most recent `execute_pushdown` statement for warehouse
+    connectors and pushdown sessions. The engine itself probes warehouse
+    columns through `SQLPushdownCompiler.compile_schema_probe_query` rather
+    than this method.
     """
 
     @abstractmethod
