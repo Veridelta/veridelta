@@ -414,13 +414,15 @@ def _read_database(
     return_value: object = None,
     side_effect: object = None,
     catalog: pl.DataFrame | None = None,
-    nulls: int = 0,
+    counts: tuple[int, int] = (0, 2),
+    bounds: tuple[object, object] = (1, 2),
 ) -> MagicMock:
     """Patch the extra probe and Polars' reader, returning the reader mock.
 
     A Postgres `table` read asks the catalog for its `numeric` columns first.
-    `catalog` answers that query, by default with no `numeric` columns, and
-    `nulls` answers the NULL count a partitioned read sends first. Every
+    `catalog` answers that query, by default with no `numeric` columns. A
+    partitioned read first counts the column's NULL and other rows, which
+    `counts` answers, then reads its range, which `bounds` answers. Every
     other statement returns the mock's `return_value`.
     """
     mocker.patch("veridelta.connectors.database.connectorx", object())
@@ -429,8 +431,10 @@ def _read_database(
     def _answer(statement: str, uri: str, **partitions: object) -> object:
         if statement.startswith("SELECT attname"):
             return answers
-        if statement.startswith("SELECT COUNT(*) AS null_rows"):
-            return pl.DataFrame({"null_rows": [nulls]})
+        if statement.startswith("SELECT COUNT(*) - COUNT("):
+            return pl.DataFrame({"null_rows": [counts[0]], "valued_rows": [counts[1]]})
+        if statement.startswith("SELECT MIN("):
+            return pl.DataFrame({"low": [bounds[0]], "high": [bounds[1]]})
         return DEFAULT
 
     read = MagicMock(
@@ -850,23 +854,61 @@ class TestPartitionedDatabaseRead:
             | fields
         )
 
-    def test_it_counts_nulls_then_splits_the_read(self, mocker: MockerFixture) -> None:
-        """Ensure the read checks the partition column, then hands ConnectorX the split."""
-        frame = pl.DataFrame({"order_id": [1, 2]})
-        read = _read_database(mocker, return_value=frame)
+    def test_it_measures_the_column_then_splits_the_read(self, mocker: MockerFixture) -> None:
+        """Ensure the read checks for NULLs and finds the range, then hands both to ConnectorX."""
+        frame = pl.DataFrame({"order_id": [1, 7]})
+        read = _read_database(mocker, return_value=frame, bounds=(1, 7))
 
         with DatabaseConnector(self._config()) as connector:
             connector.connect()
             assert connector.lazyframe().collect().equals(frame)
 
         assert read.call_args_list == [
-            call("SELECT COUNT(*) AS null_rows FROM `orders` WHERE order_id IS NULL", self._URI),
-            call("SELECT * FROM `orders`", self._URI, partition_on="order_id", partition_num=4),
+            call(
+                "SELECT COUNT(*) - COUNT(order_id) AS null_rows, "
+                "COUNT(order_id) AS valued_rows FROM `orders`",
+                self._URI,
+            ),
+            call("SELECT MIN(order_id) AS low, MAX(order_id) AS high FROM `orders`", self._URI),
+            call(
+                "SELECT * FROM `orders`",
+                self._URI,
+                partition_on="order_id",
+                partition_num=4,
+                partition_range=(1, 7),
+            ),
         ]
+
+    def test_it_reads_an_empty_table_in_one_piece(self, mocker: MockerFixture) -> None:
+        """Ensure a table with no values to range over is read whole, keeping its columns."""
+        read = _read_database(mocker, return_value=pl.DataFrame(), counts=(0, 0))
+
+        DatabaseConnector(self._config()).connect()
+
+        assert read.call_args_list[1:] == [call("SELECT * FROM `orders`", self._URI)]
+
+    @pytest.mark.parametrize(
+        "bounds",
+        [
+            pytest.param(("a", "z"), id="text"),
+            pytest.param((Decimal("1"), Decimal("9")), id="decimal"),
+            pytest.param((1, 9.5), id="float"),
+        ],
+    )
+    def test_it_refuses_a_column_that_does_not_hold_integers(
+        self, mocker: MockerFixture, bounds: tuple[object, object]
+    ) -> None:
+        """Ensure ranges are only drawn over integers, which ConnectorX's ranges compare."""
+        read = _read_database(mocker, return_value=pl.DataFrame(), bounds=bounds)
+
+        with pytest.raises(ConnectorError, match="'order_id' of table 'orders' does not hold"):
+            DatabaseConnector(self._config()).connect()
+
+        assert read.call_count == 2
 
     def test_it_refuses_a_partition_column_holding_nulls(self, mocker: MockerFixture) -> None:
         """Ensure rows ConnectorX would leave out fail the read instead of vanishing."""
-        read = _read_database(mocker, return_value=pl.DataFrame(), nulls=3)
+        read = _read_database(mocker, return_value=pl.DataFrame(), counts=(3, 5))
 
         with pytest.raises(
             ConnectorError, match="Column 'order_id' of table 'orders' is NULL in 3 of its rows"
@@ -888,13 +930,13 @@ class TestPartitionedDatabaseRead:
             connector.connect()
             frame = connector.lazyframe().collect()
 
-        assert read.call_args_list[1:] == [
-            call('SELECT COUNT(*) AS null_rows FROM "orders" WHERE order_id IS NULL', uri),
+        assert read.call_args_list[3:] == [
             call(
                 'SELECT "order_id", CAST("amount" AS TEXT) AS "amount" FROM "orders"',
                 uri,
                 partition_on="order_id",
                 partition_num=2,
+                partition_range=(1, 2),
             ),
         ]
         assert frame.schema == pl.Schema({"order_id": pl.Int64(), "amount": pl.Decimal(10, 2)})

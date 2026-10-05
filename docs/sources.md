@@ -150,9 +150,9 @@ source:
   partitions: 4
 ```
 
-ConnectorX reads the column's lowest and highest values, splits that span into `partitions` ranges, and reads the ranges in parallel. Each range opens its own connection, so the database must accept that many more.
+Veridelta reads the column's lowest and highest values, and ConnectorX splits that span into `partitions` ranges and reads them in parallel. Each range opens its own connection, so the database must accept that many more.
 
-The column must hold integers and no NULL. A NULL falls in no range, so ConnectorX would leave its row out. Veridelta counts the column's NULLs first and fails the read if it finds any, which costs one more scan of the table.
+The column must hold integers and no NULL. A NULL falls in no range, so ConnectorX would leave its row out. Veridelta counts the column's NULLs first and fails the read if it finds any. An empty table is read in one piece.
 
 ConnectorX writes the column name into each range's statement without quotes, so the database folds its case as it does for any unquoted name. On Postgres, partition on a column whose name is all lowercase.
 
