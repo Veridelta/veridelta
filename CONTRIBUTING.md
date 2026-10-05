@@ -62,6 +62,7 @@ We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/)
 2. Open a PR against the `main` branch. Ensure your PR title also follows the Conventional Commits format (e.g., `feat: added semantic parser`).
 3. **The CI Pipeline is the final gatekeeper.** It will automatically test your PR across multiple operating systems and Python versions. If the static analysis or test matrix fails, the PR cannot be merged.
 4. CI runs on every pull request, whatever its base branch, so a PR stacked on another one is checked too. Merge the base PR first and delete its branch: GitHub then retargets the stacked PR to `main`. Merging a stacked PR while its base branch still exists lands it on that branch instead of `main`.
+5. Workflows and `action.yml` run third-party actions pinned to a commit, with the release in a comment (`actions/checkout@<sha> # v5.1.0`), so a moved tag upstream cannot change what CI runs or what a release publishes. Pin any action you add the same way; `tests/unit/test_ci_integrations.py` checks it. Dependabot proposes newer pins and a refreshed `uv.lock` once a week, never higher floors in `pyproject.toml`.
 
 ## 5. Releasing
 
