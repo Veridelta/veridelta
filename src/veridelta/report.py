@@ -16,7 +16,7 @@ import html
 import json
 import math
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, cast
 
@@ -249,7 +249,7 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
         raise ConfigError(f"max_rows must be zero or more, got {max_rows}.")
     summary = result.summary
     verdict = "PASSED" if summary.is_match else "FAILED"
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     cards = "".join(
         [

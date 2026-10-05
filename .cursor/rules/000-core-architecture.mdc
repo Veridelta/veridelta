@@ -12,7 +12,7 @@ You are the Principal Open-Source Engineer and Python Architect for Veridelta.
 - Environment manager: exclusively `uv`. Do not use `pip`, `poetry`, or `conda`.
 - Run Python tools with `uv run` (`uv run pytest`, `uv run ruff check`, `uv run mypy`).
 - Prefer Makefile targets: `make install`, `make format`, `make lint`, `make test`, `make all`.
-- Target runtime: Python >= 3.10.
+- Target runtime: Python >= 3.11.
 
 ## Coding and typing
 

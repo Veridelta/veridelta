@@ -7,7 +7,7 @@ name = "veridelta"
 version = "0.11.1"
 description = "Semantic diffing for mission-critical data pipelines."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [
     { name = "The Veridelta Contributors", email = "veridelta.labs@gmail.com" },
@@ -18,7 +18,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -49,8 +48,7 @@ databricks = [
 delta = ["deltalake>=0.15.0"]
 iceberg = ["pyiceberg>=0.6.0"]
 excel = ["fastexcel>=0.11.0"]
-# 3.0.0 settled the `score_cutoff` behavior the fuzzy rules rely on. Leave the
-# floor there: later releases drop Python 3.10, and uv resolves per version.
+# 3.0.0 settled the `score_cutoff` behavior the fuzzy rules rely on.
 fuzzy = ["rapidfuzz>=3.0.0"]
 database = [
     # ConnectorX ships wheels only, and 0.4.5 is the first with Python 3.14
@@ -181,7 +179,7 @@ init_typed = true
 warn_required_dynamic_aliases = true
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 typeCheckingMode = "strict"
 include = ["src"]
 venvPath = "."
@@ -189,7 +187,7 @@ venv = ".venv"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 fix = true
 
 [tool.ruff.lint]

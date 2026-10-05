@@ -17,7 +17,7 @@ dialect's syntax.
 
 import re
 from collections.abc import Mapping, Sequence
-from enum import Enum
+from enum import StrEnum
 from typing import Final, NamedTuple
 
 import polars as pl
@@ -94,7 +94,7 @@ _Projection = tuple[str, str, DiffRule | None]
 """Stored source name, projected name, and the rule normalizing it, if any."""
 
 
-class SQLDialect(str, Enum):
+class SQLDialect(StrEnum):
     """Warehouse SQL dialects supported by the pushdown compiler.
 
     `DUCKDB` has no connector or config model. It exists so the differential
