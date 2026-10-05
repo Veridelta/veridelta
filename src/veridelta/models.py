@@ -12,7 +12,7 @@ import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import polars as pl
@@ -1134,12 +1134,37 @@ class IcebergConfig(BaseModel):
     )
 
 
+DATABASE_PUSHDOWN_SCHEMES: Final = frozenset({"postgres", "postgresql"})
+"""URI schemes whose tables a database source can compare inside the database."""
+
+
+def _check_database_pushdown(scheme: str, *, has_table: bool) -> None:
+    """Refuse `pushdown` on a database source that cannot be compared in place.
+
+    Args:
+        scheme (str): The URI's scheme, in any case.
+        has_table (bool): Whether the source names a `table` rather than a `query`.
+
+    Raises:
+        ValueError: If the database has no pushdown dialect, or the source runs
+            a `query`.
+    """
+    if scheme.lower() not in DATABASE_PUSHDOWN_SCHEMES:
+        raise ValueError(
+            "'pushdown' compares inside the database and works on postgresql:// connections only."
+        )
+    if not has_table:
+        raise ValueError("'pushdown' compares two tables, so set 'table' rather than 'query'.")
+
+
 class DatabaseConfig(BaseModel):
     """Immutable settings for reading a database table or query into a local comparison.
 
     The rows are read through ConnectorX into Polars and compared by the local
     engine, so a database pairs with files, lakehouse tables, or another
     database. Requires the `database` extra (`uv add 'veridelta[database]'`).
+    Two Postgres tables on one connection can instead be compared inside the
+    database, without reading their rows, when both sides set `pushdown`.
 
     Attributes:
         type (Literal["database"]): Discriminator for YAML source routing.
@@ -1155,6 +1180,8 @@ class DatabaseConfig(BaseModel):
             unquoted identifier segments.
         query (str | None): SQL statement to run instead, sent to the database
             exactly as written. Set exactly one of `table` and `query`.
+        pushdown (bool): Compare inside the database instead of reading the
+            rows. Postgres `table` sources only, and both sides must set it.
     """
 
     # Credentials pass through here, and Pydantic quotes raw input in its errors.
@@ -1179,6 +1206,14 @@ class DatabaseConfig(BaseModel):
         min_length=1,
         description="SQL statement to run instead of reading a table, sent as written.",
     )
+    pushdown: bool = Field(
+        default=False,
+        strict=True,
+        description=(
+            "Compare inside the database instead of reading the rows. Postgres tables "
+            "only; set it on both sides."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_connection(self) -> "DatabaseConfig":
@@ -1189,7 +1224,8 @@ class DatabaseConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set, the
-                URI has no scheme, or `password` conflicts with the URI.
+                URI has no scheme, `password` conflicts with the URI, or
+                `pushdown` is set on anything but a Postgres table.
         """
         if (self.table is None) == (self.query is None):
             raise ValueError(
@@ -1198,6 +1234,8 @@ class DatabaseConfig(BaseModel):
         parts = urlsplit(self.uri)
         if not parts.scheme:
             raise ValueError("'uri' needs a scheme such as postgresql:// or sqlite://.")
+        if self.pushdown:
+            _check_database_pushdown(parts.scheme, has_table=self.table is not None)
         if self.password is not None:
             if parts.password is not None:
                 raise ValueError("Set the password in 'password' or inside 'uri', not both.")

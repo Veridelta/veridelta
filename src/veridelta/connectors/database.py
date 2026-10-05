@@ -9,6 +9,10 @@ or `query` exactly once and holds the result: Polars has no lazy SQL reader, and
 wrapping the read in `pl.defer` would run the query again every time the engine
 asks for a schema. Requires the `database` extra (`uv add 'veridelta[database]'`).
 
+Two Postgres tables that opt into `pushdown` are compared inside the database
+instead: `PostgresPushdownSession` runs each compiled statement through the same
+driver and reads back only counts and keys.
+
 A password never reaches a log line or an error. Log lines carry the URI with
 its password masked and the table name, never SQL text. A failed read is
 reported with every form of the password replaced, and raised without the
@@ -25,7 +29,12 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import polars as pl
 
 from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
-from veridelta.connectors.sql import compile_database_probe, compile_database_select
+from veridelta.connectors.sql import (
+    SQLDialect,
+    SQLPushdownCompiler,
+    compile_database_probe,
+    compile_database_select,
+)
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DatabaseConfig
 
@@ -50,6 +59,9 @@ _PUSHDOWN_UNSUPPORTED = (
     "Call connect() and read the frame instead."
 )
 _SQLITE_PREFIX = "sqlite://"
+_POSTGRES_UNCONNECTED = "Postgres pushdown session is not connected. Call connect() first."
+_NO_STATEMENT = "No pushdown statement has run yet, so there is no result to describe."
+_LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value"
 
 
 class DatabaseConnector(VerideltaConnector):
@@ -86,7 +98,7 @@ class DatabaseConnector(VerideltaConnector):
             raise ConnectorError(_DATABASE_EXTRA)
         scheme = urlsplit(self._config.uri).scheme.lower()
         statement = self._statement(scheme)
-        uri = self._connection_uri()
+        uri = _connection_uri(self._config)
         if scheme == "sqlite":
             uri = _existing_sqlite_uri(uri)
 
@@ -105,7 +117,7 @@ class DatabaseConnector(VerideltaConnector):
             )
             raise ConnectorError(
                 f"Database read of {self._subject} from '{self._config.redacted_uri}' "
-                f"failed: {self._scrub(str(exc))}"
+                f"failed: {_scrub(self._config, str(exc))}"
             ) from None
         logger.info(
             "Read %d rows of %s from %s in %.3fs",
@@ -200,44 +212,188 @@ class DatabaseConnector(VerideltaConnector):
             return f"table '{self._config.table}'"
         return "the configured query"
 
-    def _connection_uri(self) -> str:
-        """Return the URI to connect with, carrying the `password` field if set.
 
-        The model guarantees a user name and no password of its own in the URI
-        whenever `password` is set.
+class PostgresPushdownSession(VerideltaConnector):
+    """Run compiled comparison SQL inside Postgres, through ConnectorX.
 
-        Returns:
-            str: The configured URI, with the password percent-encoded into its
-                user information when the `password` field holds one.
-        """
-        password = self._config.password
-        if password is None:
-            return self._config.uri
-        parts = urlsplit(self._config.uri)
-        user, _, host = parts.netloc.rpartition("@")
-        netloc = f"{user}:{quote(password, safe='')}@{host}"
-        return urlunsplit(parts._replace(netloc=netloc))
+    Opened for two database sources on one Postgres connection that both set
+    `pushdown`. Each statement is one ConnectorX read, which opens its own
+    connection and returns Arrow, so nothing is held between statements and
+    `close()` only forgets the connection. Only counts and keys come back.
 
-    def _scrub(self, text: str) -> str:
-        """Replace every form of the password in driver output with `***`.
+    `connect()` checks that the server reads string literals by the SQL
+    standard, as the Postgres dialect writes them: with
+    `standard_conforming_strings` off, a backslash would escape the closing
+    quote of a value that ends in one.
+    """
+
+    def __init__(self, config: DatabaseConfig) -> None:
+        """Initialize the session for one side's connection settings.
 
         Args:
-            text (str): Message from the driver or Polars.
+            config (DatabaseConfig): A Postgres table that sets `pushdown`.
+        """
+        self._config = config
+        self.compiler = SQLPushdownCompiler(SQLDialect.POSTGRES)
+        self._uri: str | None = None
+        self._last_statement: str | None = None
+
+    def connect(self) -> None:
+        """Check the server and keep the connection URI for the statements to come.
+
+        Raises:
+            ConnectorError: If the `database` extra is missing, the server cannot
+                be reached, or it reads backslashes in string literals as escapes.
+        """
+        if connectorx is None:
+            raise ConnectorError(_DATABASE_EXTRA)
+        uri = _connection_uri(self._config)
+        setting = self._read(_LITERAL_RULES, uri, query_type="settings")
+        if setting.item(0, 0) != "on":
+            raise ConnectorError(
+                f"standard_conforming_strings is off on Postgres at "
+                f"'{self._config.redacted_uri}', so it would read a backslash in a string "
+                "literal as an escape. Turn it on for the role or database, or compare "
+                "locally (pushdown: false)."
+            )
+        self._uri = uri
+
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
+        """Run one compiled statement and return its rows lazily.
+
+        Args:
+            statement (str): SQL from the Postgres compiler.
+            query_type (PushdownQueryType): Which round-trip this is, for logs
+                and errors.
 
         Returns:
-            str: The message with the raw and percent-encoded forms of the
-                `password` field and of any password in the URI masked.
+            pl.LazyFrame: The statement's result.
+
+        Raises:
+            ConnectorError: If the session is not connected or the statement fails.
         """
-        secrets: set[str] = set()
-        if self._config.password:
-            secrets.update({self._config.password, quote(self._config.password, safe="")})
-        embedded = urlsplit(self._config.uri).password
-        if embedded:
-            secrets.update({embedded, unquote(embedded)})
-        # Longest first, so a secret containing another is masked whole.
-        for secret in sorted(secrets, key=len, reverse=True):
-            text = text.replace(secret, "***")
-        return text
+        frame = self._read(statement, self._connected_uri(), query_type=query_type)
+        self._last_statement = statement
+        return frame.lazy()
+
+    def fetch_schema(self) -> pl.Schema:
+        """Describe the last statement's result by running it wrapped to return no rows.
+
+        Returns:
+            pl.Schema: Column names and dtypes.
+
+        Raises:
+            ConnectorError: If the session is not connected or nothing has run yet.
+        """
+        uri = self._connected_uri()
+        if self._last_statement is None:
+            raise ConnectorError(_NO_STATEMENT)
+        probe = self.compiler.compile_result_schema_query(self._last_statement)
+        return self._read(probe, uri, query_type="schema").schema
+
+    def close(self) -> None:
+        """Forget the connection. Idempotent; `connect()` checks the server again."""
+        self._uri = None
+        self._last_statement = None
+
+    def _connected_uri(self) -> str:
+        """Return the URI `connect()` kept.
+
+        Returns:
+            str: The connection URI, with the password spliced in.
+
+        Raises:
+            ConnectorError: If `connect()` has not been called.
+        """
+        if self._uri is None:
+            raise ConnectorError(_POSTGRES_UNCONNECTED)
+        return self._uri
+
+    def _read(self, statement: str, uri: str, *, query_type: str) -> pl.DataFrame:
+        """Run a statement through ConnectorX, logging and reporting without secrets.
+
+        Args:
+            statement (str): SQL to run.
+            uri (str): Connection URI, password included.
+            query_type (str): What the statement is for, named in logs and errors.
+
+        Returns:
+            pl.DataFrame: The result.
+
+        Raises:
+            ConnectorError: If pyarrow is missing or the statement fails.
+        """
+        started = time.perf_counter()
+        try:
+            frame = pl.read_database_uri(statement, uri)
+        except ImportError:
+            raise ConnectorError(_DATABASE_EXTRA) from None
+        except Exception as exc:
+            logger.warning(
+                "Postgres %s statement on %s failed after %.3fs",
+                query_type,
+                self._config.redacted_uri,
+                time.perf_counter() - started,
+            )
+            raise ConnectorError(
+                f"Postgres {query_type} statement on '{self._config.redacted_uri}' failed: "
+                f"{_scrub(self._config, str(exc))}"
+            ) from None
+        logger.info(
+            "Ran Postgres %s statement on %s in %.3fs, %d rows",
+            query_type,
+            self._config.redacted_uri,
+            time.perf_counter() - started,
+            frame.height,
+        )
+        return frame
+
+
+def _connection_uri(config: DatabaseConfig) -> str:
+    """Return the URI to connect with, carrying the `password` field if set.
+
+    The model guarantees a user name and no password of its own in the URI
+    whenever `password` is set.
+
+    Args:
+        config (DatabaseConfig): The source's connection settings.
+
+    Returns:
+        str: The configured URI, with the password percent-encoded into its
+            user information when the `password` field holds one.
+    """
+    password = config.password
+    if password is None:
+        return config.uri
+    parts = urlsplit(config.uri)
+    user, _, host = parts.netloc.rpartition("@")
+    netloc = f"{user}:{quote(password, safe='')}@{host}"
+    return urlunsplit(parts._replace(netloc=netloc))
+
+
+def _scrub(config: DatabaseConfig, text: str) -> str:
+    """Replace every form of the password in driver output with `***`.
+
+    Args:
+        config (DatabaseConfig): The source's connection settings.
+        text (str): Message from the driver or Polars.
+
+    Returns:
+        str: The message with the raw and percent-encoded forms of the
+            `password` field and of any password in the URI masked.
+    """
+    secrets: set[str] = set()
+    if config.password:
+        secrets.update({config.password, quote(config.password, safe="")})
+    embedded = urlsplit(config.uri).password
+    if embedded:
+        secrets.update({embedded, unquote(embedded)})
+    # Longest first, so a secret containing another is masked whole.
+    for secret in sorted(secrets, key=len, reverse=True):
+        text = text.replace(secret, "***")
+    return text
 
 
 def _existing_sqlite_uri(uri: str) -> str:

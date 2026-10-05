@@ -99,6 +99,11 @@ def _duckdb() -> SQLPushdownCompiler:
     return SQLPushdownCompiler(SQLDialect.DUCKDB)
 
 
+def _postgres() -> SQLPushdownCompiler:
+    """Return a Postgres-targeted compiler."""
+    return SQLPushdownCompiler(SQLDialect.POSTGRES)
+
+
 @pytest.mark.unit
 @pytest.mark.fast
 class TestSQLDialect:
@@ -110,11 +115,13 @@ class TestSQLDialect:
         assert SQLDialect.DATABRICKS.value == "databricks"
         assert SQLDialect.DUCKDB.value == "duckdb"
         assert SQLDialect.BIGQUERY.value == "bigquery"
+        assert SQLDialect.POSTGRES.value == "postgres"
         assert {member.value for member in SQLDialect} == {
             "snowflake",
             "databricks",
             "duckdb",
             "bigquery",
+            "postgres",
         }
 
 
@@ -1289,9 +1296,13 @@ class TestCTENormalization:
 class TestEditDistanceCompilation:
     """Validate stage 8's text similarity limits across the dialect table."""
 
-    def test_it_names_an_edit_distance_function_for_every_dialect(self) -> None:
-        """Ensure a new dialect cannot inherit another's function name."""
-        assert set(_EDIT_DISTANCE_FUNCTIONS) == set(SQLDialect)
+    def test_it_names_an_edit_distance_function_for_every_dialect_but_postgres(self) -> None:
+        """Ensure a new dialect cannot inherit another's function name.
+
+        Postgres is left out on purpose: its `levenshtein` needs an extension
+        and refuses text over 255 characters, so the compiler refuses the rule.
+        """
+        assert set(_EDIT_DISTANCE_FUNCTIONS) == set(SQLDialect) - {SQLDialect.POSTGRES}
 
     @pytest.mark.parametrize(
         ("compiler", "expected"),
@@ -1561,33 +1572,42 @@ class TestRegexReplacementReferences:
     r"""Validate that replacements are written the way each warehouse reads them.
 
     Polars reads `$1`, `${1}`, and `$0` as group references, `$$` as a dollar
-    sign, and a backslash as plain text. Snowflake, BigQuery, and DuckDB write a
-    reference as `\1` and read `$` as plain text; Databricks follows Java, where
+    sign, and a backslash as plain text. Snowflake, BigQuery, DuckDB, and
+    Postgres write a reference as `\1` and read `$` as plain text, though
+    Postgres writes the whole match as `\&`; Databricks follows Java, where
     `$1` is a reference and a backslash escapes the next character.
     """
 
     @pytest.mark.parametrize(
-        ("replacement", "backslash_form", "databricks_form"),
+        ("replacement", "backslash_form", "postgres_form", "databricks_form"),
         [
-            pytest.param("$2$1", r"\2\1", "$2$1", id="numbered"),
-            pytest.param("${1}0", r"\10", r"$1\0", id="braced-before-a-digit"),
-            pytest.param("$0", r"\0", "$0", id="whole-match"),
-            pytest.param("$01", r"\1", "$1", id="leading-zero"),
-            pytest.param("$$5", "$5", r"\$5", id="escaped-dollar"),
-            pytest.param("$!", "$!", r"\$!", id="dollar-before-punctuation"),
-            pytest.param("x$", "x$", r"x\$", id="trailing-dollar"),
-            pytest.param("${1", "${1", r"\${1", id="unclosed-brace"),
-            pytest.param(r"a\b", r"a\\b", r"a\\b", id="backslash"),
+            pytest.param("$2$1", r"\2\1", r"\2\1", "$2$1", id="numbered"),
+            pytest.param("${1}0", r"\10", r"\10", r"$1\0", id="braced-before-a-digit"),
+            pytest.param("$0", r"\0", r"\&", "$0", id="whole-match"),
+            pytest.param("$01", r"\1", r"\1", "$1", id="leading-zero"),
+            pytest.param("$$5", "$5", "$5", r"\$5", id="escaped-dollar"),
+            pytest.param("$!", "$!", "$!", r"\$!", id="dollar-before-punctuation"),
+            pytest.param("x$", "x$", "x$", r"x\$", id="trailing-dollar"),
+            pytest.param("${1", "${1", "${1", r"\${1", id="unclosed-brace"),
+            pytest.param(r"a\b", r"a\\b", r"a\\b", r"a\\b", id="backslash"),
         ],
     )
     def test_it_rewrites_a_polars_replacement_for_each_dialect(
-        self, replacement: str, backslash_form: str, databricks_form: str
+        self, replacement: str, backslash_form: str, postgres_form: str, databricks_form: str
     ) -> None:
-        """Ensure each dialect's regex engine reads what Polars reads."""
+        r"""Ensure each dialect's regex engine reads what Polars reads.
+
+        Postgres reads `\0` as plain text, so it is the one dialect whose
+        whole-match reference differs from its numbered ones.
+        """
         for dialect in _BACKSLASH_REFERENCE_DIALECTS:
             compiler = SQLPushdownCompiler(dialect)
             written = compiler._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
             assert written == backslash_form, dialect
+
+        postgres = SQLPushdownCompiler(SQLDialect.POSTGRES)
+        written = postgres._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
+        assert written == postgres_form
 
         databricks = SQLPushdownCompiler(SQLDialect.DATABRICKS)
         written = databricks._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
@@ -1881,3 +1901,149 @@ class TestValueMapQuery:
                 _VALUE_MAP_RULES,
                 min_support=support,  # type: ignore[arg-type]
             )
+
+
+@pytest.mark.unit
+@pytest.mark.fast
+class TestPostgresDialect:
+    """Validate the Postgres dialect, which runs where a database source opts into pushdown.
+
+    The live parity suite runs these statements against a real Postgres; these
+    tests pin the spellings that suite depends on.
+    """
+
+    _TYPES: dict[str, pl.DataType] = {  # noqa: RUF012
+        "id": pl.Int64(),
+        "name": pl.String(),
+        "price": pl.Float64(),
+    }
+
+    def test_it_spells_casts_with_postgres_type_names(self) -> None:
+        """Ensure `cast_to` uses `DOUBLE PRECISION` and `TEXT`, which Postgres knows."""
+        double = _postgres().compile_column_predicate(
+            DiffRule(column_names=["price"], cast_to="Float64"), "price"
+        )
+        text = _postgres().compile_column_predicate(
+            DiffRule(column_names=["name"], cast_to="String"), "name"
+        )
+
+        assert 'CAST("src"."price" AS DOUBLE PRECISION)' in double
+        assert 'CAST("src"."name" AS TEXT)' in text
+
+    def test_it_tests_numbers_against_zero_to_make_booleans(self) -> None:
+        """Ensure `cast_to: Boolean` turns a number into a comparison with zero.
+
+        Postgres casts only `integer` to `boolean`, and refuses `smallint`,
+        `bigint`, `numeric`, and floats. Polars reads every nonzero number as
+        true, NaN included, which is what `<> 0` returns for each of them.
+        """
+        rule = DiffRule(column_names=["flag"], cast_to="Boolean")
+
+        numbers = _postgres().compile_column_predicate(
+            rule, "flag", source_dtype=pl.Int64(), target_dtype=pl.Decimal(10, 2)
+        )
+        others = _postgres().compile_column_predicate(
+            rule, "flag", source_dtype=pl.String(), target_dtype=pl.Boolean()
+        )
+        padded = _postgres().compile_column_predicate(
+            DiffRule(column_names=["flag"], pad_zeros=2, cast_to="Boolean"),
+            "flag",
+            source_dtype=pl.Float64(),
+        )
+
+        assert '("src"."flag" <> 0)' in numbers
+        assert '("tgt"."flag" <> 0)' in numbers
+        assert "AS BOOLEAN" not in numbers
+        assert 'CAST("src"."flag" AS BOOLEAN)' in others
+        assert 'CAST("tgt"."flag" AS BOOLEAN)' in others
+        assert "<> 0" not in padded
+
+    def test_it_bounds_tolerances_with_postgres_infinity(self) -> None:
+        """Ensure the infinity guard uses a literal Postgres can parse."""
+        sql = _postgres().compile_column_predicate(
+            DiffRule(column_names=["price"], absolute_tolerance=0.5), "price"
+        )
+
+        assert "'Infinity'::double precision" in sql
+
+    def test_it_replaces_every_regex_match(self) -> None:
+        """Ensure `regexp_replace` gets the `'g'` flag, as on DuckDB."""
+        sql = _postgres().compile_column_predicate(
+            DiffRule(column_names=["name"], regex_replace={"-": ""}), "name"
+        )
+
+        assert "REGEXP_REPLACE(\"src\".\"name\", '-', '', 'g')" in sql
+
+    @pytest.mark.parametrize(
+        ("mode", "function"), [("left", "LTRIM"), ("right", "RTRIM"), ("both", "TRIM")]
+    )
+    def test_it_trims_with_the_characters_after_the_value(self, mode: str, function: str) -> None:
+        """Ensure `whitespace_mode` keeps the form Postgres reads.
+
+        Postgres' `ltrim`, `rtrim`, and two-argument `trim` all take the
+        characters to strip after the value, unlike Databricks' functions.
+        """
+        sql = _postgres().compile_column_predicate(
+            DiffRule(column_names=["name"], whitespace_mode=mode),  # type: ignore[arg-type]
+            "name",
+        )
+
+        assert f'{function}("src"."name", ' in sql
+        assert " FROM " not in sql
+
+    def test_it_widens_integers_to_numeric(self) -> None:
+        """Ensure tolerance arithmetic on integers cannot overflow."""
+        sql = _postgres().compile_query(
+            "s",
+            "t",
+            ["id"],
+            [DiffRule(column_names=["qty"], absolute_tolerance=1)],
+            wide_integers=frozenset({"qty"}),
+        )
+
+        assert "AS NUMERIC(38, 0)" in sql
+
+    def test_it_compares_nulls_as_equal_with_is_not_distinct_from(self) -> None:
+        """Ensure `treat_null_as_equal` uses the standard null-safe operator."""
+        sql = _postgres().compile_column_predicate(
+            DiffRule(column_names=["name"], treat_null_as_equal=True), "name"
+        )
+
+        assert '"src"."name" IS NOT DISTINCT FROM "tgt"."name"' in sql
+
+    def test_it_samples_by_a_hash_of_the_keys_as_one_row(self) -> None:
+        """Ensure a crosswalk sample hashes the keys as one value and folds the sign."""
+        sql = _postgres().compile_value_map_query(
+            "s",
+            "t",
+            ["id"],
+            [DiffRule(column_names=["name"])],
+            min_support=1,
+            sample_fraction=0.5,
+            source_types=self._TYPES,
+            target_types=self._TYPES,
+        )
+
+        assert sql is not None
+        hashed = 'hashtextextended(ROW("src"."id")::text, 0)'
+        assert f"MOD(MOD({hashed}, 1000000) + 1000000, 1000000)" in sql
+
+    def test_it_refuses_a_datetime_format(self) -> None:
+        """Ensure a parse that would fail the statement on one bad row is refused.
+
+        Postgres' `to_timestamp` raises on a value it cannot read, where a local
+        run yields NULL and keeps going.
+        """
+        rule = DiffRule(column_names=["seen_at"], datetime_format="%Y-%m-%d")
+
+        with pytest.raises(ConfigError, match=r"datetime_format.*postgres.*pushdown: false"):
+            _postgres().compile_column_predicate(
+                rule, "seen_at", source_dtype=pl.String(), target_dtype=pl.String()
+            )
+
+    def test_it_refuses_an_edit_distance(self) -> None:
+        """Ensure `max_levenshtein_distance` is refused rather than left to fail at run time."""
+        rule = DiffRule(column_names=["name"], max_levenshtein_distance=1)
+
+        with pytest.raises(ConfigError, match=r"max_levenshtein_distance.*postgres.*255"):
+            _postgres().compile_column_predicate(rule, "name")

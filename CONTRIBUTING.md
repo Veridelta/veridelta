@@ -36,6 +36,14 @@ We strictly follow Trunk-Based Development. **Never commit directly to `main`.**
    ```
    The tests include the tutorial notebooks in `docs/examples/`: each one is executed, and every `# Output:` comment must match what its cell prints. Run `make notebooks` to check just those after editing a tutorial. After changing a configuration model, run `make schema` to regenerate the JSON Schema that editors read, `docs/schema/veridelta.schema.json`; a test fails while it is stale.
 
+   `make all` checks that pushdown SQL reaches the local engine's verdicts by running it in DuckDB. After changing the SQL compiler, also run the same parity suite inside a live Postgres with `make postgres`. It loads each case into the server named by `VERIDELTA_POSTGRES_URI`, compares the tables there and locally, and drops them. A disposable server works:
+   ```bash
+   docker run --rm -d --name veridelta-postgres -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+   export VERIDELTA_POSTGRES_URI=postgresql://postgres:postgres@localhost:5432/postgres
+   make postgres
+   ```
+   Cases that Postgres pushdown refuses, or whose data Postgres cannot store, carry the `duckdb_only` marker with the reason, and `make postgres` leaves them out. CI runs the suite against a `postgres:16` service on every pull request.
+
 ## 3. Commit Standards
 
 We strickly enforce [Conventional Commits](https://www.conventionalcommits.org/). Our `commit-msg` hook will automatically reject any commit that does not follow this structure:

@@ -159,6 +159,42 @@ jobs:
 
       - name: Execute Notebooks and Check Recorded Output
         run: uv run pytest tests/notebooks --no-cov
+
+  test-postgres:
+    name: Postgres Pushdown Parity
+    needs: test-smoke
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VERIDELTA_POSTGRES_URI: postgresql://postgres:postgres@localhost:5432/postgres
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras
+
+      - name: Run the Parity Suite Inside Postgres
+        run: make postgres
+
   action:
     name: GitHub Action (${{ matrix.os }})
     needs: test-smoke

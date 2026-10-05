@@ -21,6 +21,13 @@ from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, DataIntegrityError
 from veridelta.models import DiffConfig, DiffRule, ValueMapProposal
 
+_REFUSED_PARSE = pytest.mark.duckdb_only(
+    reason="Postgres refuses datetime_format pushdown: it has no parse that yields NULL."
+)
+_REFUSED_EDIT_DISTANCE = pytest.mark.duckdb_only(
+    reason="Postgres refuses max_levenshtein_distance pushdown: levenshtein needs fuzzystrmatch."
+)
+
 
 @pytest.mark.integration
 @pytest.mark.slow
@@ -455,6 +462,7 @@ class TestCastParity:
 
 @pytest.mark.integration
 @pytest.mark.slow
+@_REFUSED_PARSE
 class TestDatetimeFormatParity:
     """Validate stage 6a.
 
@@ -617,6 +625,9 @@ class TestStrictTypesParity:
                 False,
                 2,
                 id="decimal-scales",
+                marks=pytest.mark.duckdb_only(
+                    reason="ConnectorX reads every Postgres numeric as Decimal(38, 10)."
+                ),
             ),
             pytest.param(
                 pl.Series("val", ["abc", "10"]),
@@ -1510,6 +1521,7 @@ class TestToleranceScopeParity:
                 [DiffRule(column_names=["val"], datetime_format="%Y-%m-%d %H:%M:%S")],
                 1,
                 id="parsed-timestamp",
+                marks=_REFUSED_PARSE,
             ),
             pytest.param(
                 pl.Series("val", ["10.00", "20.00"]),
@@ -1715,6 +1727,7 @@ class TestSimilarityParity:
         with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
             run_pushdown(config, src, tgt)
 
+    @_REFUSED_EDIT_DISTANCE
     @pytest.mark.parametrize(("treat_null", "changed"), [(True, 2), (False, 3)])
     def test_it_agrees_on_typos_within_and_beyond_the_limit(
         self, treat_null: bool, changed: int
@@ -1744,6 +1757,7 @@ class TestSimilarityParity:
 
         assert summary.changed_count == changed
 
+    @_REFUSED_EDIT_DISTANCE
     @pytest.mark.parametrize(("case_insensitive", "changed"), [(False, 1), (True, 0)])
     def test_it_folds_case_before_measuring_the_distance(
         self, case_insensitive: bool, changed: int
@@ -1776,6 +1790,7 @@ class TestSimilarityParity:
                 {},
                 1,
                 id="text",
+                marks=_REFUSED_EDIT_DISTANCE,
             ),
             pytest.param(pl.Series("val", [12, 20]), pl.Series("val", [13, 20]), {}, 1, id="int"),
             pytest.param(
@@ -1798,6 +1813,7 @@ class TestSimilarityParity:
                 {"pad_zeros": 5},
                 0,
                 id="padded-to-text",
+                marks=_REFUSED_EDIT_DISTANCE,
             ),
             pytest.param(
                 pl.Series("val", ["2024-01-01 00:00:00", "2024-01-01 00:00:00"]),
@@ -1805,6 +1821,7 @@ class TestSimilarityParity:
                 {"datetime_format": "%Y-%m-%d %H:%M:%S"},
                 1,
                 id="parsed-timestamp",
+                marks=_REFUSED_PARSE,
             ),
             pytest.param(
                 pl.Series("val", [12, 20]),
@@ -1812,6 +1829,7 @@ class TestSimilarityParity:
                 {"cast_to": "String"},
                 0,
                 id="cast-to-text",
+                marks=_REFUSED_EDIT_DISTANCE,
             ),
             pytest.param(
                 pl.Series("val", ["12", "20"]),
@@ -1841,6 +1859,7 @@ class TestSimilarityParity:
 
         assert summary.changed_count == expected_changed
 
+    @pytest.mark.duckdb_only(reason="It pins how DuckDB itself counts edits.")
     def test_it_counts_bytes_on_the_duckdb_stand_in(self) -> None:
         """Pin the harness's one known divergence, which no supported warehouse shares.
 

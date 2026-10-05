@@ -276,6 +276,36 @@ class TestConfigChecks:
         assert "%b" in findings[2][1]
         assert "Snowflake" in findings[2][1]
 
+    def test_it_warns_about_rules_postgres_cannot_push_down(self) -> None:
+        """Ensure a Postgres pair hears about the settings its run would refuse."""
+        uri = "postgresql://analyst@db.internal/sales"
+        source = DatabaseConfig(uri=uri, table="src", pushdown=True)
+        target = DatabaseConfig(uri=uri, table="tgt", pushdown=True)
+        rules = [
+            DiffRule(column_names=["seen_at"], datetime_format="%Y-%m-%d"),
+            DiffRule(column_names=["name"], max_levenshtein_distance=1),
+        ]
+
+        findings = _check(source, target, rules=rules)
+
+        assert [severity for severity, _ in findings] == ["warning", "warning"]
+        assert findings[0][1].startswith("rules[0] datetime_format has no Postgres spelling")
+        assert findings[1][1].startswith(
+            "rules[1] max_levenshtein_distance has no Postgres spelling"
+        )
+        assert "pushdown: false" in findings[1][1]
+
+    def test_it_reports_a_database_pair_that_half_opts_into_pushdown(self) -> None:
+        """Ensure a pair with pushdown on one side only fails here, not at run time."""
+        uri = "postgresql://analyst@db.internal/sales"
+        source = DatabaseConfig(uri=uri, table="src", pushdown=True)
+        target = DatabaseConfig(uri=uri, table="tgt")
+
+        [(severity, message)] = _check(source, target)
+
+        assert severity == "error"
+        assert "Set pushdown on both database sources" in message
+
     def test_it_reports_a_database_table_it_cannot_quote(self) -> None:
         """Ensure an unknown scheme with `table` fails here, and `query` is left alone."""
         findings = _check(

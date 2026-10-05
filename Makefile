@@ -1,4 +1,4 @@
-.PHONY: install format lint test notebooks docs docs-serve schema all clean
+.PHONY: install format lint test notebooks postgres docs docs-serve schema all clean
 
 install:
 	uv sync --all-extras
@@ -20,6 +20,10 @@ test:
 
 notebooks:
 	uv run pytest tests/notebooks --no-cov
+
+postgres:
+	@test -n "$$VERIDELTA_POSTGRES_URI" || { echo "Set VERIDELTA_POSTGRES_URI to a Postgres server the tests may create tables on."; exit 1; }
+	VERIDELTA_PARITY_BACKEND=postgres uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_parity_fuzz.py tests/integration/test_postgres_pushdown.py -m "not duckdb_only" --no-cov
 
 schema:
 	uv run veridelta schema > docs/schema/veridelta.schema.json

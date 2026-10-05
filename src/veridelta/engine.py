@@ -28,6 +28,7 @@ from typing import (
     TypedDict,
     TypeGuard,
     TypeVar,
+    cast,
 )
 from urllib.parse import urlsplit
 
@@ -36,7 +37,7 @@ import polars as pl
 from veridelta.connectors import database as database_connectors
 from veridelta.connectors import warehouse as warehouse_connectors
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
-from veridelta.connectors.database import DatabaseConnector
+from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import (
     SAMPLE_BUCKETS,
@@ -482,8 +483,9 @@ class LoaderFactory:
 
 _T = TypeVar("_T")
 
-_WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig | BigQueryConfig
-"""Connection configs whose comparisons compile to SQL and run in place."""
+_WarehouseConfig: TypeAlias = SnowflakeConfig | DatabricksConfig | BigQueryConfig | DatabaseConfig
+"""Connection configs whose comparisons compile to SQL and run in place. A database
+source belongs here only when it sets `pushdown`; `_is_warehouse` checks that."""
 
 
 class _WarehouseSession(PushdownSession, Protocol):
@@ -556,6 +558,18 @@ def _bigquery_fingerprint(config: BigQueryConfig) -> tuple[object, ...]:
     )
 
 
+def _postgres_fingerprint(config: DatabaseConfig) -> tuple[object, ...]:
+    """Return connection identity excluding the compared table name.
+
+    Args:
+        config (DatabaseConfig): A Postgres table that sets `pushdown`.
+
+    Returns:
+        tuple[object, ...]: The URI and the password field.
+    """
+    return (config.uri, config.password)
+
+
 @dataclass(frozen=True)
 class _Warehouse:
     """How the engine identifies and opens one warehouse backend.
@@ -597,6 +611,14 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
         _bigquery_fingerprint,
         lambda config: BigQueryConnector(config),
     ),
+    # Only a database source that sets `pushdown` is routed here; its model
+    # allows that on a Postgres table alone.
+    DatabaseConfig: _Warehouse(
+        "Postgres",
+        SQLDialect.POSTGRES,
+        _postgres_fingerprint,
+        lambda config: PostgresPushdownSession(config),
+    ),
 }
 """Every warehouse the engine pushes comparisons down to, keyed by config type.
 Adding a backend means one entry here and one member of `_WarehouseConfig`."""
@@ -609,8 +631,11 @@ def _is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
         config (SourceRef): Parsed source or target configuration.
 
     Returns:
-        bool: True for a config type in the warehouse registry.
+        bool: True for a config type in the warehouse registry, and for a
+            database source only when it sets `pushdown`.
     """
+    if isinstance(config, DatabaseConfig):
+        return config.pushdown
     return type(config) in _WAREHOUSES
 
 
@@ -1952,6 +1977,24 @@ def _reject_self_comparison(source_table: str, target_table: str) -> None:
 
 _MIXED_BACKENDS: Final = "Mixed file/lakehouse/database and warehouse backends are unsupported."
 
+_HALF_PUSHDOWN: Final = (
+    "Set pushdown on both database sources to compare the tables inside Postgres, "
+    "or on neither to read them and compare locally."
+)
+
+
+def _table_name(config: _WarehouseConfig) -> str:
+    """Return the table a pushdown side names.
+
+    Args:
+        config (_WarehouseConfig): One side of a warehouse pair.
+
+    Returns:
+        str: The configured table. A database source that sets `pushdown`
+            always names one; its model refuses a `query`.
+    """
+    return cast("str", config.table)
+
 
 @dataclass(frozen=True)
 class _WarehousePair:
@@ -1980,7 +2023,7 @@ class _WarehousePair:
         session = self.warehouse.session(self.source)
         session.connect()
         try:
-            return work(session, self.source.table, self.target.table)
+            return work(session, _table_name(self.source), _table_name(self.target))
         finally:
             session.close()
 
@@ -2003,8 +2046,15 @@ def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePa
     Raises:
         ConnectorError: If only one side is a warehouse table, the sides use
             different warehouses, or their connections differ.
-        ConfigError: If both sides name the same table on one connection.
+        ConfigError: If both sides name the same table on one connection, or
+            only one of two database sources sets `pushdown`.
     """
+    if (
+        isinstance(source, DatabaseConfig)
+        and isinstance(target, DatabaseConfig)
+        and source.pushdown != target.pushdown
+    ):
+        raise ConfigError(_HALF_PUSHDOWN)
     if not _is_warehouse(source):
         if _is_warehouse(target):
             raise ConnectorError(_MIXED_BACKENDS)
@@ -2024,7 +2074,7 @@ def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePa
             "Cross-account warehouse pushdown is unsupported. "
             f"Source and target {warehouse.name} connections must match."
         )
-    _reject_self_comparison(source.table, target.table)
+    _reject_self_comparison(_table_name(source), _table_name(target))
     return _WarehousePair(warehouse, source, target)
 
 
@@ -2287,6 +2337,12 @@ def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFin
                 DiffRule(column_names=["probe"], datetime_format=rule.datetime_format),
             ),
             ("regex_replace", DiffRule(column_names=["probe"], regex_replace=rule.regex_replace)),
+            (
+                "max_levenshtein_distance",
+                DiffRule(
+                    column_names=["probe"], max_levenshtein_distance=rule.max_levenshtein_distance
+                ),
+            ),
         ):
             reason = _text_probe_refusal(compiler, probe)
             if reason is not None:

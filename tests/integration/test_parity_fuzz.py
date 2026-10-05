@@ -20,7 +20,12 @@ import polars as pl
 import pytest
 from hypothesis import HealthCheck, given, settings
 
-from tests.integration.duckdb_harness import run_local, run_pushdown
+from tests.integration.duckdb_harness import (
+    REFUSED_RULES,
+    UNPADDED_DTYPES,
+    run_local,
+    run_pushdown,
+)
 from tests.integration.parity_strategies import comparison_cases
 from veridelta.exceptions import ConnectorError, VerideltaError
 from veridelta.models import DiffConfig, DiffResult
@@ -49,8 +54,8 @@ Outcome = tuple[object, ...]
 def _outcome(run: Callable[[], DiffResult]) -> Outcome:
     """Reduce a run to what both engines can report, or to the error it raised.
 
-    A `ConnectorError` means DuckDB rejected the compiled SQL, which is never
-    an acceptable outcome, so it propagates and fails the case.
+    A `ConnectorError` means the database rejected the compiled SQL, which is
+    never an acceptable outcome, so it propagates and fails the case.
     """
     try:
         result = run()
@@ -76,7 +81,7 @@ class TestFuzzedParity:
     """Validate that drawn comparisons reach one verdict on both engines."""
 
     @_PROFILE
-    @given(comparison_cases())
+    @given(comparison_cases(refused=REFUSED_RULES, unpadded=UNPADDED_DTYPES))
     def test_both_engines_reach_the_same_verdict(
         self, case: tuple[DiffConfig, pl.DataFrame, pl.DataFrame]
     ) -> None:
