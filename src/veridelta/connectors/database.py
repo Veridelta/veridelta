@@ -33,6 +33,7 @@ from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
 from veridelta.connectors.sql import (
     SQLDialect,
     SQLPushdownCompiler,
+    compile_database_null_count,
     compile_database_probe,
     compile_database_select,
     compile_postgres_columns_query,
@@ -78,8 +79,11 @@ class DatabaseConnector(VerideltaConnector):
 
     `connect()` reads eagerly and keeps the frame, and `lazyframe()` hands it to
     the local engine as a LazyFrame over those rows. The read is the one place
-    the rows are fetched, so it happens once per `connect()`. `execute_pushdown`
-    always raises: the comparison runs in Polars, never in the database.
+    the rows are fetched, so it happens once per `connect()`. With
+    `partition_on` set, ConnectorX splits that read into ranges over parallel
+    connections, after a count confirms that no row falls outside them.
+    `execute_pushdown` always raises: the comparison runs in Polars, never in
+    the database.
     """
 
     def __init__(self, config: DatabaseConfig, *, probe: bool = False) -> None:
@@ -99,7 +103,8 @@ class DatabaseConnector(VerideltaConnector):
 
         Raises:
             ConnectorError: If the `database` extra is missing, a SQLite file
-                does not exist, or the read fails.
+                does not exist, the partition column holds a NULL, or the read
+                fails.
             ConfigError: If `table` names a database Veridelta cannot quote for,
                 or a probe was asked of a `query`.
         """
@@ -116,7 +121,9 @@ class DatabaseConnector(VerideltaConnector):
         try:
             if scheme in _POSTGRES_SCHEMES and self._config.table is not None:
                 statement, declared = self._declared_statement(self._config.table, statement, uri)
-            frame = pl.read_database_uri(statement, uri)
+            frame = self._read(scheme, statement, uri)
+        except ConnectorError:
+            raise
         except ImportError:
             # A missing pyarrow surfaces here, and it is the same missing extra.
             raise ConnectorError(_DATABASE_EXTRA) from None
@@ -201,6 +208,24 @@ class DatabaseConnector(VerideltaConnector):
             )
         # DatabaseConfig requires exactly one of `table` and `query`.
         return cast("str", self._config.query)
+
+    def _read(self, scheme: str, statement: str, uri: str) -> pl.DataFrame:
+        """Run the read, split into ranges over parallel connections when configured."""
+        column = self._config.partition_on
+        if column is None or self._probe:
+            return pl.read_database_uri(statement, uri)
+        # The model sets `table` and `partitions` whenever `partition_on` is set.
+        table, partitions = cast("str", self._config.table), cast("int", self._config.partitions)
+        count = compile_database_null_count(scheme, table, column)
+        nulls = pl.read_database_uri(count, uri).item()
+        if nulls:
+            # ConnectorX reads only rows inside its ranges, and a NULL is in none of them.
+            raise ConnectorError(
+                f"Column '{column}' of {self._subject} is NULL in {nulls:,} of its rows, "
+                "which a partitioned read would leave out. Partition on a column without "
+                "NULLs, or remove 'partition_on' and 'partitions'."
+            )
+        return pl.read_database_uri(statement, uri, partition_on=column, partition_num=partitions)
 
     def _declared_statement(
         self, table: str, statement: str, uri: str
