@@ -23,6 +23,7 @@ from veridelta.connectors.sql import (
     VALUE_MAP_ROWS_ALIAS,
     VALUE_MAP_SOURCE_ALIAS,
     VALUE_MAP_TARGET_ALIAS,
+    SampleQuery,
     compile_database_probe,
     compile_database_select,
 )
@@ -531,6 +532,104 @@ class TestQueryAssembly:
 
 @pytest.mark.unit
 @pytest.mark.fast
+class TestChangedSampleQuery:
+    """Validate the opt-in statement that fetches changed rows with their values."""
+
+    _RULES = [  # noqa: RUF012
+        DiffRule(column_names=["status"], whitespace_mode="both"),
+        DiffRule(column_names=["old_amount"], rename_to="amount", absolute_tolerance=0.5),
+        DiffRule(column_names=["notes"], ignore=True),
+    ]
+
+    def _sample(self, compiler: SQLPushdownCompiler, limit: int = 5) -> SampleQuery:
+        sample = compiler.compile_changed_sample_query(
+            "s", "t", ["id", "line"], self._RULES, limit=limit
+        )
+        assert sample is not None
+        return sample
+
+    def test_it_selects_the_rows_the_mismatch_query_reports(self) -> None:
+        """Ensure a sampled row is one the changed-row count includes.
+
+        Both statements share the normalized CTEs, the join, and the WHERE
+        clause, so the sample can never show a row the count left out.
+        """
+        compiler = _duckdb()
+        mismatch = compiler.compile_query("s", "t", ["id", "line"], self._RULES)
+        sample = self._sample(compiler).statement
+
+        where = mismatch[mismatch.index(" WHERE ") :]
+        assert f"{where} ORDER BY " in sample
+        assert sample.startswith(mismatch[: mismatch.index(" SELECT ")])
+        assert (
+            mismatch[mismatch.index('FROM "_src_normalized"') : mismatch.index(" WHERE ")] in sample
+        )
+
+    def test_it_projects_both_sides_and_each_predicate_under_positional_aliases(self) -> None:
+        """Ensure values and match flags come back under names that cannot clash.
+
+        A long column name could pass Postgres' identifier limit once suffixed,
+        and a key could be named like a suffixed column, so every output takes
+        a positional alias and `renames` maps it to the local engine's name.
+        """
+        sample = self._sample(_duckdb())
+
+        assert '"src"."id" AS "_veridelta_key_0", "src"."line" AS "_veridelta_key_1"' in (
+            sample.statement
+        )
+        assert '"src"."status" AS "_veridelta_source_0"' in sample.statement
+        assert '"tgt"."status" AS "_veridelta_target_0"' in sample.statement
+        assert '"src"."amount" AS "_veridelta_source_1"' in sample.statement
+        assert ') AS "_veridelta_match_0"' in sample.statement
+        assert '"notes"' not in sample.statement
+        assert sample.renames == {
+            "_veridelta_key_0": "id",
+            "_veridelta_key_1": "line",
+            "_veridelta_source_0": "status_source",
+            "_veridelta_target_0": "status_target",
+            "_veridelta_match_0": "status_is_match",
+            "_veridelta_source_1": "amount_source",
+            "_veridelta_target_1": "amount_target",
+            "_veridelta_match_1": "amount_is_match",
+        }
+
+    def test_it_flags_each_column_with_the_predicate_that_decided_it(self) -> None:
+        """Ensure each match flag is the WHERE predicate for that column, coalesced."""
+        compiler = _duckdb()
+        sample = self._sample(compiler).statement
+        mismatch = compiler.compile_query("s", "t", ["id", "line"], self._RULES)
+        where = mismatch[mismatch.index("WHERE NOT (") + len("WHERE NOT (") : -1]
+        flags = where.split(" AND COALESCE(")
+
+        assert f'{flags[0]} AS "_veridelta_match_0"' in sample
+        assert f'COALESCE({flags[1]} AS "_veridelta_match_1"' in sample
+
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_it_orders_by_the_keys_and_limits_the_rows(self, dialect: SQLDialect) -> None:
+        """Ensure every dialect returns the first rows in key order, so a sample repeats."""
+        compiler = SQLPushdownCompiler(dialect)
+        quote = compiler._quote_ident  # pyright: ignore[reportPrivateUsage]
+
+        statement = self._sample(compiler, limit=25).statement
+
+        keys = f"{quote('_veridelta_key_0')}, {quote('_veridelta_key_1')}"
+        assert statement.endswith(f" ORDER BY {keys} LIMIT 25")
+
+    def test_it_returns_none_when_no_column_is_compared(self) -> None:
+        """Ensure there is nothing to sample when every rule is ignored."""
+        sample = _duckdb().compile_changed_sample_query(
+            "s", "t", ["id"], [DiffRule(column_names=["notes"], ignore=True)], limit=5
+        )
+
+        assert sample is None
+
+    @pytest.mark.parametrize("limit", [0, -3, True])
+    def test_it_refuses_a_limit_that_is_not_a_positive_count(self, limit: int) -> None:
+        """Ensure the LIMIT is a real positive integer before it reaches SQL."""
+        with pytest.raises(ConnectorError, match=r"LIMIT|SQL integer"):
+            _duckdb().compile_changed_sample_query("s", "t", ["id"], self._RULES, limit=limit)
+
+
 class TestAntiJoinAssembly:
     """Validate LEFT/RIGHT JOIN SQL for added and removed warehouse rows."""
 
