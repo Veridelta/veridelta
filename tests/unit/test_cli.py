@@ -124,60 +124,51 @@ class TestCommandLineInterface:
         assert exit_code == 1
         assert "Artifacts saved to:" not in captured.err
 
-    def test_it_catches_config_errors_and_returns_exit_code_one_via_stderr(
+    @pytest.mark.parametrize(
+        ("failing_call", "failure", "header"),
+        [
+            pytest.param(
+                "veridelta.cli.load_config",
+                ConfigError("Invalid schema mode"),
+                "Configuration Error",
+                id="config",
+            ),
+            # Warehouse routing failures print a named `VerideltaError` without a traceback.
+            pytest.param(
+                "veridelta.cli.DiffEngine.run_from_configs",
+                ConnectorError("Cross-dialect warehouse pushdown"),
+                "ConnectorError",
+                id="connector",
+            ),
+            pytest.param(
+                "veridelta.cli.load_config",
+                RuntimeError("Disk full"),
+                "Unexpected System Error",
+                id="unexpected",
+            ),
+        ],
+    )
+    def test_it_catches_errors_and_returns_exit_code_one_via_stderr(
         self,
         mocker: MockerFixture,
         default_args: argparse.Namespace,
         capsys: pytest.CaptureFixture[str],
+        failing_call: str,
+        failure: Exception,
+        header: str,
     ) -> None:
-        """Ensure validation errors gracefully halt execution and print to standard error."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
-        mock_load.side_effect = ConfigError("Invalid schema mode")
-
-        exit_code = run(default_args)
-        captured = capsys.readouterr()
-
-        assert exit_code == 1
-        assert "Configuration Error" in captured.err
-        assert "Invalid schema mode" in captured.err
-
-    def test_it_catches_connector_errors_and_returns_exit_code_one_via_stderr(
-        self,
-        mocker: MockerFixture,
-        default_args: argparse.Namespace,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Ensure warehouse routing failures print a named VerideltaError without a traceback."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
-        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
-        mock_load.return_value = (MagicMock(), MagicMock(), MagicMock())
-        mock_engine.run_from_configs.side_effect = ConnectorError(
-            "Cross-dialect warehouse pushdown"
+        """Ensure a failure halts the run gracefully and explains itself on standard error."""
+        mocker.patch(
+            "veridelta.cli.load_config", return_value=(MagicMock(), MagicMock(), MagicMock())
         )
+        mocker.patch(failing_call, side_effect=failure)
 
         exit_code = run(default_args)
         captured = capsys.readouterr()
 
         assert exit_code == 1
-        assert "ConnectorError" in captured.err
-        assert "Cross-dialect warehouse pushdown" in captured.err
-
-    def test_it_catches_unexpected_exceptions_and_returns_exit_code_one_via_stderr(
-        self,
-        mocker: MockerFixture,
-        default_args: argparse.Namespace,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Ensure unhandled system errors do not crash the runner ungracefully."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
-        mock_load.side_effect = RuntimeError("Disk full")
-
-        exit_code = run(default_args)
-        captured = capsys.readouterr()
-
-        assert exit_code == 1
-        assert "Unexpected System Error" in captured.err
-        assert "Disk full" in captured.err
+        assert header in captured.err
+        assert str(failure) in captured.err
 
     def test_it_prints_the_summary_as_json_on_stdout(
         self,
@@ -185,7 +176,7 @@ class TestCommandLineInterface:
         default_args: argparse.Namespace,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Ensure `--json` produces a parseable payload and no formatted report."""
+        """Ensure `--json` prints only a parseable payload on stdout and keeps progress on stderr."""
         mock_load = mocker.patch("veridelta.cli.load_config")
         mock_engine = mocker.patch("veridelta.cli.DiffEngine")
         mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
@@ -200,28 +191,9 @@ class TestCommandLineInterface:
         assert exit_code == 0
         assert captured.out.strip() == '{"is_match": true}'
         assert "Status: PASSED" not in captured.out
-        mock_summary.model_dump_json.assert_called_once_with(indent=2)
-
-    def test_it_keeps_progress_off_of_stdout_when_emitting_json(
-        self,
-        mocker: MockerFixture,
-        default_args: argparse.Namespace,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Ensure `veridelta run --json | jq` does not have to strip chatter."""
-        mock_load = mocker.patch("veridelta.cli.load_config")
-        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
-        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
-        mock_summary = MagicMock(is_match=True, report_summary="Status: PASSED")
-        mock_summary.model_dump_json.return_value = "{}"
-        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
-        default_args.json = True
-
-        run(default_args)
-        captured = capsys.readouterr()
-
         assert "Loading configuration" in captured.err
         assert "Loading configuration" not in captured.out
+        mock_summary.model_dump_json.assert_called_once_with(indent=2)
 
     def test_it_writes_an_html_report_when_asked(
         self, mocker: MockerFixture, default_args: argparse.Namespace
@@ -260,15 +232,6 @@ class TestCommandLineInterface:
         mock_write.assert_called_once_with(mock_result, "summary.md")
         assert "Markdown summary saved to" in captured.err
         assert "Markdown summary saved to" not in captured.out
-
-    def test_it_parses_the_markdown_flag(self) -> None:
-        """Ensure `--markdown` takes a path and defaults to writing nothing."""
-        parser = build_parser()
-
-        assert parser.parse_args(["run"]).markdown is None
-        assert (
-            parser.parse_args(["run", "--markdown", "out/summary.md"]).markdown == "out/summary.md"
-        )
 
     @pytest.mark.parametrize("is_match", [True, False])
     def test_it_writes_otel_metrics_when_asked(
@@ -318,12 +281,19 @@ class TestCommandLineInterface:
         assert exit_code == 1
         mock_write.assert_not_called()
 
-    def test_it_parses_the_otel_flag(self) -> None:
-        """Ensure `--otel` takes a path and defaults to writing nothing."""
+    @pytest.mark.parametrize(
+        ("flag", "path"),
+        [
+            pytest.param("markdown", "out/summary.md", id="markdown"),
+            pytest.param("otel", "out/metrics.json", id="otel"),
+        ],
+    )
+    def test_it_parses_an_output_file_flag(self, flag: str, path: str) -> None:
+        """Ensure `--markdown` and `--otel` take a path and default to writing nothing."""
         parser = build_parser()
 
-        assert parser.parse_args(["run"]).otel is None
-        assert parser.parse_args(["run", "--otel", "out/metrics.json"]).otel == "out/metrics.json"
+        assert getattr(parser.parse_args(["run"]), flag) is None
+        assert getattr(parser.parse_args(["run", f"--{flag}", path]), flag) == path
 
     def test_it_stays_silent_when_asked(
         self,
