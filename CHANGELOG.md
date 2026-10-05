@@ -1,3 +1,41 @@
+## v0.12.1 (2026-10-05)
+
+A Postgres `table` now keeps the declared precision and scale of each `numeric` column,
+with or without `pushdown`. Before, every `numeric` arrived as `Decimal(38, 10)`,
+rounded to ten decimal places. A value with more than 18 digits before the decimal point
+failed the read, and `strict_types` could not tell `numeric(10, 2)` from
+`numeric(12, 4)`. Veridelta now reads the declarations from the `pg_attribute` catalog
+before the rows, so a Postgres-compatible server without that catalog needs a `query`. A
+`query`, a `numeric` declared without a precision, and one with a precision above 38 or
+a negative scale keep `Decimal(38, 10)`. A stored `NaN` fails the read, which now names
+its column.
+
+Pushdown also accepts `timezone` on text that `datetime_format` parses with an offset,
+as a local run does, and `cast_to: Boolean` works on BigQuery numbers that are not
+integers. OpenTelemetry exports keep the container in `abfss://` source names.
+
+The documentation follows written style rules, which a CI check enforces. The
+configuration guide is split into pages for configuration, sources, rules, pushdown,
+results, and the command line. A link to a section that moved lands at the top of the
+configuration page.
+
+### Fix
+
+- read each Postgres `numeric` at its declared precision and scale, with or without
+  `pushdown`
+- accept `timezone` in pushdown on text that `datetime_format` parses with an offset
+- compare BigQuery numbers with zero for `cast_to: Boolean`, since BigQuery casts only
+  integers and text to `BOOL`
+- keep the container in the `abfss://` source names of OpenTelemetry exports
+
+### Chore
+
+- pin workflow actions to commits, and let Dependabot keep them and the lockfile current
+- deploy the documentation one commit at a time
+- add a code of conduct, issue forms, and a pull request template
+- hold the documentation and tutorials to written style rules, checked in CI, and split
+  the configuration guide into focused pages
+
 ## v0.12.0 (2026-10-05)
 
 Veridelta now requires Python 3.11 or later, since Python 3.10 reaches end of life this
