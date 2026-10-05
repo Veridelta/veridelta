@@ -34,6 +34,10 @@ spec:
       description: Rows to embed per table in the HTML report.
       type: number
       default: 1000
+    markdown-max-rows:
+      description: Changed values to list in the Markdown summary, which reaches the job log and the merge request note. 0 lists none.
+      type: number
+      default: 0
     fail-on-mismatch:
       description: Fail the job when the comparison finds drift. An error always fails it.
       type: boolean
@@ -52,6 +56,7 @@ spec:
     VERIDELTA_VERSION: "$[[ inputs.version ]]"
     VERIDELTA_EXTRAS: "$[[ inputs.extras ]]"
     VERIDELTA_HTML_MAX_ROWS: "$[[ inputs.html-max-rows ]]"
+    VERIDELTA_MARKDOWN_MAX_ROWS: "$[[ inputs.markdown-max-rows ]]"
     VERIDELTA_FAIL_ON_MISMATCH: "$[[ inputs.fail-on-mismatch ]]"
     VERIDELTA_COMMENT: "$[[ inputs.comment ]]"
   script:
@@ -60,7 +65,7 @@ spec:
       mkdir -p veridelta-report
       extras=$(printf '%s' "$VERIDELTA_EXTRAS" | tr -d ' ')
       spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
-      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md --otel veridelta-report/otel-metrics.json > veridelta-report/summary.json
+      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel veridelta-report/otel-metrics.json > veridelta-report/summary.json
       code=$?
       if [ "$code" -eq 0 ]; then
         status=match

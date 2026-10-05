@@ -28,9 +28,10 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | `--html PATH` | Also write a standalone [HTML report](results.md#html-report), which loads nothing from a CDN. |
 | `--html-max-rows N` | Rows per table in the HTML report, zero or more. Default 1000, so a large diff cannot produce a file too large to open. |
 | `--markdown PATH` | Also write the [Markdown summary](results.md#markdown-summary) that the [CI integrations](ci.md) post. |
+| `--markdown-max-rows N` | Changed values to list in the Markdown summary, lowest keys first. Default 0, which lists none. |
 | `--otel PATH` | Also write the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). |
 
-Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one.
+Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one, and so does a Markdown summary that lists values.
 
 ## Exit codes
 

@@ -42,7 +42,7 @@ def _progress(message: str, *, quiet: bool) -> None:
 
 
 def _row_limit(text: str) -> int:
-    """Parse `--html-max-rows`, which must be a whole number of zero or more."""
+    """Parse a row cap, such as `--html-max-rows`, which must be a whole number of zero or more."""
     try:
         value = int(text)
     except ValueError:
@@ -147,7 +147,7 @@ def run(args: argparse.Namespace) -> int:
             _progress(f"HTML report saved to: {written.absolute()}", quiet=quiet)
 
         if args.markdown:
-            summary_file = write_markdown(result, args.markdown)
+            summary_file = write_markdown(result, args.markdown, max_rows=args.markdown_max_rows)
             _progress(f"Markdown summary saved to: {summary_file.absolute()}", quiet=quiet)
 
         if args.otel:
@@ -389,6 +389,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--markdown",
         metavar="PATH",
         help="Also write a short Markdown summary to PATH, for CI job summaries and PR comments.",
+    )
+    run_parser.add_argument(
+        "--markdown-max-rows",
+        type=_row_limit,
+        default=0,
+        metavar="N",
+        help=(
+            "Changed values to list in the Markdown summary, lowest keys first "
+            "(default: 0, which lists none)."
+        ),
     )
     run_parser.add_argument(
         "--otel",

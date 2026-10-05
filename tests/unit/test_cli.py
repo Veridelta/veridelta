@@ -33,6 +33,7 @@ class TestCommandLineInterface:
             html=None,
             html_max_rows=1000,
             markdown=None,
+            markdown_max_rows=0,
             otel=None,
         )
 
@@ -225,11 +226,12 @@ class TestCommandLineInterface:
         mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
         mock_engine.run_from_configs.return_value = mock_result
         default_args.markdown = "summary.md"
+        default_args.markdown_max_rows = 5
 
         run(default_args)
         captured = capsys.readouterr()
 
-        mock_write.assert_called_once_with(mock_result, "summary.md")
+        mock_write.assert_called_once_with(mock_result, "summary.md", max_rows=5)
         assert "Markdown summary saved to" in captured.err
         assert "Markdown summary saved to" not in captured.out
 
@@ -326,6 +328,7 @@ class TestCommandLineInterface:
         assert exc.value.code == 0
         assert __version__ in capsys.readouterr().out
 
+    @pytest.mark.parametrize("flag", ["--html-max-rows", "--markdown-max-rows"])
     @pytest.mark.parametrize(
         ("value", "message"),
         [
@@ -333,22 +336,31 @@ class TestCommandLineInterface:
             pytest.param("many", "whole number", id="not-a-number"),
         ],
     )
-    def test_it_rejects_an_unusable_html_row_cap(
-        self, capsys: pytest.CaptureFixture[str], value: str, message: str
+    def test_it_rejects_an_unusable_row_cap(
+        self, capsys: pytest.CaptureFixture[str], flag: str, value: str, message: str
     ) -> None:
-        """Ensure a bad `--html-max-rows` is a usage error, not a silently wrong report."""
+        """Ensure a bad row cap is a usage error, not a silently wrong report."""
         with pytest.raises(SystemExit) as exc:
-            build_parser().parse_args(["run", "--html", "r.html", "--html-max-rows", value])
+            build_parser().parse_args(["run", flag, value])
 
         assert exc.value.code == 2
         assert message in capsys.readouterr().err
 
-    def test_it_accepts_a_zero_or_positive_html_row_cap(self) -> None:
-        """Ensure a valid cap, zero included, parses to an integer."""
+    @pytest.mark.parametrize(
+        ("flag", "default"),
+        [
+            pytest.param("html_max_rows", 1000, id="html"),
+            pytest.param("markdown_max_rows", 0, id="markdown"),
+        ],
+    )
+    def test_it_accepts_a_zero_or_positive_row_cap(self, flag: str, default: int) -> None:
+        """Ensure a valid cap, zero included, parses to an integer, and values stay off by default."""
         parser = build_parser()
+        option = "--" + flag.replace("_", "-")
 
-        assert parser.parse_args(["run", "--html-max-rows", "0"]).html_max_rows == 0
-        assert parser.parse_args(["run", "--html-max-rows", "25"]).html_max_rows == 25
+        assert getattr(parser.parse_args(["run"]), flag) == default
+        assert getattr(parser.parse_args(["run", option, "0"]), flag) == 0
+        assert getattr(parser.parse_args(["run", option, "25"]), flag) == 25
 
     def test_main_parses_arguments_and_delegates_to_run(self, mocker: MockerFixture) -> None:
         """Ensure the main entrypoint correctly routes the run command and exits."""

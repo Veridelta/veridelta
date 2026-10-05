@@ -59,6 +59,7 @@ jobs:
 | `version` | empty | Install this version from PyPI instead of the action's own ref. |
 | `python-version` | `3.12` | Python to run Veridelta with. |
 | `html-max-rows` | `1000` | Rows per table in the HTML report. |
+| `markdown-max-rows` | `0` | Changed values to list in the summary. See [Values in the summary](#values-in-the-summary). |
 | `fail-on-mismatch` | `true` | Fail the step on drift. An error always fails it. |
 | `comment` | `true` | Keep a summary comment on the pull request. |
 | `github-token` | `github.token` | Token used to comment. |
@@ -76,6 +77,10 @@ jobs:
 | `otel-metrics` | Path to the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). Empty when the run did not finish. |
 
 To act on drift in a later step instead of failing, set `fail-on-mismatch: false` and read `status`.
+
+### Values in the summary
+
+The summary lists counts and column names, never values, unless `markdown-max-rows` is above `0`. It then lists up to that many [changed values](results.md#markdown-summary), lowest keys first. They appear in the job summary and the pull request comment, where anyone who can read the pull request can read them. Set it only where every such reader may see the data.
 
 ### Sending metrics to an observability backend
 
@@ -120,7 +125,7 @@ The template defines one job, named `veridelta` by default, which:
 
 **Inputs:**
 
-- `config`, `version`, `extras`, `html-max-rows`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action.
+- `config`, `version`, `extras`, `html-max-rows`, `markdown-max-rows`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action. With `markdown-max-rows` above `0`, values appear in the job log and the merge request note.
 - `stage`, `job-name`, and `image` place the job in your pipeline.
 
 **Credentials.** Set them as masked CI/CD variables; the configuration reads them as `${NAME}`.

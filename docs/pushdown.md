@@ -121,10 +121,11 @@ pushdown_sample_rows: 50
 
 After the counts, one more statement fetches up to that many changed rows, lowest keys first, so the same tables give the same sample. Each row holds its keys and, for every compared column, `{column}_source`, `{column}_target`, and `{column}_is_match`, as a local run's changed rows do. The values are the ones the comparison saw, after every rule up to the comparison itself, and each flag is the result that decided the row. The counts do not change, because the sample comes from the same changed rows.
 
-The sample reaches three places:
+The sample reaches these places:
 
 - the HTML report, whose changed rows table shows it in place of the bare keys;
 - `DiffResult.changed_sample`;
-- with `output_path` set, a `changed_rows_sample` artifact.
+- with `output_path` set, a `changed_rows_sample` artifact;
+- with `--markdown-max-rows` above 0, the [Markdown summary](results.md#markdown-summary), which the [CI integrations](ci.md) post as a pull request comment.
 
-It never reaches a log line, the `--json` summary, or the Markdown summary, which the [CI integrations](ci.md) post as a pull request comment. Values do leave the warehouse, though, and the GitHub Action uploads the HTML report as a workflow artifact. Set `pushdown_sample_rows` only where everyone who can open the report may read the data. `0`, the default, fetches nothing.
+It never reaches a log line or the `--json` summary. Values do leave the warehouse, though, and the GitHub Action uploads the HTML report as a workflow artifact. Set `pushdown_sample_rows` only where everyone who can open the report may read the data. `0`, the default, fetches nothing.
