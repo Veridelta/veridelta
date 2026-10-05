@@ -1739,6 +1739,34 @@ class TestPostgresDialect:
         assert 'CAST("src"."price" AS DOUBLE PRECISION)' in double
         assert 'CAST("src"."name" AS TEXT)' in text
 
+    def test_it_tests_numbers_against_zero_to_make_booleans(self) -> None:
+        """Ensure `cast_to: Boolean` turns a number into a comparison with zero.
+
+        Postgres casts only `integer` to `boolean`, and refuses `smallint`,
+        `bigint`, `numeric`, and floats. Polars reads every nonzero number as
+        true, NaN included, which is what `<> 0` returns for each of them.
+        """
+        rule = DiffRule(column_names=["flag"], cast_to="Boolean")
+
+        numbers = _postgres().compile_column_predicate(
+            rule, "flag", source_dtype=pl.Int64(), target_dtype=pl.Decimal(10, 2)
+        )
+        others = _postgres().compile_column_predicate(
+            rule, "flag", source_dtype=pl.String(), target_dtype=pl.Boolean()
+        )
+        padded = _postgres().compile_column_predicate(
+            DiffRule(column_names=["flag"], pad_zeros=2, cast_to="Boolean"),
+            "flag",
+            source_dtype=pl.Float64(),
+        )
+
+        assert '("src"."flag" <> 0)' in numbers
+        assert '("tgt"."flag" <> 0)' in numbers
+        assert "AS BOOLEAN" not in numbers
+        assert 'CAST("src"."flag" AS BOOLEAN)' in others
+        assert 'CAST("tgt"."flag" AS BOOLEAN)' in others
+        assert "<> 0" not in padded
+
     def test_it_bounds_tolerances_with_postgres_infinity(self) -> None:
         """Ensure the infinity guard uses a literal Postgres can parse."""
         sql = _postgres().compile_column_predicate(

@@ -133,6 +133,14 @@ parameter, so this table is the boundary that keeps configuration text out of
 the emitted SQL grammar. Nothing outside it ever reaches a `CAST`.
 """
 
+_ZERO_TEST_BOOLEANS: Final[frozenset[SQLDialect]] = frozenset({SQLDialect.POSTGRES})
+"""Dialects that turn a number into a boolean by comparing it with zero.
+
+Postgres casts only `integer` to `boolean` and refuses `smallint`, `bigint`,
+`numeric`, and floats. Polars reads every nonzero number as true, NaN included,
+which is exactly what `<> 0` returns for each of them.
+"""
+
 _IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
     SQLDialect.SNOWFLAKE: '"',
     SQLDialect.DATABRICKS: "`",
@@ -1788,41 +1796,53 @@ class SQLPushdownCompiler:
             expr (str): SQL expression to cast.
             rule (DiffRule): Rule providing `cast_to`.
             dtype (pl.DataType | None): Probed dtype for this side, used to
-                detect the float-to-integer case below.
+                detect the float-to-integer and number-to-boolean cases below.
 
         Returns:
-            str: `CAST(expr AS keyword)`, or `expr` when `cast_to` is unset.
+            str: `CAST(expr AS keyword)`, `(expr <> 0)` for a number on a
+                dialect in `_ZERO_TEST_BOOLEANS`, or `expr` when `cast_to` is unset.
 
         Raises:
             ConnectorError: If `cast_to` has no keyword for this dialect.
         """
         if rule.cast_to is None:
             return expr
-        if rule.cast_to == "Int64" and self._precast_is_float(rule, dtype):
+        precast = self._precast_dtype(rule, dtype)
+        if (
+            rule.cast_to == "Boolean"
+            and self.dialect in _ZERO_TEST_BOOLEANS
+            and precast is not None
+            and precast.is_numeric()
+        ):
+            return f"({expr} <> 0)"
+        if rule.cast_to == "Int64" and precast is not None and precast.is_float():
             # Polars truncates a float toward zero on the way to an integer.
             # Snowflake and DuckDB round instead, so 10.7 would compare as 11
             # under pushdown and 10 locally. Truncate explicitly rather than
-            # inherit whichever behavior the warehouse happens to have.
+            # inherit whichever behavior the warehouse happens to have. Only
+            # floats need this: `Decimal` rounds to integers in Polars exactly
+            # as SQL does.
             expr = f"CASE WHEN {expr} < 0 THEN CEIL({expr}) ELSE FLOOR({expr}) END"
         return f"CAST({expr} AS {self._cast_keyword(rule.cast_to)})"
 
-    def _precast_is_float(self, rule: DiffRule, dtype: pl.DataType | None) -> bool:
-        """Return whether stage 7 receives a floating-point value on this side.
+    def _precast_dtype(self, rule: DiffRule, dtype: pl.DataType | None) -> pl.DataType | None:
+        """Return the probed dtype if stage 7 still receives it on this side.
 
-        Only floats need the truncation guard. `Decimal` rounds to integers in
-        Polars exactly as SQL does, and every earlier stage that fires leaves
-        text or a timestamp behind rather than a float.
+        Every earlier stage that fires on a number leaves text or a timestamp
+        behind, so the probed dtype only describes the cast's input when none
+        of them does.
 
         Args:
             rule (DiffRule): Rule whose earlier stages may have changed the type.
             dtype (pl.DataType | None): Probed dtype, or None when unprobed.
 
         Returns:
-            bool: True only when the value reaching the cast is still a float.
+            pl.DataType | None: The dtype reaching the cast, or None when an
+                earlier stage changed it or the side was not probed.
         """
         if rule.pad_zeros is not None or rule.datetime_format or rule.timezone:
-            return False
-        return dtype is not None and dtype.is_float()
+            return None
+        return dtype
 
     def _cast_keyword(self, target: CastTarget) -> str:
         """Look up the dialect keyword for a cast target.
