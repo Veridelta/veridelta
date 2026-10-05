@@ -15,7 +15,11 @@ to differ are left out on purpose, so a failure is a real divergence:
 - no column is cast between float and text, or cast leniently, since each
   engine spells those conversions its own way;
 - no Categorical, Enum, Duration, Null, nanosecond, or non-UTC timezone dtypes,
-  which the DuckDB harness cannot round-trip faithfully.
+  which the DuckDB harness cannot round-trip faithfully;
+- no rule field the backend's pushdown refuses, such as `datetime_format` on
+  Postgres, and no `pad_zeros` on a dtype the backend writes as different text
+  on its two sides, such as a `UInt64` Postgres stores as `numeric`, both of
+  which `comparison_cases` drops when told to.
 """
 
 from collections.abc import Callable
@@ -272,8 +276,20 @@ def _target_cell(draw: st.DrawFn, kind: _Kind, value: Any) -> Any:
 
 
 @st.composite
-def comparison_cases(draw: st.DrawFn) -> tuple[DiffConfig, pl.DataFrame, pl.DataFrame]:
+def comparison_cases(
+    draw: st.DrawFn,
+    refused: frozenset[str] = frozenset(),
+    unpadded: frozenset[type[pl.DataType]] = frozenset(),
+) -> tuple[DiffConfig, pl.DataFrame, pl.DataFrame]:
     """Draw a configuration and a source and target both engines should agree on.
+
+    Args:
+        draw (st.DrawFn): Hypothesis' draw function.
+        refused (frozenset[str]): Rule fields to leave out of every rule,
+            because the pushdown side would refuse them.
+        unpadded (frozenset[type[pl.DataType]]): Dtypes never given
+            `pad_zeros`, because the backend writes them as different text on
+            its two sides.
 
     Returns:
         tuple[DiffConfig, pl.DataFrame, pl.DataFrame]: Keys on a unique `id`,
@@ -307,11 +323,14 @@ def comparison_cases(draw: st.DrawFn) -> tuple[DiffConfig, pl.DataFrame, pl.Data
             for column, kind in columns.items()
         },
     }
-    rules = [
-        DiffRule(column_names=[column], **draw(kind.rules))
-        for column, kind in columns.items()
-        if draw(st.booleans())
-    ]
+    rules: list[DiffRule] = []
+    for column, kind in columns.items():
+        if not draw(st.booleans()):
+            continue
+        fields = {field: value for field, value in draw(kind.rules).items() if field not in refused}
+        if {type(schema[column]), type(target_schema[column])} & unpadded:
+            fields.pop("pad_zeros", None)
+        rules.append(DiffRule(column_names=[column], **fields))
     config = DiffConfig(
         primary_keys=["id"],
         rules=rules,

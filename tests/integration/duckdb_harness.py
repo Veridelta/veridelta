@@ -17,15 +17,21 @@ covered by string assertions in `tests/unit/test_sql_compiler.py`.
 DuckDB's `levenshtein` also counts UTF-8 bytes where Snowflake, Databricks,
 and the local engine count characters, so edit-distance parity cases use ASCII
 text, on which the two agree.
+
+Setting `VERIDELTA_PARITY_BACKEND=postgres` runs the same cases against a live
+Postgres through `postgres_harness` instead: the comparison runs inside
+Postgres, and the local engine reads the same tables back.
 """
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any
 
 import duckdb
 import polars as pl
 
+from tests.integration import postgres_harness
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.engine import DiffEngine, _collect_pushdown_summary, _collect_value_map_proposals
 from veridelta.exceptions import ConnectorError
@@ -40,6 +46,22 @@ SOURCE_TABLE = "src_data"
 
 TARGET_TABLE = "tgt_data"
 """Relation name the harness registers the target frame under."""
+
+PARITY_BACKEND = os.environ.get("VERIDELTA_PARITY_BACKEND", "duckdb")
+"""Database the pushdown side runs in: `duckdb`, or `postgres` for a live server."""
+
+if PARITY_BACKEND not in {"duckdb", "postgres"}:
+    raise RuntimeError(
+        f"VERIDELTA_PARITY_BACKEND must be duckdb or postgres, not {PARITY_BACKEND!r}."
+    )
+
+REFUSED_RULES = postgres_harness.REFUSED_RULES if PARITY_BACKEND == "postgres" else frozenset()
+"""Rule fields the selected backend's pushdown refuses before running any query."""
+
+UNPADDED_DTYPES: frozenset[type[pl.DataType]] = (
+    postgres_harness.NUMERIC_DTYPES if PARITY_BACKEND == "postgres" else frozenset()
+)
+"""Dtypes the selected backend writes as different text on its two sides."""
 
 
 class DuckDBPushdownSession:
@@ -138,7 +160,7 @@ class DuckDBPushdownSession:
 def run_pushdown(
     config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
 ) -> tuple[DiffResult, list[str]]:
-    """Compile the comparison and execute every statement against DuckDB.
+    """Compile the comparison and execute every statement in the selected backend.
 
     Args:
         config (DiffConfig): Comparison rules and keys.
@@ -149,6 +171,8 @@ def run_pushdown(
         tuple[DiffResult, list[str]]: The pushdown result and the SQL that
             produced it, in execution order.
     """
+    if PARITY_BACKEND == "postgres":
+        return postgres_harness.run_pushdown(config, source, target)
     with DuckDBPushdownSession(source, target) as session:
         result = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
         return result, list(session.statements)
@@ -163,7 +187,7 @@ def run_value_map_pushdown(
     min_support: int = 5,
     sample_fraction: float = 1.0,
 ) -> tuple[list[ValueMapProposal], list[str]]:
-    """Propose value maps from the frames through compiled SQL in DuckDB.
+    """Propose value maps from the frames through compiled SQL in the selected backend.
 
     Args:
         config (DiffConfig): Comparison rules and keys.
@@ -177,6 +201,15 @@ def run_value_map_pushdown(
         tuple[list[ValueMapProposal], list[str]]: The proposals and the SQL
             that produced them, in execution order.
     """
+    if PARITY_BACKEND == "postgres":
+        return postgres_harness.run_value_map_pushdown(
+            config,
+            source,
+            target,
+            min_confidence=min_confidence,
+            min_support=min_support,
+            sample_fraction=sample_fraction,
+        )
     with DuckDBPushdownSession(source, target) as session:
         proposals = _collect_value_map_proposals(
             session,
@@ -193,6 +226,9 @@ def run_value_map_pushdown(
 def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:
     """Execute the same comparison through the local Polars engine.
 
+    Against Postgres, the frames are loaded and read back first, so the local
+    engine sees the tables the pushdown side compared.
+
     Args:
         config (DiffConfig): Comparison rules and keys.
         source (pl.DataFrame): Source rows.
@@ -201,6 +237,8 @@ def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) ->
     Returns:
         DiffResult: The local engine's verdict and discrepancy rows.
     """
+    if PARITY_BACKEND == "postgres":
+        return postgres_harness.run_local(config, source, target)
     return DiffEngine(config, source.lazy(), target.lazy()).run()
 
 

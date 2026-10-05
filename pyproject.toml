@@ -93,6 +93,7 @@ dev = [
     "nbclient>=0.10.4",
     "nbformat>=5.10.4",
     "pre-commit>=4.5.1",
+    "psycopg[binary]>=3.2",
     "pyright>=1.1.414",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
@@ -142,6 +143,8 @@ module = [
     "nbclient.*",
     "jsonschema",
     "jsonschema.*",
+    "psycopg",
+    "psycopg.*",
 ]
 ignore_missing_imports = true
 
@@ -239,6 +242,7 @@ markers = [
     "fast: CPU-bound tests that execute in milliseconds.",
     "slow: I/O bound or large-dataset tests.",
     "property: Hypothesis property tests that draw their own cases.",
+    "duckdb_only: Parity cases Postgres pushdown refuses or cannot store; make postgres deselects them.",
 ]
 
 [tool.coverage.run]
