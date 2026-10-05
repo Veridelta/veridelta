@@ -119,6 +119,7 @@ class TestGitHubAction:
         assert parsed.json is True
         assert parsed.html == "placeholder/report.html"
         assert parsed.markdown == "placeholder/summary.md"
+        assert parsed.markdown_max_rows == 1000
         assert parsed.otel == "placeholder/otel-metrics.json"
 
     def test_it_exposes_the_metrics_file_only_for_a_finished_run(self) -> None:
@@ -170,6 +171,7 @@ class TestGitLabTemplate:
 
         assert parsed.json is True
         assert parsed.markdown == "veridelta-report/summary.md"
+        assert parsed.markdown_max_rows == 1000
         assert parsed.otel == "veridelta-report/otel-metrics.json"
 
     def test_it_installs_the_release_it_ships_with(self) -> None:

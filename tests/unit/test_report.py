@@ -390,7 +390,173 @@ class TestMarkdownSummary:
         """Ensure a nested output path does not require pre-creating the tree."""
         destination = tmp_path / "reports" / "summary.md"
 
-        written = write_markdown(_result(), destination)
+        written = write_markdown(_result(), destination, max_rows=5)
 
         assert written == destination
-        assert destination.read_text(encoding="utf-8") == render_markdown(_result())
+        assert destination.read_text(encoding="utf-8") == render_markdown(_result(), max_rows=5)
+
+
+_CHANGED = pl.DataFrame(
+    {
+        "id": [2, 1],
+        "status_source": ["open", "open"],
+        "status_target": [None, "closed"],
+        "status_is_match": [False, False],
+        "amount_source": [5.0, 10.0],
+        "amount_target": [5.0, 10.5],
+        "amount_is_match": [True, False],
+    }
+)
+"""Two changed rows, out of key order, holding three differing values."""
+
+
+def _with_changes(changed: pl.DataFrame) -> DiffResult:
+    """Wrap changed rows keyed by `id` in a local result whose counts match them."""
+    columns = [name.removesuffix("_is_match") for name in changed.columns if "_is_match" in name]
+    mismatches = {column: int((~changed[f"{column}_is_match"]).sum()) for column in columns}
+    return DiffResult(
+        summary=_summary(changed_count=changed.height, column_mismatches=mismatches),
+        added=pl.DataFrame(),
+        removed=pl.DataFrame(),
+        changed=changed,
+        primary_keys=("id",),
+        compared_columns=tuple(columns),
+    )
+
+
+def _pushdown(sample: pl.DataFrame | None) -> DiffResult:
+    """Wrap a pushdown run with three changed keys and, optionally, a sample of them."""
+    return DiffResult(
+        summary=_summary(changed_count=3, column_mismatches={"val": 3}),
+        added=pl.DataFrame({"id": []}),
+        removed=pl.DataFrame({"id": []}),
+        changed=pl.DataFrame({"id": [2, 3, 4]}),
+        primary_keys=("id",),
+        compared_columns=("val",),
+        keys_only=True,
+        changed_sample=sample,
+    )
+
+
+class TestMarkdownValues:
+    """Validate the changed values a Markdown summary lists on request."""
+
+    def test_it_lists_no_values_by_default(self) -> None:
+        """Ensure values reach a pull request only when someone asks for them."""
+        document = render_markdown(_with_changes(_CHANGED))
+
+        assert "Changed values" not in document
+        assert "closed" not in document
+
+    def test_it_rejects_a_negative_row_cap(self) -> None:
+        """Ensure a negative cap fails loudly, as the HTML report's does."""
+        with pytest.raises(ConfigError, match="max_rows must be zero or more"):
+            render_markdown(_with_changes(_CHANGED), max_rows=-1)
+
+    def test_it_lists_each_differing_value_in_key_order(self) -> None:
+        """Ensure each differing value gets a row, lowest keys first, and nothing else does."""
+        document = render_markdown(_with_changes(_CHANGED), max_rows=10)
+
+        assert document.endswith(
+            "#### Changed values\n"
+            "\n"
+            "| `id` | Column | Source | Target |\n"
+            "| :--- | :--- | :--- | :--- |\n"
+            "| `1` | `status` | `'open'` | `'closed'` |\n"
+            "| `1` | `amount` | `10.0` | `10.5` |\n"
+            "| `2` | `status` | `'open'` | _null_ |\n"
+        )
+
+    def test_it_stops_at_the_row_cap_and_says_so(self) -> None:
+        """Ensure a capped list says how many values it left out."""
+        document = render_markdown(_with_changes(_CHANGED), max_rows=2)
+
+        assert "| `1` | `amount` | `10.0` | `10.5` |" in document
+        assert "| `2` |" not in document
+        assert document.endswith("\n\n_Showing 2 of 3 changed values._\n")
+
+    def test_it_reads_the_rows_a_local_run_produces(self) -> None:
+        """Ensure the summary reads a real run's changed rows."""
+        document = render_markdown(_result(), max_rows=5)
+
+        assert "| `2` | `val` | `'B'` | `'CHANGED'` |" in document
+
+    @pytest.mark.parametrize(
+        ("value", "cell"),
+        [
+            pytest.param("a|b", r"`'a\|b'`", id="pipe"),
+            pytest.param("we`ird", "``'we`ird'``", id="backtick"),
+            pytest.param("<!-- veridelta:x -->", "`'<!-- veridelta:x -->'`", id="marker"),
+            pytest.param("@octocat", "`'@octocat'`", id="mention"),
+            pytest.param("line\nbreak", r"`'line\nbreak'`", id="newline"),
+            pytest.param("ACME ", "`'ACME '`", id="trailing-space"),
+            pytest.param("", "`''`", id="empty"),
+            pytest.param("x" * 100, "`'" + "x" * 59 + "...`", id="long"),
+        ],
+    )
+    def test_it_keeps_values_from_breaking_the_markdown(self, value: str, cell: str) -> None:
+        """Ensure a value renders as literal text, quoted so whitespace shows, and cut when long.
+
+        The summary is posted to pull requests, so a value must never close the
+        table, mention someone, or spoof the sticky-comment marker.
+        """
+        changed = pl.DataFrame(
+            {"id": [1], "note_source": [value], "note_target": ["x"], "note_is_match": [False]}
+        )
+
+        document = render_markdown(_with_changes(changed), max_rows=1)
+
+        assert f"| `1` | `note` | {cell} | `'x'` |" in document
+
+    def test_it_stops_before_a_comment_grows_too_long(self) -> None:
+        """Ensure the summary stays under GitHub's comment limit, counting multibyte text."""
+        rows = 5_000
+        changed = pl.DataFrame(
+            {
+                "id": list(range(rows)),
+                "note_source": ["\u00e9" * 80] * rows,
+                "note_target": ["e" * 80] * rows,
+                "note_is_match": [False] * rows,
+            }
+        )
+
+        document = render_markdown(_with_changes(changed), max_rows=rows)
+
+        shown = document.count("`'\u00e9")
+        assert 0 < shown < rows
+        assert len(document.encode()) <= 60_000
+        assert document.endswith(f"\n_Showing {shown:,} of 5,000 changed values._\n")
+
+    def test_it_lists_a_pushdown_sample_and_counts_what_it_left_out(self) -> None:
+        """Ensure a pushdown run lists its sample, and counts every value the warehouse found."""
+        sample = pl.DataFrame(
+            {
+                "id": [3, 2],
+                "val_source": ["c", "b"],
+                "val_target": ["C", "B"],
+                "val_is_match": [False, False],
+            }
+        )
+
+        document = render_markdown(_pushdown(sample), max_rows=10)
+
+        assert document.index("| `2` | `val` | `'b'` | `'B'` |") < document.index(
+            "| `3` | `val` | `'c'` | `'C'` |"
+        )
+        assert document.endswith("\n_Showing 2 of 3 changed values._\n")
+
+    def test_it_asks_for_a_sample_under_pushdown(self) -> None:
+        """Ensure a pushdown run without a sample says how to get values."""
+        document = render_markdown(_pushdown(None), max_rows=10)
+
+        assert document.endswith(
+            "#### Changed values\n\nSet `pushdown_sample_rows` to list values here.\n"
+        )
+
+    def test_it_leaves_out_the_section_when_nothing_changed(self) -> None:
+        """Ensure a run with no changed rows adds no empty section."""
+        summary = _summary(
+            added_count=0, removed_count=0, changed_count=0, column_mismatches={}, is_match=True
+        )
+
+        assert "Changed values" not in render_markdown(_with_summary(summary), max_rows=10)

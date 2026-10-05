@@ -224,6 +224,7 @@ jobs:
           config: tests/fixtures/ci/drift.yaml
           comment: "false"
           fail-on-mismatch: "false"
+          markdown-max-rows: "5"
           artifact-name: veridelta-drift-${{ matrix.os }}
 
       - name: Run a configuration that cannot finish
@@ -257,6 +258,7 @@ jobs:
           test "$DRIFT_IS_MATCH" = false
           test "$DRIFT_EXIT_CODE" = 1
           grep -q "### Veridelta: FAILED" "$DRIFT_SUMMARY"
+          grep -q "| \`2\` | \`status\` | \`'closed'\` | \`'shipped'\` |" "$DRIFT_SUMMARY"
           grep -q '"name":"veridelta.diff.match"' "$DRIFT_OTEL"
           test "$(wc -l < "$DRIFT_OTEL")" -eq 1
           test "$BROKEN_OUTCOME" = failure
