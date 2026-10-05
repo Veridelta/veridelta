@@ -211,23 +211,22 @@ class TestOTLPShape:
 class TestOTLPValues:
     """Validate the counts, column drift, and verdict the export carries."""
 
-    def test_it_counts_the_rows_on_each_side(self) -> None:
-        """Ensure each side's row total is one point, labeled by side."""
-        text = render_otlp_metrics(_drift(), time_unix_nano=_OBSERVED)
-
-        assert _points(text, "veridelta.dataset.rows") == {"source": 4, "target": 4}
-
-    def test_it_counts_added_removed_and_changed_rows(self) -> None:
-        """Ensure each kind of difference is one point, labeled by kind."""
-        text = render_otlp_metrics(_drift(), time_unix_nano=_OBSERVED)
-
-        assert _points(text, "veridelta.diff.rows") == {"added": 1, "removed": 1, "changed": 1}
-
-    def test_it_reports_every_compared_column_including_those_without_drift(self) -> None:
-        """Ensure a column that stops drifting reports zero rather than vanishing."""
-        text = render_otlp_metrics(_drift(), time_unix_nano=_OBSERVED)
-
-        assert _points(text, "veridelta.column.mismatched_rows") == {"val": 1, "qty": 0}
+    @pytest.mark.parametrize(
+        ("metric", "points"),
+        [
+            pytest.param("veridelta.dataset.rows", {"source": 4, "target": 4}, id="rows-by-side"),
+            pytest.param(
+                "veridelta.diff.rows", {"added": 1, "removed": 1, "changed": 1}, id="rows-by-kind"
+            ),
+            # A column that stops drifting reports zero rather than vanishing.
+            pytest.param(
+                "veridelta.column.mismatched_rows", {"val": 1, "qty": 0}, id="every-compared-column"
+            ),
+        ],
+    )
+    def test_it_reports_one_point_per_label(self, metric: str, points: dict[str, int]) -> None:
+        """Ensure each count is one point, labeled by side, kind, or column."""
+        assert _points(render_otlp_metrics(_drift(), time_unix_nano=_OBSERVED), metric) == points
 
     def test_it_reports_a_drifting_column_missing_from_the_compared_list(self) -> None:
         """Ensure a hand-built result's drift is exported even without `compared_columns`."""

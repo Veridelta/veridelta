@@ -41,51 +41,36 @@ class TestYAMLConfigurationParsing:
 
     def test_it_raises_config_error_for_malformed_yaml_syntax(self, tmp_path: Path) -> None:
         """Ensure invalid YAML formatting triggers a graceful ConfigError."""
-        bad_yaml = tmp_path / "bad.yaml"
-        bad_yaml.write_text("source: [this is unclosed and invalid yaml: \n - target:")
-
         with pytest.raises(ConfigError, match="Failed to parse YAML file"):
-            load_config(bad_yaml)
+            _load_yaml(tmp_path, "source: [this is unclosed and invalid yaml: \n - target:")
 
-    def test_it_raises_config_error_when_file_is_completely_empty(self, tmp_path: Path) -> None:
-        """Ensure completely blank files are caught and gracefully rejected."""
-        empty_yaml = tmp_path / "empty.yaml"
-        empty_yaml.touch()
-
+    @pytest.mark.parametrize(
+        "text",
+        [pytest.param("", id="empty-file"), pytest.param("- item1\n- item2", id="list-root")],
+    )
+    def test_it_rejects_a_root_that_is_not_a_dictionary(self, tmp_path: Path, text: str) -> None:
+        """Ensure an empty file or a list root fails, since the root must be a mapping."""
         with pytest.raises(ConfigError, match="Root element must be a dictionary"):
-            load_config(empty_yaml)
-
-    def test_it_raises_config_error_when_root_is_not_a_dictionary(self, tmp_path: Path) -> None:
-        """Ensure the parser rejects YAML files that evaluate to a list instead of a dict."""
-        list_yaml = tmp_path / "list.yaml"
-        list_yaml.write_text("- item1\n- item2")
-
-        with pytest.raises(ConfigError, match="Root element must be a dictionary"):
-            load_config(list_yaml)
+            _load_yaml(tmp_path, text)
 
     def test_it_raises_config_error_when_missing_source_or_target_blocks(
         self, tmp_path: Path
     ) -> None:
         """Ensure the mandatory 'source' and 'target' definitions are strictly enforced."""
-        missing_yaml = tmp_path / "missing.yaml"
         # Providing source, but omitting target
-        missing_yaml.write_text("source:\n  path: data.csv\nprimary_keys:\n  - id\n")
-
         with pytest.raises(ConfigError, match="must contain both 'source' and 'target' blocks"):
-            load_config(missing_yaml)
+            _load_yaml(tmp_path, "source:\n  path: data.csv\nprimary_keys:\n  - id\n")
 
     def test_it_raises_config_error_with_formatted_message_on_validation_failure(
         self, tmp_path: Path
     ) -> None:
         """Ensure Pydantic ValidationErrors are cleanly intercepted and formatted for the user."""
-        invalid_schema_yaml = tmp_path / "invalid.yaml"
         # Missing the required 'primary_keys' root attribute, and adding an illegal extra field
-        invalid_schema_yaml.write_text(
-            "source:\n  path: src.csv\ntarget:\n  path: tgt.csv\nunsupported_field: true\n"
-        )
-
         with pytest.raises(ConfigError) as exc_info:
-            load_config(invalid_schema_yaml)
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: src.csv\ntarget:\n  path: tgt.csv\nunsupported_field: true\n",
+            )
 
         error_msg = str(exc_info.value)
         assert "Configuration Validation Failed" in error_msg
@@ -117,11 +102,8 @@ class TestYAMLConfigurationParsing:
         quoted the whole block, so a traceback or `logging.exception` printed
         the password.
         """
-        config = tmp_path / "leaky.yaml"
-        config.write_text(blocks + "primary_keys:\n  - id\n")
-
         with pytest.raises(ConfigError) as exc_info:
-            load_config(config)
+            _load_yaml(tmp_path, blocks + "primary_keys:\n  - id\n")
 
         assert "hunter2-do-not-print" not in str(exc_info.value)
         assert "hunter2-do-not-print" not in str(exc_info.value.__cause__)
@@ -146,8 +128,8 @@ class TestYAMLConfigurationParsing:
         self, tmp_path: Path
     ) -> None:
         """Ensure a fully valid YAML file maps correctly to all three Pydantic models."""
-        valid_yaml = tmp_path / "valid.yaml"
-        valid_yaml.write_text(
+        diff_cfg, src_cfg, tgt_cfg = _load_yaml(
+            tmp_path,
             "source:\n"
             "  path: source_data.parquet\n"
             "  format: parquet\n"
@@ -158,10 +140,8 @@ class TestYAMLConfigurationParsing:
             "  - invoice_id\n"
             "  - line_item_id\n"
             "schema_mode: allow_additions\n"
-            "strict_types: true\n"
+            "strict_types: true\n",
         )
-
-        diff_cfg, src_cfg, tgt_cfg = load_config(valid_yaml)
 
         assert isinstance(src_cfg, SourceConfig)
         assert isinstance(tgt_cfg, SourceConfig)
@@ -175,11 +155,13 @@ class TestYAMLConfigurationParsing:
         assert diff_cfg.strict_types is True
 
 
-def _load_yaml(tmp_path: Path, text: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
-    """Write a configuration file and load it."""
+def _load_yaml(
+    tmp_path: Path, text: str, **kwargs: list[str]
+) -> tuple[DiffConfig, SourceRef, SourceRef]:
+    """Write a configuration file and load it, passing keywords such as `unset_env` along."""
     path = tmp_path / "config.yaml"
     path.write_text(text)
-    return load_config(path)
+    return load_config(path, **kwargs)
 
 
 _SNOWFLAKE_BLOCK = (
@@ -448,16 +430,16 @@ class TestUnsetEnvironmentTolerance:
         monkeypatch.delenv("VD_UNSET_TABLE", raising=False)
         monkeypatch.delenv("VD_UNSET_PASSWORD", raising=False)
         monkeypatch.setenv("VD_SET_USER", "analyst")
-        path = tmp_path / "config.yaml"
-        path.write_text(
+        unset: list[str] = []
+
+        _, source, target = _load_yaml(
+            tmp_path,
             "source:\n  type: snowflake\n  table: ${VD_UNSET_TABLE}\n  account: xy12345\n"
             "  user: ${VD_SET_USER}\n  warehouse: ${VD_UNSET_WH:-COMPUTE_WH}\n"
             "  database: ANALYTICS\n  schema_name: PUBLIC\n  password: ${VD_UNSET_PASSWORD}\n"
-            "target:\n  path: ${VD_UNSET_TABLE}.csv\nprimary_keys: [id]\n"
+            "target:\n  path: ${VD_UNSET_TABLE}.csv\nprimary_keys: [id]\n",
+            unset_env=unset,
         )
-        unset: list[str] = []
-
-        _, source, target = load_config(path, unset_env=unset)
 
         assert isinstance(source, SnowflakeConfig)
         assert isinstance(target, SourceConfig)
@@ -472,14 +454,14 @@ class TestUnsetEnvironmentTolerance:
     ) -> None:
         """Ensure a failure a guessed value may have caused says so, in that block only."""
         monkeypatch.delenv("VD_UNSET_URI", raising=False)
-        path = tmp_path / "config.yaml"
-        path.write_text(
-            "source:\n  type: database\n  uri: ${VD_UNSET_URI}\n  table: orders\n"
-            "target:\n  path: b.csv\nprimary_keys: [id]\n"
-        )
 
         with pytest.raises(ConfigError, match="needs a scheme") as exc_info:
-            load_config(path, unset_env=[])
+            _load_yaml(
+                tmp_path,
+                "source:\n  type: database\n  uri: ${VD_UNSET_URI}\n  table: orders\n"
+                "target:\n  path: b.csv\nprimary_keys: [id]\n",
+                unset_env=[],
+            )
 
         assert "unset environment variables: VD_UNSET_URI" in str(exc_info.value)
 
@@ -488,21 +470,22 @@ class TestUnsetEnvironmentTolerance:
     ) -> None:
         """Ensure a block that guessed nothing fails exactly as it does without the option."""
         monkeypatch.delenv("VD_UNSET_PATH", raising=False)
-        path = tmp_path / "config.yaml"
-        path.write_text(
-            "source:\n  path: ${VD_UNSET_PATH}\n"
-            "target:\n  type: snowflake\n  table: TGT\nprimary_keys: [id]\n"
-        )
 
         with pytest.raises(ConfigError, match="Field required") as exc_info:
-            load_config(path, unset_env=[])
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: ${VD_UNSET_PATH}\n"
+                "target:\n  type: snowflake\n  table: TGT\nprimary_keys: [id]\n",
+                unset_env=[],
+            )
 
         assert "unset environment variables" not in str(exc_info.value)
 
     def test_it_still_refuses_a_malformed_reference(self, tmp_path: Path) -> None:
         """Ensure only unset variables are tolerated, never broken syntax."""
-        path = tmp_path / "config.yaml"
-        path.write_text("source:\n  path: ${1}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n")
-
         with pytest.raises(ConfigError, match="Malformed environment reference"):
-            load_config(path, unset_env=[])
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: ${1}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
+                unset_env=[],
+            )

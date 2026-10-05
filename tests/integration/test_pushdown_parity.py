@@ -34,215 +34,183 @@ _REFUSED_EDIT_DISTANCE = pytest.mark.duckdb_only(
 class TestBaselineParity:
     """Validate the harness itself on comparisons with no transform rules."""
 
-    def test_it_agrees_on_a_clean_comparison(self) -> None:
-        """Ensure identical relations report a perfect match on both paths."""
-        frame = pl.DataFrame({"id": [1, 2, 3], "amount": [10.5, 20.0, 30.0]})
-
-        summary = assert_parity(DiffConfig(primary_keys=["id"]), frame, frame)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_added_removed_and_changed_rows(self) -> None:
-        """Ensure the three anti-join and inner-join tallies line up exactly."""
-        src = pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]})
-        tgt = pl.DataFrame({"id": [1, 2, 4], "val": ["A", "CHANGED", "D"]})
-
-        summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
-
-        assert summary.added_count == 1
-        assert summary.removed_count == 1
-        assert summary.changed_count == 1
-        assert summary.column_mismatches == {"val": 1}
-
-    def test_it_agrees_when_a_null_meets_a_value(self) -> None:
-        """Ensure SQL's three-valued logic is folded to False like `fill_null`.
-
-        A bare `=` against NULL yields NULL, not False. Without the compiler's
-        `COALESCE(..., FALSE)` the row would be dropped from the mismatch join
-        and the pushdown count would understate the drift.
-        """
-        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
-        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", None]})
-
-        summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_when_nulls_are_treated_as_equal(self) -> None:
-        """Ensure `IS NOT DISTINCT FROM` matches `fill_null` null-safe equality."""
-        src = pl.DataFrame({"id": [1, 2], "val": [None, "B"]})
-        tgt = pl.DataFrame({"id": [1, 2], "val": [None, "B"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["val"], treat_null_as_equal=True)],
-        )
-
+    @pytest.mark.parametrize(
+        ("src", "tgt", "config", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "amount": [10.5, 20.0, 30.0]}),
+                pl.DataFrame({"id": [1, 2, 3], "amount": [10.5, 20.0, 30.0]}),
+                DiffConfig(primary_keys=["id"]),
+                {"is_perfect_match": True},
+                id="clean-comparison",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]}),
+                pl.DataFrame({"id": [1, 2, 4], "val": ["A", "CHANGED", "D"]}),
+                DiffConfig(primary_keys=["id"]),
+                {
+                    "added_count": 1,
+                    "removed_count": 1,
+                    "changed_count": 1,
+                    "column_mismatches": {"val": 1},
+                    "is_match": False,
+                },
+                id="added-removed-and-changed-rows",
+            ),
+            # A bare `=` against NULL yields NULL, so pushdown needs `COALESCE(..., FALSE)`.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "val": ["A", "B"]}),
+                pl.DataFrame({"id": [1, 2], "val": ["A", None]}),
+                DiffConfig(primary_keys=["id"]),
+                {"changed_count": 1},
+                id="null-meets-a-value",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "val": [None, "B"]}),
+                pl.DataFrame({"id": [1, 2], "val": [None, "B"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["val"], treat_null_as_equal=True)],
+                ),
+                {"is_perfect_match": True},
+                id="nulls-treated-as-equal",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "val": [None, "B"]}),
+                pl.DataFrame({"id": [1, 2], "val": ["A", "B"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["val"], treat_null_as_equal=True)],
+                ),
+                {"changed_count": 1},
+                id="unmatched-null-is-a-mismatch",
+            ),
+        ],
+    )
+    def test_it_agrees_without_transform_rules(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, config: DiffConfig, expected: dict[str, object]
+    ) -> None:
+        """Ensure comparisons without transforms report the same tallies on both paths."""
         summary = assert_parity(config, src, tgt)
 
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_that_an_unmatched_null_is_a_mismatch(self) -> None:
-        """Ensure null-safe equality still fails when only one side is null."""
-        src = pl.DataFrame({"id": [1, 2], "val": [None, "B"]})
-        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["val"], treat_null_as_equal=True)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
+        assert {key: getattr(summary, key) for key in expected} == expected
 
 
 class TestShippedStageParity:
     """Validate the transform stages that shipped before complete parity."""
 
-    def test_it_agrees_on_numeric_tolerances(self) -> None:
-        """Ensure `ABS(src - tgt) <= tol` matches the local tolerance check."""
-        src = pl.DataFrame({"id": [1, 2, 3], "cost": [10.00, 20.00, 30.00]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "cost": [10.02, 20.04, 30.20]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["cost"], absolute_tolerance=0.05)],
-        )
-
+    @pytest.mark.parametrize(
+        ("src", "tgt", "config", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "cost": [10.00, 20.00, 30.00]}),
+                pl.DataFrame({"id": [1, 2, 3], "cost": [10.02, 20.04, 30.20]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["cost"], absolute_tolerance=0.05)],
+                ),
+                {"changed_count": 1},
+                id="numeric-tolerance",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "status": ["Active", "N/A"]}),
+                pl.DataFrame({"id": [1, 2], "status": ["Active", None]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["status"], null_values=["N/A"], treat_null_as_equal=True
+                        )
+                    ],
+                ),
+                {"is_perfect_match": True},
+                id="typed-null-sentinel",
+            ),
+            # Pushdown skips the stage as local does, rather than emit `amount IN ('N/A')`.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "amount": [10, 20]}),
+                pl.DataFrame({"id": [1, 2], "amount": [10, 99]}),
+                DiffConfig(primary_keys=["id"], default_null_values=["N/A"]),
+                {"changed_count": 1},
+                id="sentinel-cannot-apply-to-the-dtype",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "phone": ["1-800-555", "1-800-556"]}),
+                pl.DataFrame({"id": [1, 2], "phone": ["1800555", "1800555"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["phone"], regex_replace={"-": ""})],
+                ),
+                {"changed_count": 1},
+                id="regex-replaces-every-match",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$20.50"]}),
+                pl.DataFrame({"id": [1, 2], "cost": ["10.00", "20.50"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["cost"], regex_replace={"\\$": ""})],
+                ),
+                {"is_perfect_match": True},
+                id="regex-replace",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "name": ["  Ada ", "grace", "LINUS "]}),
+                pl.DataFrame({"id": [1, 2, 3], "name": ["ADA", "Grace  ", " torvalds"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["name"], whitespace_mode="both", case_insensitive=True
+                        )
+                    ],
+                ),
+                {"changed_count": 1},
+                id="whitespace-and-case",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "tier": ["Enterprise", "Premium", "Standard"]}),
+                pl.DataFrame({"id": [1, 2, 3], "tier": ["ENT", "PRM", "BASIC"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["tier"],
+                            value_map={"Enterprise": "ENT", "Premium": "PRM", "Standard": "STD"},
+                        )
+                    ],
+                ),
+                {"changed_count": 1},
+                id="source-side-value-map",
+            ),
+            # Polars skips the regex on the float side, so pushdown skips `REGEXP_REPLACE` too.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$99.99"]}),
+                pl.DataFrame({"id": [1, 2], "cost": [10.0, 99.98]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["cost"],
+                            regex_replace={"\\$": ""},
+                            whitespace_mode="both",
+                            case_insensitive=True,
+                            cast_to="Float64",
+                        )
+                    ],
+                ),
+                {"changed_count": 1},
+                id="text-stage-meets-a-numeric-side",
+            ),
+        ],
+    )
+    def test_it_agrees_on_each_shipped_stage(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, config: DiffConfig, expected: dict[str, object]
+    ) -> None:
+        """Ensure each shipped stage reaches the same verdict on both paths."""
         summary = assert_parity(config, src, tgt)
 
-        assert summary.changed_count == 1
-
-    def test_it_agrees_on_typed_null_sentinels(self) -> None:
-        """Ensure sentinel coercion collapses to NULL on both paths."""
-        src = pl.DataFrame({"id": [1, 2], "status": ["Active", "N/A"]})
-        tgt = pl.DataFrame({"id": [1, 2], "status": ["Active", None]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["status"],
-                    null_values=["N/A"],
-                    treat_null_as_equal=True,
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_when_a_sentinel_cannot_apply_to_the_dtype(self) -> None:
-        """Ensure a numeric column never receives a string sentinel comparison.
-
-        The local engine skips the stage and the compiler must skip it too,
-        rather than emitting `amount IN ('N/A')` for the warehouse to choke on.
-        """
-        src = pl.DataFrame({"id": [1, 2], "amount": [10, 20]})
-        tgt = pl.DataFrame({"id": [1, 2], "amount": [10, 99]})
-
-        config = DiffConfig(primary_keys=["id"], default_null_values=["N/A"])
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_that_regex_replace_replaces_every_match(self) -> None:
-        """Ensure a pattern that matches twice is replaced twice on both paths."""
-        src = pl.DataFrame({"id": [1, 2], "phone": ["1-800-555", "1-800-556"]})
-        tgt = pl.DataFrame({"id": [1, 2], "phone": ["1800555", "1800555"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["phone"], regex_replace={"-": ""})],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_on_regex_replace(self) -> None:
-        """Ensure `REGEXP_REPLACE` strips the same characters Polars does."""
-        src = pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$20.50"]})
-        tgt = pl.DataFrame({"id": [1, 2], "cost": ["10.00", "20.50"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["cost"], regex_replace={"\\$": ""})],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_whitespace_and_case_normalization(self) -> None:
-        """Ensure trimming and case folding land on the same normalized strings."""
-        src = pl.DataFrame({"id": [1, 2, 3], "name": ["  Ada ", "grace", "LINUS "]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "name": ["ADA", "Grace  ", " torvalds"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["name"],
-                    whitespace_mode="both",
-                    case_insensitive=True,
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_on_source_side_value_mapping(self) -> None:
-        """Ensure the CASE chain maps the same keys as the Polars replace."""
-        src = pl.DataFrame({"id": [1, 2, 3], "tier": ["Enterprise", "Premium", "Standard"]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "tier": ["ENT", "PRM", "BASIC"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["tier"],
-                    value_map={"Enterprise": "ENT", "Premium": "PRM", "Standard": "STD"},
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_when_a_text_stage_meets_a_numeric_side(self) -> None:
-        """Ensure text stages skip a non-text side the way the local engine does.
-
-        A migration that cleans a currency string on the left and compares it
-        to a native float on the right hits this on every row: Polars skips the
-        regex on the float, and the compiler has to skip it too rather than ask
-        the warehouse to run `REGEXP_REPLACE` over a number.
-        """
-        src = pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$99.99"]})
-        tgt = pl.DataFrame({"id": [1, 2], "cost": [10.0, 99.98]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["cost"],
-                    regex_replace={"\\$": ""},
-                    whitespace_mode="both",
-                    case_insensitive=True,
-                    cast_to="Float64",
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
+        assert {key: getattr(summary, key) for key in expected} == expected
 
     def test_it_agrees_on_ignored_columns(self) -> None:
         """Ensure a dropped column contributes to neither tally."""
@@ -263,195 +231,122 @@ class TestShippedStageParity:
 class TestPaddingParity:
     """Validate stage 5 against Python's `str.zfill`, sign and overflow included."""
 
-    def test_it_agrees_on_unsigned_padding(self) -> None:
-        """Ensure short values gain leading zeros identically."""
-        src = pl.DataFrame({"id": [1, 2], "code": ["7", "42"]})
-        tgt = pl.DataFrame({"id": [1, 2], "code": ["00007", "00042"]})
+    @pytest.mark.parametrize(
+        ("src", "tgt", "rule", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "code": ["7", "42"]}),
+                pl.DataFrame({"id": [1, 2], "code": ["00007", "00042"]}),
+                DiffRule(column_names=["code"], pad_zeros=5),
+                {"is_perfect_match": True},
+                id="unsigned",
+            ),
+            # A bare `LPAD('-12', 4, '0')` yields `0-12`, while Polars yields `-012`.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "code": ["-12", "-7", "-1234"]}),
+                pl.DataFrame({"id": [1, 2, 3], "code": ["-012", "-007", "-1234"]}),
+                DiffRule(column_names=["code"], pad_zeros=4),
+                {"is_perfect_match": True},
+                id="negative-numbers",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1], "code": ["+7"]}),
+                pl.DataFrame({"id": [1], "code": ["+007"]}),
+                DiffRule(column_names=["code"], pad_zeros=4),
+                {"is_perfect_match": True},
+                id="explicitly-positive",
+            ),
+            # A bare `LPAD` truncates input longer than the width, so distinct long codes collide.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "code": ["1234567", "1234599"]}),
+                pl.DataFrame({"id": [1, 2], "code": ["1234567", "1234500"]}),
+                DiffRule(column_names=["code"], pad_zeros=3),
+                {"changed_count": 1},
+                id="never-truncates",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "code": [7, -42]}),
+                pl.DataFrame({"id": [1, 2], "code": ["00007", "-0042"]}),
+                DiffRule(column_names=["code"], pad_zeros=5),
+                {"is_perfect_match": True},
+                id="padded-integers",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "code": [None, "7"]}),
+                pl.DataFrame({"id": [1, 2], "code": [None, "007"]}),
+                DiffRule(column_names=["code"], pad_zeros=3, treat_null_as_equal=True),
+                {"is_perfect_match": True},
+                id="propagates-nulls",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "code": [7, 42]}),
+                pl.DataFrame({"id": [1, 2], "code": ["7", "42"]}),
+                DiffRule(column_names=["code"], pad_zeros=0),
+                {"is_perfect_match": True},
+                id="zero-width",
+            ),
+        ],
+    )
+    def test_it_agrees_on_zero_padding(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, rule: DiffRule, expected: dict[str, object]
+    ) -> None:
+        """Ensure zero padding lands on the same text on both paths."""
+        summary = assert_parity(DiffConfig(primary_keys=["id"], rules=[rule]), src, tgt)
 
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=5)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_negative_numbers(self) -> None:
-        """Ensure padding lands after the sign, not before it.
-
-        A bare `LPAD('-12', 4, '0')` yields `0-12`. Polars yields `-012`, so an
-        unguarded implementation reports drift on every negative value.
-        """
-        src = pl.DataFrame({"id": [1, 2, 3], "code": ["-12", "-7", "-1234"]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "code": ["-012", "-007", "-1234"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=4)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_explicitly_positive_numbers(self) -> None:
-        """Ensure a leading `+` is preserved the way `str.zfill` preserves it."""
-        src = pl.DataFrame({"id": [1], "code": ["+7"]})
-        tgt = pl.DataFrame({"id": [1], "code": ["+007"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=4)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_that_padding_never_truncates(self) -> None:
-        """Ensure over-long input survives intact.
-
-        `LPAD` truncates from the right when the input exceeds the width, which
-        would make two distinct long codes collide.
-        """
-        src = pl.DataFrame({"id": [1, 2], "code": ["1234567", "1234599"]})
-        tgt = pl.DataFrame({"id": [1, 2], "code": ["1234567", "1234500"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=3)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_on_padded_integers(self) -> None:
-        """Ensure a numeric column and a zero-padded text column converge."""
-        src = pl.DataFrame({"id": [1, 2], "code": [7, -42]})
-        tgt = pl.DataFrame({"id": [1, 2], "code": ["00007", "-0042"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=5)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_that_padding_propagates_nulls(self) -> None:
-        """Ensure a NULL stays NULL through every branch of the pad expression."""
-        src = pl.DataFrame({"id": [1, 2], "code": [None, "7"]})
-        tgt = pl.DataFrame({"id": [1, 2], "code": [None, "007"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=3, treat_null_as_equal=True)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_a_zero_width_pad(self) -> None:
-        """Ensure width zero still stringifies without padding anything."""
-        src = pl.DataFrame({"id": [1, 2], "code": [7, 42]})
-        tgt = pl.DataFrame({"id": [1, 2], "code": ["7", "42"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=0)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
+        assert {key: getattr(summary, key) for key in expected} == expected
 
 
 class TestCastParity:
     """Validate stage 7 against Polars cast semantics."""
 
-    def test_it_agrees_on_a_string_to_float_cast(self) -> None:
-        """Ensure a cleaned currency string compares as a number."""
-        src = pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$99.99"]})
-        tgt = pl.DataFrame({"id": [1, 2], "cost": [10.0, 99.98]})
+    @pytest.mark.parametrize(
+        ("src", "tgt", "rule", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "cost": ["$10.00", "$99.99"]}),
+                pl.DataFrame({"id": [1, 2], "cost": [10.0, 99.98]}),
+                DiffRule(column_names=["cost"], regex_replace={"\\$": ""}, cast_to="Float64"),
+                {"changed_count": 1},
+                id="string-to-float",
+            ),
+            # Polars truncates toward zero, while Snowflake and DuckDB round.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3, 4], "n": [10.7, -10.7, 10.5, 11.5]}),
+                pl.DataFrame({"id": [1, 2, 3, 4], "n": [10, -10, 10, 11]}),
+                DiffRule(column_names=["n"], cast_to="Int64"),
+                {"is_perfect_match": True},
+                id="float-to-integer-truncates",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "code": [7, -42]}),
+                pl.DataFrame({"id": [1, 2], "code": ["7", "-42"]}),
+                DiffRule(column_names=["code"], cast_to="String"),
+                {"is_perfect_match": True},
+                id="integer-to-string",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "day": ["2026-01-02", "2026-03-04"]}),
+                pl.DataFrame({"id": [1, 2], "day": [date(2026, 1, 2), date(2026, 3, 5)]}),
+                DiffRule(column_names=["day"], cast_to="Date"),
+                {"changed_count": 1},
+                id="string-to-date",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "code": [7, 42]}),
+                pl.DataFrame({"id": [1, 2], "code": ["00007", "00042"]}),
+                DiffRule(column_names=["code"], pad_zeros=5, cast_to="String"),
+                {"is_perfect_match": True},
+                id="padding-feeds-a-cast",
+            ),
+        ],
+    )
+    def test_it_agrees_on_casts(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, rule: DiffRule, expected: dict[str, object]
+    ) -> None:
+        """Ensure a cast yields the same values on both paths."""
+        summary = assert_parity(DiffConfig(primary_keys=["id"], rules=[rule]), src, tgt)
 
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["cost"],
-                    regex_replace={"\\$": ""},
-                    cast_to="Float64",
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_that_a_float_to_integer_cast_truncates(self) -> None:
-        """Ensure the cast truncates toward zero rather than rounding.
-
-        Polars truncates; Snowflake and DuckDB round. Without the explicit
-        guard, 10.7 compares as 11 under pushdown and 10 locally.
-        """
-        src = pl.DataFrame({"id": [1, 2, 3, 4], "n": [10.7, -10.7, 10.5, 11.5]})
-        tgt = pl.DataFrame({"id": [1, 2, 3, 4], "n": [10, -10, 10, 11]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["n"], cast_to="Int64")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_an_integer_to_string_cast(self) -> None:
-        """Ensure a numeric column and its text spelling converge."""
-        src = pl.DataFrame({"id": [1, 2], "code": [7, -42]})
-        tgt = pl.DataFrame({"id": [1, 2], "code": ["7", "-42"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], cast_to="String")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_a_string_to_date_cast(self) -> None:
-        """Ensure ISO date text parses to the same calendar day."""
-        src = pl.DataFrame({"id": [1, 2], "day": ["2026-01-02", "2026-03-04"]})
-        tgt = pl.DataFrame({"id": [1, 2], "day": [date(2026, 1, 2), date(2026, 3, 5)]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["day"], cast_to="Date")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_when_padding_feeds_a_cast(self) -> None:
-        """Ensure stage 5 output flows into stage 7 in the documented order."""
-        src = pl.DataFrame({"id": [1, 2], "code": [7, 42]})
-        tgt = pl.DataFrame({"id": [1, 2], "code": ["00007", "00042"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["code"], pad_zeros=5, cast_to="String")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
+        assert {key: getattr(summary, key) for key in expected} == expected
 
 
 @_REFUSED_PARSE
@@ -464,96 +359,79 @@ class TestDatetimeFormatParity:
     string assertions in `tests/unit/test_sql_compiler.py` instead.
     """
 
-    def test_it_agrees_on_a_parsed_timestamp(self) -> None:
-        """Ensure legacy timestamp text compares against native timestamps."""
-        src = pl.DataFrame({"id": [1, 2], "ts": ["2026-01-02 15:30:45", "2026-03-04 01:02:03"]})
-        tgt = pl.DataFrame(
-            {
-                "id": [1, 2],
-                "ts": [datetime(2026, 1, 2, 15, 30, 45), datetime(2026, 3, 4, 1, 2, 4)],
-            }
-        )
+    @pytest.mark.parametrize(
+        ("src", "tgt", "rule", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "ts": ["2026-01-02 15:30:45", "2026-03-04 01:02:03"]}),
+                pl.DataFrame(
+                    {
+                        "id": [1, 2],
+                        "ts": [datetime(2026, 1, 2, 15, 30, 45), datetime(2026, 3, 4, 1, 2, 4)],
+                    }
+                ),
+                DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S"),
+                {"changed_count": 1},
+                id="parsed-timestamp",
+            ),
+            # Polars parses non-strictly, while a strict SQL parse fails the whole query.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "ts": ["2026-01-02", "not a date"]}),
+                pl.DataFrame({"id": [1, 2], "ts": ["2026-01-02", "also not a date"]}),
+                DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d", treat_null_as_equal=True),
+                {"is_perfect_match": True},
+                id="unparseable-text-becomes-null",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1], "ts": [20260102]}),
+                pl.DataFrame({"id": [1], "ts": ["20260102"]}),
+                DiffRule(column_names=["ts"], pad_zeros=8, datetime_format="%Y%m%d"),
+                {"is_perfect_match": True},
+                id="padding-precedes-parsing",
+            ),
+            pytest.param(
+                pl.DataFrame(
+                    {
+                        "id": [1, 2, 3, 4],
+                        "ts": [
+                            "2026-01-02 01:02:03.5",
+                            "2026-01-02 01:02:03.123",
+                            "2026-01-02 01:02:03.123456",
+                            "2026-01-02 01:02:03.25",
+                        ],
+                    }
+                ),
+                pl.DataFrame(
+                    {
+                        "id": [1, 2, 3, 4],
+                        "ts": [
+                            datetime(2026, 1, 2, 1, 2, 3, 500000),
+                            datetime(2026, 1, 2, 1, 2, 3, 123000),
+                            datetime(2026, 1, 2, 1, 2, 3, 123456),
+                            datetime(2026, 1, 2, 1, 2, 3, 520000),
+                        ],
+                    }
+                ),
+                DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f"),
+                {"changed_count": 1},
+                id="fractional-seconds",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1], "ts": ["2026-01-02 15:30:45+0200"]}),
+                pl.DataFrame({"id": [1], "ts": ["2026-01-02 13:30:45+0000"]}),
+                DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S%z"),
+                {"is_perfect_match": True},
+                id="parsed-offset",
+            ),
+        ],
+    )
+    def test_it_agrees_on_parsed_datetimes(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, rule: DiffRule, expected: dict[str, object]
+    ) -> None:
+        """Ensure text parsed by `datetime_format` compares the same on both paths."""
+        summary = assert_parity(DiffConfig(primary_keys=["id"], rules=[rule]), src, tgt)
 
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_that_unparseable_text_becomes_null(self) -> None:
-        """Ensure a bad row yields NULL rather than aborting the statement.
-
-        Polars parses non-strictly, so one malformed value nulls that row and
-        the run continues. A strict SQL parser would fail the whole query.
-        """
-        src = pl.DataFrame({"id": [1, 2], "ts": ["2026-01-02", "not a date"]})
-        tgt = pl.DataFrame({"id": [1, 2], "ts": ["2026-01-02", "also not a date"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["ts"],
-                    datetime_format="%Y-%m-%d",
-                    treat_null_as_equal=True,
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_when_padding_precedes_parsing(self) -> None:
-        """Ensure stage 5 output is what stage 6a parses."""
-        src = pl.DataFrame({"id": [1], "ts": [20260102]})
-        tgt = pl.DataFrame({"id": [1], "ts": ["20260102"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["ts"], pad_zeros=8, datetime_format="%Y%m%d")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_fractional_seconds(self) -> None:
-        """Ensure `%f` reads one to six digits as a fraction on both paths."""
-        src = pl.DataFrame(
-            {
-                "id": [1, 2, 3, 4],
-                "ts": [
-                    "2026-01-02 01:02:03.5",
-                    "2026-01-02 01:02:03.123",
-                    "2026-01-02 01:02:03.123456",
-                    "2026-01-02 01:02:03.25",
-                ],
-            }
-        )
-        tgt = pl.DataFrame(
-            {
-                "id": [1, 2, 3, 4],
-                "ts": [
-                    datetime(2026, 1, 2, 1, 2, 3, 500000),
-                    datetime(2026, 1, 2, 1, 2, 3, 123000),
-                    datetime(2026, 1, 2, 1, 2, 3, 123456),
-                    datetime(2026, 1, 2, 1, 2, 3, 520000),
-                ],
-            }
-        )
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S.%f")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
+        assert {key: getattr(summary, key) for key in expected} == expected
 
     def test_it_differs_on_fractions_longer_than_six_digits(self) -> None:
         """Pin the documented difference: only a local run reads seven to nine digits.
@@ -573,20 +451,6 @@ class TestDatetimeFormatParity:
 
         assert local.changed_count == 0
         assert pushdown.summary.changed_count == 1
-
-    def test_it_agrees_on_a_parsed_offset(self) -> None:
-        """Ensure `%z` lands on the same instant on both paths."""
-        src = pl.DataFrame({"id": [1], "ts": ["2026-01-02 15:30:45+0200"]})
-        tgt = pl.DataFrame({"id": [1], "ts": ["2026-01-02 13:30:45+0000"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["ts"], datetime_format="%Y-%m-%d %H:%M:%S%z")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
 
 
 class TestStrictTypesParity:
@@ -656,60 +520,66 @@ class TestStrictTypesParity:
 class TestTimezoneParity:
     """Validate stage 6b, where the local conversion is metadata-only."""
 
-    def test_it_agrees_on_a_converted_timestamp(self) -> None:
-        """Ensure a zone rule leaves the compared instants untouched."""
-        src = pl.DataFrame(
-            {
-                "id": [1, 2],
-                "ts": [
-                    datetime(2026, 1, 2, 2, 30, tzinfo=UTC),
-                    datetime(2026, 7, 2, 15, 30, tzinfo=UTC),
-                ],
-            }
-        )
-        tgt = pl.DataFrame(
-            {
-                "id": [1, 2],
-                "ts": [
-                    datetime(2026, 1, 2, 2, 30, tzinfo=UTC),
-                    datetime(2026, 7, 2, 16, 30, tzinfo=UTC),
-                ],
-            }
-        )
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["ts"], timezone="America/New_York")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_when_a_converted_timestamp_is_cast_to_a_date(self) -> None:
-        """Ensure the cast reads the UTC instant on both paths.
-
-        The source instant is 2026-01-01 21:30 in New York but 2026-01-02 in
-        UTC. Polars casts through the instant and yields the UTC day, so a
-        warehouse that shifted to wall-clock time first would disagree.
-        """
-        src = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=UTC)]})
-        tgt = pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=UTC)]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
+    @pytest.mark.parametrize(
+        ("src", "tgt", "rule", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame(
+                    {
+                        "id": [1, 2],
+                        "ts": [
+                            datetime(2026, 1, 2, 2, 30, tzinfo=UTC),
+                            datetime(2026, 7, 2, 15, 30, tzinfo=UTC),
+                        ],
+                    }
+                ),
+                pl.DataFrame(
+                    {
+                        "id": [1, 2],
+                        "ts": [
+                            datetime(2026, 1, 2, 2, 30, tzinfo=UTC),
+                            datetime(2026, 7, 2, 16, 30, tzinfo=UTC),
+                        ],
+                    }
+                ),
+                DiffRule(column_names=["ts"], timezone="America/New_York"),
+                {"changed_count": 1},
+                id="converted-timestamp",
+            ),
+            # Polars casts the UTC instant to 2026-01-02, not to the New York day of 2026-01-01.
+            pytest.param(
+                pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=UTC)]}),
+                pl.DataFrame({"id": [1], "ts": [datetime(2026, 1, 2, 2, 30, tzinfo=UTC)]}),
+                DiffRule(column_names=["ts"], timezone="America/New_York", cast_to="Date"),
+                {"is_perfect_match": True},
+                id="converted-timestamp-cast-to-a-date",
+            ),
+            # A `%z` parse makes the text timezone-aware before the zone rule converts it.
+            pytest.param(
+                pl.DataFrame(
+                    {"id": [1, 2], "ts": ["2026-01-02T02:30:00+0000", "2026-07-02T15:30:00+0000"]}
+                ),
+                pl.DataFrame(
+                    {"id": [1, 2], "ts": ["2026-01-01T21:30:00-0500", "2026-07-02T12:30:00-0400"]}
+                ),
                 DiffRule(
                     column_names=["ts"],
+                    datetime_format="%Y-%m-%dT%H:%M:%S%z",
                     timezone="America/New_York",
-                    cast_to="Date",
-                )
-            ],
-        )
+                ),
+                {"changed_count": 1},
+                id="text-parsed-with-an-offset",
+                marks=_REFUSED_PARSE,
+            ),
+        ],
+    )
+    def test_it_agrees_under_a_zone_rule(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, rule: DiffRule, expected: dict[str, object]
+    ) -> None:
+        """Ensure a zone rule leaves both paths comparing the same instants."""
+        summary = assert_parity(DiffConfig(primary_keys=["id"], rules=[rule]), src, tgt)
 
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
+        assert {key: getattr(summary, key) for key in expected} == expected
 
     def test_it_rejects_a_naive_timestamp_on_both_paths(self) -> None:
         """Ensure pushdown refuses to guess an origin zone, exactly as local does."""
@@ -738,34 +608,6 @@ class TestTimezoneParity:
             run_local(config, frame, frame)
         with pytest.raises(ConfigError, match="not a"):
             run_pushdown(config, frame, frame)
-
-    @_REFUSED_PARSE
-    def test_it_agrees_on_text_parsed_with_an_offset(self) -> None:
-        """Ensure a zone rule applies to text that `datetime_format` makes aware.
-
-        Pushdown used to check the stored type, so it refused a text column the
-        local engine parses with `%z` before converting.
-        """
-        src = pl.DataFrame(
-            {"id": [1, 2], "ts": ["2026-01-02T02:30:00+0000", "2026-07-02T15:30:00+0000"]}
-        )
-        tgt = pl.DataFrame(
-            {"id": [1, 2], "ts": ["2026-01-01T21:30:00-0500", "2026-07-02T12:30:00-0400"]}
-        )
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["ts"],
-                    datetime_format="%Y-%m-%dT%H:%M:%S%z",
-                    timezone="America/New_York",
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
 
     @_REFUSED_PARSE
     def test_it_rejects_text_parsed_without_an_offset_on_both_paths(self) -> None:
@@ -797,85 +639,243 @@ class TestEdgeCaseParity:
     rules claim the same column.
     """
 
-    def test_it_agrees_on_relative_tolerance_alone(self) -> None:
-        """Ensure `rel_tol * ABS(src)` scales the allowance with the source value."""
-        src = pl.DataFrame({"id": [1, 2, 3], "cost": [100.0, 100.0, 1000.0]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "cost": [100.5, 102.0, 1005.0]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["cost"], relative_tolerance=0.01)],
-        )
-
+    @pytest.mark.parametrize(
+        ("src", "tgt", "config", "expected"),
+        [
+            # 0.5 and 5.0 sit inside 1% of their source; 2.0 does not.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "cost": [100.0, 100.0, 1000.0]}),
+                pl.DataFrame({"id": [1, 2, 3], "cost": [100.5, 102.0, 1005.0]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["cost"], relative_tolerance=0.01)],
+                ),
+                {"changed_count": 1},
+                id="relative-tolerance-alone",
+            ),
+            # A 1.0 drift fails 0.6 absolute or 0.5% relative alone, but passes their sum.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "cost": [100.0, 100.0]}),
+                pl.DataFrame({"id": [1, 2], "cost": [101.0, 101.2]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["cost"], absolute_tolerance=0.6, relative_tolerance=0.005
+                        )
+                    ],
+                ),
+                {"changed_count": 1},
+                id="absolute-and-relative-tolerances-add",
+            ),
+            # Row 2 is a null pair, row 3 exceeds the tolerance, row 4 is one-sided.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3, 4], "cost": [10.0, None, 30.0, None]}),
+                pl.DataFrame({"id": [1, 2, 3, 4], "cost": [10.04, None, 30.5, 5.0]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["cost"], absolute_tolerance=0.05, treat_null_as_equal=True
+                        )
+                    ],
+                ),
+                {"changed_count": 2},
+                id="tolerance-meets-null-safe-equality",
+            ),
+            pytest.param(
+                pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 2, 1], "val": ["A", "B", "C"]}),
+                pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 2, 2], "val": ["A", "X", "D"]}),
+                DiffConfig(primary_keys=["tenant", "id"]),
+                {
+                    "added_count": 1,
+                    "removed_count": 1,
+                    "changed_count": 1,
+                    "column_mismatches": {"val": 1},
+                },
+                id="composite-primary-keys",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "legacy_amt": [10.0, 20.0, 30.0]}),
+                pl.DataFrame({"id": [1, 2, 3], "amount": [10.0, 25.0, 30.0]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["legacy_amt"], rename_to="amount")],
+                ),
+                {"changed_count": 1, "column_mismatches": {"amount": 1}},
+                id="renamed-column",
+            ),
+            # `_literal` doubles each quote, so a literal never ends the SQL string early.
+            pytest.param(
+                pl.DataFrame(
+                    {
+                        "id": [1, 2, 3],
+                        "owner": ["O'Brien", "Smith", "D'Angelo"],
+                        "phrase": ["it's", "that's", "ok"],
+                    }
+                ),
+                pl.DataFrame(
+                    {
+                        "id": [1, 2, 3],
+                        "owner": [None, "Smith", "DAngelo"],
+                        "phrase": ["its", "thats", "ok"],
+                    }
+                ),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["owner"],
+                            null_values=["O'Brien"],
+                            regex_replace={"'": ""},
+                            treat_null_as_equal=True,
+                        ),
+                        DiffRule(
+                            column_names=["phrase"], value_map={"it's": "its", "that's": "thats"}
+                        ),
+                    ],
+                ),
+                {"is_perfect_match": True},
+                id="apostrophes-inside-literals",
+            ),
+            # `SUM` over zero rows is NULL in SQL, which the reducer reads as nothing to report.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "val": ["A", "B"]}),
+                pl.DataFrame({"id": [3, 4], "val": ["C", "D"]}),
+                DiffConfig(primary_keys=["id"]),
+                {"added_count": 2, "removed_count": 2, "changed_count": 0, "column_mismatches": {}},
+                id="no-primary-key-overlaps",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "audit": ["x", "y"]}),
+                pl.DataFrame({"id": [1, 3], "audit": ["p", "q"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["audit"], ignore=True)],
+                ),
+                {"added_count": 1, "removed_count": 1, "changed_count": 0, "column_mismatches": {}},
+                id="every-non-key-column-ignored",
+            ),
+            # Integers are the portable input, since Polars refuses to cast text such as `'true'`.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, 3], "flag": [1, 0, 1]}),
+                pl.DataFrame({"id": [1, 2, 3], "flag": [True, False, False]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["flag"], cast_to="Boolean")],
+                ),
+                {"changed_count": 1},
+                id="boolean-cast",
+            ),
+            # The tolerance survives the rename, though the rule lists only the source spelling.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]}),
+                pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["legacy_amt"], rename_to="amount", absolute_tolerance=0.05
+                        )
+                    ],
+                ),
+                {"is_perfect_match": True},
+                id="renamed-column-carries-a-tolerance",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "legacy_name": ["ada", "grace"]}),
+                pl.DataFrame({"id": [1, 2], "name": [" ada ", "Grace"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["legacy_name"],
+                            rename_to="name",
+                            whitespace_mode="both",
+                            case_insensitive=True,
+                        )
+                    ],
+                ),
+                {"is_perfect_match": True},
+                id="renamed-column-normalized-on-both-sides",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]}),
+                pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(column_names=["legacy_amt"], rename_to="amount"),
+                        DiffRule(column_names=["amount"], absolute_tolerance=0.05),
+                    ],
+                ),
+                {"is_perfect_match": True},
+                id="rule-names-the-target-spelling",
+            ),
+            # Exact names outrank patterns, so the ignore pattern cannot drop `_etl_batch_id`.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 2], "_etl_loaded_at": ["a", "b"]}),
+                pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 3], "_etl_loaded_at": ["x", "y"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(pattern="^_etl_", ignore=True),
+                        DiffRule(column_names=["_etl_batch_id"]),
+                    ],
+                ),
+                {"changed_count": 1, "column_mismatches": {"_etl_batch_id": 1}},
+                id="exact-rule-outranks-a-pattern-ignore",
+            ),
+            # Pushdown reads the key under its stored name and projects it under the join name.
+            pytest.param(
+                pl.DataFrame({"legacy_id": [1, 2, 3], "val": ["A", "B", "C"]}),
+                pl.DataFrame({"user_id": [1, 2, 4], "val": ["A", "X", "D"]}),
+                DiffConfig(
+                    primary_keys=["user_id"],
+                    rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
+                ),
+                {"changed_count": 1, "added_count": 1, "removed_count": 1},
+                id="renamed-primary-key",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "val": ["A", "B"]}),
+                pl.DataFrame({"id": [1, 2], "val": ["A", "C"]}),
+                DiffConfig(primary_keys=["id"], normalize_column_names=True),
+                {"changed_count": 1},
+                id="header-normalization-changes-nothing",
+            ),
+            # A null key never joins, yet its row counts toward the totals, as `COUNT(*)` does.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2, None], "val": ["A", "B", "C"]}),
+                pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]}),
+                DiffConfig(primary_keys=["id"], threshold=0.7),
+                {"total_rows_source": 3, "removed_count": 1, "added_count": 1, "is_match": True},
+                id="row-totals-with-a-null-key",
+            ),
+            # `cost` takes the strict exact-name rule; `count` falls through to the pattern.
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "cost": [10.0, 20.0], "count": [1, 2]}),
+                pl.DataFrame({"id": [1, 2], "cost": [10.04, 21.0], "count": [1, 5]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[
+                        DiffRule(pattern="^co", absolute_tolerance=100.0),
+                        DiffRule(column_names=["cost"], absolute_tolerance=0.05),
+                        DiffRule(column_names=["cost"], absolute_tolerance=10.0),
+                    ],
+                ),
+                {"changed_count": 1, "column_mismatches": {"cost": 1}},
+                id="first-matching-rule-wins",
+            ),
+        ],
+    )
+    def test_it_agrees_on_edge_cases(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, config: DiffConfig, expected: dict[str, object]
+    ) -> None:
+        """Ensure both paths agree at the seams between stages and the join."""
         summary = assert_parity(config, src, tgt)
 
-        # 0.5 and 5.0 sit inside 1% of their source; 2.0 does not.
-        assert summary.changed_count == 1
-
-    def test_it_agrees_that_absolute_and_relative_tolerances_add(self) -> None:
-        """Ensure the allowance is `abs_tol + rel_tol * ABS(src)`, not the larger of the two.
-
-        A 1.0 drift on 100.0 fails 0.6 absolute alone and fails 0.5% relative
-        alone, yet passes their sum. Whichever engine picked `max` instead of
-        `+` would flag the row.
-        """
-        src = pl.DataFrame({"id": [1, 2], "cost": [100.0, 100.0]})
-        tgt = pl.DataFrame({"id": [1, 2], "cost": [101.0, 101.2]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(column_names=["cost"], absolute_tolerance=0.6, relative_tolerance=0.005)
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_when_a_tolerance_meets_null_safe_equality(self) -> None:
-        """Ensure the tolerance branch still folds NULLs the way stage 9 asks."""
-        src = pl.DataFrame({"id": [1, 2, 3, 4], "cost": [10.0, None, 30.0, None]})
-        tgt = pl.DataFrame({"id": [1, 2, 3, 4], "cost": [10.04, None, 30.5, 5.0]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(column_names=["cost"], absolute_tolerance=0.05, treat_null_as_equal=True)
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        # Row 2 is a null pair, row 3 exceeds the tolerance, row 4 is one-sided.
-        assert summary.changed_count == 2
-
-    def test_it_agrees_on_composite_primary_keys(self) -> None:
-        """Ensure every key column participates in both the anti-joins and the inner join."""
-        src = pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 2, 1], "val": ["A", "B", "C"]})
-        tgt = pl.DataFrame({"tenant": [1, 1, 2], "id": [1, 2, 2], "val": ["A", "X", "D"]})
-
-        summary = assert_parity(DiffConfig(primary_keys=["tenant", "id"]), src, tgt)
-
-        assert summary.added_count == 1
-        assert summary.removed_count == 1
-        assert summary.changed_count == 1
-        assert summary.column_mismatches == {"val": 1}
-
-    def test_it_agrees_on_a_renamed_column_end_to_end(self) -> None:
-        """Ensure `rename_to` pairs the two spellings and reports drift under the target name."""
-        src = pl.DataFrame({"id": [1, 2, 3], "legacy_amt": [10.0, 20.0, 30.0]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "amount": [10.0, 25.0, 30.0]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["legacy_amt"], rename_to="amount")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-        assert summary.column_mismatches == {"amount": 1}
+        assert {key: getattr(summary, key) for key in expected} == expected
 
     @pytest.mark.parametrize(
         ("mode", "expected_changed"),
@@ -970,199 +970,6 @@ class TestEdgeCaseParity:
 
         assert summary.changed_count == expected_changed
 
-    def test_it_agrees_on_apostrophes_inside_data_literals(self) -> None:
-        """Ensure `'` inside sentinels, crosswalks, and regexes survives SQL quoting.
-
-        Each literal reaches the statement through `_literal`, which doubles
-        the quote. A raw interpolation would either break the statement or,
-        worse, end the string early and compare against the wrong value.
-        """
-        src = pl.DataFrame(
-            {
-                "id": [1, 2, 3],
-                "owner": ["O'Brien", "Smith", "D'Angelo"],
-                "phrase": ["it's", "that's", "ok"],
-            }
-        )
-        tgt = pl.DataFrame(
-            {
-                "id": [1, 2, 3],
-                "owner": [None, "Smith", "DAngelo"],
-                "phrase": ["its", "thats", "ok"],
-            }
-        )
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["owner"],
-                    null_values=["O'Brien"],
-                    regex_replace={"'": ""},
-                    treat_null_as_equal=True,
-                ),
-                DiffRule(column_names=["phrase"], value_map={"it's": "its", "that's": "thats"}),
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_when_no_primary_key_overlaps(self) -> None:
-        """Ensure an empty inner join yields no changed rows and an empty tally.
-
-        `SUM` over zero rows is NULL in SQL; the reducer must read that as
-        nothing to report, exactly like the local engine's empty frame.
-        """
-        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
-        tgt = pl.DataFrame({"id": [3, 4], "val": ["C", "D"]})
-
-        summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
-
-        assert summary.added_count == 2
-        assert summary.removed_count == 2
-        assert summary.changed_count == 0
-        assert summary.column_mismatches == {}
-
-    def test_it_agrees_when_every_non_key_column_is_ignored(self) -> None:
-        """Ensure a keys-only comparison still counts added and removed rows."""
-        src = pl.DataFrame({"id": [1, 2], "audit": ["x", "y"]})
-        tgt = pl.DataFrame({"id": [1, 3], "audit": ["p", "q"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["audit"], ignore=True)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.added_count == 1
-        assert summary.removed_count == 1
-        assert summary.changed_count == 0
-        assert summary.column_mismatches == {}
-
-    def test_it_agrees_on_a_boolean_cast(self) -> None:
-        """Ensure 0/1 flags and native booleans converge through `cast_to='Boolean'`.
-
-        Integers are the portable input here: Polars refuses to cast text such
-        as `'true'` to Boolean, so a rule doing that fails locally before any
-        parity question arises.
-        """
-        src = pl.DataFrame({"id": [1, 2, 3], "flag": [1, 0, 1]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "flag": [True, False, False]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["flag"], cast_to="Boolean")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_on_a_renamed_column_that_carries_a_tolerance(self) -> None:
-        """Ensure a `rename_to` rule's other settings survive the rename.
-
-        The local engine used to look rules up by the renamed spelling, which
-        the rule does not list, so the tolerance silently fell away there
-        while pushdown, resolving by the source spelling, still applied it.
-        """
-        src = pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]})
-        tgt = pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(column_names=["legacy_amt"], rename_to="amount", absolute_tolerance=0.05)
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_a_renamed_column_normalized_on_both_sides(self) -> None:
-        """Ensure a rename rule's transforms reach the target spelling too."""
-        src = pl.DataFrame({"id": [1, 2], "legacy_name": ["ada", "grace"]})
-        tgt = pl.DataFrame({"id": [1, 2], "name": [" ada ", "Grace"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(
-                    column_names=["legacy_name"],
-                    rename_to="name",
-                    whitespace_mode="both",
-                    case_insensitive=True,
-                )
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_when_a_rule_names_the_target_spelling(self) -> None:
-        """Ensure a rule written against the renamed spelling governs the pair on both paths."""
-        src = pl.DataFrame({"id": [1, 2], "legacy_amt": [10.0, 20.0]})
-        tgt = pl.DataFrame({"id": [1, 2], "amount": [10.0, 20.04]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(column_names=["legacy_amt"], rename_to="amount"),
-                DiffRule(column_names=["amount"], absolute_tolerance=0.05),
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_that_an_exact_rule_outranks_a_pattern_ignore(self) -> None:
-        """Ensure an ignore pattern cannot hide a column an exact-name rule claims.
-
-        Precedence is exact names before patterns, for `ignore` as for every
-        other field. The local engine used to drop any column an ignore rule
-        matched, skipping a column the configuration asked it to compare.
-        """
-        src = pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 2], "_etl_loaded_at": ["a", "b"]})
-        tgt = pl.DataFrame({"id": [1, 2], "_etl_batch_id": [1, 3], "_etl_loaded_at": ["x", "y"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(pattern="^_etl_", ignore=True),
-                DiffRule(column_names=["_etl_batch_id"]),
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-        assert summary.column_mismatches == {"_etl_batch_id": 1}
-
-    def test_it_agrees_on_a_renamed_primary_key(self) -> None:
-        """Ensure a key renamed between systems joins on both paths.
-
-        The source relation stores the key under its old name, so pushdown
-        reads it there and projects it under the name the join uses.
-        """
-        src = pl.DataFrame({"legacy_id": [1, 2, 3], "val": ["A", "B", "C"]})
-        tgt = pl.DataFrame({"user_id": [1, 2, 4], "val": ["A", "X", "D"]})
-
-        config = DiffConfig(
-            primary_keys=["user_id"],
-            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-        assert summary.added_count == 1
-        assert summary.removed_count == 1
-
     def test_it_refuses_header_normalization_that_would_rename_a_warehouse_column(self) -> None:
         """Ensure pushdown fails loudly where normalizing would change a stored name.
 
@@ -1176,58 +983,6 @@ class TestEdgeCaseParity:
         with pytest.raises(ConfigError, match="normalize_column_names"):
             run_pushdown(config, frame, frame)
 
-    def test_it_agrees_when_header_normalization_changes_nothing(self) -> None:
-        """Ensure names already in normalized form still compare with the flag on."""
-        src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
-        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "C"]})
-        config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-
-    def test_it_agrees_on_row_totals_when_a_key_is_null(self) -> None:
-        """Ensure a row with a null key still counts toward the totals.
-
-        The totals are the threshold's denominator. The local engine used to
-        count non-null values of the first key, so it disagreed with the
-        warehouse's `COUNT(*)` and could flip the verdict near the threshold.
-        """
-        src = pl.DataFrame({"id": [1, 2, None], "val": ["A", "B", "C"]})
-        tgt = pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]})
-
-        summary = assert_parity(DiffConfig(primary_keys=["id"], threshold=0.7), src, tgt)
-
-        # A null key never joins, so that row is removed and key 3 is added.
-        assert summary.total_rows_source == 3
-        assert summary.removed_count == 1
-        assert summary.added_count == 1
-        assert summary.is_match is True
-
-    def test_it_agrees_that_the_first_matching_rule_wins(self) -> None:
-        """Ensure both engines resolve a doubly-ruled column to the same rule.
-
-        Exact names beat patterns, and among exact names the first declared
-        wins. A looser second rule must not widen the tolerance on either path.
-        """
-        src = pl.DataFrame({"id": [1, 2], "cost": [10.0, 20.0], "count": [1, 2]})
-        tgt = pl.DataFrame({"id": [1, 2], "cost": [10.04, 21.0], "count": [1, 5]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(pattern="^co", absolute_tolerance=100.0),
-                DiffRule(column_names=["cost"], absolute_tolerance=0.05),
-                DiffRule(column_names=["cost"], absolute_tolerance=10.0),
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        # `cost` takes the strict exact-name rule; `count` falls through to the pattern.
-        assert summary.changed_count == 1
-        assert summary.column_mismatches == {"cost": 1}
-
 
 class TestKeyNormalizationParity:
     """Validate that primary keys pass through stages 1-7 on both paths.
@@ -1237,160 +992,116 @@ class TestKeyNormalizationParity:
     warehouse for keys a local run matched.
     """
 
-    def test_it_agrees_on_keys_under_a_global_whitespace_mode(self) -> None:
-        """Ensure a global default reaches key columns, not only compared ones."""
-        src = pl.DataFrame({"id": ["  A", "B "], "val": [1, 2]})
-        tgt = pl.DataFrame({"id": ["A", "B"], "val": [1, 3]})
-
-        summary = assert_parity(
-            DiffConfig(primary_keys=["id"], default_whitespace_mode="both"), src, tgt
-        )
-
-        assert summary.added_count == 0
-        assert summary.removed_count == 0
-        assert summary.changed_count == 1
-
-    def test_it_strips_tabs_and_unicode_spaces_from_keys(self) -> None:
-        """Ensure keys padded with more than spaces still join in a warehouse."""
-        src = pl.DataFrame({"id": ["\tA", "B\u00a0", "\x0bC\r\n"], "val": [1, 2, 3]})
-        tgt = pl.DataFrame({"id": ["A", "B", "C"], "val": [1, 2, 4]})
-
-        summary = assert_parity(
-            DiffConfig(primary_keys=["id"], default_whitespace_mode="both"), src, tgt
-        )
-
-        assert summary.added_count == 0
-        assert summary.removed_count == 0
-        assert summary.changed_count == 1
-
-    def test_it_agrees_on_a_case_insensitive_key(self) -> None:
-        """Ensure rows whose keys differ only by case are matched and compared."""
-        src = pl.DataFrame({"email": ["Ada@Example.com", "grace@example.com"], "val": [1, 2]})
-        tgt = pl.DataFrame({"email": ["ada@example.com", "GRACE@EXAMPLE.COM"], "val": [1, 2]})
-
-        config = DiffConfig(
-            primary_keys=["email"],
-            rules=[DiffRule(column_names=["email"], case_insensitive=True)],
-        )
-
+    @pytest.mark.parametrize(
+        ("src", "tgt", "config", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame({"id": ["  A", "B "], "val": [1, 2]}),
+                pl.DataFrame({"id": ["A", "B"], "val": [1, 3]}),
+                DiffConfig(primary_keys=["id"], default_whitespace_mode="both"),
+                {"added_count": 0, "removed_count": 0, "changed_count": 1},
+                id="global-whitespace-mode",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": ["\tA", "B\u00a0", "\x0bC\r\n"], "val": [1, 2, 3]}),
+                pl.DataFrame({"id": ["A", "B", "C"], "val": [1, 2, 4]}),
+                DiffConfig(primary_keys=["id"], default_whitespace_mode="both"),
+                {"added_count": 0, "removed_count": 0, "changed_count": 1},
+                id="tabs-and-unicode-spaces",
+            ),
+            pytest.param(
+                pl.DataFrame({"email": ["Ada@Example.com", "grace@example.com"], "val": [1, 2]}),
+                pl.DataFrame({"email": ["ada@example.com", "GRACE@EXAMPLE.COM"], "val": [1, 2]}),
+                DiffConfig(
+                    primary_keys=["email"],
+                    rules=[DiffRule(column_names=["email"], case_insensitive=True)],
+                ),
+                {"is_perfect_match": True},
+                id="case-insensitive-key",
+            ),
+            pytest.param(
+                pl.DataFrame({"acct": ["7", "42"], "val": ["A", "B"]}),
+                pl.DataFrame({"acct": ["00007", "00042"], "val": ["A", "B"]}),
+                DiffConfig(
+                    primary_keys=["acct"],
+                    rules=[DiffRule(column_names=["acct"], pad_zeros=5)],
+                ),
+                {"is_perfect_match": True},
+                id="zero-padded-text-key",
+            ),
+            # DuckDB coerces the raw join anyway, so this guards the padded cross-type path.
+            pytest.param(
+                pl.DataFrame({"acct": [7, 42], "val": ["A", "B"]}),
+                pl.DataFrame({"acct": ["00007", "00042"], "val": ["A", "B"]}),
+                DiffConfig(
+                    primary_keys=["acct"],
+                    rules=[DiffRule(column_names=["acct"], pad_zeros=5)],
+                ),
+                {"is_perfect_match": True},
+                id="padded-key-of-different-types",
+            ),
+            # DuckDB coerces the raw join too, so this guards the cast path.
+            pytest.param(
+                pl.DataFrame({"id": ["1", "2"], "val": ["A", "B"]}),
+                pl.DataFrame({"id": [1, 2], "val": ["A", "C"]}),
+                DiffConfig(
+                    primary_keys=["id"],
+                    rules=[DiffRule(column_names=["id"], cast_to="Int64")],
+                ),
+                {"changed_count": 1, "added_count": 0},
+                id="cast-key-of-different-types",
+            ),
+            pytest.param(
+                pl.DataFrame({"code": ["M", "F"], "val": [1, 2]}),
+                pl.DataFrame({"code": ["Male", "Female"], "val": [1, 2]}),
+                DiffConfig(
+                    primary_keys=["code"],
+                    rules=[DiffRule(column_names=["code"], value_map={"M": "Male", "F": "Female"})],
+                ),
+                {"is_perfect_match": True},
+                id="crosswalked-key",
+            ),
+            pytest.param(
+                pl.DataFrame({"legacy_id": ["ab-1", "CD-2"], "val": [1, 2]}),
+                pl.DataFrame({"user_id": ["AB-1", "cd-2"], "val": [1, 2]}),
+                DiffConfig(
+                    primary_keys=["user_id"],
+                    rules=[
+                        DiffRule(
+                            column_names=["legacy_id"], rename_to="user_id", case_insensitive=True
+                        )
+                    ],
+                ),
+                {"is_perfect_match": True},
+                id="renamed-key-its-rule-normalizes",
+            ),
+            # A NULL key never joins on either path, yet its row counts toward the totals.
+            pytest.param(
+                pl.DataFrame({"id": ["N/A", "B"], "val": [1, 2]}),
+                pl.DataFrame({"id": ["N/A", "B"], "val": [1, 2]}),
+                DiffConfig(primary_keys=["id"], default_null_values=["N/A"]),
+                {"removed_count": 1, "added_count": 1, "total_rows_source": 2},
+                id="sentinel-key-never-joins",
+            ),
+            pytest.param(
+                pl.DataFrame({"tenant": [1, 1, 2], "code": ["a", "B", "c"], "val": [1, 2, 3]}),
+                pl.DataFrame({"tenant": [1, 1, 3], "code": ["A", "b", "c"], "val": [1, 9, 3]}),
+                DiffConfig(
+                    primary_keys=["tenant", "code"],
+                    rules=[DiffRule(column_names=["code"], case_insensitive=True)],
+                ),
+                {"changed_count": 1, "added_count": 1, "removed_count": 1},
+                id="composite-key-with-one-normalized-part",
+            ),
+        ],
+    )
+    def test_it_agrees_on_normalized_keys(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, config: DiffConfig, expected: dict[str, object]
+    ) -> None:
+        """Ensure keys normalized before the join pair the same rows on both paths."""
         summary = assert_parity(config, src, tgt)
 
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_a_zero_padded_text_key(self) -> None:
-        """Ensure account numbers stored with and without leading zeros join once padded."""
-        src = pl.DataFrame({"acct": ["7", "42"], "val": ["A", "B"]})
-        tgt = pl.DataFrame({"acct": ["00007", "00042"], "val": ["A", "B"]})
-
-        config = DiffConfig(
-            primary_keys=["acct"],
-            rules=[DiffRule(column_names=["acct"], pad_zeros=5)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_a_padded_key_stored_as_different_types(self) -> None:
-        """Ensure a numeric key and its zero-padded text form join once padded.
-
-        DuckDB would coerce the raw join here anyway, so this guards the padded
-        cross-type path rather than proving the key is normalized.
-        """
-        src = pl.DataFrame({"acct": [7, 42], "val": ["A", "B"]})
-        tgt = pl.DataFrame({"acct": ["00007", "00042"], "val": ["A", "B"]})
-
-        config = DiffConfig(
-            primary_keys=["acct"],
-            rules=[DiffRule(column_names=["acct"], pad_zeros=5)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_a_cast_key_stored_as_different_types(self) -> None:
-        """Ensure a text key cast to an integer joins an integer key.
-
-        Like the padded cross-type case, DuckDB would coerce the raw join too,
-        so this guards the cast path rather than proving normalization.
-        """
-        src = pl.DataFrame({"id": ["1", "2"], "val": ["A", "B"]})
-        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "C"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["id"], cast_to="Int64")],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-        assert summary.added_count == 0
-
-    def test_it_agrees_on_a_crosswalked_key(self) -> None:
-        """Ensure a source-side `value_map` rewrites legacy key codes before the join."""
-        src = pl.DataFrame({"code": ["M", "F"], "val": [1, 2]})
-        tgt = pl.DataFrame({"code": ["Male", "Female"], "val": [1, 2]})
-
-        config = DiffConfig(
-            primary_keys=["code"],
-            rules=[DiffRule(column_names=["code"], value_map={"M": "Male", "F": "Female"})],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_on_a_renamed_key_its_rename_rule_normalizes(self) -> None:
-        """Ensure the rule that renames a key also normalizes it on both paths."""
-        src = pl.DataFrame({"legacy_id": ["ab-1", "CD-2"], "val": [1, 2]})
-        tgt = pl.DataFrame({"user_id": ["AB-1", "cd-2"], "val": [1, 2]})
-
-        config = DiffConfig(
-            primary_keys=["user_id"],
-            rules=[
-                DiffRule(column_names=["legacy_id"], rename_to="user_id", case_insensitive=True)
-            ],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.is_perfect_match is True
-
-    def test_it_agrees_that_a_sentinel_key_never_joins(self) -> None:
-        """Ensure a key nulled by a sentinel is reported as removed and added.
-
-        NULL never equals anything in a join, locally or in a warehouse, so
-        the placeholder rows stay unmatched on both paths while still counting
-        toward the totals.
-        """
-        src = pl.DataFrame({"id": ["N/A", "B"], "val": [1, 2]})
-        tgt = pl.DataFrame({"id": ["N/A", "B"], "val": [1, 2]})
-
-        summary = assert_parity(
-            DiffConfig(primary_keys=["id"], default_null_values=["N/A"]), src, tgt
-        )
-
-        assert summary.removed_count == 1
-        assert summary.added_count == 1
-        assert summary.total_rows_source == 2
-
-    def test_it_agrees_on_a_composite_key_with_one_normalized_part(self) -> None:
-        """Ensure a rule on one key column leaves the other key column as stored."""
-        src = pl.DataFrame({"tenant": [1, 1, 2], "code": ["a", "B", "c"], "val": [1, 2, 3]})
-        tgt = pl.DataFrame({"tenant": [1, 1, 3], "code": ["A", "b", "c"], "val": [1, 9, 3]})
-
-        config = DiffConfig(
-            primary_keys=["tenant", "code"],
-            rules=[DiffRule(column_names=["code"], case_insensitive=True)],
-        )
-
-        summary = assert_parity(config, src, tgt)
-
-        assert summary.changed_count == 1
-        assert summary.added_count == 1
-        assert summary.removed_count == 1
+        assert {key: getattr(summary, key) for key in expected} == expected
 
 
 def _rejection_on_both_paths(config: DiffConfig, src: pl.DataFrame, tgt: pl.DataFrame) -> str:
@@ -1736,7 +1447,6 @@ class TestSimilarityParity:
 
     def test_it_runs_jaro_winkler_locally_and_refuses_it_in_a_warehouse(self) -> None:
         """Ensure a limit SQL cannot reproduce is refused rather than approximated."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1], "name": ["MARTHA"]})
         tgt = pl.DataFrame({"id": [1], "name": ["MARHTA"]})
         config = DiffConfig(
@@ -1758,7 +1468,6 @@ class TestSimilarityParity:
         The data is ASCII: DuckDB counts bytes where every warehouse counts
         characters, which only differ once a character needs two bytes.
         """
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame(
             {"id": [1, 2, 3, 4, 5], "name": ["Jon", "Smith", "Jonathan", None, None]}
         )
@@ -1784,7 +1493,6 @@ class TestSimilarityParity:
         self, case_insensitive: bool, changed: int
     ) -> None:
         """Ensure stage 3 lowercases both sides before stage 8 counts edits."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1], "code": ["ABD"]})
         tgt = pl.DataFrame({"id": [1], "code": ["abc"]})
         config = DiffConfig(
@@ -1869,7 +1577,6 @@ class TestSimilarityParity:
         expected_changed: int,
     ) -> None:
         """Ensure numbers, booleans, and dates one step apart still differ in both engines."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
         tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
         rule = DiffRule.model_validate(
@@ -1889,7 +1596,6 @@ class TestSimilarityParity:
         which count characters. That is why the parity data above is ASCII. If
         this starts failing, DuckDB counts characters and the restriction can go.
         """
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1], "name": ["café"]})
         tgt = pl.DataFrame({"id": [1], "name": ["cafe"]})
         config = DiffConfig(

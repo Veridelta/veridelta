@@ -95,7 +95,6 @@ class TestDataIngestorAndLoaders:
 
     def test_it_reads_an_excel_workbook(self, tmp_path: Path) -> None:
         """Ensure the Excel loader materializes a sheet through the optional extra."""
-        pytest.importorskip("fastexcel")
         xlsxwriter = pytest.importorskip("xlsxwriter")
         _ = xlsxwriter
 
@@ -377,22 +376,74 @@ class TestHeaderNormalization:
 class TestSemanticNormalization:
     """Validate complex data transformations, strings, and numeric tolerances."""
 
-    def test_it_applies_rules_using_regex_patterns_to_match_multiple_columns(self) -> None:
-        """Ensure users can target multiple columns dynamically without explicit naming."""
-        src = pl.DataFrame({"id": [1], "amt_usd": [10.5], "amt_eur": [20.0]})
-        tgt = pl.DataFrame({"id": [1], "amt_usd": [10.51], "amt_eur": [20.02]})
-
-        config = DiffConfig(
-            primary_keys=["id"], rules=[DiffRule(pattern=r"^amt_.*", absolute_tolerance=0.05)]
-        )
+    @pytest.mark.parametrize(
+        ("src", "tgt", "rule", "expected"),
+        [
+            pytest.param(
+                pl.DataFrame({"id": [1], "amt_usd": [10.5], "amt_eur": [20.0]}),
+                pl.DataFrame({"id": [1], "amt_usd": [10.51], "amt_eur": [20.02]}),
+                DiffRule(pattern=r"^amt_.*", absolute_tolerance=0.05),
+                {"is_match": True},
+                id="pattern-over-several-columns",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1], "name": ["   John Doe  "]}),
+                pl.DataFrame({"id": [1], "name": ["john doe"]}),
+                DiffRule(column_names=["name"], whitespace_mode="both", case_insensitive=True),
+                {"is_match": True},
+                id="casing-and-whitespace",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "cost": ["$100", "€50"]}),
+                pl.DataFrame({"id": [1, 2], "cost": ["100", "50"]}),
+                DiffRule(column_names=["cost"], regex_replace={r"\$|€": ""}),
+                {"is_match": True},
+                id="regex-replace",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1, 2], "status": ["N/A", "Active"]}),
+                pl.DataFrame({"id": [1, 2], "status": [None, "Active"]}),
+                DiffRule(column_names=["status"], null_values=["N/A"], treat_null_as_equal=True),
+                {"is_match": True},
+                id="null-sentinel",
+            ),
+            pytest.param(
+                pl.DataFrame({"id": [1], "noise": [100]}),
+                pl.DataFrame({"id": [1], "noise": [999]}),
+                DiffRule(column_names=["noise"], ignore=True),
+                {"is_match": True, "changed_count": 0},
+                id="ignored-column",
+            ),
+        ],
+    )
+    def test_it_matches_once_a_rule_covers_the_difference(
+        self, src: pl.DataFrame, tgt: pl.DataFrame, rule: DiffRule, expected: dict[str, object]
+    ) -> None:
+        """Ensure each rule settles the difference it targets before the rows are compared."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
         summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
-        assert summary.is_match is True
+        assert {key: getattr(summary, key) for key in expected} == expected
 
     def test_it_chains_regex_type_casting_and_tolerances_successfully_on_a_single_column(
-        self, complex_src: pl.DataFrame, complex_tgt: pl.DataFrame
+        self,
     ) -> None:
         """Ensure the semantic pipeline safely executes multi-step transformations."""
+        src = pl.DataFrame(
+            {
+                "invoice_id": ["INV-001", "INV-002", "INV-003"],
+                "total_billed": ["$10.00", "$99.99", "$50.00"],  # Requires Regex + Cast
+                "category": ["Enterprise", "Premium", "Standard"],
+            }
+        )
+        tgt = pl.DataFrame(
+            {
+                "invoice_id": ["INV-001", "INV-002", "INV-003"],
+                "total_billed": [10.00, 99.98, 50.00],  # Float64, minus 1-cent tax bug on INV-002
+                "category": ["ENT", "PRM", "STD"],  # Requires Value Map
+            }
+        )
+
         config = DiffConfig(
             primary_keys=["invoice_id"],
             rules=[
@@ -408,7 +459,7 @@ class TestSemanticNormalization:
                 ),
             ],
         )
-        summary = DiffEngine(config, complex_src.lazy(), complex_tgt.lazy()).run().summary
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
         assert summary.is_match is True
         assert summary.changed_count == 0
@@ -425,49 +476,6 @@ class TestSemanticNormalization:
 
         assert set(get_args(CastTarget)) == set(_CAST_TARGETS)
 
-    def test_it_evaluates_strings_as_matches_when_casing_and_whitespace_rules_are_applied(
-        self,
-    ) -> None:
-        """Ensure string normalization rules resolve formatting discrepancies."""
-        src = pl.DataFrame({"id": [1], "name": ["   John Doe  "]})
-        tgt = pl.DataFrame({"id": [1], "name": ["john doe"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["name"], whitespace_mode="both", case_insensitive=True)],
-        )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
-
-        assert summary.is_match is True
-
-    def test_it_sanitizes_strings_using_regex_replace_dictionary_before_comparison(self) -> None:
-        """Ensure string contents can be dynamically replaced before diffing occurs."""
-        src = pl.DataFrame({"id": [1, 2], "cost": ["$100", "€50"]})
-        tgt = pl.DataFrame({"id": [1, 2], "cost": ["100", "50"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[DiffRule(column_names=["cost"], regex_replace={r"\$|€": ""})],
-        )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
-
-        assert summary.is_match is True
-
-    def test_it_coerces_specific_string_values_to_null_before_comparison(self) -> None:
-        """Ensure predefined string markers are actively converted to true nulls during processing."""
-        src = pl.DataFrame({"id": [1, 2], "status": ["N/A", "Active"]})
-        tgt = pl.DataFrame({"id": [1, 2], "status": [None, "Active"]})
-
-        config = DiffConfig(
-            primary_keys=["id"],
-            rules=[
-                DiffRule(column_names=["status"], null_values=["N/A"], treat_null_as_equal=True)
-            ],
-        )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
-
-        assert summary.is_match is True
-
     def test_it_evaluates_numeric_differences_using_relative_tolerance_percentage(self) -> None:
         """Ensure proportional differences within a calculated relative tolerance pass validation."""
         src = pl.DataFrame({"id": [1, 2], "metric": [100.0, 100.0]})
@@ -483,42 +491,25 @@ class TestSemanticNormalization:
         assert summary.changed_count == 1
         assert summary.column_mismatches["metric"] == 1
 
-    def test_it_ignores_value_mismatches_in_columns_flagged_to_be_ignored(self) -> None:
-        """Ensure columns flagged for explicit ignoring do not trigger value mismatch failures."""
-        src = pl.DataFrame({"id": [1], "noise": [100]})
-        tgt = pl.DataFrame({"id": [1], "noise": [999]})
-
-        config = DiffConfig(
-            primary_keys=["id"], rules=[DiffRule(column_names=["noise"], ignore=True)]
-        )
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
-
-        assert summary.is_match is True
-        assert summary.changed_count == 0
-
 
 class TestEvaluationStrictness:
     """Validate how the engine handles typing mismatches and null evaluations."""
 
-    def test_it_fails_mixed_type_comparisons_when_strict_types_is_enforced(self) -> None:
-        """Ensure 'strict_types' immediately flags mismatched data types as failures."""
+    @pytest.mark.parametrize(
+        ("strict_types", "matches"),
+        [pytest.param(True, False, id="strict"), pytest.param(False, True, id="by-value")],
+    )
+    def test_it_matches_mixed_types_by_value_unless_strict_types_is_on(
+        self, strict_types: bool, matches: bool
+    ) -> None:
+        """Ensure a float and an integer holding the same number match unless `strict_types` is on."""
         src = pl.DataFrame({"id": [1], "val": [10.0]})
         tgt = pl.DataFrame({"id": [1], "val": [10]})
 
-        config = DiffConfig(primary_keys=["id"], strict_types=True)
+        config = DiffConfig(primary_keys=["id"], strict_types=strict_types)
         summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
 
-        assert summary.is_match is False
-
-    def test_it_matches_mixed_types_by_value_when_strict_types_is_disabled(self) -> None:
-        """Ensure a float and an integer holding the same number match by default."""
-        src = pl.DataFrame({"id": [1], "val": [10.0]})
-        tgt = pl.DataFrame({"id": [1], "val": [10]})
-
-        config = DiffConfig(primary_keys=["id"], strict_types=False)
-        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
-
-        assert summary.is_match is True
+        assert summary.is_match is matches
 
     @pytest.mark.parametrize(
         ("source", "target"),
@@ -1050,7 +1041,6 @@ class TestFuzzyTextMatching:
 
     def test_it_forgives_typos_within_the_edit_distance(self) -> None:
         """Ensure a one-letter slip matches while a different name still does not."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1, 2, 3], "name": ["Jon", "Smith", "Jonathan"]})
         tgt = pl.DataFrame({"id": [1, 2, 3], "name": ["John", "Smyth", "John"]})
         config = DiffConfig(
@@ -1066,7 +1056,6 @@ class TestFuzzyTextMatching:
     @pytest.mark.parametrize(("limit", "changed"), [(2, 1), (3, 0)])
     def test_it_counts_every_edit_toward_the_limit(self, limit: int, changed: int) -> None:
         """Ensure kitten and sitting, three edits apart, need a limit of three."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1], "word": ["kitten"]})
         tgt = pl.DataFrame({"id": [1], "word": ["sitting"]})
         config = DiffConfig(
@@ -1083,7 +1072,6 @@ class TestFuzzyTextMatching:
         self, floor: float, changed: int
     ) -> None:
         """Ensure MARTHA and MARHTA, which score 0.961, match only under a lower floor."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1], "name": ["MARTHA"]})
         tgt = pl.DataFrame({"id": [1], "name": ["MARHTA"]})
         config = DiffConfig(
@@ -1100,7 +1088,6 @@ class TestFuzzyTextMatching:
         self, case_insensitive: bool, changed: int
     ) -> None:
         """Ensure `ABD` and `abc` are three edits apart until stage 3 lowercases both."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1], "code": ["ABD"]})
         tgt = pl.DataFrame({"id": [1], "code": ["abc"]})
         config = DiffConfig(
@@ -1121,7 +1108,6 @@ class TestFuzzyTextMatching:
     @pytest.mark.parametrize(("treat_null", "changed"), [(True, 1), (False, 2)])
     def test_it_leaves_nulls_to_treat_null_as_equal(self, treat_null: bool, changed: int) -> None:
         """Ensure a missing value is never within any distance of a present one."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1, 2, 3], "name": ["Jon", None, None]})
         tgt = pl.DataFrame({"id": [1, 2, 3], "name": ["John", "x", None]})
         config = DiffConfig(
@@ -1179,7 +1165,6 @@ class TestFuzzyTextMatching:
         self, source: pl.Series, target: pl.Series, rule: DiffRule, changed: int
     ) -> None:
         """Ensure numbers and dates one apart still differ, while text one edit apart matches."""
-        pytest.importorskip("rapidfuzz")
         config = DiffConfig(
             primary_keys=["id"],
             rules=[rule.model_copy(update={"max_levenshtein_distance": 1})],
@@ -1193,7 +1178,6 @@ class TestFuzzyTextMatching:
 
     def test_it_never_loosens_a_primary_key(self) -> None:
         """Ensure keys one edit apart stay separate rows, since keys join on equality."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"code": ["abc"], "val": [1]})
         tgt = pl.DataFrame({"code": ["abd"], "val": [1]})
         config = DiffConfig(
@@ -1207,7 +1191,6 @@ class TestFuzzyTextMatching:
 
     def test_it_measures_a_numeric_target_as_text_against_a_text_source(self) -> None:
         """Ensure the soft cast to the source's type runs before the distance."""
-        pytest.importorskip("rapidfuzz")
         src = pl.DataFrame({"id": [1], "val": ["12"]})
         tgt = pl.DataFrame({"id": [1], "val": [13]})
         config = DiffConfig(
@@ -1317,7 +1300,6 @@ class TestFuzzyTextMatching:
         self, rule: DiffRule, matches: list[bool]
     ) -> None:
         """Ensure each limit is compared in its own direction: at most, or at least."""
-        pytest.importorskip("rapidfuzz")
         config = DiffConfig(primary_keys=["id"], rules=[rule])
 
         test = _similarity_test(_fold_rule_defaults(rule, config))

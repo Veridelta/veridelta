@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import polars as pl
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pytest_mock import MockerFixture
 
 from veridelta.config import (
@@ -78,35 +78,21 @@ def _sample_lazy_frame() -> pl.LazyFrame:
 class TestConnectorConfigValidation:
     """Validate frozen, extra-forbid credential models."""
 
-    def test_it_forbids_unrecognized_fields_on_snowflake_config(self) -> None:
-        """Ensure typos in Snowflake settings raise ValidationError."""
+    @pytest.mark.parametrize(
+        ("config", "unknown"),
+        [
+            pytest.param(_snowflake_config(), {"region": "us-east-1"}, id="snowflake"),
+            pytest.param(_databricks_config(), {"cluster_id": "ignored"}, id="databricks"),
+            pytest.param(_delta_config(), {"catalog": "main"}, id="delta"),
+            pytest.param(_iceberg_config(), {"catalog": "main"}, id="iceberg"),
+        ],
+    )
+    def test_it_forbids_unrecognized_fields(
+        self, config: BaseModel, unknown: dict[str, str]
+    ) -> None:
+        """Ensure each connector config rejects a key it does not define."""
         with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-            SnowflakeConfig(
-                account="xy12345",
-                user="analyst",
-                warehouse="COMPUTE_WH",
-                database="ANALYTICS",
-                schema_name="PUBLIC",
-                table="ANALYTICS.PUBLIC.LEGACY_EVENTS",
-                region="us-east-1",  # type: ignore[call-arg]
-            )
-
-    def test_it_forbids_unrecognized_fields_on_databricks_config(self) -> None:
-        """Ensure typos in Databricks settings raise ValidationError."""
-        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-            DatabricksConfig(
-                server_hostname="adb.azuredatabricks.net",
-                http_path="/sql/1.0/warehouses/abc",
-                table="main.default.legacy_events",
-                cluster_id="ignored",  # type: ignore[call-arg]
-            )
-
-    def test_it_forbids_unrecognized_fields_on_delta_and_iceberg_configs(self) -> None:
-        """Ensure lakehouse configs reject unknown keys."""
-        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-            DeltaLakeConfig(table_uri="s3://lake/events", catalog="main")  # type: ignore[call-arg]
-        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-            IcebergConfig(table_uri="s3://lake/iceberg/events", catalog="main")  # type: ignore[call-arg]
+            type(config).model_validate(config.model_dump() | unknown)
 
     def test_it_rejects_mutation_on_frozen_connector_configs(self) -> None:
         """Ensure credential models are immutable after construction."""

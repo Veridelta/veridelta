@@ -196,37 +196,36 @@ class TestSimilarityThresholds:
             )
 
     @pytest.mark.parametrize(
-        ("value", "message"),
+        ("field", "value", "message"),
         [
-            pytest.param(0, "greater than or equal to 1", id="zero"),
-            pytest.param(-1, "greater than or equal to 1", id="negative"),
-            pytest.param(2.0, "valid integer", id="float"),
-            pytest.param("2", "valid integer", id="text"),
-            pytest.param(True, "valid integer", id="bool"),
+            # The edit limit is a whole number of edits, so it reaches SQL as written.
+            pytest.param(
+                "max_levenshtein_distance", 0, "greater than or equal to 1", id="distance-zero"
+            ),
+            pytest.param(
+                "max_levenshtein_distance", -1, "greater than or equal to 1", id="distance-negative"
+            ),
+            pytest.param("max_levenshtein_distance", 2.0, "valid integer", id="distance-float"),
+            pytest.param("max_levenshtein_distance", "2", "valid integer", id="distance-text"),
+            pytest.param("max_levenshtein_distance", True, "valid integer", id="distance-bool"),
+            pytest.param("min_jaro_winkler_similarity", 0.0, "greater than 0", id="floor-zero"),
+            pytest.param(
+                "min_jaro_winkler_similarity", 1.5, "less than or equal to 1", id="floor-above-one"
+            ),
+            pytest.param(
+                "min_jaro_winkler_similarity", float("nan"), "finite number", id="floor-nan"
+            ),
+            pytest.param(
+                "min_jaro_winkler_similarity", float("inf"), "finite number", id="floor-infinity"
+            ),
+            pytest.param("min_jaro_winkler_similarity", "0.9", "valid number", id="floor-text"),
+            pytest.param("min_jaro_winkler_similarity", True, "valid number", id="floor-bool"),
         ],
     )
-    def test_it_rejects_an_unusable_edit_distance(self, value: object, message: str) -> None:
-        """Ensure the limit is a whole number of edits that can reach SQL as written."""
+    def test_it_rejects_an_unusable_limit(self, field: str, value: object, message: str) -> None:
+        """Ensure each similarity limit refuses a value it cannot use."""
         with pytest.raises(ValidationError, match=message):
-            DiffRule.model_validate({"column_names": ["name"], "max_levenshtein_distance": value})
-
-    @pytest.mark.parametrize(
-        ("value", "message"),
-        [
-            pytest.param(0.0, "greater than 0", id="zero"),
-            pytest.param(1.5, "less than or equal to 1", id="above-one"),
-            pytest.param(float("nan"), "finite number", id="nan"),
-            pytest.param(float("inf"), "finite number", id="infinity"),
-            pytest.param("0.9", "valid number", id="text"),
-            pytest.param(True, "valid number", id="bool"),
-        ],
-    )
-    def test_it_rejects_an_unusable_similarity_floor(self, value: object, message: str) -> None:
-        """Ensure the floor is a finite share of a perfect score."""
-        with pytest.raises(ValidationError, match=message):
-            DiffRule.model_validate(
-                {"column_names": ["name"], "min_jaro_winkler_similarity": value}
-            )
+            DiffRule.model_validate({"column_names": ["name"], field: value})
 
 
 class TestDiffConfigNormalization:
