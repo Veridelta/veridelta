@@ -159,24 +159,6 @@ def _json_cell(value: object) -> object:
     return value
 
 
-def _embed_json(payload: object) -> str:
-    """Serialize a payload for a `<script type="application/json">` block.
-
-    Args:
-        payload (object): JSON-serializable data whose cells went through
-            `_json_cell`.
-
-    Returns:
-        str: JSON with `<` escaped, so a string in the data cannot close the
-        script element and inject markup into the document.
-
-    Raises:
-        ValueError: If a non-finite float reached the payload anyway, rather
-            than emitting a document the browser cannot parse.
-    """
-    return json.dumps(payload, default=str, allow_nan=False).replace("<", "\\u003c")
-
-
 def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
     """Render one paginated table section.
 
@@ -201,9 +183,10 @@ def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
         )
 
     header = "".join(f"<th>{_escape(name)}</th>" for name in shown.columns)
-    payload = _embed_json(
-        {"rows": [[_json_cell(cell) for cell in row] for row in shown.iter_rows()]}
-    )
+    rows = [[_json_cell(cell) for cell in row] for row in shown.iter_rows()]
+    # `<` is escaped so no string can close the script element and inject markup.
+    # A non-finite float raises rather than producing JSON the browser cannot parse.
+    payload = json.dumps({"rows": rows}, default=str, allow_nan=False).replace("<", "\\u003c")
 
     return (
         f"<h2>{_escape(title)}</h2>\n{truncated}"
