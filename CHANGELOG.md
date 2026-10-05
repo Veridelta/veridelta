@@ -1,8 +1,20 @@
 ## v0.11.1 (2026-10-05)
 
-Warehouse pushdown now trims whitespace and reads regex replacements the way a local
-run does. Two settings that compared differently in a warehouse now give the local
-verdict there too, so a run can report fewer differences than it did on 0.11.0.
+Two Postgres tables can now be compared inside Postgres, and warehouse pushdown trims
+whitespace and reads regex replacements the way a local run does. Those two settings
+compared differently in a warehouse and now give the local verdict there too, so a
+run can report fewer differences than it did on 0.11.0.
+
+Set `pushdown: true` on two `type: database` sources that name tables on one Postgres
+connection, and the comparison compiles to SQL and runs inside Postgres through
+ConnectorX, so only counts and primary keys come back. Both sides must set it; a
+database source without it is still read into memory and compared locally. Postgres
+refuses `datetime_format` and `max_levenshtein_distance` with `ConfigError`, since it
+has no date parse that returns NULL and its `levenshtein` needs an extension, and the
+server must keep `standard_conforming_strings` on, as it is by default. CI runs the
+parity suite against a live Postgres. ConnectorX reads every Postgres `numeric` as
+`Decimal(38, 10)` whether or not `pushdown` is set; the configuration guide explains
+what that changes.
 
 `whitespace_mode` strips the same characters in a warehouse as in a local run: tabs,
 line breaks, no-break spaces, and the rest of Unicode's whitespace, not only spaces.
@@ -12,10 +24,15 @@ characters as changed, and keys padded with them as added and removed rows.
 A `regex_replace` replacement now means the same in every warehouse. Write group
 references as Polars reads them, `$1` or `${1}`, with `$0` for the whole match and
 `$$` for a dollar sign, and pushdown rewrites them for each warehouse: `\1` on
-Snowflake, BigQuery, and DuckDB, and `$1` on Databricks. A reference to a group by
-name, which includes `$1a`, or to a group above 9 raises `ConfigError` on a warehouse
-pair, and `veridelta validate` warns about it. A replacement written for Snowflake as
-`\1` is now plain text in the warehouse, as it always was in a local run.
+Snowflake, BigQuery, DuckDB, and Postgres, and `$1` on Databricks. A reference to a
+group by name, which includes `$1a`, or to a group above 9 raises `ConfigError` on a
+warehouse pair, and `veridelta validate` warns about it. A replacement written for
+Snowflake as `\1` is now plain text in the warehouse, as it always was in a local run.
+
+### Feat
+
+- compare two Postgres tables inside Postgres when both `database` sources set
+  `pushdown: true`
 
 ### Fix
 
