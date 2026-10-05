@@ -9,7 +9,7 @@ shell script, third-party actions are pinned, the `veridelta run` command line
 they build still parses with the CLI's own parser, and a release publishes only
 a new version, only from its tag, with no more permission than each job needs.
 They also pin the CI safeguards: one required check covers every job, jobs have
-time limits, and only jobs GitHub never started are re-run.
+time limits and a read-only token, and only jobs GitHub never started are re-run.
 """
 
 import re
@@ -453,7 +453,21 @@ class TestDocsWorkflow:
 
 
 class TestCIWorkflow:
-    """Pin the safeguards that keep an unfinished or failed CI run from reading as green."""
+    """Pin the safeguards that keep an unfinished or failed CI run from reading as green.
+
+    They also keep the packages CI installs and runs from writing to the repository.
+    """
+
+    def test_every_job_gets_a_read_only_token(self) -> None:
+        """Ensure a dependency that CI installs and runs cannot push commits or tags.
+
+        Without a `permissions` block every job would get the repository's
+        default token, which can write. No job needs more than reading the code.
+        """
+        workflow = _workflow(_CI)
+
+        assert workflow["permissions"] == {"contents": "read"}
+        assert all("permissions" not in job for job in workflow["jobs"].values())
 
     def test_one_check_passes_only_when_every_job_passes(self) -> None:
         """Ensure `CI Passed` waits for every job and fails unless each one succeeded.

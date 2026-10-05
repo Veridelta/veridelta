@@ -10,6 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Jobs install and run third-party packages, so the token can only read the code.
+permissions:
+  contents: read
+
 jobs:
   static-analysis:
     name: Lint, Format, and Type Check
