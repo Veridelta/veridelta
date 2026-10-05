@@ -1,0 +1,70 @@
+name: Re-run Dropped CI Jobs
+
+# GitHub sometimes never assigns a runner to a queued job. After 15 minutes it
+# cancels the job, with the annotation "The job was not acquired by Runner of
+# type hosted even after multiple attempts". No test ran, so this re-runs the
+# CI run's failed jobs, up to three times. A run with any other failure stays
+# red, so a failing test is never retried, and only a branch's newest run is
+# re-run. A workflow_run workflow always runs from main and checks out nothing.
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  rerun:
+    name: Re-run Jobs GitHub Never Started
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.run_attempt < 4
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    permissions:
+      actions: write # re-run the CI run's failed jobs
+      checks: read # read why each job failed
+
+    steps:
+      - name: Re-run the Run When Every Failed Job Never Started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          EVENT: ${{ github.event.workflow_run.event }}
+        run: |
+          set -euo pipefail
+          # CI cancels a branch's older run when a newer one starts, so
+          # re-running an older run would cancel the run for the newer commit.
+          # Run IDs only grow, so the largest of the latest few is the newest.
+          newest=$(gh api -X GET "repos/${GH_REPO}/actions/workflows/${WORKFLOW_ID}/runs" \
+            -f branch="$BRANCH" -f event="$EVENT" -F per_page=10 --jq '[.workflow_runs[].id] | max')
+          if [ "$newest" != "$RUN_ID" ]; then
+            echo "Run ${newest} is newer for this branch, so run ${RUN_ID} is left as it is."
+            exit 0
+          fi
+
+          # `CI Passed` fails whenever another job fails, so it counts only
+          # when GitHub never started it either.
+          failed=$(gh api "repos/${GH_REPO}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | select(.conclusion == "cancelled" or (.conclusion == "failure" and .name != "CI Passed")) | .id')
+          if [ -z "$failed" ]; then
+            echo "No job to re-run in run ${RUN_ID}."
+            exit 0
+          fi
+
+          for job in $failed; do
+            messages=$(gh api "repos/${GH_REPO}/check-runs/${job}/annotations" --jq '.[].message')
+            case "$messages" in
+              *"was not acquired by Runner"*) ;;
+              *)
+                echo "Job ${job} failed after it started, so run ${RUN_ID} stays red."
+                exit 0
+                ;;
+            esac
+          done
+
+          gh api -X POST "repos/${GH_REPO}/actions/runs/${RUN_ID}/rerun-failed-jobs"
+          echo "::notice::Re-ran the jobs GitHub never started in run ${RUN_ID}."

@@ -1,13 +1,15 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Static checks for the GitHub Action, the GitLab CI template, and the release workflow.
+"""Static checks for the GitHub Action, the GitLab CI template, and the workflows.
 
 None of them can run inside the test suite, so these pin the contracts a typo
 would break: every input a step reads is declared, no input is expanded inside a
 shell script, third-party actions are pinned, the `veridelta run` command line
 they build still parses with the CLI's own parser, and a release publishes only
 a new version, only from its tag, with no more permission than each job needs.
+They also pin the CI safeguards: one required check covers every job, jobs have
+time limits, and only jobs GitHub never started are re-run.
 """
 
 import re
@@ -30,6 +32,8 @@ _RELEASE = _ROOT / ".github" / "workflows" / "release.yml"
 _WORKFLOWS = sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
 _DEPENDABOT = _ROOT / ".github" / "dependabot.yml"
 _DOCS = _ROOT / ".github" / "workflows" / "docs.yml"
+_CI = _ROOT / ".github" / "workflows" / "ci.yml"
+_RERUN = _ROOT / ".github" / "workflows" / "rerun-dropped.yml"
 _COMMIT_PIN = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
@@ -364,12 +368,11 @@ class TestReleaseWorkflow:
         }
         assert _release_job("github-release")["permissions"] == {"contents": "write"}
 
-    def test_it_never_expands_an_expression_inside_a_shell_script(self) -> None:
-        """Ensure values reach scripts through `env` only, so none can inject shell syntax."""
-        for name, job in _release()["jobs"].items():
-            for step in job["steps"]:
-                if "run" in step:
-                    assert "${{" not in step["run"], (name, step["name"])
+
+def _workflow(path: Path) -> dict[Any, Any]:
+    """Load a workflow file."""
+    loaded: dict[Any, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return loaded
 
 
 def _workflow_steps(path: Path) -> list[dict[str, Any]]:
@@ -383,7 +386,24 @@ class TestWorkflowPins:
 
     def test_it_finds_the_workflows(self) -> None:
         """Ensure a moved workflows folder cannot silently skip every check below."""
-        assert {path.name for path in _WORKFLOWS} >= {"ci.yml", "docs.yml", "release.yml"}
+        assert {path.name for path in _WORKFLOWS} >= {
+            "ci.yml",
+            "docs.yml",
+            "release.yml",
+            "rerun-dropped.yml",
+        }
+
+    @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
+    def test_it_never_expands_an_expression_inside_a_shell_script(self, workflow: Path) -> None:
+        """Ensure values reach scripts through `env` only, so none can inject shell syntax.
+
+        A branch name or a pull request title is chosen by whoever opens it, and
+        `${{ }}` would paste it into the script before the shell parses it.
+        """
+        for name, job in _workflow(workflow)["jobs"].items():
+            for step in job.get("steps", []):
+                if "run" in step:
+                    assert "${{" not in step["run"], (workflow.name, name, step["name"])
 
     @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
     def test_it_pins_every_action_to_a_commit(self, workflow: Path) -> None:
@@ -430,3 +450,96 @@ class TestDocsWorkflow:
         workflow: dict[str, Any] = yaml.safe_load(_DOCS.read_text(encoding="utf-8"))
 
         assert workflow["concurrency"] == {"group": "docs-deploy", "cancel-in-progress": False}
+
+
+class TestCIWorkflow:
+    """Pin the safeguards that keep an unfinished or failed CI run from reading as green."""
+
+    def test_one_check_passes_only_when_every_job_passes(self) -> None:
+        """Ensure `CI Passed` waits for every job and fails unless each one succeeded.
+
+        A ruleset on `main` requires this one check instead of each matrix job by
+        name. So it covers every job, runs even after one fails, and counts a
+        cancelled or skipped job as a failure. A skipped required check would
+        read as passing, which is why it never uses a condition that can skip it.
+        """
+        jobs = _workflow(_CI)["jobs"]
+        gate = jobs["ci-passed"]
+        [step] = gate["steps"]
+
+        assert gate["name"] == "CI Passed"
+        assert gate["if"] == "always()"
+        assert set(gate["needs"]) == set(jobs) - {"ci-passed"}
+        assert step["env"] == {"RESULTS": "${{ join(needs.*.result, ' ') }}"}
+        assert 'for result in $RESULTS; do\n  [ "$result" = success ] || exit 1' in step["run"]
+
+    @pytest.mark.parametrize("workflow", [_CI, _DOCS, _RERUN], ids=lambda path: path.name)
+    def test_every_job_has_a_time_limit(self, workflow: Path) -> None:
+        """Ensure a hung job fails within minutes, not after GitHub's six-hour default.
+
+        The slowest job takes about two minutes. The release workflow keeps the
+        default, since its publishing job waits for a person to approve it.
+        """
+        for name, job in _workflow(workflow)["jobs"].items():
+            assert 1 <= job.get("timeout-minutes", 0) <= 15, (workflow.name, name)
+
+
+def _rerun_script() -> str:
+    """Return the shell script of the re-run workflow's one step."""
+    [step] = _workflow(_RERUN)["jobs"]["rerun"]["steps"]
+    script: str = step["run"]
+    return script
+
+
+class TestRerunDroppedJobs:
+    """Pin the workflow that re-runs CI when GitHub never started some of its jobs.
+
+    GitHub sometimes never assigns a runner to a queued job and cancels it after
+    15 minutes. No test ran, so a re-run is safe. Any other failure stays red,
+    so a test that fails is never retried until it passes.
+    """
+
+    def test_it_runs_after_each_ci_run(self) -> None:
+        """Ensure it follows the CI workflow by its name, which a rename would break."""
+        workflow = _workflow(_RERUN)
+        triggers = workflow[True] if True in workflow else workflow["on"]
+
+        assert triggers == {
+            "workflow_run": {"workflows": [_workflow(_CI)["name"]], "types": ["completed"]}
+        }
+
+    def test_it_acts_only_on_a_failed_run_and_at_most_three_times(self) -> None:
+        """Ensure a cancelled run is left alone and a run that keeps failing stops."""
+        assert _workflow(_RERUN)["jobs"]["rerun"]["if"] == (
+            "github.event.workflow_run.conclusion == 'failure' "
+            "&& github.event.workflow_run.run_attempt < 4"
+        )
+
+    def test_it_gets_only_the_permissions_it_needs(self) -> None:
+        """Ensure it can re-run jobs and read why they failed, and nothing else."""
+        workflow = _workflow(_RERUN)
+
+        assert workflow["permissions"] == {}
+        assert workflow["jobs"]["rerun"]["permissions"] == {"actions": "write", "checks": "read"}
+
+    def test_it_reruns_only_when_every_failed_job_never_started(self) -> None:
+        """Ensure one job that failed after it started keeps the whole run red.
+
+        `CI Passed` fails whenever another job fails, so it counts only when
+        GitHub never started it either.
+        """
+        script = _rerun_script()
+        gate = _workflow(_CI)["jobs"]["ci-passed"]["name"]
+
+        assert (
+            f'select(.conclusion == "cancelled" or (.conclusion == "failure" and .name != "{gate}"))'
+        ) in script
+        assert '*"was not acquired by Runner"*) ;;' in script
+        assert script.index("was not acquired") < script.index("rerun-failed-jobs")
+
+    def test_it_never_reruns_a_run_a_newer_commit_replaced(self) -> None:
+        """Ensure an old run is not re-run, which would cancel the newer run on its branch."""
+        script = _rerun_script()
+
+        assert '[ "$newest" != "$RUN_ID" ]' in script
+        assert script.index('"$newest" != "$RUN_ID"') < script.index("rerun-failed-jobs")

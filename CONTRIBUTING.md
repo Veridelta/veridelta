@@ -71,9 +71,10 @@ The hooks also format the code and add the Apache-2.0 license header. If a hook 
 
 1. Run `make all` before opening a pull request.
 2. Open it against `main`, with a title in the Conventional Commits form, such as `feat: read Avro files`.
-3. CI tests the pull request on several operating systems and Python versions. A pull request is merged only after every check passes.
-4. CI runs on every pull request, whatever its base branch, so a pull request stacked on another one is checked too. Merge the base pull request first and delete its branch: GitHub then retargets the stacked one to `main`. Merging a stacked pull request while its base branch still exists lands it on that branch instead of `main`.
-5. Workflows and `action.yml` run third-party actions pinned to a commit, with the release in a comment (`actions/checkout@<sha> # v5.1.0`). A moved tag upstream then cannot change what CI runs or what a release publishes. Pin any action you add the same way; `tests/unit/test_ci_integrations.py` checks it. Dependabot proposes newer pins and a refreshed `uv.lock` once a week, never higher floors in `pyproject.toml`.
+3. CI tests the pull request on several operating systems and Python versions. A pull request is merged only after every check passes. The `CI Passed` check sums them up: it fails when any other job fails, is cancelled, or is skipped, so it is the one check for a ruleset on `main` to require. Each job stops after 15 minutes, so a hung job fails instead of holding a runner.
+4. GitHub sometimes never starts a queued job, and cancels it after 15 minutes. The `Re-run Dropped CI Jobs` workflow then re-runs the failed jobs, at most three times, but only when no failed job ever started. A job that fails after it starts is never re-run: fix the failure instead.
+5. CI runs on every pull request, whatever its base branch, so a pull request stacked on another one is checked too. Merge the base pull request first and delete its branch: GitHub then retargets the stacked one to `main`. Merging a stacked pull request while its base branch still exists lands it on that branch instead of `main`.
+6. Workflows and `action.yml` run third-party actions pinned to a commit, with the release in a comment (`actions/checkout@<sha> # v5.1.0`). A moved tag upstream then cannot change what CI runs or what a release publishes. Pin any action you add the same way; `tests/unit/test_ci_integrations.py` checks it. Dependabot proposes newer pins and a refreshed `uv.lock` once a week, never higher floors in `pyproject.toml`.
 
 ## Releasing
 

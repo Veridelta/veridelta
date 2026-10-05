@@ -14,6 +14,7 @@ jobs:
   static-analysis:
     name: Lint, Format, and Type Check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +38,7 @@ jobs:
   docs:
     name: Documentation Build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,6 +60,7 @@ jobs:
     name: Smoke Tests
     needs: static-analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,6 +82,7 @@ jobs:
     name: Core Engine (Py ${{ matrix.python-version }}, ${{ matrix.os }})
     needs: test-smoke
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false # Continue running matrix jobs to identify all failing OS/Python combinations
       matrix:
@@ -116,6 +120,7 @@ jobs:
     name: CLI End-to-End (${{ matrix.os }})
     needs: test-smoke
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -143,6 +148,7 @@ jobs:
     name: Tutorial Notebooks
     needs: test-smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -164,6 +170,7 @@ jobs:
     name: Postgres Pushdown Parity
     needs: test-smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -199,6 +206,7 @@ jobs:
     name: GitHub Action (${{ matrix.os }})
     needs: test-smoke
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -263,3 +271,23 @@ jobs:
           test "$(wc -l < "$DRIFT_OTEL")" -eq 1
           test "$BROKEN_OUTCOME" = failure
           test -z "$BROKEN_OTEL"
+
+  # Rulesets require this one check rather than each matrix job by name. It
+  # needs every job above, runs even after one fails, and passes only when each
+  # one succeeded, so a cancelled or skipped job fails it too. It never takes a
+  # condition that could skip it, since a skipped required check reads as passing.
+  ci-passed:
+    name: CI Passed
+    if: always()
+    needs: [static-analysis, docs, test-smoke, test-core, test-e2e, test-notebooks, test-postgres, action]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require Every Job to Pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: ${RESULTS}"
+          for result in $RESULTS; do
+            [ "$result" = success ] || exit 1
+          done
