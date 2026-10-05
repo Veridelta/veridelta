@@ -25,9 +25,9 @@ from veridelta.models import (
     ValueMapProposal,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
-@pytest.mark.unit
-@pytest.mark.fast
+
 class TestDiffRuleValidation:
     """Validate specific field constraints and regex parsing within individual rules."""
 
@@ -76,8 +76,6 @@ def _databricks_table(table: str) -> DatabricksConfig:
     )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestWarehouseTableAllowlist:
     """Validate dotted SQL identifier allowlists on warehouse table fields."""
 
@@ -99,8 +97,6 @@ class TestWarehouseTableAllowlist:
             _databricks_table("main default events")
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestStrictNumericFields:
     """Validate that SQL-adjacent numerics reject string coercion."""
 
@@ -175,8 +171,6 @@ class TestStrictNumericFields:
             )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestSimilarityThresholds:
     """Validate the text similarity limits a rule can loosen a comparison by."""
 
@@ -235,8 +229,6 @@ class TestSimilarityThresholds:
             )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDiffConfigNormalization:
     """Validate the post-initialization normalization logic (lowercase/stripping)."""
 
@@ -285,8 +277,6 @@ class TestDiffConfigNormalization:
         assert config.primary_keys == ["User_ID"]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestModelStrictness:
     """Validate that models strictly adhere to the defined schema and typing boundaries."""
 
@@ -499,8 +489,6 @@ class TestModelStrictness:
         )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDatabaseConfig:
     """Validate the settings a database source reads a table or query with."""
 
@@ -645,8 +633,6 @@ class TestDatabaseConfig:
         assert f"uri='{uri}'" in repr(config)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDiffSummaryCalculations:
     """Validate the computed properties and report generation in the execution summary."""
 
@@ -729,8 +715,6 @@ class TestDiffSummaryCalculations:
         assert report.find("massive_drift") < report.find("moderate_drift")
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDiffResultRowAccess:
     """Validate row-level access to the discrepancies behind the summary."""
 
@@ -839,8 +823,6 @@ class TestDiffResultRowAccess:
             self._run().to_pandas()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestValueMapProposalModels:
     """Validate the evidence and rules a value_map proposal carries."""
 

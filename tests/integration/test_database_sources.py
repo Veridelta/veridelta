@@ -21,6 +21,8 @@ from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DatabaseConfig, DiffConfig, DiffRule, SourceConfig
 
+pytestmark = [pytest.mark.integration]
+
 
 def _sqlite(
     path: Path, *statements: str, rows: Sequence[tuple[str, tuple[object, ...]]] = ()
@@ -68,7 +70,6 @@ def _orders(path: Path) -> str:
     )
 
 
-@pytest.mark.integration
 class TestDatabaseSources:
     """Validate database sources end to end against real SQLite files."""
 

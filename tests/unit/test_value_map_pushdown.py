@@ -30,6 +30,8 @@ from veridelta.models import (
     ValueMapProposal,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 
 def _engine() -> DiffEngine:
     """Build an engine over one matching row, enough to reach the threshold checks."""
@@ -37,8 +39,6 @@ def _engine() -> DiffEngine:
     return DiffEngine(DiffConfig(primary_keys=["id"]), frame, frame)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestValueMapThresholdTypes:
     """Validate that proposal thresholds are real numbers before anything reads rows."""
 
@@ -134,8 +134,6 @@ def _propose(**thresholds: Any) -> list[ValueMapProposal]:
     )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestWarehouseValueMapRouting:
     """Validate how a warehouse pair's proposals are collected."""
 

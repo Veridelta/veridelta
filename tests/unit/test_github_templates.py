@@ -14,6 +14,8 @@ from typing import Any
 import pytest
 import yaml
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _TEMPLATES = Path(__file__).resolve().parents[2] / ".github" / "ISSUE_TEMPLATE"
 
 _FIELD_TYPES = {"input", "textarea", "dropdown", "checkboxes"}
@@ -32,8 +34,6 @@ def _load(path: Path) -> Any:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestIssueForms:
     """Validate each issue form against the rules GitHub enforces."""
 

@@ -11,6 +11,8 @@ import nbformat
 import pytest
 from nbclient import NotebookClient
 
+pytestmark = [pytest.mark.e2e]
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NOTEBOOKS = sorted((REPO_ROOT / "docs" / "examples").glob("*.ipynb"))
 OUTPUT_MARKER = "# Output:"
@@ -43,14 +45,12 @@ def _printed_output(cell: nbformat.NotebookNode) -> list[str]:
     return _trimmed(text.replace("\r\n", "\n").split("\n"))
 
 
-@pytest.mark.e2e
 @pytest.mark.fast
 def test_it_finds_the_tutorials() -> None:
     """Ensure a moved or renamed examples folder cannot silently skip every notebook."""
     assert NOTEBOOKS
 
 
-@pytest.mark.e2e
 @pytest.mark.slow
 @pytest.mark.parametrize("notebook", NOTEBOOKS, ids=[path.stem for path in NOTEBOOKS])
 def test_it_prints_what_the_tutorial_documents(

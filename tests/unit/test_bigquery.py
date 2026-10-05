@@ -20,12 +20,12 @@ from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import BigQueryConfig, DiffConfig, DiffRule, SnowflakeConfig
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _BASE: dict[str, Any] = {"project": "analytics-prod", "table": "sales.orders"}
 """The fields every BigQuery config needs."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestBigQueryConfig:
     """Validate BigQuery connection settings."""
 
@@ -104,8 +104,6 @@ _EQUAL = "(`src`.`x` = `tgt`.`x` OR (`src`.`x` IS NOT DISTINCT FROM `tgt`.`x` AN
 """BigQuery value equality: `=`, or two NaNs, which `=` calls different."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestBigQueryDialect:
     """Validate the BigQuery spelling of each compiled stage."""
 
@@ -252,8 +250,6 @@ def _driver(mocker: MockerFixture, batches: list[pa.RecordBatch] | None = None) 
     return driver
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestBigQueryConnector:
     """Validate the BigQuery connector against a stand-in client."""
 
@@ -409,8 +405,6 @@ def _pair(**overrides: Any) -> tuple[BigQueryConfig, BigQueryConfig]:
     )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestBigQueryRouting:
     """Validate which BigQuery pairs share one pushdown session."""
 

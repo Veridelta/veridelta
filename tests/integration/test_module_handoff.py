@@ -12,8 +12,9 @@ from veridelta.engine import DataIngestor, DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, SourceConfig
 
+pytestmark = [pytest.mark.integration]
 
-@pytest.mark.integration
+
 class TestModuleBoundaryHandoffs:
     """Validate that Config, Ingestor, and Engine modules interact seamlessly."""
 

@@ -17,9 +17,9 @@ from veridelta.config import config_json_schema
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffConfig, DiffRule, ValueMapEntry, ValueMapProposal
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
-@pytest.mark.unit
-@pytest.mark.fast
+
 class TestCommandLineInterface:
     """Validate CLI argument parsing, workflow execution, and exit codes."""
 
@@ -431,8 +431,6 @@ def _proposal(
     )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestCrosswalkCommand:
     """Validate `veridelta crosswalk`, which prints proposed value_map rules."""
 
@@ -683,8 +681,6 @@ class TestCrosswalkCommand:
         mock_exit.assert_called_once_with(0)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestSchemaCommand:
     """Validate `veridelta schema`."""
 
@@ -707,8 +703,6 @@ _SNOWFLAKE_SIDE = (
 )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestValidateCommand:
     """Validate `veridelta validate`, which checks a configuration without reading data."""
 

@@ -20,6 +20,8 @@ from veridelta.models import (
     SourceConfig,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _DOCS = Path(__file__).resolve().parents[2] / "docs"
 
 _PAGES: dict[str, tuple[type[BaseModel], ...]] = {
@@ -38,8 +40,6 @@ _PAGES: dict[str, tuple[type[BaseModel], ...]] = {
 """Each guide page and the models whose every field it must name."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestUserGuideCoverage:
     """Keep the user guide in lockstep with the config models."""
 

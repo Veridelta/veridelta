@@ -21,6 +21,8 @@ from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, DataIntegrityError
 from veridelta.models import DiffConfig, DiffRule, ValueMapProposal
 
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
+
 _REFUSED_PARSE = pytest.mark.duckdb_only(
     reason="Postgres refuses datetime_format pushdown: it has no parse that yields NULL."
 )
@@ -29,8 +31,6 @@ _REFUSED_EDIT_DISTANCE = pytest.mark.duckdb_only(
 )
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestBaselineParity:
     """Validate the harness itself on comparisons with no transform rules."""
 
@@ -97,8 +97,6 @@ class TestBaselineParity:
         assert summary.changed_count == 1
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestShippedStageParity:
     """Validate the transform stages that shipped before complete parity."""
 
@@ -262,8 +260,6 @@ class TestShippedStageParity:
         assert "audit" not in summary.column_mismatches
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestPaddingParity:
     """Validate stage 5 against Python's `str.zfill`, sign and overflow included."""
 
@@ -374,8 +370,6 @@ class TestPaddingParity:
         assert summary.is_perfect_match is True
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestCastParity:
     """Validate stage 7 against Polars cast semantics."""
 
@@ -460,8 +454,6 @@ class TestCastParity:
         assert summary.is_perfect_match is True
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 @_REFUSED_PARSE
 class TestDatetimeFormatParity:
     """Validate stage 6a.
@@ -597,8 +589,6 @@ class TestDatetimeFormatParity:
         assert summary.is_perfect_match is True
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestStrictTypesParity:
     """Validate that `strict_types` fails a type mismatch on both paths."""
 
@@ -663,8 +653,6 @@ class TestStrictTypesParity:
         assert summary.changed_count == expected_changed
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestTimezoneParity:
     """Validate stage 6b, where the local conversion is metadata-only."""
 
@@ -800,8 +788,6 @@ class TestTimezoneParity:
             run_pushdown(config, frame, frame)
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestEdgeCaseParity:
     """Validate join shapes, literal escaping, and rule precedence at the edges.
 
@@ -1243,8 +1229,6 @@ class TestEdgeCaseParity:
         assert summary.column_mismatches == {"cost": 1}
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestKeyNormalizationParity:
     """Validate that primary keys pass through stages 1-7 on both paths.
 
@@ -1420,8 +1404,6 @@ def _rejection_on_both_paths(config: DiffConfig, src: pl.DataFrame, tgt: pl.Data
     return str(local.value)
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestDuplicateKeyParity:
     """Validate that duplicate primary keys fail both paths identically.
 
@@ -1518,8 +1500,6 @@ class TestDuplicateKeyParity:
         assert "Primary keys ['user_id'] are not unique in SOURCE dataset" in message
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestToleranceScopeParity:
     """Validate that a tolerance only ever loosens a numeric comparison.
 
@@ -1594,8 +1574,6 @@ class TestToleranceScopeParity:
         assert summary.changed_count == expected_changed
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestNumericComparisonParity:
     """Validate that both paths compare numbers by value, whatever their storage."""
 
@@ -1753,8 +1731,6 @@ class TestNumericComparisonParity:
         assert summary.changed_count == (0 if matches else 1)
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestSimilarityParity:
     """Validate text similarity limits on both engines."""
 
@@ -1927,8 +1903,6 @@ class TestSimilarityParity:
         assert pushdown.summary.changed_count == 1
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestRowSampleParity:
     """Validate that a pushdown sample shows the rows and values a local run reports.
 
@@ -1988,8 +1962,6 @@ class TestRowSampleParity:
         assert pushdown.summary.changed_count == local.summary.changed_count == 3
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestHarnessSensitivity:
     """Prove the harness can actually observe divergence before it is trusted."""
 
@@ -2018,8 +1990,6 @@ class TestHarnessSensitivity:
         assert run_pushdown(lenient, src, tgt)[0].summary.changed_count == 0
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestPushdownRowAccess:
     """Validate what a pushdown result can and cannot hand back."""
 
@@ -2078,8 +2048,6 @@ def _codes(pairs: Sequence[tuple[str | None, str | None]]) -> tuple[pl.DataFrame
     )
 
 
-@pytest.mark.integration
-@pytest.mark.slow
 class TestValueMapProposalParity:
     """Validate that a warehouse proposes exactly the value maps a local run does."""
 
