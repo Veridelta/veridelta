@@ -32,6 +32,8 @@ from veridelta.connectors.sql import (
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffRule
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _BACKSLASH_ESCAPE_DIALECTS = frozenset(
     {SQLDialect.SNOWFLAKE, SQLDialect.DATABRICKS, SQLDialect.BIGQUERY}
 )
@@ -107,8 +109,6 @@ def _postgres() -> SQLPushdownCompiler:
     return SQLPushdownCompiler(SQLDialect.POSTGRES)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestSQLDialect:
     """Validate the warehouse dialect enum."""
 
@@ -128,8 +128,6 @@ class TestSQLDialect:
         }
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestIdentifierQuoting:
     """Validate identifier quoting and literal escaping."""
 
@@ -173,8 +171,6 @@ class TestIdentifierQuoting:
         assert "O''Brien" not in databricks
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestStringLiteralEscaping:
     """Validate that configured text survives the trip into a SQL literal.
 
@@ -241,8 +237,6 @@ class TestStringLiteralEscaping:
         assert r"'C:\'" in duckdb
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestPredicateCompilation:
     """Validate DiffRule field translation into SQL fragments."""
 
@@ -442,8 +436,6 @@ class TestPredicateCompilation:
         assert '"tgt"."user_id"' not in sql
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestQueryAssembly:
     """Validate SELECT / JOIN / WHERE assembly."""
 
@@ -532,8 +524,6 @@ class TestQueryAssembly:
         assert '"src"."b" = "tgt"."b"' in sql
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestChangedSampleQuery:
     """Validate the opt-in statement that fetches changed rows with their values."""
 
@@ -701,8 +691,6 @@ class TestAntiJoinAssembly:
             _snowflake().compile_added_query("src_tbl", "tgt_tbl", [])
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestKeyNormalization:
     """Validate that primary keys pass through stages 1-7 before any join.
 
@@ -798,8 +786,6 @@ class TestKeyNormalization:
             _snowflake().compile_added_query("src_tbl", "tgt_tbl", ["id"], key_rules=[key_rule])
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDuplicateKeyQuery:
     """Validate the per-side check that keys are unique after normalization."""
 
@@ -860,8 +846,6 @@ class TestDuplicateKeyQuery:
             _snowflake().compile_duplicate_key_query("src_tbl", [], is_source=True)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestCountAndProbeAssembly:
     """Validate the row-count and column-probe statements backing DiffSummary."""
 
@@ -910,8 +894,6 @@ class TestCountAndProbeAssembly:
             _databricks().compile_schema_probe_query("a.b.c.d")
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestColumnMismatchAggregate:
     """Validate the per-column tally backing DiffSummary.column_mismatches."""
 
@@ -1033,8 +1015,6 @@ class TestColumnMismatchAggregate:
             )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestCompilerErrors:
     """Validate ConnectorError guards for unsupported or invalid input."""
 
@@ -1113,8 +1093,6 @@ class TestCompilerErrors:
         assert "CAST" in sql
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestCastCompilation:
     """Validate stage 7 across the dialect keyword table."""
 
@@ -1206,8 +1184,6 @@ class TestCastCompilation:
             _snowflake()._cast_keyword("Decimal")  # type: ignore[arg-type]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestPadZerosCompilation:
     """Validate stage 5, which has no single-function SQL equivalent."""
 
@@ -1238,8 +1214,6 @@ class TestPadZerosCompilation:
         assert "LPAD" not in sql
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDatetimeFormatCompilation:
     """Validate stage 6a, whose translation tables DuckDB cannot exercise.
 
@@ -1328,8 +1302,6 @@ class TestDatetimeFormatCompilation:
         assert "try_strptime" not in sql
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestCTENormalization:
     """Validate that join SQL stays linear after stages 1-7 are projected once."""
 
@@ -1392,8 +1364,6 @@ class TestCTENormalization:
         assert last / first < 12
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestEditDistanceCompilation:
     """Validate stage 8's text similarity limits across the dialect table."""
 
@@ -1468,8 +1438,6 @@ class TestEditDistanceCompilation:
             _databricks().compile_column_predicate(rule, "name")
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDatabaseSelect:
     """Validate the statement a database source's `table` is read with."""
 
@@ -1544,8 +1512,6 @@ class TestDatabaseSelect:
             compile_database_select("postgresql", table)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestWhitespaceTrim:
     """Validate that `whitespace_mode` trims the characters Polars strips, in every dialect.
 
@@ -1629,8 +1595,6 @@ class TestWhitespaceTrim:
         assert sql == "x"
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestRegexReplaceEveryMatch:
     """Validate that `regex_replace` replaces every match in every dialect, as Polars does."""
 
@@ -1667,8 +1631,6 @@ _BACKSLASH_REFERENCE_DIALECTS = [SQLDialect.SNOWFLAKE, SQLDialect.DUCKDB, SQLDia
 r"""Dialects whose `REGEXP_REPLACE` reads a group reference as `\N`."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestRegexReplacementReferences:
     r"""Validate that replacements are written the way each warehouse reads them.
 
@@ -1767,8 +1729,6 @@ class TestRegexReplacementReferences:
         assert rest == f"{_REGEX_REPLACE_FLAGS[dialect]})"
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestWideIntegerTolerances:
     """Validate that integer tolerance operands are widened before they are subtracted."""
 
@@ -1816,8 +1776,6 @@ class TestWideIntegerTolerances:
         assert "DECIMAL(38, 0)" not in sql
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestStrictTypeDrift:
     """Validate that a column whose types differ under `strict_types` never matches."""
 
@@ -1875,8 +1833,6 @@ class TestDatabaseProbe:
             compile_database_probe("trino", "orders")
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestPostgresDeclaredNumerics:
     """Validate the statements that read a Postgres `numeric` at its declared scale."""
 
@@ -1924,8 +1880,6 @@ _VALUE_MAP_RULES = [
 """Two candidate columns: one plain, one renamed with a map whose output needs escaping."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestValueMapQuery:
     """Validate the single statement that counts value map evidence in a warehouse."""
 
@@ -2046,8 +2000,6 @@ class TestValueMapQuery:
             )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestPostgresDialect:
     """Validate the Postgres dialect, which runs where a database source opts into pushdown.
 

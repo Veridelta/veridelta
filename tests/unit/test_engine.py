@@ -45,9 +45,9 @@ from veridelta.models import (
     ValueMapProposal,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
-@pytest.mark.unit
-@pytest.mark.fast
+
 class TestDataIngestorAndLoaders:
     """Validate data ingestion, loader factories, and pre-engine dataset preparation."""
 
@@ -179,8 +179,6 @@ class TestDataIngestorAndLoaders:
         assert _optional_module("veridelta_no_such_optional_module") is None
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestStructuralAlignment:
     """Validate the structural alignment and schema validation heuristics."""
 
@@ -335,8 +333,6 @@ class TestStructuralAlignment:
         assert summary.total_mismatches == 0
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestHeaderNormalization:
     """Validate that `normalize_column_names` holds on every entry point."""
 
@@ -378,8 +374,6 @@ class TestHeaderNormalization:
             DiffEngine(config, frame.lazy(), frame.lazy()).run()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestSemanticNormalization:
     """Validate complex data transformations, strings, and numeric tolerances."""
 
@@ -503,8 +497,6 @@ class TestSemanticNormalization:
         assert summary.changed_count == 0
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestEvaluationStrictness:
     """Validate how the engine handles typing mismatches and null evaluations."""
 
@@ -687,8 +679,6 @@ class TestEvaluationStrictness:
         assert summary.changed_count == 1
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDataIntegrityAndSetDifferences:
     """Validate set-difference logic, uniqueness constraints, and artifact generation."""
 
@@ -813,8 +803,6 @@ def _normalized(config: DiffConfig, frame: pl.DataFrame) -> pl.DataFrame:
     ).collect()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestCanonicalTransformPipeline:
     """Validate the single normalization pass shared by keys and compared columns."""
 
@@ -1057,8 +1045,6 @@ class TestCanonicalTransformPipeline:
         assert right["name"][0] == "  A"
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestFuzzyTextMatching:
     """Validate stage 8's text similarity limits on the local engine."""
 
@@ -1433,8 +1419,6 @@ Pushdown predicts the compared dtype from the probe alone, so every prediction
 helper is pinned to the real normalizer over these cases."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestPushdownRuleHelpers:
     """Validate the pushdown rule expander and tally reducer at the edges."""
 
@@ -1731,8 +1715,6 @@ class TestPushdownRuleHelpers:
             _column_mismatches_from_frame(pl.DataFrame({"amount": ["five"]}))
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestSharedRuleAndAlignmentHelpers:
     """Pin the helpers the local and pushdown paths now share."""
 
@@ -1893,8 +1875,6 @@ class TestSharedRuleAndAlignmentHelpers:
         assert pushdown == {"a": ("b", 1.0), "b": ("a", 0.1)}
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestRemainingEngineBranches:
     """Close the last branch gaps that a typical happy-path run never takes."""
 
@@ -2004,8 +1984,6 @@ def _codes(
     )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestValueMapProposals:
     """Validate value_map proposals drawn from how source and target values line up."""
 
@@ -2285,8 +2263,6 @@ def _tolerance_changes(
     return result.summary.changed_count
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestIntegerToleranceWidth:
     """Keep integer tolerances from wrapping around the column's type."""
 
@@ -2353,8 +2329,6 @@ class TestIntegerToleranceWidth:
         )
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestFractionalSeconds:
     """Read `%f` in `datetime_format` as Python does: a fraction of a second."""
 
@@ -2394,8 +2368,6 @@ class TestFractionalSeconds:
         assert result.summary.changed_count == 0
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestWideIntegerColumns:
     """Validate which pushdown columns subtract in a wider integer type."""
 
@@ -2438,8 +2410,6 @@ class TestWideIntegerColumns:
         assert _wide_integer_columns(config, rules, source, target) == {"qty", "units", "code"}
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestTypeDriftColumns:
     """Validate which pushdown columns `strict_types` fails outright."""
 
@@ -2486,8 +2456,6 @@ class TestTypeDriftColumns:
         assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestRuleDryRun:
     """Validate `DiffEngine.validate_rules`, the schema-only half of a run."""
 
@@ -2564,8 +2532,6 @@ _AVRO_COLUMNS = {
 """One column per dtype the Polars Avro writer supports, each holding a NULL."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestAvroLoader:
     """Validate reading Avro object container files."""
 

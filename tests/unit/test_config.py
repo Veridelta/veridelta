@@ -19,9 +19,9 @@ from veridelta.models import (
     SourceRef,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
-@pytest.mark.unit
-@pytest.mark.fast
+
 class TestYAMLConfigurationParsing:
     """Validate YAML file reading, structural integrity, and Pydantic schema mapping."""
 
@@ -189,8 +189,6 @@ _SNOWFLAKE_BLOCK = (
 """Required Snowflake fields, indented as a `source` or `target` block."""
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestEnvironmentExpansion:
     """Validate `${NAME}` references in the `source` and `target` blocks."""
 
@@ -440,8 +438,6 @@ class TestEnvironmentExpansion:
         assert "hunter2-do-not-print" not in str(exc_info.value.__cause__)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestUnsetEnvironmentTolerance:
     """Validate `load_config(..., unset_env=[])`, which `veridelta validate` relies on."""
 

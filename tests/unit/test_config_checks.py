@@ -30,6 +30,8 @@ from veridelta.models import (
     SourceRef,
 )
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 
 def _snowflake(table: str, **overrides: Any) -> SnowflakeConfig:
     """Build a Snowflake side on one shared connection."""
@@ -82,8 +84,6 @@ def drivers(mocker: MockerFixture) -> None:
     mocker.patch("veridelta.engine.find_spec", return_value=object())
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 @pytest.mark.usefixtures("drivers")
 class TestConfigChecks:
     """Validate what `check_configs` reports, and that it never connects."""
@@ -360,8 +360,6 @@ def _warehouse_session(mocker: MockerFixture) -> MagicMock:
     return session
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 @pytest.mark.usefixtures("drivers")
 class TestLiveSchemaChecks:
     """Validate `check_configs(..., schemas=True)`, which reads schemas but never rows."""

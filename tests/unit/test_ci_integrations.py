@@ -21,6 +21,8 @@ import yaml
 from veridelta import __version__
 from veridelta.cli import build_parser
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _ROOT = Path(__file__).resolve().parents[2]
 _ACTION = _ROOT / "action.yml"
 _GITLAB = _ROOT / "ci" / "gitlab" / "veridelta.yml"
@@ -69,8 +71,6 @@ def _cli_arguments(script: str) -> list[str]:
     return shlex.split(filled)[1:]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestGitHubAction:
     """Pin the composite action's contract."""
 
@@ -146,8 +146,6 @@ def _gitlab_job() -> dict[str, Any]:
     return found
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestGitLabTemplate:
     """Pin the GitLab CI template's contract."""
 
@@ -220,8 +218,6 @@ def _release_script(name: str) -> str:
     return "\n".join(step["run"] for step in _release_job(name)["steps"] if "run" in step)
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestReleaseWorkflow:
     """Pin the release workflow: a merged version bump becomes a tag, a package, and a page.
 
@@ -380,8 +376,6 @@ def _workflow_steps(path: Path) -> list[dict[str, Any]]:
     return [step for job in loaded["jobs"].values() for step in job.get("steps", [])]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestWorkflowPins:
     """Pin the third-party actions every workflow runs, and keep the pins current."""
 
@@ -422,8 +416,6 @@ class TestWorkflowPins:
         assert updates["uv"]["versioning-strategy"] == "lockfile-only"
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestDocsWorkflow:
     """Pin how the documentation site deploys."""
 

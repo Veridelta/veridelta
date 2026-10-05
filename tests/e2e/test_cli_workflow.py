@@ -17,8 +17,9 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
 )
 
+pytestmark = [pytest.mark.e2e]
 
-@pytest.mark.e2e
+
 class TestEndToEndCLIWorkflow:
     """Validate the entire Veridelta pipeline from YAML to artifact generation via subprocess."""
 

@@ -35,6 +35,8 @@ from veridelta.models import (
     SourceConfig,
 )
 
+pytestmark = [pytest.mark.integration]
+
 
 def _snowflake_config(
     *,
@@ -139,7 +141,6 @@ def _configure_warehouse_compiler(connector: Any) -> None:
     connector.execute_pushdown.side_effect = _pushdown_by_query_type
 
 
-@pytest.mark.integration
 class TestEngineConnectorRouting:
     """Validate LoaderFactory lakehouse scans and DiffEngine warehouse routing."""
 
@@ -1092,7 +1093,6 @@ def _postgres_config(
     return DatabaseConfig(uri=uri, table=table, pushdown=pushdown, password=password)
 
 
-@pytest.mark.integration
 class TestPostgresPushdownRouting:
     """Validate how two database sources that set `pushdown` are routed."""
 
@@ -1222,7 +1222,6 @@ def _pushdown_with_a_sample(statement: str, query_type: str = "mismatch") -> pl.
     return _pushdown_by_query_type(statement, query_type)
 
 
-@pytest.mark.integration
 class TestPushdownRowSamples:
     """Validate the opt-in fetch of changed rows with both sides' values."""
 

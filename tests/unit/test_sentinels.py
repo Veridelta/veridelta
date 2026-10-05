@@ -11,11 +11,11 @@ import pytest
 from veridelta.models import SentinelValue
 from veridelta.sentinels import is_text_dtype, usable_sentinels
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 MIXED: list[SentinelValue] = ["N/A", -999, 0.5, False]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestUsableSentinels:
     """Validate which sentinels survive against each column type."""
 
@@ -63,8 +63,6 @@ class TestUsableSentinels:
         assert frame.select(pl.col("amount").is_in([-999]))["amount"].to_list() == [True, False]
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestIsTextDtype:
     """Validate the text family used for sentinel matching."""
 

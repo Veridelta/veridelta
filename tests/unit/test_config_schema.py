@@ -15,6 +15,8 @@ from jsonschema import Draft202012Validator
 from veridelta.config import config_json_schema, load_config
 from veridelta.exceptions import ConfigError
 
+pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
 _ROOT = Path(__file__).resolve().parents[2]
 
 _SNOWFLAKE = (
@@ -55,8 +57,6 @@ def _documented_configs() -> list[Any]:
     return params
 
 
-@pytest.mark.unit
-@pytest.mark.fast
 class TestConfigJsonSchema:
     """Validate the generated schema against the loader it describes."""
 
