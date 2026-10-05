@@ -439,6 +439,29 @@ class TestLiveSchemaChecks:
         ]
         read.assert_not_called()
 
+    @pytest.mark.parametrize(("rows", "compiled"), [(0, 0), (5, 1)])
+    def test_it_compiles_an_asked_for_row_sample_without_running_it(
+        self, mocker: MockerFixture, rows: int, compiled: int
+    ) -> None:
+        """Ensure the sample statement is checked like the rest, and reads no rows."""
+        session = _warehouse_session(mocker)
+        compile_sample = mocker.spy(session.compiler, "compile_changed_sample_query")
+
+        findings = _check(
+            _snowflake("SRC"),
+            _snowflake("TGT"),
+            schemas=True,
+            primary_keys=["ID"],
+            pushdown_sample_rows=rows,
+        )
+
+        assert findings == []
+        assert compile_sample.call_count == compiled
+        assert [call.kwargs["query_type"] for call in session.execute_pushdown.call_args_list] == [
+            "schema",
+            "schema",
+        ]
+
     def test_it_probes_a_warehouse_pair_and_compiles_without_executing(
         self, mocker: MockerFixture
     ) -> None:

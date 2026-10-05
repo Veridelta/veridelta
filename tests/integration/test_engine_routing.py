@@ -13,7 +13,7 @@ from pytest_mock import MockerFixture
 from veridelta.config import load_config
 from veridelta.connectors.database import DatabaseConnector
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
-from veridelta.connectors.sql import COUNT_ALIAS
+from veridelta.connectors.sql import COUNT_ALIAS, SampleQuery
 from veridelta.engine import _WAREHOUSES, DiffEngine, LoaderFactory, _WarehouseConfig
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
@@ -22,6 +22,7 @@ from veridelta.models import (
     DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
+    DiffResult,
     DiffRule,
     IcebergConfig,
     SnowflakeConfig,
@@ -1153,3 +1154,135 @@ class TestPostgresPushdownRouting:
             ConnectorError, match="the source is Postgres and the target is Snowflake"
         ):
             DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+
+_SAMPLE = SampleQuery(
+    "SELECT sample",
+    {
+        "_veridelta_key_0": "id",
+        "_veridelta_source_0": "amount_source",
+        "_veridelta_target_0": "amount_target",
+        "_veridelta_match_0": "amount_is_match",
+    },
+)
+
+
+def _pushdown_with_a_sample(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+    """Answer each round trip as `_pushdown_by_query_type` does, plus a two-row sample."""
+    if query_type == "samples":
+        return pl.DataFrame(
+            {
+                "_veridelta_key_0": [0, 1],
+                "_veridelta_source_0": [1.0, 2.0],
+                "_veridelta_target_0": [1.5, 2.5],
+                "_veridelta_match_0": [False, False],
+            }
+        ).lazy()
+    return _pushdown_by_query_type(statement, query_type)
+
+
+@pytest.mark.integration
+class TestPushdownRowSamples:
+    """Validate the opt-in fetch of changed rows with both sides' values."""
+
+    def _connector(self, mocker: MockerFixture) -> Any:
+        connector: Any = mocker.patch("veridelta.engine.SnowflakeConnector").return_value
+        _configure_warehouse_compiler(connector)
+        connector.compiler.compile_changed_sample_query.return_value = _SAMPLE
+        connector.execute_pushdown.side_effect = _pushdown_with_a_sample
+        return connector
+
+    def _run(self, **diff: Any) -> DiffResult:
+        return DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"], **diff),
+            _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+            _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+        )
+
+    @staticmethod
+    def _query_types(connector: Any) -> list[str]:
+        return [call.kwargs["query_type"] for call in connector.execute_pushdown.call_args_list]
+
+    def test_it_fetches_no_values_unless_asked(self, mocker: MockerFixture) -> None:
+        """Ensure a default run issues exactly the statements it always has."""
+        connector = self._connector(mocker)
+
+        result = self._run()
+
+        assert result.changed_sample is None
+        connector.compiler.compile_changed_sample_query.assert_not_called()
+        assert "samples" not in self._query_types(connector)
+
+    def test_it_fetches_changed_rows_with_values_when_asked(self, mocker: MockerFixture) -> None:
+        """Ensure the sample reads the changed rows the counts came from, under local names.
+
+        It is compiled with exactly the arguments of the changed-row query, so
+        it samples the rows that query counted, and the counts are unchanged.
+        """
+        connector = self._connector(mocker)
+
+        result = self._run(pushdown_sample_rows=5)
+
+        sample_call = connector.compiler.compile_changed_sample_query.call_args
+        query_call = connector.compiler.compile_query.call_args
+        assert sample_call.args == query_call.args
+        assert sample_call.kwargs == {**query_call.kwargs, "limit": 5}
+        assert self._query_types(connector).count("samples") == 1
+        assert result.changed_sample is not None
+        assert result.changed_sample.columns == [
+            "id",
+            "amount_source",
+            "amount_target",
+            "amount_is_match",
+        ]
+        assert result.changed.columns == ["id"]
+        assert result.summary.changed_count == 2
+
+    def test_it_skips_the_sample_when_no_row_changed(self, mocker: MockerFixture) -> None:
+        """Ensure a clean comparison spends no statement on an empty sample."""
+        connector = self._connector(mocker)
+
+        def nothing_changed(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "mismatch":
+                return _frame_with_ids(0)
+            return _pushdown_with_a_sample(statement, query_type)
+
+        connector.execute_pushdown.side_effect = nothing_changed
+
+        result = self._run(pushdown_sample_rows=5)
+
+        assert result.changed_sample is None
+        connector.compiler.compile_changed_sample_query.assert_not_called()
+
+    def test_it_writes_the_sample_as_an_artifact_of_its_own(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure the values land in a file that cannot be taken for the key list."""
+        self._connector(mocker)
+
+        self._run(pushdown_sample_rows=5, output_path=str(tmp_path), output_format="csv")
+
+        assert sorted(path.name for path in tmp_path.iterdir()) == [
+            "added_rows_pks_only.csv",
+            "changed_rows_pks_only.csv",
+            "changed_rows_sample.csv",
+            "removed_rows_pks_only.csv",
+        ]
+        sample = pl.read_csv(tmp_path / "changed_rows_sample.csv")
+        assert sample.columns == ["id", "amount_source", "amount_target", "amount_is_match"]
+
+    def test_it_rejects_a_sample_missing_the_columns_it_asked_for(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a malformed result fails loudly instead of naming the wrong values."""
+        connector = self._connector(mocker)
+
+        def short_sample(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "samples":
+                return pl.DataFrame({"_veridelta_key_0": [0]}).lazy()
+            return _pushdown_with_a_sample(statement, query_type)
+
+        connector.execute_pushdown.side_effect = short_sample
+
+        with pytest.raises(ConnectorError, match=r"sample.*_veridelta_source_0"):
+            self._run(pushdown_sample_rows=5)

@@ -783,6 +783,12 @@ class DiffResult:
             themselves cannot reveal which columns were compared.
         keys_only (bool): True for warehouse pushdown, which compares in place
             and projects primary keys rather than extracting rows.
+        changed_sample (pl.DataFrame | None): Pushdown only, when
+            `pushdown_sample_rows` is set: up to that many changed rows, in key
+            order, with `{column}_source`, `{column}_target`, and
+            `{column}_is_match` for every compared column, as a local run's
+            `changed` carries them. None when no sample was asked for, nothing
+            changed, or the run was local, where `changed` holds every row.
     """
 
     summary: DiffSummary
@@ -792,6 +798,7 @@ class DiffResult:
     primary_keys: tuple[str, ...] = ()
     compared_columns: tuple[str, ...] = ()
     keys_only: bool = False
+    changed_sample: pl.DataFrame | None = None
 
     def get_mismatches(self, column: str) -> pl.DataFrame:
         """Isolate the rows where one column disagreed.
