@@ -2,26 +2,36 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
-Powered by [Polars](https://pola.rs/).
-
-## Why
-
-- **Deterministic verdicts.** Nine fixed transform stages. The same rule produces the same result locally and in a warehouse, verified by a differential harness.
-- **Scale.** Lazy Polars scans. Warehouse pushdown compiles comparison SQL and never extracts full tables.
-- **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
-- **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report, `--markdown` a summary for pull requests, and `--otel` OpenTelemetry metrics for a dashboard. Artifacts for added, removed, and changed rows.
-- **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
-- **Connectors.** Snowflake, Databricks, BigQuery, and opt-in Postgres SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras. See the [Configuration Guide](configuration.md) for YAML, extras, and routing.
+Files, lakehouse tables, and databases are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, and only counts and keys come back.
 
 ## Install
 
 ```bash
-uv add veridelta
-# or: pip install veridelta
+uv add veridelta                # or: pip install veridelta
 uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, excel, fuzzy, all
 ```
 
-## Architecture
+## Where to start
+
+The tutorials build a comparison step by step:
+
+1. [Core concepts](examples/01_core_concepts.ipynb): the Python API, `DiffResult`, and rules.
+2. [YAML and CLI](examples/02_yaml_and_cli.ipynb): a configuration file, `--json`, and artifacts.
+3. [Advanced rules](examples/03_advanced_rules.ipynb): resolving drift in real data.
+4. [HTML reports](examples/04_html_reports.ipynb): a report to hand to reviewers.
+5. [Validate and CI](examples/05_validate_and_ci.ipynb): a database source, `veridelta validate`, and the GitHub Action.
+
+The user guide is the reference:
+
+- [Configuration](configuration.md): the file, its settings, and environment variables.
+- [Sources](sources.md): files, lakehouse tables, databases, and warehouses.
+- [Rules](rules.md): what counts as a match, column by column.
+- [Pushdown](pushdown.md): comparing two tables inside the warehouse that stores them.
+- [Results](results.md): the summary, reports, metrics, and files a run produces.
+- [Command line](cli.md): commands, flags, and exit codes.
+- [CI integrations](ci.md): the GitHub Action and the GitLab CI template.
+
+## How it works
 
 ```mermaid
 flowchart LR
@@ -45,62 +55,4 @@ flowchart LR
   result --> exitCode[Exit code]
 ```
 
-File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs, and two Postgres tables that set `pushdown`, compile to SQL and execute in place. Both paths return a `DiffResult`.
-
-## Quick start
-
-In Python, `DiffEngine` compares two `LazyFrame`s:
-
-```python
-import polars as pl
-from veridelta import DiffConfig, DiffEngine, DiffRule
-
-result = DiffEngine(
-    DiffConfig(
-        primary_keys=["user_id"],
-        rules=[DiffRule(pattern="^AMT_.*", absolute_tolerance=0.05)],
-    ),
-    pl.scan_parquet("legacy.parquet"),
-    pl.scan_parquet("modern.parquet"),
-).run()
-
-if not result.summary.is_match:
-    raise SystemExit(f"{result.summary.changed_count} rows differ")
-```
-
-The same comparison as a YAML file, for the CLI and CI:
-
-```yaml
-# veridelta.yaml
-primary_keys: ["transaction_id"]
-source:
-  path: "legacy.parquet"
-  format: "parquet"
-target:
-  path: "modern.parquet"
-  format: "parquet"
-rules:
-  - column_names: ["grand_total"]
-    relative_tolerance: 0.01
-  - column_names: ["contact_number"]
-    regex_replace: {"[^0-9]": ""}
-```
-
-```bash
-veridelta validate -c veridelta.yaml   # what would stop a run, without reading any rows
-veridelta run -c veridelta.yaml
-```
-
-Set `output_path` to write `added` / `removed` / `changed` artifacts; `output_format` selects Parquet, CSV, JSON, NDJSON, or Arrow.
-
-## Documentation
-
-- [**1. Core Concepts**](examples/01_core_concepts.ipynb): Python API, `DiffResult`, and rules.
-- [**2. YAML and CLI**](examples/02_yaml_and_cli.ipynb): pipeline automation, `--json`, artifacts.
-- [**3. Advanced Rules**](examples/03_advanced_rules.ipynb): drift resolution on real data.
-- [**4. HTML Reports**](examples/04_html_reports.ipynb): audit and compliance hand-off.
-- [**5. Validate and CI**](examples/05_validate_and_ci.ipynb): a database source, `veridelta validate`, and the GitHub Action.
-- [**CI Integrations**](ci.md): GitHub Action and GitLab CI template that comment on pull requests.
-- [**Configuration Guide**](configuration.md): fields, formats, extras, CLI flags, warehouse, lakehouse, and database routing.
-- [**API Reference**](api.md): public Python surface.
-- [**Roadmap**](roadmap.md): work that is not built yet.
+File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. A pair of tables in one warehouse, or two Postgres tables that set `pushdown`, compiles to SQL and runs in place. Both paths return a `DiffResult`.

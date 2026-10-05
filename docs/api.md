@@ -1,25 +1,28 @@
-# API Reference
+# API reference
 
-The public Python API. Explore the configuration schemas, core diffing engine, and operational utilities.
+The public Python interface, generated from its docstrings.
 
-## Configuration Models
-Strict Pydantic models defining how Veridelta comparisons are structured. These can be instantiated programmatically or driven by declarative YAML.
+## Configuration models
+
+Pydantic models for a comparison and its sources. Build them in Python, or read them from YAML with `load_config`.
 
 ::: veridelta.models
     options:
       show_root_heading: false
       show_source: true
 
-## The Engine
-The core mathematical evaluation engine and I/O orchestration, powered by the Rust-based Polars backend.
+## Engine
+
+`DiffEngine` loads, aligns, and compares two datasets, on Polars or inside a warehouse.
 
 ::: veridelta.engine
     options:
       show_root_heading: false
       show_source: true
 
-## Configuration Parser
-Utilities for loading, parsing, and validating YAML files into strictly typed configuration objects.
+## Configuration loading
+
+Functions that read and check a YAML file and return configuration models.
 
 ::: veridelta.config
     options:
@@ -27,7 +30,8 @@ Utilities for loading, parsing, and validating YAML files into strictly typed co
       show_source: true
 
 ## Exceptions
-The custom exception hierarchy. Consumers of the Python API should handle these specific errors to manage pipeline failures gracefully without silencing native Python runtime panics.
+
+The errors Veridelta raises. Each derives from `VerideltaError`, so one `except` clause catches them all without hiding Python's own errors.
 
 ::: veridelta.exceptions
     options:
@@ -35,23 +39,26 @@ The custom exception hierarchy. Consumers of the Python API should handle these 
       show_source: true
 
 ## Connectors
-Warehouse SQL pushdown, lakehouse-native scanners, and the database reader. `VerideltaConnector` is the session contract; `SQLPushdownCompiler` emits dialect-specific comparison SQL.
+
+Warehouse sessions, lakehouse scanners, and the database reader. `VerideltaConnector` is the session interface, and `SQLPushdownCompiler` writes each dialect's comparison SQL.
 
 ::: veridelta.connectors
     options:
       show_root_heading: false
       show_source: true
 
-## HTML Reports
-Standalone, air-gapped HTML dashboards rendered from a `DiffResult`.
+## Reports
+
+Standalone HTML reports and Markdown summaries, rendered from a `DiffResult`.
 
 ::: veridelta.report
     options:
       show_root_heading: false
       show_source: true
 
-## OpenTelemetry Metrics
-Writes a comparison's counts, column drift, and verdict as an OTLP/JSON metrics export, for an OpenTelemetry Collector or any OTLP/HTTP endpoint. See [OpenTelemetry metrics](results.md#opentelemetry-metrics).
+## OpenTelemetry metrics
+
+A run's counts, column drift, and verdict as OTLP/JSON metrics. See [OpenTelemetry metrics](results.md#opentelemetry-metrics).
 
 ::: veridelta.telemetry
     options:
@@ -59,7 +66,8 @@ Writes a comparison's counts, column drift, and verdict as an OTLP/JSON metrics 
       show_source: true
 
 ## Datasets
-Built-in data utilities with network-resilient caching for testing, onboarding, and tutorials.
+
+Sample datasets for the tutorials, downloaded once and cached.
 
 ::: veridelta.datasets
     options:

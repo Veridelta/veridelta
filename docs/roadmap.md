@@ -2,15 +2,14 @@
 render_macros: true
 ---
 
-# Veridelta Roadmap
+# Roadmap
 
-Veridelta is currently in **v{{ config.extra.version }}**. The core execution engine is stable. The following roadmap outlines the strategic expansion of the framework's ecosystem and developer tooling.
+This page lists work that is not built yet. The current release is v{{ config.extra.version }}.
 
-## 1. Enterprise Ecosystem Integration
+## Warehouses
 
-* Additional warehouse dialects, such as Redshift and Synapse, as demand requires.
+- Pushdown for more SQL dialects, such as Redshift and Synapse.
 
-## 2. Developer Experience (DX) & Tooling
-A framework is only as effective as the developer's ability to interface with it safely and efficiently.
+## Editor
 
-* **VS Code Extension:** One-click local runs and inline views of discrepancy artifacts inside the editor. Completion and validation of configuration files already work through the YAML language server and the published JSON Schema (see [Editor support](configuration.md#editor-support)), and `veridelta validate` checks a file before a run.
+- A VS Code extension that runs a comparison and shows its discrepancy files inside the editor. Completion and checking of configuration files already work through the published JSON Schema; see [Editor support](configuration.md#editor-support). `veridelta validate` checks a file before a run.

@@ -7,52 +7,22 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
-Powered by [Polars](https://pola.rs/). **[Documentation](https://veridelta.github.io/veridelta)**
+It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelta.github.io/veridelta/).
 
-## Why
+## Features
 
-- **Deterministic verdicts.** Nine fixed transform stages. The same rule produces the same result locally and in a warehouse, verified by a differential harness.
-- **Scale.** Lazy Polars scans. Warehouse pushdown compiles comparison SQL and never extracts full tables.
-- **Exactness.** Nothing is forgiven unless a rule says so. `strict_types` treats type drift as a mismatch, not a cast.
-- **CI/CD.** Exit codes 0 (match), 1 (drift or a failure), and 2 (invalid arguments). `--json` on stdout. `--html` writes a standalone report, `--markdown` a summary for pull requests, and `--otel` OpenTelemetry metrics for a dashboard. Artifacts for added, removed, and changed rows.
-- **Schema evolution.** `schema_mode` is `intersection`, `exact`, `allow_additions`, or `allow_removals`.
-- **Connectors.** Snowflake, Databricks, BigQuery, and opt-in Postgres SQL pushdown; Delta Lake and Iceberg scans; PostgreSQL, MySQL, SQL Server, Oracle, SQLite, and more through ConnectorX. Optional extras.
+- **Declared rules.** Tolerances, null sentinels, regular expressions, value maps, date parsing, casts, and fuzzy text matching apply in nine fixed stages. Nothing is forgiven unless a rule says so, and `strict_types` fails a column whose type drifts.
+- **The same verdict in the warehouse.** Two tables in Snowflake, Databricks, BigQuery, or Postgres are compared where they are stored. The rules compile to SQL, and only counts and keys come back.
+- **Many sources.** CSV, Parquet, JSON, Arrow, Avro, and Excel files, Delta Lake and Iceberg tables, and Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases. Files and tables are scanned lazily where Polars can.
+- **Built for CI.** Exit codes, a JSON summary, a standalone HTML report, a Markdown summary for pull requests, OpenTelemetry metrics, and files of the rows that differ. A GitHub Action and a GitLab CI template post the summary on each pull request.
+- **Checks before a run.** `veridelta validate` reports what would stop a run without reading any rows, and a JSON Schema gives editors completion for configuration files.
 
 ## Install
 
 ```bash
-uv add veridelta
-# or: pip install veridelta
+uv add veridelta                # or: pip install veridelta
 uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, excel, fuzzy, all
 ```
-
-Routing, YAML fields, and time travel: [configuration guide](https://veridelta.github.io/veridelta/configuration/).
-
-## Architecture
-
-```mermaid
-flowchart LR
-  subgraph sources [Sources]
-    files[Files]
-    lakehouse[Delta Iceberg]
-    databases[Postgres MySQL SQLite]
-    warehouse[Snowflake Databricks BigQuery]
-  end
-  files --> loader[LoaderFactory]
-  lakehouse --> loader
-  databases --> loader
-  warehouse --> compiler[SQLPushdownCompiler]
-  databases -. pushdown .-> compiler
-  loader --> engine["DiffEngine"]
-  engine --> result[DiffResult]
-  compiler --> warehouseSql[Warehouse SQL]
-  warehouseSql --> result
-  result --> artifacts[Artifacts]
-  result --> reports["HTML JSON"]
-  result --> exitCode[Exit code]
-```
-
-File, lakehouse, and database sources load through `LoaderFactory` into a local `DiffEngine` run. Same-warehouse pairs, and two Postgres tables that set `pushdown`, compile to SQL and execute in place. Both paths return a `DiffResult`.
 
 ## Quick start
 
@@ -93,22 +63,24 @@ rules:
     regex_replace: {"[^0-9]": ""}
 ```
 
+`validate` checks the file without reading any rows, and `run` compares the datasets:
+
 ```bash
-veridelta validate -c veridelta.yaml   # what would stop a run, without reading any rows
+veridelta validate -c veridelta.yaml
 veridelta run -c veridelta.yaml
 ```
 
-## Where next
+## Documentation
 
-- [1. Core Concepts](https://veridelta.github.io/veridelta/examples/01_core_concepts/): Python API, `DiffResult`, rules.
-- [2. YAML and CLI](https://veridelta.github.io/veridelta/examples/02_yaml_and_cli/): pipeline automation, `--json`, artifacts.
-- [3. Advanced Rules](https://veridelta.github.io/veridelta/examples/03_advanced_rules/): drift resolution on real data.
-- [4. HTML Reports](https://veridelta.github.io/veridelta/examples/04_html_reports/): audit and compliance hand-off.
-- [5. Validate and CI](https://veridelta.github.io/veridelta/examples/05_validate_and_ci/): a database source, `veridelta validate`, and the GitHub Action.
-- [CI integrations](https://veridelta.github.io/veridelta/ci/): GitHub Action and GitLab CI template that comment on pull requests.
-- [Configuration](https://veridelta.github.io/veridelta/configuration/): fields, formats, extras, warehouse, lakehouse, and database routing.
-- [API Reference](https://veridelta.github.io/veridelta/api/): public Python surface.
+- [Tutorials](https://veridelta.github.io/veridelta/examples/01_core_concepts/): five notebooks, from a first comparison in Python to a CI pipeline.
+- [User guide](https://veridelta.github.io/veridelta/configuration/): configuration, sources, rules, pushdown, results, and the command line.
+- [CI integrations](https://veridelta.github.io/veridelta/ci/): the GitHub Action and the GitLab CI template.
+- [API reference](https://veridelta.github.io/veridelta/api/): the public Python interface.
 - [Roadmap](https://veridelta.github.io/veridelta/roadmap/): work that is not built yet.
+
+## Contributing
+
+See [CONTRIBUTING.md](https://github.com/Veridelta/veridelta/blob/main/CONTRIBUTING.md) for the development setup and the checks a change must pass.
 
 ## License
 
