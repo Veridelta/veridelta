@@ -29,7 +29,7 @@ def is_text_dtype(dtype: pl.DataType) -> bool:
     Returns:
         bool: True for string, categorical, and enum columns.
     """
-    return isinstance(dtype, (pl.String, pl.Utf8, pl.Categorical, pl.Enum))
+    return isinstance(dtype, (pl.String, pl.Categorical, pl.Enum))
 
 
 def _sentinel_matches(value: SentinelValue, dtype: pl.DataType) -> bool:
@@ -71,6 +71,4 @@ def usable_sentinels(
         list[SentinelValue]: Applicable sentinels, preserving configured order.
             Empty when the column type matches none of them.
     """
-    if not values:
-        return []
-    return [value for value in values if _sentinel_matches(value, dtype)]
+    return [value for value in values or () if _sentinel_matches(value, dtype)]

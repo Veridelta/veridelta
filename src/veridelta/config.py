@@ -167,19 +167,6 @@ class _RootConfig(DiffConfig):
     target: SourceRef
 
 
-def _is_constrained_string(prop: dict[str, Any]) -> bool:
-    """Return whether a property restricts its text by `pattern` or `enum`.
-
-    Args:
-        prop (dict[str, Any]): Property schema, possibly an `anyOf` of options.
-
-    Returns:
-        bool: True when the property or one of its options carries either.
-    """
-    options: list[dict[str, Any]] = prop.get("anyOf", [prop])
-    return any("pattern" in option or "enum" in option for option in options)
-
-
 def _accept_env_reference(prop: dict[str, Any]) -> dict[str, Any]:
     """Let a constrained string field also hold a `${NAME}` reference.
 
@@ -220,7 +207,9 @@ def config_json_schema() -> dict[str, Any]:
         if tag != "file":
             branch["required"] = [*branch.get("required", []), "type"]
         for name, prop in branch["properties"].items():
-            if name != "type" and _is_constrained_string(prop):
+            # Text restricted by `pattern` or `enum`, directly or in an `anyOf`.
+            options: list[dict[str, Any]] = prop.get("anyOf", [prop])
+            if name != "type" and any("pattern" in o or "enum" in o for o in options):
                 branch["properties"][name] = _accept_env_reference(prop)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -279,8 +268,7 @@ def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -
     payload: dict[str, Any] = _expand_env(raw, label, unset=guessed)
     if unset is not None and guessed:
         unset.extend(name for name in guessed if name not in unset)
-    if "type" not in payload:
-        payload["type"] = "file"
+    payload.setdefault("type", "file")
     try:
         return _SOURCE_REF_ADAPTER.validate_python(payload)
     except ValidationError as e:

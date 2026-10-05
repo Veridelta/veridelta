@@ -21,7 +21,6 @@ from typing import (
     Any,
     ClassVar,
     Final,
-    Literal,
     NamedTuple,
     Protocol,
     TypeAlias,
@@ -148,9 +147,7 @@ def _unusable_sentinel_error(
     )
 
 
-def _duplicate_keys_error(
-    keys: list[str], side: Literal["SOURCE", "TARGET"], count: int
-) -> DataIntegrityError:
+def _duplicate_keys_error(keys: list[str], side: str, count: int) -> DataIntegrityError:
     """Build the error for primary keys that repeat within one dataset.
 
     Both engines raise through here, so a repeated key reads the same whether
@@ -158,7 +155,7 @@ def _duplicate_keys_error(
 
     Args:
         keys (list[str]): Configured primary keys.
-        side (Literal["SOURCE", "TARGET"]): Dataset the keys repeat in.
+        side (str): Dataset the keys repeat in, `SOURCE` or `TARGET`.
         count (int): Rows sharing a key with another row, every copy counted.
 
     Returns:
@@ -230,7 +227,6 @@ class BaseLoader(ABC):
         Returns:
             pl.LazyFrame: The lazy-loaded dataset graph.
         """
-        pass
 
 
 class CSVLoader(BaseLoader):
@@ -498,78 +494,6 @@ class _WarehouseSession(PushdownSession, Protocol):
         """Release the driver session."""
 
 
-def _snowflake_fingerprint(config: SnowflakeConfig) -> tuple[object, ...]:
-    """Return connection identity excluding the compared table name.
-
-    Args:
-        config (SnowflakeConfig): Snowflake source or target.
-
-    Returns:
-        tuple[object, ...]: Account, user, warehouse, database, schema, secrets.
-    """
-    return (
-        config.account,
-        config.user,
-        config.warehouse,
-        config.database,
-        config.schema_name,
-        config.password,
-        config.role,
-    )
-
-
-def _databricks_fingerprint(config: DatabricksConfig) -> tuple[object, ...]:
-    """Return connection identity excluding the compared table name.
-
-    Args:
-        config (DatabricksConfig): Databricks source or target.
-
-    Returns:
-        tuple[object, ...]: Host, path, token, catalog, and schema.
-    """
-    return (
-        config.server_hostname,
-        config.http_path,
-        config.access_token,
-        config.catalog,
-        config.schema_name,
-    )
-
-
-def _bigquery_fingerprint(config: BigQueryConfig) -> tuple[object, ...]:
-    """Return connection identity excluding the compared table name.
-
-    Every setting but the table shapes the job a statement runs as, so two
-    sides that differ in any of them cannot share one client.
-
-    Args:
-        config (BigQueryConfig): BigQuery source or target.
-
-    Returns:
-        tuple[object, ...]: Project, default dataset, location, key file, and
-            byte cap.
-    """
-    return (
-        config.project,
-        config.dataset,
-        config.location,
-        config.credentials_path,
-        config.maximum_bytes_billed,
-    )
-
-
-def _postgres_fingerprint(config: DatabaseConfig) -> tuple[object, ...]:
-    """Return connection identity excluding the compared table name.
-
-    Args:
-        config (DatabaseConfig): A Postgres table that sets `pushdown`.
-
-    Returns:
-        tuple[object, ...]: The URI and the password field.
-    """
-    return (config.uri, config.password)
-
-
 @dataclass(frozen=True)
 class _Warehouse:
     """How the engine identifies and opens one warehouse backend.
@@ -577,16 +501,12 @@ class _Warehouse:
     Attributes:
         name (str): Vendor name used in error messages.
         dialect (SQLDialect): Dialect its connector compiles for.
-        fingerprint (Callable[[Any], tuple[object, ...]]): Connection identity
-            without the compared table. Two sides share one session only when
-            their fingerprints are equal.
         session (Callable[[Any], _WarehouseSession]): Builds an unconnected
             session from one side's configuration.
     """
 
     name: str
     dialect: SQLDialect
-    fingerprint: Callable[[Any], tuple[object, ...]]
     session: Callable[[Any], _WarehouseSession]
 
 
@@ -596,19 +516,16 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
     SnowflakeConfig: _Warehouse(
         "Snowflake",
         SQLDialect.SNOWFLAKE,
-        _snowflake_fingerprint,
         lambda config: SnowflakeConnector(config),
     ),
     DatabricksConfig: _Warehouse(
         "Databricks",
         SQLDialect.DATABRICKS,
-        _databricks_fingerprint,
         lambda config: DatabricksConnector(config),
     ),
     BigQueryConfig: _Warehouse(
         "BigQuery",
         SQLDialect.BIGQUERY,
-        _bigquery_fingerprint,
         lambda config: BigQueryConnector(config),
     ),
     # Only a database source that sets `pushdown` is routed here; its model
@@ -616,7 +533,6 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
     DatabaseConfig: _Warehouse(
         "Postgres",
         SQLDialect.POSTGRES,
-        _postgres_fingerprint,
         lambda config: PostgresPushdownSession(config),
     ),
 }
@@ -714,7 +630,7 @@ def _alignment_maps(
 ) -> tuple[dict[str, str], set[str]]:
     """Derive the `rename_to` map and `ignore` drop set for one frame's columns.
 
-    Shared by `DataIngestor._align_columns` and `DiffEngine._align_structure`
+    Shared by `DataIngestor.get_dataframes` and `DiffEngine._align_structure`
     for both sides. Each column is dropped only when the rule governing it
     ignores it, so an exact-name rule keeps a column a broader ignore pattern
     would otherwise remove, and a column is never both dropped and renamed.
@@ -871,18 +787,6 @@ _OFFSET_DIRECTIVE: Final = re.compile(r"%%|%[:#]*z")
 """A literal `%%`, or a `%z` offset directive in any of its chrono spellings."""
 
 
-def _parses_offset(fmt: str) -> bool:
-    """Return whether a `datetime_format` reads a UTC offset, making the result aware.
-
-    Args:
-        fmt (str): Format from a rule's `datetime_format`.
-
-    Returns:
-        bool: True when a `%z` directive appears outside a `%%` escape.
-    """
-    return any(token != "%%" for token in _OFFSET_DIRECTIVE.findall(fmt))
-
-
 def _normalized_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
     """Predict a column's dtype after stages 1 through 7, from its stored dtype.
 
@@ -918,48 +822,11 @@ def _parsed_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.Dat
     if effective["pad_zeros"] is not None:
         dtype = pl.String()
     fmt = effective["datetime_format"]
-    if fmt and isinstance(dtype, (pl.String, pl.Utf8)):
-        dtype = pl.Datetime("us", "UTC" if _parses_offset(fmt) else None)
+    if fmt and isinstance(dtype, pl.String):
+        # A `%z` outside a `%%` escape reads a UTC offset, so the result is aware.
+        aware = any(token != "%%" for token in _OFFSET_DIRECTIVE.findall(fmt))
+        dtype = pl.Datetime("us", "UTC" if aware else None)
     return dtype
-
-
-def _compares_numerically(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
-    """Predict whether the local engine compares a source column as a number.
-
-    `_build_match_expr` applies tolerances only when the normalized source
-    column is numeric and compares everything else exactly.
-
-    Args:
-        effective (EffectiveRule): Rule with global defaults folded in.
-        dtype (pl.DataType | None): Probed source dtype, or None when the
-            probe did not report one, in which case the tolerance is kept.
-
-    Returns:
-        bool: True when a tolerance should reach the warehouse predicate.
-    """
-    normalized = _normalized_dtype(effective, dtype)
-    return normalized is None or normalized.is_numeric()
-
-
-def _compares_as_text(effective: EffectiveRule, dtype: pl.DataType | None) -> bool:
-    """Predict whether the local engine compares a source column as text.
-
-    `_build_match_expr` applies a similarity limit only when the normalized
-    source column is a string.
-
-    Args:
-        effective (EffectiveRule): Rule with global defaults folded in.
-        dtype (pl.DataType | None): Probed source dtype, or None when the
-            probe did not report one, in which case the limit is kept unless
-            a `datetime_format` would parse the text.
-
-    Returns:
-        bool: True when a similarity limit should reach the warehouse predicate.
-    """
-    normalized = _normalized_dtype(effective, dtype)
-    if normalized is None:
-        return not effective["datetime_format"]
-    return isinstance(normalized, (pl.String, pl.Utf8))
 
 
 _FRACTION_SPELLINGS: Final[dict[str, str]] = {"%%": "%%", ".%f": "%.f", "%f": "%6f"}
@@ -1023,25 +890,6 @@ def _tolerance_match(
         # non-finite source must never reach the allowance.
         within = within & src.is_finite()
     return (src == tgt) | within
-
-
-def _jaro_winkler_pushdown_error(column: str) -> ConfigError:
-    """Build the refusal for a Jaro-Winkler limit on a warehouse comparison.
-
-    Args:
-        column (str): Column whose rule sets the limit.
-
-    Returns:
-        ConfigError: Error naming the column, why SQL cannot honor the limit,
-            and what to do instead.
-    """
-    return ConfigError(
-        f"Column '{column}' sets min_jaro_winkler_similarity, which warehouse pushdown "
-        "cannot evaluate the way a local run does: Snowflake's JAROWINKLER_SIMILARITY "
-        "ignores case and returns a whole number from 0 to 100, and Databricks has no "
-        "Jaro-Winkler function. Use max_levenshtein_distance, which compiles to SQL, or "
-        "compare file or lakehouse copies of these tables locally."
-    )
 
 
 def _pushdown_rule(
@@ -1212,13 +1060,24 @@ def _resolve_pushdown_rules(
     """
     resolved: list[DiffRule] = []
     for column, aligned, rule, effective in _pushdown_columns(diff, source_schema, target_schema):
-        # A global tolerance reaches every column, but only a numeric one may
-        # compare within it; the rest compare exactly, as they do locally.
-        numeric = _compares_numerically(effective, source_schema.get(column))
-        # Likewise a similarity limit only ever loosens a column compared as text.
-        text = _compares_as_text(effective, source_schema.get(column))
+        # As in `_build_match_expr`, a tolerance loosens only a column compared as
+        # a number, and a similarity limit only one compared as text. An unknown
+        # type keeps both, unless `datetime_format` would parse the text.
+        normalized = _normalized_dtype(effective, source_schema.get(column))
+        numeric = normalized is None or normalized.is_numeric()
+        if normalized is None:
+            text = not effective["datetime_format"]
+        else:
+            text = isinstance(normalized, pl.String)
         if text and effective["min_jaro_winkler_similarity"] is not None:
-            raise _jaro_winkler_pushdown_error(aligned)
+            raise ConfigError(
+                f"Column '{aligned}' sets min_jaro_winkler_similarity, which warehouse "
+                "pushdown cannot evaluate the way a local run does: Snowflake's "
+                "JAROWINKLER_SIMILARITY ignores case and returns a whole number from 0 to "
+                "100, and Databricks has no Jaro-Winkler function. Use "
+                "max_levenshtein_distance, which compiles to SQL, or compare file or "
+                "lakehouse copies of these tables locally."
+            )
 
         resolved.append(
             _pushdown_rule(
@@ -1278,19 +1137,15 @@ def _wide_integer_columns(
         frozenset[str]: Target names of the columns that carry a tolerance and
             compare as integers on both sides.
     """
-    wide: set[str] = set()
-    for rule in rules:
-        if not (rule.absolute_tolerance or rule.relative_tolerance):
-            continue
-        source, target = _compared_dtypes(diff, rule, source_schema, target_schema)
-        if (
-            source is not None
-            and target is not None
-            and source.is_integer()
-            and target.is_integer()
-        ):
-            wide.add(rule.rename_to or rule.column_names[0])
-    return frozenset(wide)
+    return frozenset(
+        rule.rename_to or rule.column_names[0]
+        for rule in rules
+        if (rule.absolute_tolerance or rule.relative_tolerance)
+        and all(
+            dtype is not None and dtype.is_integer()
+            for dtype in _compared_dtypes(diff, rule, source_schema, target_schema)
+        )
+    )
 
 
 def _type_drift_columns(
@@ -1484,7 +1339,7 @@ second dependency that a discrepancy dump does not justify."""
 
 
 def _export_artifacts(
-    frames: dict[str, pl.DataFrame], output_path: str, output_format: ArtifactFormat
+    frames: dict[str, pl.DataFrame], output_path: str | None, output_format: ArtifactFormat
 ) -> bool:
     """Persist non-empty discrepancy frames to the configured directory.
 
@@ -1493,7 +1348,8 @@ def _export_artifacts(
 
     Args:
         frames (dict[str, pl.DataFrame]): Artifact base name mapped to its rows.
-        output_path (str): Directory to create and write into.
+        output_path (str | None): Directory to create and write into, or None
+            to write nothing.
         output_format (ArtifactFormat): Format to write, which must have an
             entry in `_ARTIFACT_WRITERS`.
 
@@ -1502,8 +1358,10 @@ def _export_artifacts(
             so a clean comparison leaves no artifacts behind.
 
     Raises:
-        ConfigError: If `output_format` has no writer.
+        ConfigError: If `output_path` is set and `output_format` has no writer.
     """
+    if output_path is None:
+        return False
     # Checked before the loop so a misconfigured format fails the same way on a
     # clean run as on a drifted one, rather than only when a frame reaches disk.
     if output_format not in _ARTIFACT_WRITERS:
@@ -1524,7 +1382,7 @@ def _export_artifacts(
     return written
 
 
-def _summary_from_pushdown(
+def _summary(
     diff: DiffConfig,
     changed: pl.DataFrame,
     added: pl.DataFrame,
@@ -1534,21 +1392,21 @@ def _summary_from_pushdown(
     column_mismatches: dict[str, int],
     artifacts_written: bool,
 ) -> DiffSummary:
-    """Map mismatch and anti-join pushdown rows to a DiffSummary.
+    """Count a comparison's discrepancies and apply the threshold, for either engine.
 
     Args:
         diff (DiffConfig): Comparison rules including `threshold`.
-        changed (pl.DataFrame): Inner-join mismatch rows.
-        added (pl.DataFrame): Target-only anti-join rows.
-        removed (pl.DataFrame): Source-only anti-join rows.
-        source_total (int): `COUNT(*)` of the source relation.
-        target_total (int): `COUNT(*)` of the target relation.
-        column_mismatches (dict[str, int]): Per-column drift counts from the tally.
-        artifacts_written (bool): Whether key artifacts reached disk.
+        changed (pl.DataFrame): Rows whose compared values differ.
+        added (pl.DataFrame): Target-only rows.
+        removed (pl.DataFrame): Source-only rows.
+        source_total (int): Rows in the source, counted as `COUNT(*)` counts.
+        target_total (int): Rows in the target.
+        column_mismatches (dict[str, int]): Per-column drift counts.
+        artifacts_written (bool): Whether any artifact reached disk.
 
     Returns:
-        DiffSummary: Counts from the three pushdown result heights, ratioed
-            against the source total exactly as the local engine does.
+        DiffSummary: Counts from the three frame heights, ratioed against the
+            source total.
     """
     changed_count = changed.height
     added_count = added.height
@@ -1598,40 +1456,14 @@ def _pushdown_scalar(
         raise ConnectorError(f"{label} returned a non-numeric value.") from exc
 
 
-def _pushdown_row_count(
-    connector: PushdownSession,
-    table: str,
-) -> int:
-    """Collect a single `COUNT(*)` scalar from a warehouse relation.
-
-    Args:
-        connector (PushdownSession): Connected session with a matching compiler.
-        table (str): Relation to count.
-
-    Returns:
-        int: Total row count for the relation.
-
-    Raises:
-        ConnectorError: If the warehouse does not return a single numeric value.
-    """
-    return _pushdown_scalar(
-        connector,
-        connector.compiler.compile_count_query(table),
-        "count",
-        f"Row count query for '{table}'",
-    )
-
-
 def _reject_duplicate_pushdown_keys(
     connector: PushdownSession,
-    table: str,
     diff: DiffConfig,
     key_rules: Sequence[DiffRule],
-    *,
-    types: pl.Schema,
-    is_source: bool,
+    tables: tuple[str, str],
+    schemas: tuple[pl.Schema, pl.Schema],
 ) -> None:
-    """Fail a relation whose normalized primary keys repeat, as a local run does.
+    """Fail a pair whose normalized primary keys repeat on either side, as a local run does.
 
     A repeated key would fan out every join below it, so the local engine
     refuses to compare such a dataset. The check groups the keys after stages
@@ -1639,26 +1471,26 @@ def _reject_duplicate_pushdown_keys(
 
     Args:
         connector (PushdownSession): Connected session with a matching compiler.
-        table (str): Relation to check.
         diff (DiffConfig): Master comparison rules and keys.
         key_rules (Sequence[DiffRule]): Normalization resolved for each key.
-        types (pl.Schema): Schema probed from the relation.
-        is_source (bool): True for the source relation, which reads renamed
-            keys under their stored names and applies `value_map`.
+        tables (tuple[str, str]): Source and target relations, checked in that
+            order. The source reads renamed keys under their stored names and
+            applies `value_map`.
+        schemas (tuple[pl.Schema, pl.Schema]): Schemas probed from each.
 
     Raises:
         DataIntegrityError: If any normalized key appears on more than one row.
         ConnectorError: If the warehouse does not return a single numeric value.
     """
-    statement = connector.compiler.compile_duplicate_key_query(
-        table, diff.primary_keys, is_source=is_source, key_rules=key_rules, types=types
-    )
-    duplicates = _pushdown_scalar(
-        connector, statement, "duplicates", f"Duplicate key query for '{table}'"
-    )
-    if duplicates:
-        side: Literal["SOURCE", "TARGET"] = "SOURCE" if is_source else "TARGET"
-        raise _duplicate_keys_error(diff.primary_keys, side, duplicates)
+    for table, types, side in zip(tables, schemas, ("SOURCE", "TARGET"), strict=True):
+        statement = connector.compiler.compile_duplicate_key_query(
+            table, diff.primary_keys, is_source=side == "SOURCE", key_rules=key_rules, types=types
+        )
+        duplicates = _pushdown_scalar(
+            connector, statement, "duplicates", f"Duplicate key query for '{table}'"
+        )
+        if duplicates:
+            raise _duplicate_keys_error(diff.primary_keys, side, duplicates)
 
 
 def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema) -> None:
@@ -1887,14 +1719,18 @@ def _collect_pushdown_summary(
     # As in a local run, a ConfigError from rule resolution wins over repeated
     # keys, and repeated keys stop the run before any count or join executes.
     _reject_duplicate_pushdown_keys(
-        connector, source_table, diff, key_rules, types=source_schema, is_source=True
-    )
-    _reject_duplicate_pushdown_keys(
-        connector, target_table, diff, key_rules, types=target_schema, is_source=False
+        connector, diff, key_rules, (source_table, target_table), (source_schema, target_schema)
     )
 
-    source_total = _pushdown_row_count(connector, source_table)
-    target_total = _pushdown_row_count(connector, target_table)
+    source_total, target_total = (
+        _pushdown_scalar(
+            connector,
+            connector.compiler.compile_count_query(table),
+            "count",
+            f"Row count query for '{table}'",
+        )
+        for table in (source_table, target_table)
+    )
     # Every join reads normalized keys, so a key the rules transform matches
     # across the two relations exactly where a local run would match it.
     wide_integers = _wide_integer_columns(diff, rules, source_schema, target_schema)
@@ -1956,22 +1792,20 @@ def _collect_pushdown_summary(
         type_drift=type_drift,
     )
 
-    artifacts_written = False
-    if isinstance(diff.output_path, str):
-        # Pushdown projects primary keys only, never full rows, so the suffix
-        # keeps these files from being mistaken for local artifacts.
-        frames = {
-            "added_rows_pks_only": added,
-            "removed_rows_pks_only": removed,
-            "changed_rows_pks_only": changed,
-        }
-        if changed_sample is not None:
-            # A sample holds values, so its own name sets it apart from the keys.
-            frames["changed_rows_sample"] = changed_sample
-        artifacts_written = _export_artifacts(frames, diff.output_path, diff.output_format)
+    # Pushdown projects primary keys only, never full rows, so the suffix keeps
+    # these files from being mistaken for local artifacts.
+    frames = {
+        "added_rows_pks_only": added,
+        "removed_rows_pks_only": removed,
+        "changed_rows_pks_only": changed,
+    }
+    if changed_sample is not None:
+        # A sample holds values, so its own name sets it apart from the keys.
+        frames["changed_rows_sample"] = changed_sample
+    artifacts_written = _export_artifacts(frames, diff.output_path, diff.output_format)
 
     return DiffResult(
-        summary=_summary_from_pushdown(
+        summary=_summary(
             diff,
             changed,
             added,
@@ -2051,28 +1885,6 @@ def _collect_changed_sample(
     return frame.select(list(sample.renames)).rename(sample.renames)
 
 
-def _reject_self_comparison(source_table: str, target_table: str) -> None:
-    """Refuse a pushdown run whose two sides name the same relation.
-
-    Both sides share one connection by this point, so equal names are one
-    table. Comparing a table with itself always matches, which would turn a
-    copy-pasted configuration into a passing run whatever the data held.
-
-    Args:
-        source_table (str): Source relation name.
-        target_table (str): Target relation name.
-
-    Raises:
-        ConfigError: If the two names are identical.
-    """
-    if source_table == target_table:
-        raise ConfigError(
-            f"Source and target both name the same table '{source_table}' on one "
-            "connection, so the comparison could only ever match. Point one side "
-            "at the table it should be compared with."
-        )
-
-
 _MIXED_BACKENDS: Final = "Mixed file/lakehouse/database and warehouse backends are unsupported."
 
 _HALF_PUSHDOWN: Final = (
@@ -2130,8 +1942,8 @@ def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePa
     """Refuse a pair no engine can compare, without connecting to anything.
 
     Two sides are read locally unless both are warehouse tables. A warehouse
-    pair must use one backend and one connection, compared by fingerprint, and
-    name two different tables.
+    pair must use one backend and one connection, which means every setting but
+    the table is equal, and name two different tables.
 
     Args:
         source (SourceRef): Source configuration.
@@ -2167,12 +1979,19 @@ def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePa
             f"{warehouse.name} and the target is {target_warehouse.name}. Source and "
             "target must use the same warehouse connection."
         )
-    if warehouse.fingerprint(source) != warehouse.fingerprint(target):
+    # Compared only for equality: the dumps hold passwords and tokens.
+    if source.model_dump(exclude={"table"}) != target.model_dump(exclude={"table"}):
         raise ConnectorError(
             "Cross-account warehouse pushdown is unsupported. "
             f"Source and target {warehouse.name} connections must match."
         )
-    _reject_self_comparison(_table_name(source), _table_name(target))
+    # One connection by now, so one name is one table, and it would always match.
+    if source.table == target.table:
+        raise ConfigError(
+            f"Source and target both name the same table '{source.table}' on one "
+            "connection, so the comparison could only ever match. Point one side "
+            "at the table it should be compared with."
+        )
     return _WarehousePair(warehouse, source, target)
 
 
@@ -2244,25 +2063,6 @@ def _warning(message: str) -> ConfigFinding:
         ConfigFinding: A `warning` finding.
     """
     return ConfigFinding(severity="warning", message=message)
-
-
-def _pairing_findings(
-    source: SourceRef, target: SourceRef
-) -> tuple[_WarehousePair | None, list[ConfigFinding]]:
-    """Run the backend pairing check and report its refusal as a finding.
-
-    Args:
-        source (SourceRef): Source configuration.
-        target (SourceRef): Target configuration.
-
-    Returns:
-        tuple[_WarehousePair | None, list[ConfigFinding]]: The warehouse pair a
-            run would push down to, or None, and the refusal if there was one.
-    """
-    try:
-        return _check_backend_pairing(source, target), []
-    except (ConfigError, ConnectorError) as exc:
-        return None, [_error(str(exc))]
 
 
 def _missing_extra_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
@@ -2442,34 +2242,18 @@ def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFin
                 ),
             ),
         ):
-            reason = _text_probe_refusal(compiler, probe)
-            if reason is not None:
+            try:
+                compiler.compile_column_predicate(
+                    probe, "probe", source_dtype=pl.String(), target_dtype=pl.String()
+                )
+            except ConfigError as exc:
                 findings.append(
                     _warning(
                         f"rules[{index}] {setting} has no {name} spelling, so a run "
-                        f"refuses it on any column stored as text: {reason}"
+                        f"refuses it on any column stored as text: {exc}"
                     )
                 )
     return findings
-
-
-def _text_probe_refusal(compiler: SQLPushdownCompiler, probe: DiffRule) -> str | None:
-    """Return why a warehouse refuses a rule on a text column, if it does.
-
-    Args:
-        compiler (SQLPushdownCompiler): Compiler for the warehouse's dialect.
-        probe (DiffRule): A rule carrying the one setting to check.
-
-    Returns:
-        str | None: The compiler's refusal, or None when the rule compiles.
-    """
-    try:
-        compiler.compile_column_predicate(
-            probe, "probe", source_dtype=pl.String(), target_dtype=pl.String()
-        )
-    except ConfigError as exc:
-        return str(exc)
-    return None
 
 
 def _schema_frame(config: SourceRef) -> pl.LazyFrame:
@@ -2624,7 +2408,7 @@ def _compares_mapped_text(effective: EffectiveRule, dtype: pl.DataType) -> bool:
         bool: True when a proposed entry would be compared as written.
     """
     return (
-        isinstance(dtype, (pl.String, pl.Utf8))
+        isinstance(dtype, pl.String)
         and effective["pad_zeros"] is None
         and not effective["datetime_format"]
         and effective["cast_to"] in (None, "String")
@@ -2744,40 +2528,6 @@ _VALUE_MAP_FIELDS: Final[dict[str, str]] = {
 """Result columns renamed to the `ValueMapEntry` fields they fill."""
 
 
-def _value_map_pushdown_rules(
-    diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
-) -> list[DiffRule]:
-    """Resolve one rule per column a warehouse can propose a `value_map` for.
-
-    A column qualifies when it is stored as text on both sides and nothing
-    after stage 4 changes what a map produces. A local run also proposes text
-    for a non-text target, read as the text it is compared as, but every
-    engine writes numbers and timestamps as text its own way, and a pasted
-    `Y: '1'` against an integer target fails the warehouse's comparison.
-
-    Args:
-        diff (DiffConfig): Master comparison rules, keys, and global defaults.
-        source_schema (pl.Schema): Schema probed from the source relation.
-        target_schema (pl.Schema): Schema probed from the target relation.
-
-    Returns:
-        list[DiffRule]: Normalizing rules for the candidate columns, in
-            source order.
-
-    Raises:
-        ConfigError: If a column fails a normalization precondition, as it
-            would in a run.
-    """
-    return [
-        _pushdown_rule(column, aligned, rule, effective)
-        for column, aligned, rule, effective in _pushdown_columns(
-            diff, source_schema, target_schema
-        )
-        if _compares_mapped_text(effective, source_schema[column])
-        and isinstance(target_schema[aligned], (pl.String, pl.Utf8))
-    ]
-
-
 def _value_map_pairs(result: pl.DataFrame) -> pl.DataFrame:
     """Read the value map statement's result into typed, labeled pairs.
 
@@ -2844,13 +2594,20 @@ def _collect_value_map_proposals(
         connector, source_table, target_table, diff
     )
     key_rules = _resolve_pushdown_keys(diff, source_schema, target_schema)
-    rules = _value_map_pushdown_rules(diff, source_schema, target_schema)
+    # A column qualifies when it is text on both sides and nothing after stage 4
+    # changes what a map produces. Unlike a local run, a non-text target never
+    # qualifies: each engine writes numbers and timestamps as text its own way.
+    rules = [
+        _pushdown_rule(column, aligned, rule, effective)
+        for column, aligned, rule, effective in _pushdown_columns(
+            diff, source_schema, target_schema
+        )
+        if _compares_mapped_text(effective, source_schema[column])
+        and isinstance(target_schema[aligned], pl.String)
+    ]
     # As locally, repeated keys stop the run even when no column qualifies.
     _reject_duplicate_pushdown_keys(
-        connector, source_table, diff, key_rules, types=source_schema, is_source=True
-    )
-    _reject_duplicate_pushdown_keys(
-        connector, target_table, diff, key_rules, types=target_schema, is_source=False
+        connector, diff, key_rules, (source_table, target_table), (source_schema, target_schema)
     )
     statement = connector.compiler.compile_value_map_query(
         source_table,
@@ -2907,53 +2664,22 @@ class DataIngestor:
         self.source_config = source_config
         self.target_config = target_config
 
-    def _normalize_headers(self, df: pl.LazyFrame) -> pl.LazyFrame:
-        """Standardizes column names based on the master configuration.
-
-        Args:
-            df (pl.LazyFrame): The raw lazy dataframe.
-
-        Returns:
-            pl.LazyFrame: A dataframe with lowercased/stripped headers if enabled.
-        """
-        if not self.config.normalize_column_names:
-            return df
-        return _normalize_header_names(df)
-
-    def _align_columns(self, df: pl.LazyFrame, is_source: bool = True) -> pl.LazyFrame:
-        """Applies configured renames and drops ignored columns.
-
-        Args:
-            df (pl.LazyFrame): The lazy dataframe to process.
-            is_source (bool): True if processing the source data, False for target.
-
-        Returns:
-            pl.LazyFrame: The structurally aligned lazy dataframe.
-        """
-        rename_map, to_drop = _alignment_maps(
-            self.config.rules, df.collect_schema().names(), rename=is_source
-        )
-        return df.drop(list(to_drop)).rename(rename_map)
-
     def get_dataframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
         """Loads and aligns both source and target datasets.
 
         Returns:
             tuple[pl.LazyFrame, pl.LazyFrame]: The prepared (source_df, target_df).
         """
-        source_df = (
-            LoaderFactory.load(self.source_config)
-            .pipe(self._normalize_headers)
-            .pipe(self._align_columns, is_source=True)
-        )
-
-        target_df = (
-            LoaderFactory.load(self.target_config)
-            .pipe(self._normalize_headers)
-            .pipe(self._align_columns, is_source=False)
-        )
-
-        return source_df, target_df
+        frames: list[pl.LazyFrame] = []
+        for config, is_source in ((self.source_config, True), (self.target_config, False)):
+            frame = LoaderFactory.load(config)
+            if self.config.normalize_column_names:
+                frame = _normalize_header_names(frame)
+            rename_map, to_drop = _alignment_maps(
+                self.config.rules, frame.collect_schema().names(), rename=is_source
+            )
+            frames.append(frame.drop(list(to_drop)).rename(rename_map))
+        return frames[0], frames[1]
 
 
 class DiffEngine:
@@ -3091,8 +2817,7 @@ class DiffEngine:
             ConfigError: If primary keys are missing, schema constraints are
                 violated, or a rule cannot apply as configured.
         """
-        compared, _ = cls(config, source_df, target_df)._plan()
-        return compared
+        return cls(config, source_df, target_df)._plan()[0]
 
     @staticmethod
     def check_configs(
@@ -3130,7 +2855,12 @@ class DiffEngine:
             list[ConfigFinding]: Errors and warnings, empty when nothing is
                 wrong. A configuration with no errors is expected to start.
         """
-        pair, findings = _pairing_findings(source, target)
+        findings: list[ConfigFinding] = []
+        pair: _WarehousePair | None = None
+        try:
+            pair = _check_backend_pairing(source, target)
+        except (ConfigError, ConnectorError) as exc:
+            findings.append(_error(str(exc)))
         findings += _missing_extra_findings(source, target)
         findings += _database_findings(source, target)
         findings += _regex_findings(diff, pushdown=pair is not None)
@@ -3288,9 +3018,7 @@ class DiffEngine:
             rule = self._get_effective_rule(column)
             if rule["ignore"] or not _compares_mapped_text(rule, dtype):
                 continue
-            if self.config.strict_types and not isinstance(
-                target_schema[column], (pl.String, pl.Utf8)
-            ):
+            if self.config.strict_types and not isinstance(target_schema[column], pl.String):
                 # Types that differ always mismatch under strict_types; no map helps.
                 continue
             columns.append(column)
@@ -3307,12 +3035,8 @@ class DiffEngine:
             pl.LazyFrame: Keys plus `<column>_source` and `<column>_target`.
         """
         keys = self.config.primary_keys
-        source = self.source.select(
-            *keys, *(pl.col(column).alias(f"{column}_source") for column in columns)
-        )
-        target = self.target.select(
-            *keys, *(pl.col(column).alias(f"{column}_target") for column in columns)
-        )
+        source = self.source.select(*keys, pl.col(columns).name.suffix("_source"))
+        target = self.target.select(*keys, pl.col(columns).name.suffix("_target"))
         if sample_fraction < 1:
             cutoff = round(sample_fraction * SAMPLE_BUCKETS)
             source = source.filter(pl.struct(keys).hash(seed=0) % SAMPLE_BUCKETS < cutoff)
@@ -3337,16 +3061,11 @@ class DiffEngine:
                 dataset, preventing join explosions.
         """
         pks = self.config.primary_keys
-
-        src_pks = self.source.select(pks).collect()
-        if src_pks.is_duplicated().any():
-            dupes = src_pks.filter(src_pks.is_duplicated()).height
-            raise _duplicate_keys_error(pks, "SOURCE", dupes)
-
-        tgt_pks = self.target.select(pks).collect()
-        if tgt_pks.is_duplicated().any():
-            dupes = tgt_pks.filter(tgt_pks.is_duplicated()).height
-            raise _duplicate_keys_error(pks, "TARGET", dupes)
+        for side, frame in (("SOURCE", self.source), ("TARGET", self.target)):
+            keys = frame.select(pks).collect()
+            duplicated = keys.is_duplicated()
+            if duplicated.any():
+                raise _duplicate_keys_error(pks, side, keys.filter(duplicated).height)
 
     def _normalize_frame(self, frame: pl.LazyFrame, *, is_source: bool) -> pl.LazyFrame:
         """Apply stages 1 through 7 of the canonical transform order to one dataset.
@@ -3368,12 +3087,14 @@ class DiffEngine:
                 or names a zone Polars does not recognize.
         """
         schema = frame.collect_schema()
-        rules = {column: self._get_effective_rule(column) for column in schema.names()}
+        rules = {
+            column: rule
+            for column in schema.names()
+            if not (rule := self._get_effective_rule(column))["ignore"]
+        }
 
         value_exprs: list[pl.Expr] = []
         for column, rule in rules.items():
-            if rule["ignore"]:
-                continue
             value_expr = self._normalize_value_expr(
                 column, rule, schema[column], is_source=is_source
             )
@@ -3382,22 +3103,17 @@ class DiffEngine:
         if value_exprs:
             frame = frame.with_columns(value_exprs)
 
-        if not any(rule["timezone"] or rule["cast_to"] for rule in rules.values()):
+        temporal = [column for column, rule in rules.items() if rule["timezone"] or rule["cast_to"]]
+        if not temporal:
             return frame
-
-        # Stage 6a can turn a String column into a Datetime, so the timezone guard
-        # has to inspect the post-parse schema rather than the original one.
+        # A second pass, since every expression in one `with_columns` reads the
+        # input frame. Stage 6a can turn a String column into a Datetime, so the
+        # timezone guard inspects the post-parse schema.
         parsed_schema = frame.collect_schema()
-        temporal_exprs: list[pl.Expr] = []
-        for column, rule in rules.items():
-            if rule["ignore"]:
-                continue
-            temporal_expr = self._normalize_temporal_expr(column, rule, parsed_schema[column])
-            if temporal_expr is not None:
-                temporal_exprs.append(temporal_expr)
-        if temporal_exprs:
-            frame = frame.with_columns(temporal_exprs)
-        return frame
+        return frame.with_columns(
+            self._normalize_temporal_expr(column, rules[column], parsed_schema[column])
+            for column in temporal
+        )
 
     def _normalize_value_expr(
         self, column: str, rule: EffectiveRule, dtype: pl.DataType, *, is_source: bool
@@ -3421,7 +3137,7 @@ class DiffEngine:
         applied = False
         # Deliberately narrower than `is_text_dtype`: `is_in` accepts Categorical
         # and Enum, but the `.str` namespace used below rejects both.
-        is_text = isinstance(dtype, (pl.String, pl.Utf8))
+        is_text = isinstance(dtype, pl.String)
 
         sentinels = usable_sentinels(rule["null_values"], dtype)
         if sentinels:
@@ -3500,7 +3216,7 @@ class DiffEngine:
 
     def _normalize_temporal_expr(
         self, column: str, rule: EffectiveRule, dtype: pl.DataType
-    ) -> pl.Expr | None:
+    ) -> pl.Expr:
         """Build stages 6b and 7 for one column: timezone conversion, then cast.
 
         Args:
@@ -3509,23 +3225,18 @@ class DiffEngine:
             dtype (pl.DataType): Dtype after the value stages have been applied.
 
         Returns:
-            pl.Expr | None: Aliased expression, or None when no stage applies.
+            pl.Expr: Aliased expression. The caller passes only columns that set
+                `timezone` or `cast_to`.
 
         Raises:
             ConfigError: If `timezone` cannot be applied to the column.
         """
         expr = pl.col(column)
-        applied = False
-
         if rule["timezone"]:
             expr = self._convert_time_zone(column, expr, dtype, rule["timezone"])
-            applied = True
-
         if rule["cast_to"]:
             expr = expr.cast(_CAST_TARGETS[rule["cast_to"]])
-            applied = True
-
-        return expr.alias(column) if applied else None
+        return expr.alias(column)
 
     def _convert_time_zone(
         self, column: str, expr: pl.Expr, dtype: pl.DataType, zone: str
@@ -3606,7 +3317,7 @@ class DiffEngine:
                 tgt = tgt.cast(dtype, strict=False)
                 compared_tgt_dtype = dtype
 
-        similar = _similarity_test(rule) if isinstance(dtype, (pl.String, pl.Utf8)) else None
+        similar = _similarity_test(rule) if isinstance(dtype, pl.String) else None
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
             val_match = _tolerance_match(src, tgt, rule, dtype, compared_tgt_dtype)
         elif similar is not None:
@@ -3725,7 +3436,9 @@ class DiffEngine:
         # here rather than silently exploding the joins below.
         self._check_uniqueness()
 
-        added_df, removed_df = self._collect_key_discrepancies()
+        keys = self.config.primary_keys
+        added_df = self.target.join(self.source, on=keys, how="anti").collect()
+        removed_df = self.source.join(self.target, on=keys, how="anti").collect()
         changed_df = self._collect_changed_rows(compared_columns, match_expressions)
         return self._build_result(added_df, removed_df, changed_df, compared_columns)
 
@@ -3749,18 +3462,6 @@ class DiffEngine:
         self.source = self._normalize_frame(self.source, is_source=True)
         self.target = self._normalize_frame(self.target, is_source=False)
         return self._match_expressions()
-
-    def _collect_key_discrepancies(self) -> tuple[pl.DataFrame, pl.DataFrame]:
-        """Materialize the rows present on only one side of the comparison.
-
-        Returns:
-            tuple[pl.DataFrame, pl.DataFrame]: Added rows (target-only) and
-                removed rows (source-only), joined on the normalized keys.
-        """
-        keys = self.config.primary_keys
-        added_lazy = self.target.join(self.source, on=keys, how="anti")
-        removed_lazy = self.source.join(self.target, on=keys, how="anti")
-        return added_lazy.collect(), removed_lazy.collect()
 
     def _match_expressions(self) -> tuple[list[str], list[pl.Expr]]:
         """Build one boolean match expression per compared column.
@@ -3810,21 +3511,9 @@ class DiffEngine:
             return pl.DataFrame()
 
         keys = self.config.primary_keys
-        src_renamed = self.source.rename(
-            {
-                col: f"{col}_source"
-                for col in self.source.collect_schema().names()
-                if col not in keys
-            }
-        )
-        tgt_renamed = self.target.rename(
-            {
-                col: f"{col}_target"
-                for col in self.target.collect_schema().names()
-                if col not in keys
-            }
-        )
-        common_lazy = src_renamed.join(tgt_renamed, on=keys, how="inner")
+        source = self.source.rename(lambda col: col if col in keys else f"{col}_source")
+        target = self.target.rename(lambda col: col if col in keys else f"{col}_target")
+        common_lazy = source.join(target, on=keys, how="inner")
 
         all_matched = pl.all_horizontal([f"{col}_is_match" for col in compared_columns])
         return common_lazy.with_columns(match_expressions).filter(~all_matched).collect()
@@ -3858,32 +3547,21 @@ class DiffEngine:
         src_total = self.source.select(pl.len()).collect().item()
         tgt_total = self.target.select(pl.len()).collect().item()
 
-        total_mismatches = added_df.height + removed_df.height + changed_df.height
-        is_match = total_mismatches / max(src_total, 1) <= self.config.threshold
-
-        artifacts_written = False
-        if isinstance(self.config.output_path, str):
-            artifacts_written = _export_artifacts(
-                {
-                    "added_rows": added_df,
-                    "removed_rows": removed_df,
-                    "changed_rows": changed_df,
-                },
-                self.config.output_path,
-                self.config.output_format,
-            )
-
+        artifacts_written = _export_artifacts(
+            {"added_rows": added_df, "removed_rows": removed_df, "changed_rows": changed_df},
+            self.config.output_path,
+            self.config.output_format,
+        )
         return DiffResult(
-            summary=DiffSummary(
-                total_rows_source=src_total,
-                total_rows_target=tgt_total,
-                added_count=added_df.height,
-                removed_count=removed_df.height,
-                changed_count=changed_df.height,
-                column_mismatches=column_mismatches,
-                is_match=is_match,
-                report_limit=self.config.report_top_columns_limit,
-                artifacts_written=artifacts_written,
+            summary=_summary(
+                self.config,
+                changed_df,
+                added_df,
+                removed_df,
+                src_total,
+                tgt_total,
+                column_mismatches,
+                artifacts_written,
             ),
             added=added_df,
             removed=removed_df,

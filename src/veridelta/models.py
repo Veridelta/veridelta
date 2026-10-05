@@ -752,11 +752,8 @@ class DiffSummary(BaseModel):
             : self.report_limit
         ]
 
-        col_report = "\nTop Column-Level Drifts:\n---------------------------\n"
-        for col, count in top_cols:
-            col_report += f"- {col}: {count:,} mismatches\n"
-
-        return base_report + col_report
+        col_report = "".join(f"- {col}: {count:,} mismatches\n" for col, count in top_cols)
+        return f"{base_report}\nTop Column-Level Drifts:\n---------------------------\n{col_report}"
 
 
 @dataclass(frozen=True)
@@ -1159,25 +1156,6 @@ DATABASE_PUSHDOWN_SCHEMES: Final = frozenset({"postgres", "postgresql"})
 """URI schemes whose tables a database source can compare inside the database."""
 
 
-def _check_database_pushdown(scheme: str, *, has_table: bool) -> None:
-    """Refuse `pushdown` on a database source that cannot be compared in place.
-
-    Args:
-        scheme (str): The URI's scheme, in any case.
-        has_table (bool): Whether the source names a `table` rather than a `query`.
-
-    Raises:
-        ValueError: If the database has no pushdown dialect, or the source runs
-            a `query`.
-    """
-    if scheme.lower() not in DATABASE_PUSHDOWN_SCHEMES:
-        raise ValueError(
-            "'pushdown' compares inside the database and works on postgresql:// connections only."
-        )
-    if not has_table:
-        raise ValueError("'pushdown' compares two tables, so set 'table' rather than 'query'.")
-
-
 class DatabaseConfig(BaseModel):
     """Immutable settings for reading a database table or query into a local comparison.
 
@@ -1255,8 +1233,13 @@ class DatabaseConfig(BaseModel):
         parts = urlsplit(self.uri)
         if not parts.scheme:
             raise ValueError("'uri' needs a scheme such as postgresql:// or sqlite://.")
-        if self.pushdown:
-            _check_database_pushdown(parts.scheme, has_table=self.table is not None)
+        if self.pushdown and parts.scheme.lower() not in DATABASE_PUSHDOWN_SCHEMES:
+            raise ValueError(
+                "'pushdown' compares inside the database and works on postgresql:// "
+                "connections only."
+            )
+        if self.pushdown and self.table is None:
+            raise ValueError("'pushdown' compares two tables, so set 'table' rather than 'query'.")
         if self.password is not None:
             if parts.password is not None:
                 raise ValueError("Set the password in 'password' or inside 'uri', not both.")
