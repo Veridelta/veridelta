@@ -319,6 +319,12 @@ _GROUP_NUMBER: Final = re.compile(r"[0-9]+")
 _HIGHEST_GROUP: Final = 9
 """The highest group a warehouse replacement can refer to: their references are one digit."""
 
+_WHOLE_MATCH_REFERENCES: Final[dict[SQLDialect, str]] = {SQLDialect.POSTGRES: "\\&"}
+r"""How a dialect refers to the whole match, where group 0 is not spelled `\0`.
+
+Postgres' `regexp_replace` reads `\0` as plain text and the whole match as `\&`.
+"""
+
 
 def _reference_at(replacement: str, index: int) -> tuple[str, int] | None:
     """Read the group reference that starts at a `$` in a Polars replacement.
@@ -1703,8 +1709,9 @@ class SQLPushdownCompiler:
         r"""Rewrite a Polars replacement in the dialect's replacement syntax.
 
         Polars writes a group as `$1` or `${1}` and reads a backslash as plain
-        text. Snowflake, BigQuery, and DuckDB write a group as `\1`, read `$` as
-        plain text, and need a plain backslash doubled. Databricks follows Java:
+        text. Snowflake, BigQuery, DuckDB, and Postgres write a group as `\1`,
+        read `$` as plain text, and need a plain backslash doubled; Postgres
+        writes the whole match as `\&`. Databricks follows Java:
         a group is `$1`, a backslash makes the next character plain, and a
         digit right after a group would extend its number, so it is escaped.
 
@@ -1724,9 +1731,7 @@ class SQLPushdownCompiler:
         follows_group = False
         for token in _replacement_tokens(pattern, replacement):
             if isinstance(token, int):
-                written.append(
-                    f"${token}" if self.dialect is SQLDialect.DATABRICKS else f"\\{token}"
-                )
+                written.append(self._group_reference(token))
                 follows_group = True
                 continue
             if self.dialect is SQLDialect.DATABRICKS:
@@ -1738,6 +1743,22 @@ class SQLPushdownCompiler:
             written.append(token)
             follows_group = False
         return "".join(written)
+
+    def _group_reference(self, group: int) -> str:
+        r"""Write a reference to a numbered group in the dialect's replacement syntax.
+
+        Args:
+            group (int): Group number, with 0 for the whole match.
+
+        Returns:
+            str: `$N` on Databricks, and `\N` elsewhere, except where
+                `_WHOLE_MATCH_REFERENCES` spells the whole match its own way.
+        """
+        if self.dialect is SQLDialect.DATABRICKS:
+            return f"${group}"
+        if group == 0 and self.dialect in _WHOLE_MATCH_REFERENCES:
+            return _WHOLE_MATCH_REFERENCES[self.dialect]
+        return f"\\{group}"
 
     def _apply_whitespace(self, expr: str, rule: DiffRule) -> str:
         """Trim the characters Polars strips, from the side `whitespace_mode` names.

@@ -1572,33 +1572,42 @@ class TestRegexReplacementReferences:
     r"""Validate that replacements are written the way each warehouse reads them.
 
     Polars reads `$1`, `${1}`, and `$0` as group references, `$$` as a dollar
-    sign, and a backslash as plain text. Snowflake, BigQuery, and DuckDB write a
-    reference as `\1` and read `$` as plain text; Databricks follows Java, where
+    sign, and a backslash as plain text. Snowflake, BigQuery, DuckDB, and
+    Postgres write a reference as `\1` and read `$` as plain text, though
+    Postgres writes the whole match as `\&`; Databricks follows Java, where
     `$1` is a reference and a backslash escapes the next character.
     """
 
     @pytest.mark.parametrize(
-        ("replacement", "backslash_form", "databricks_form"),
+        ("replacement", "backslash_form", "postgres_form", "databricks_form"),
         [
-            pytest.param("$2$1", r"\2\1", "$2$1", id="numbered"),
-            pytest.param("${1}0", r"\10", r"$1\0", id="braced-before-a-digit"),
-            pytest.param("$0", r"\0", "$0", id="whole-match"),
-            pytest.param("$01", r"\1", "$1", id="leading-zero"),
-            pytest.param("$$5", "$5", r"\$5", id="escaped-dollar"),
-            pytest.param("$!", "$!", r"\$!", id="dollar-before-punctuation"),
-            pytest.param("x$", "x$", r"x\$", id="trailing-dollar"),
-            pytest.param("${1", "${1", r"\${1", id="unclosed-brace"),
-            pytest.param(r"a\b", r"a\\b", r"a\\b", id="backslash"),
+            pytest.param("$2$1", r"\2\1", r"\2\1", "$2$1", id="numbered"),
+            pytest.param("${1}0", r"\10", r"\10", r"$1\0", id="braced-before-a-digit"),
+            pytest.param("$0", r"\0", r"\&", "$0", id="whole-match"),
+            pytest.param("$01", r"\1", r"\1", "$1", id="leading-zero"),
+            pytest.param("$$5", "$5", "$5", r"\$5", id="escaped-dollar"),
+            pytest.param("$!", "$!", "$!", r"\$!", id="dollar-before-punctuation"),
+            pytest.param("x$", "x$", "x$", r"x\$", id="trailing-dollar"),
+            pytest.param("${1", "${1", "${1", r"\${1", id="unclosed-brace"),
+            pytest.param(r"a\b", r"a\\b", r"a\\b", r"a\\b", id="backslash"),
         ],
     )
     def test_it_rewrites_a_polars_replacement_for_each_dialect(
-        self, replacement: str, backslash_form: str, databricks_form: str
+        self, replacement: str, backslash_form: str, postgres_form: str, databricks_form: str
     ) -> None:
-        """Ensure each dialect's regex engine reads what Polars reads."""
+        r"""Ensure each dialect's regex engine reads what Polars reads.
+
+        Postgres reads `\0` as plain text, so it is the one dialect whose
+        whole-match reference differs from its numbered ones.
+        """
         for dialect in _BACKSLASH_REFERENCE_DIALECTS:
             compiler = SQLPushdownCompiler(dialect)
             written = compiler._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
             assert written == backslash_form, dialect
+
+        postgres = SQLPushdownCompiler(SQLDialect.POSTGRES)
+        written = postgres._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
+        assert written == postgres_form
 
         databricks = SQLPushdownCompiler(SQLDialect.DATABRICKS)
         written = databricks._regex_replacement("(a)(b)", replacement)  # pyright: ignore[reportPrivateUsage]
@@ -1964,6 +1973,23 @@ class TestPostgresDialect:
         )
 
         assert "REGEXP_REPLACE(\"src\".\"name\", '-', '', 'g')" in sql
+
+    @pytest.mark.parametrize(
+        ("mode", "function"), [("left", "LTRIM"), ("right", "RTRIM"), ("both", "TRIM")]
+    )
+    def test_it_trims_with_the_characters_after_the_value(self, mode: str, function: str) -> None:
+        """Ensure `whitespace_mode` keeps the form Postgres reads.
+
+        Postgres' `ltrim`, `rtrim`, and two-argument `trim` all take the
+        characters to strip after the value, unlike Databricks' functions.
+        """
+        sql = _postgres().compile_column_predicate(
+            DiffRule(column_names=["name"], whitespace_mode=mode),  # type: ignore[arg-type]
+            "name",
+        )
+
+        assert f'{function}("src"."name", ' in sql
+        assert " FROM " not in sql
 
     def test_it_widens_integers_to_numeric(self) -> None:
         """Ensure tolerance arithmetic on integers cannot overflow."""
