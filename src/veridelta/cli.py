@@ -40,28 +40,13 @@ EXIT_MISMATCH = 1
 
 
 def _progress(message: str, *, quiet: bool) -> None:
-    """Write a progress line to stderr.
-
-    Args:
-        message (str): Line to emit.
-        quiet (bool): Suppress the line entirely.
-    """
+    """Write a progress line to stderr."""
     if not quiet:
         print(message, file=sys.stderr)
 
 
 def _row_limit(text: str) -> int:
-    """Parse `--html-max-rows`, which must be a whole number of zero or more.
-
-    Args:
-        text (str): Raw argument value.
-
-    Returns:
-        int: The row limit.
-
-    Raises:
-        argparse.ArgumentTypeError: If the value is not a non-negative integer.
-    """
+    """Parse `--html-max-rows`, which must be a whole number of zero or more."""
     try:
         value = int(text)
     except ValueError:
@@ -72,17 +57,7 @@ def _row_limit(text: str) -> int:
 
 
 def _number(text: str) -> float:
-    """Parse a numeric threshold.
-
-    Args:
-        text (str): Raw argument value.
-
-    Returns:
-        float: The parsed number.
-
-    Raises:
-        argparse.ArgumentTypeError: If the value is not a number.
-    """
+    """Parse a numeric threshold."""
     try:
         return float(text)
     except ValueError:
@@ -90,17 +65,7 @@ def _number(text: str) -> float:
 
 
 def _confidence(text: str) -> float:
-    """Parse `--min-confidence`, a share above one half and at most one.
-
-    Args:
-        text (str): Raw argument value.
-
-    Returns:
-        float: The confidence floor.
-
-    Raises:
-        argparse.ArgumentTypeError: If the value is out of range, NaN included.
-    """
+    """Parse `--min-confidence`, a share above one half and at most one."""
     value = _number(text)
     if not 0.5 < value <= 1:
         raise argparse.ArgumentTypeError(f"must be above 0.5 and at most 1, got {text!r}")
@@ -108,17 +73,7 @@ def _confidence(text: str) -> float:
 
 
 def _share(text: str) -> float:
-    """Parse `--sample-fraction`, a share above zero and at most one.
-
-    Args:
-        text (str): Raw argument value.
-
-    Returns:
-        float: The share of source rows to read.
-
-    Raises:
-        argparse.ArgumentTypeError: If the value is out of range, NaN included.
-    """
+    """Parse `--sample-fraction`, a share above zero and at most one."""
     value = _number(text)
     if not 0 < value <= 1:
         raise argparse.ArgumentTypeError(f"must be above 0 and at most 1, got {text!r}")
@@ -126,17 +81,7 @@ def _share(text: str) -> float:
 
 
 def _support(text: str) -> int:
-    """Parse `--min-support`, a whole number of at least one.
-
-    Args:
-        text (str): Raw argument value.
-
-    Returns:
-        int: The agreeing rows a proposal needs.
-
-    Raises:
-        argparse.ArgumentTypeError: If the value is not a positive integer.
-    """
+    """Parse `--min-support`, a whole number of at least one."""
     try:
         value = int(text)
     except ValueError:
@@ -147,14 +92,7 @@ def _support(text: str) -> int:
 
 
 def _report_failure(exc: Exception) -> int:
-    """Explain on stderr why a command stopped.
-
-    Args:
-        exc (Exception): What stopped the command.
-
-    Returns:
-        int: `EXIT_MISMATCH`, since CI treats a failure like drift.
-    """
+    """Explain on stderr why a command stopped."""
     if isinstance(exc, ConfigError):
         message = (
             f"\nConfiguration Error\n{exc}\n\nThis is a problem with the configuration "
@@ -233,19 +171,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _merge_advice(rule: "DiffRule", column: str) -> str:
-    """Say where a proposed map for `column` belongs, given the rule governing it.
-
-    Only one rule governs a column, so a second rule pasted after it changes
-    nothing. Merging into a rule that governs other columns too would apply
-    the map to all of them, so such a rule has to give the column up first.
-
-    Args:
-        rule (DiffRule): Rule that governs the column today.
-        column (str): Column the proposal is for.
-
-    Returns:
-        str: One sentence of advice.
-    """
+    """Say where a proposed map for `column` belongs, given the rule governing it."""
     if len(rule.column_names) > 1 or (rule.pattern is not None and rule.column_names):
         return (
             f"That rule also governs other columns, so move '{column}' into a rule of its "
@@ -262,17 +188,7 @@ def _merge_advice(rule: "DiffRule", column: str) -> str:
 def _report_proposals(
     proposals: Sequence["ValueMapProposal"], rules: Sequence["DiffRule"], *, quiet: bool
 ) -> None:
-    """Explain on stderr what was proposed and why.
-
-    The evidence is progress chatter, so `--quiet` drops it. A note that a
-    rule already governs a column is printed regardless, since pasting the
-    printed rule as it stands would then change nothing.
-
-    Args:
-        proposals (Sequence[ValueMapProposal]): Proposals to explain.
-        rules (Sequence[DiffRule]): The configuration's rules.
-        quiet (bool): Suppress the evidence.
-    """
+    """Explain on stderr what was proposed and why."""
     if not proposals:
         _progress("No value_map entries met the thresholds.", quiet=quiet)
     for proposal in proposals:
@@ -289,6 +205,8 @@ def _report_proposals(
             )
         index = proposal.governing_rule_index
         if index is not None:
+            # This note ignores `quiet`: only one rule governs a column, so pasting the
+            # printed rule as it stands changes nothing.
             print(
                 f"Note: rules[{index}] already governs '{proposal.column}'. "
                 + _merge_advice(rules[index], proposal.column),
@@ -354,15 +272,7 @@ def schema(args: argparse.Namespace) -> int:
 
 
 def _plural(count: int, noun: str) -> str:
-    """Write a count with its noun, such as `1 error` or `2 warnings`.
-
-    Args:
-        count (int): How many.
-        noun (str): Singular noun.
-
-    Returns:
-        str: The count and the noun, plural unless the count is one.
-    """
+    """Write a count with its noun, such as `1 error` or `2 warnings`."""
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
 
 
