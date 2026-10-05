@@ -127,7 +127,6 @@ def _escape(value: object) -> str:
 
 def _json_cell(value: object) -> object:
     """Make one cell safe for the page's `JSON.parse` without changing what it shows."""
-    # Python's `json` writes non-finite floats as bare `NaN`, which `JSON.parse` rejects.
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _JS_SAFE_INTEGER:
