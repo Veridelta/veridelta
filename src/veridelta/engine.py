@@ -188,7 +188,7 @@ def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None
 
     Args:
         column (str): Column the rule resolved to.
-        dtype (pl.DataType): Probed type for that side of the comparison.
+        dtype (pl.DataType): Type of that side after padding and parsing.
         zone (str): Configured target timezone.
 
     Raises:
@@ -861,7 +861,8 @@ def _enforce_pushdown_preconditions(
                 raise _unusable_sentinel_error(name, dtype, effective["null_values"])
     if effective["timezone"]:
         for name, schema in sides:
-            dtype = schema.get(name)
+            # The zone rule reads the column after padding and parsing, as locally.
+            dtype = _parsed_dtype(effective, schema.get(name))
             if dtype is not None:
                 _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
@@ -906,13 +907,19 @@ def _normalized_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl
     """
     if effective["cast_to"] is not None:
         return _CAST_TARGETS[effective["cast_to"]]
+    dtype = _parsed_dtype(effective, dtype)
+    if effective["timezone"] and isinstance(dtype, pl.Datetime):
+        dtype = pl.Datetime(dtype.time_unit, effective["timezone"])
+    return dtype
+
+
+def _parsed_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
+    """Predict a column's dtype after stages 1 through 6a, before timezone and cast."""
     if effective["pad_zeros"] is not None:
         dtype = pl.String()
     fmt = effective["datetime_format"]
     if fmt and isinstance(dtype, (pl.String, pl.Utf8)):
         dtype = pl.Datetime("us", "UTC" if _parses_offset(fmt) else None)
-    if effective["timezone"] and isinstance(dtype, pl.Datetime):
-        dtype = pl.Datetime(dtype.time_unit, effective["timezone"])
     return dtype
 
 

@@ -63,7 +63,7 @@ Escaping keeps the text, but each warehouse runs its own regular expression engi
 
 The table covers `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, `%z`, and `%%`, separated by spaces or any of `-` `/` `:` `.` `,` `_` `T`. Any other directive raises `ConfigError`. An untranslated directive would parse nothing and return NULL for every row, which would read as a clean match.
 
-`timezone` emits no SQL. In a local run it rewrites only a column's timezone label, and every later cast and comparison reads the underlying UTC instant, so it cannot change a verdict. Warehouses have no per-column label to rewrite, and Spark's `TIMESTAMP` is a bare instant. Functions that look equivalent shift the value to a wall clock time instead, which would make pushdown disagree with a local run. The rule's precondition still holds: a column that is naive or not temporal in the probed schema raises `ConfigError`, as it does locally.
+`timezone` emits no SQL. In a local run it rewrites only a column's timezone label, and every later cast and comparison reads the underlying UTC instant, so it cannot change a verdict. Warehouses have no per-column label to rewrite, and Spark's `TIMESTAMP` is a bare instant. Functions that look equivalent shift the value to a wall clock time instead, which would make pushdown disagree with a local run. The rule's precondition still holds: a column that is not a timezone-aware timestamp once `pad_zeros` and `datetime_format` apply raises `ConfigError`, as it does locally. Text parsed with a `%z` format is aware, and text parsed without one is naive.
 
 ## Differences from a local run
 
