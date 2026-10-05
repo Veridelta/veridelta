@@ -31,7 +31,10 @@ theme:
 plugins:
   - search
   - mkdocs-jupyter
-  - macros: {}
+  # Opt-in: a page that uses a macro sets `render_macros: true`. Notebooks and
+  # pages quoting GitHub's `${{ }}` expressions are never read as templates.
+  - macros:
+      render_by_default: false
   - mkdocstrings:
       handlers:
         python:
