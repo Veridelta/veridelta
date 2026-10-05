@@ -72,13 +72,15 @@ class SQLDialect(str, Enum):
 
     `DUCKDB` has no connector or config model. It exists so the differential
     test harness can execute real compiler output instead of a rewritten
-    approximation of it.
+    approximation of it. `POSTGRES` runs where two database sources on one
+    Postgres connection opt into pushdown.
     """
 
     SNOWFLAKE = "snowflake"
     DATABRICKS = "databricks"
     DUCKDB = "duckdb"
     BIGQUERY = "bigquery"
+    POSTGRES = "postgres"
 
 
 _CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
@@ -115,6 +117,14 @@ _CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
         "Date": "DATE",
         "Datetime": "DATETIME",
     },
+    SQLDialect.POSTGRES: {
+        "Int64": "BIGINT",
+        "Float64": "DOUBLE PRECISION",
+        "String": "TEXT",
+        "Boolean": "BOOLEAN",
+        "Date": "DATE",
+        "Datetime": "TIMESTAMP",
+    },
 }
 """`cast_to` value to the type keyword each dialect spells it with.
 
@@ -128,6 +138,7 @@ _IDENTIFIER_QUOTES: Final[dict[SQLDialect, str]] = {
     SQLDialect.DATABRICKS: "`",
     SQLDialect.DUCKDB: '"',
     SQLDialect.BIGQUERY: "`",
+    SQLDialect.POSTGRES: '"',
 }
 """Character each dialect quotes identifiers with. Names are allowlisted before
 they are quoted, so no identifier ever holds a quote character to escape."""
@@ -137,6 +148,7 @@ _LITERAL_ESCAPES: Final[dict[SQLDialect, tuple[tuple[str, str], ...]]] = {
     SQLDialect.DATABRICKS: (("\\", "\\\\"), ("'", "\\'")),
     SQLDialect.DUCKDB: (("'", "''"),),
     SQLDialect.BIGQUERY: (("\\", "\\\\"), ("'", "\\'"), ("\n", "\\n"), ("\r", "\\r")),
+    SQLDialect.POSTGRES: (("'", "''"),),
 }
 """Replacements that keep text inside a single-quoted literal, applied in order.
 
@@ -150,7 +162,9 @@ concatenates them, dropping the apostrophe, so it escapes quotes with a
 backslash instead. BigQuery reads backslash escapes too, rejects any it does
 not know, and refuses a raw line break inside quotes, so line breaks become
 `\\n` and `\\r`. DuckDB follows the SQL standard, where a backslash is
-ordinary text and only the quote needs doubling.
+ordinary text and only the quote needs doubling. So does Postgres while
+`standard_conforming_strings` is on, its default, which the Postgres session
+checks before it runs anything.
 """
 
 _STRPTIME_DIRECTIVES: Final[dict[SQLDialect, dict[str, str]]] = {
@@ -240,6 +254,8 @@ _PARSE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
 The strict variants abort the whole statement on one unparseable row where the
 local engine yields a null and keeps going. BigQuery takes the format first, and
 parses a format with an offset into a TIMESTAMP, `_BIGQUERY_OFFSET_PARSE`.
+Postgres has none: its `to_timestamp` raises, so a dialect missing here refuses
+`datetime_format`, and the directive and quoting tables leave it out too.
 """
 
 _BIGQUERY_OFFSET_PARSE: Final = "SAFE.PARSE_TIMESTAMP"
@@ -251,6 +267,7 @@ _INFINITY_LITERALS: Final[dict[SQLDialect, str]] = {
     SQLDialect.DATABRICKS: "CAST('Infinity' AS DOUBLE)",
     SQLDialect.DUCKDB: "'inf'::DOUBLE",
     SQLDialect.BIGQUERY: "CAST('inf' AS FLOAT64)",
+    SQLDialect.POSTGRES: "'Infinity'::double precision",
 }
 """Each dialect's positive infinity, which bounds the finite values a tolerance
 may apply to. `ABS(x) < inf` is false for an infinity and for NaN, whether an
@@ -267,7 +284,9 @@ _EDIT_DISTANCE_FUNCTIONS: Final[dict[SQLDialect, str]] = {
 Snowflake's optional third argument caps the result, and Databricks' returns -1
 above it and needs Runtime 13.3, so neither is portable. Snowflake,
 Databricks, and BigQuery count characters, as the local engine does. DuckDB counts UTF-8
-bytes, which is why the parity tests compare ASCII text.
+bytes, which is why the parity tests compare ASCII text. Postgres is left out: its
+`levenshtein` needs the `fuzzystrmatch` extension and refuses text longer than 255
+characters, so a dialect missing here refuses `max_levenshtein_distance`.
 """
 
 
@@ -276,10 +295,11 @@ _REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
     SQLDialect.DATABRICKS: "",
     SQLDialect.DUCKDB: ", 'g'",
     SQLDialect.BIGQUERY: "",
+    SQLDialect.POSTGRES: ", 'g'",
 }
 """Trailing `REGEXP_REPLACE` arguments that make it replace every match, as Polars'
 `replace_all` does. Snowflake, Databricks, and BigQuery already replace every match; DuckDB
-replaces only the first unless given the `'g'` option."""
+and Postgres replace only the first unless given the `'g'` option."""
 
 
 _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
@@ -288,6 +308,7 @@ _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
     SQLDialect.DUCKDB: "DECIMAL(38, 0)",
     # NUMERIC keeps 29 integer digits, more than any INT64 difference needs.
     SQLDialect.BIGQUERY: "NUMERIC",
+    SQLDialect.POSTGRES: "NUMERIC(38, 0)",
 }
 """An exact integer type wide enough to subtract any two stored integers in.
 Thirty-eight digits hold every difference of two 64-bit values, signed or not,
@@ -299,12 +320,14 @@ _SAMPLE_HASH_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.DATABRICKS: "xxhash64",
     SQLDialect.DUCKDB: "hash",
     SQLDialect.BIGQUERY: "FARM_FINGERPRINT",
+    SQLDialect.POSTGRES: "hashtextextended",
 }
 """Each dialect's hash of several values, used to sample value map evidence by
 key. Snowflake's `HASH` and Databricks' `xxhash64` return signed 64-bit
 integers, so their buckets fold negatives back into range; DuckDB's `hash` is
 unsigned. BigQuery's `FARM_FINGERPRINT` is signed and takes one string, so the
-keys are hashed as one JSON value. No engine hashes the way Polars does, so a warehouse sample is a
+keys are hashed as one JSON value, and Postgres' `hashtextextended` likewise hashes
+the keys as the text of one row. No engine hashes the way Polars does, so a warehouse sample is a
 different, though equally repeatable, set of rows from a local one."""
 
 
@@ -918,6 +941,10 @@ class SQLPushdownCompiler:
             hashed = (
                 f"{_SAMPLE_HASH_FUNCTIONS[self.dialect]}(TO_JSON_STRING(STRUCT({', '.join(keys)})))"
             )
+            return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
+        if self.dialect is SQLDialect.POSTGRES:
+            # hashtextextended is signed and takes one text and a seed.
+            hashed = f"{_SAMPLE_HASH_FUNCTIONS[self.dialect]}(ROW({', '.join(keys)})::text, 0)"
             return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
         if self.dialect is SQLDialect.SNOWFLAKE:
             # HASH is signed, and MOD keeps the dividend's sign.
@@ -1672,16 +1699,22 @@ class SQLPushdownCompiler:
             return expr
         if rule.pad_zeros is None and not self._is_text_side(dtype):
             return expr
+        parse_function = _PARSE_FUNCTIONS.get(self.dialect)
+        if parse_function is None:
+            raise ConfigError(
+                f"datetime_format cannot be pushed down to {self.dialect.value}: it has no "
+                "parse that returns NULL for a value it cannot read, as a local run does, so "
+                "one bad row would fail the whole statement. Compare locally instead "
+                "(pushdown: false)."
+            )
         pattern = self._translate_datetime_format(rule.datetime_format)
         if self.dialect is SQLDialect.BIGQUERY:
             # BigQuery takes the format first, and only a TIMESTAMP holds an offset.
             parse = (
-                _BIGQUERY_OFFSET_PARSE
-                if _reads_offset(rule.datetime_format)
-                else _PARSE_FUNCTIONS[self.dialect]
+                _BIGQUERY_OFFSET_PARSE if _reads_offset(rule.datetime_format) else parse_function
             )
             return f"{parse}({self._literal(pattern)}, {expr})"
-        return f"{_PARSE_FUNCTIONS[self.dialect]}({expr}, {self._literal(pattern)})"
+        return f"{parse_function}({expr}, {self._literal(pattern)})"
 
     def _translate_datetime_format(self, fmt: str) -> str:
         """Rewrite a Python `strptime` format in the dialect's format language.
@@ -1876,8 +1909,17 @@ class SQLPushdownCompiler:
 
         Returns:
             str: `(src = tgt OR <distance>(src, tgt) <= limit)`.
+
+        Raises:
+            ConfigError: If the dialect has no faithful edit distance.
         """
-        distance = _EDIT_DISTANCE_FUNCTIONS[self.dialect]
+        distance = _EDIT_DISTANCE_FUNCTIONS.get(self.dialect)
+        if distance is None:
+            raise ConfigError(
+                f"max_levenshtein_distance cannot be pushed down to {self.dialect.value}: its "
+                "levenshtein needs the fuzzystrmatch extension and refuses text longer than "
+                "255 characters. Compare locally instead (pushdown: false)."
+            )
         return (
             f"({src_expr} = {tgt_expr} OR "
             f"{distance}({src_expr}, {tgt_expr}) <= {self._number(limit)})"
@@ -1955,7 +1997,7 @@ class SQLPushdownCompiler:
                 return f"EQUAL_NULL({src_expr}, {tgt_expr})"
             if self.dialect is SQLDialect.DATABRICKS:
                 return f"{src_expr} <=> {tgt_expr}"
-            # DuckDB and BigQuery; BigQuery's also treats two NaNs as equal.
+            # DuckDB, BigQuery, and Postgres; BigQuery's also treats two NaNs as equal.
             return f"{src_expr} IS NOT DISTINCT FROM {tgt_expr}"
 
         return self._value_equality(src_expr, tgt_expr)
