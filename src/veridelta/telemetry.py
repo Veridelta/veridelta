@@ -312,7 +312,8 @@ def write_otlp_metrics(
         target=target,
         time_unix_nano=time_unix_nano,
     )
-    destination.write_text(export + "\n", encoding="utf-8")
+    # A bare newline everywhere, so Windows writes the same bytes as Linux.
+    destination.write_text(export + "\n", encoding="utf-8", newline="\n")
     return destination
 
 

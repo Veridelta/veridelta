@@ -466,16 +466,18 @@ class TestWriteOTLPMetrics:
     """Validate the file a collector or an HTTP request reads."""
 
     def test_it_writes_one_line_creating_parent_directories(self, tmp_path: Path) -> None:
-        """Ensure the file is one JSON line, as the Collector's file receiver reads it."""
+        """Ensure the file is the export on one line, ended by a bare newline on every platform.
+
+        The Collector's file receiver reads one export per line, and the same
+        bytes on Windows keep the file identical wherever CI runs.
+        """
         destination = tmp_path / "out" / "metrics" / "otel.json"
 
         written = write_otlp_metrics(_drift(), destination, time_unix_nano=_OBSERVED)
 
         assert written == destination
-        content = destination.read_text(encoding="utf-8")
-        assert content.endswith("\n")
-        assert content.count("\n") == 1
-        assert content.rstrip("\n") == render_otlp_metrics(_drift(), time_unix_nano=_OBSERVED)
+        export = render_otlp_metrics(_drift(), time_unix_nano=_OBSERVED)
+        assert destination.read_bytes() == f"{export}\n".encode()
 
     def test_it_keeps_any_column_name_on_the_one_line(self, tmp_path: Path) -> None:
         """Ensure a line break or non-ASCII character in a name is escaped, not written raw."""
