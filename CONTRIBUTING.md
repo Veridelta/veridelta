@@ -2,6 +2,8 @@
 
 Contributions are welcome. Every change passes the same typing, formatting, and test checks that CI runs.
 
+Everyone who takes part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Development environment
 
 Veridelta uses [uv](https://docs.astral.sh/uv/) for its environment and dependencies. A native setup is recommended. A Dev Container gives an isolated one.
