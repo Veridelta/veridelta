@@ -237,6 +237,7 @@ class TestLakehouseConnectors:
 
         scan.assert_called_once_with(
             "s3://lake/iceberg/events",
+            snapshot_id=None,
             storage_options={"AWS_REGION": "us-east-1"},
         )
         assert connector.lazyframe() is lazy

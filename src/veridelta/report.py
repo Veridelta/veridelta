@@ -129,7 +129,7 @@ def _escape(value: object) -> str:
     Returns:
         str: HTML-safe text.
     """
-    return html.escape(str(value), quote=True)
+    return html.escape(str(value))
 
 
 def _json_cell(value: object) -> object:
