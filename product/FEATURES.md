@@ -83,5 +83,5 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | :--- | :--- |
 | The GitLab CI template | Frozen by [a decision record](../decisions/gitlab-template-is-frozen.md): nobody has named GitLab, removal would break a user nobody has seen, and keeping it costs nothing until an Action input needs mirroring. |
 | OpenTelemetry metrics, written with `--otel` or sent with `--otel-send` | No persona watches a dashboard yet. They stay for the migration engineer's CI, and the first user who reads them gives them a use case. |
-| `DataIngestor` in the Python API | Used by no code in the repository, and its own docstring warns against feeding its output to `DiffEngine`. A deprecation candidate, recorded on the cleanup issue, #124. |
+| `DataIngestor` in the Python API | Used by no code in the repository, and its own docstring warns against feeding its output to `DiffEngine`. Deprecated: it warns on construction and goes in 0.15.0. |
 | The NYC taxi sample in `veridelta.datasets` | Tutorial data, not a feature. |

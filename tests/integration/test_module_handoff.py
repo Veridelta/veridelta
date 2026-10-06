@@ -29,7 +29,8 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="csv")
         diff_cfg = DiffConfig(primary_keys=["id"])
 
-        ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
+        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
+            ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
         src_lazy, tgt_lazy = ingestor.get_dataframes()
 
         engine = DiffEngine(diff_cfg, src_lazy, tgt_lazy)
@@ -54,7 +55,8 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="parquet")
         diff_cfg = DiffConfig(primary_keys=["id"], strict_types=True)
 
-        ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
+        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
+            ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
         src_lazy, tgt_lazy = ingestor.get_dataframes()
         summary = DiffEngine(diff_cfg, src_lazy, tgt_lazy).run().summary
 
@@ -77,7 +79,8 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="csv")
         diff_cfg = DiffConfig(primary_keys=["id"], schema_mode="exact")
 
-        ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
+        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
+            ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
         src_lazy, tgt_lazy = ingestor.get_dataframes()
 
         with pytest.raises(ConfigError, match="EXACT schema match failed"):

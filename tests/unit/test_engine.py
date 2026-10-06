@@ -195,7 +195,8 @@ class TestDataIngestorAndLoaders:
         config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
 
         dummy_cfg = SourceConfig(path="dummy.csv", format="csv")
-        source, _ = DataIngestor(config, dummy_cfg, dummy_cfg).get_dataframes()
+        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
+            source, _ = DataIngestor(config, dummy_cfg, dummy_cfg).get_dataframes()
 
         assert source.collect_schema().names() == ["messy_col", "cleancol"]
 
@@ -214,7 +215,8 @@ class TestDataIngestorAndLoaders:
                 DiffRule(pattern="^sec"),
             ],
         )
-        aligned, _ = DataIngestor(config, dummy, dummy).get_dataframes()
+        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
+            aligned, _ = DataIngestor(config, dummy, dummy).get_dataframes()
 
         assert aligned.collect_schema().names() == ["user_id", "val"]
 
@@ -229,7 +231,8 @@ class TestDataIngestorAndLoaders:
             primary_keys=["user_id"],
             rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
         )
-        _, aligned = DataIngestor(config, dummy, dummy).get_dataframes()
+        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
+            _, aligned = DataIngestor(config, dummy, dummy).get_dataframes()
 
         assert aligned.collect_schema().names() == ["user_id", "val"]
 
