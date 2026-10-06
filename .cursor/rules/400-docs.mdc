@@ -18,6 +18,7 @@ alwaysApply: false
   - `DiffResult`, reports, OpenTelemetry metrics, and artifacts: `docs/results.md`
   - CLI commands, flags, exit codes, and `validate`: `docs/cli.md`
   - GitHub Action and GitLab CI template usage: `docs/ci.md` (macros are off on that page, so `${{ }}` renders literally)
+  - How an AI agent runs Veridelta: `docs/agents.md`. The build also writes `llms.txt` and `llms-full.txt` from every page, through `hooks/llms_txt.py`.
   - Public Python surface: `docs/api.md` (generated; do not hand-copy signatures)
   - What is not built: `docs/roadmap.md` only
   - Tutorials: existing notebooks under `docs/examples/`

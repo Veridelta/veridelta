@@ -116,7 +116,7 @@ veridelta = "veridelta.cli:main"
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "src"
-files = ["src", "tests"]
+files = ["src", "tests", "hooks"]
 strict = true
 plugins = ["pydantic.mypy"]
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]
@@ -153,6 +153,8 @@ module = [
     "opentelemetry.*",
     "google.protobuf",
     "google.protobuf.*",
+    "mkdocs",
+    "mkdocs.*",
 ]
 ignore_missing_imports = true
 

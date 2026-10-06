@@ -33,6 +33,8 @@ _LINK_TARGET = re.compile(r"\]\(([^)\s]+)\)")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+_GENERATED = {name: _ROOT / "hooks" / "llms_txt.py" for name in ("llms.txt", "llms-full.txt")}
+"""Files the docs build writes, each mapped to the hook that writes it."""
 
 
 def _slug(heading: str) -> str:
@@ -85,8 +87,11 @@ def _resolve(path: str) -> Path | None:
         path (str): The URL path after the site root, such as `rules/`.
 
     Returns:
-        Path | None: A Markdown page, a notebook, or a published file.
+        Path | None: A Markdown page, a notebook, a published file, or the hook
+            that writes a generated file.
     """
+    if path in _GENERATED:
+        return _GENERATED[path]
     if "." in path.rsplit("/", 1)[-1]:
         candidates = [_DOCS / path]
     else:

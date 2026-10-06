@@ -80,7 +80,8 @@ def _notebook_cells() -> Iterator[_Text]:
 
 def _python_text() -> Iterator[_Text]:
     """Yield docstrings and the `help=` and `description=` strings users read."""
-    for module in sorted((_ROOT / "src" / "veridelta").rglob("*.py")):
+    modules = [*(_ROOT / "src" / "veridelta").rglob("*.py"), *(_ROOT / "hooks").glob("*.py")]
+    for module in sorted(modules):
         where = _label(module)
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
