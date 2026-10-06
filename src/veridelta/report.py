@@ -14,13 +14,12 @@ lists changed values only when asked.
 """
 
 import html
-import json
 import math
 import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, cast
+from typing import Final
 
 import polars as pl
 
@@ -35,8 +34,11 @@ open. The report states when it has truncated, so a reader never mistakes a
 capped table for the whole story.
 """
 
-_JS_SAFE_INTEGER: Final[int] = 2**53 - 1
-"""Largest integer a JavaScript number holds exactly (`Number.MAX_SAFE_INTEGER`)."""
+_PAGE_SIZE: Final[int] = 25
+"""Rows the report's script shows at a time in each table.
+
+Every row is in the markup, so a reader without JavaScript sees them all.
+"""
 
 _STYLE: Final[str] = """
 :root {
@@ -80,45 +82,41 @@ th { color: var(--muted); font-weight: 600; }
 td.null { color: var(--muted); font-style: italic; }
 .wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
 .pager { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; }
+.pager[hidden] { display: none; }
 .pager button {
   border: 1px solid var(--line); background: var(--chip); color: var(--fg);
   border-radius: 5px; padding: .3rem .7rem; cursor: pointer; font-size: .85rem;
 }
-.pager button:disabled { opacity: .45; cursor: default; }
+.pager button[aria-disabled="true"] { opacity: .45; cursor: default; }
 .pager .status { color: var(--muted); font-size: .85rem; }
 .empty { color: var(--muted); padding: .75rem; }
 """
 
 _SCRIPT: Final[str] = """
-const PAGE = 25;
-function render(root) {
-  const data = JSON.parse(root.querySelector('script[type="application/json"]').textContent);
-  const body = root.querySelector('tbody');
-  const status = root.querySelector('.status');
-  const [prev, next] = root.querySelectorAll('button');
-  const pages = Math.max(1, Math.ceil(data.rows.length / PAGE));
+function paginate(root) {
+  const pager = root.querySelector('.pager');
+  if (!pager) return;
+  const size = Number(root.dataset.pageSize);
+  const rows = Array.from(root.querySelectorAll('tbody tr'));
+  const pages = Math.ceil(rows.length / size);
+  const status = pager.querySelector('.status');
+  const [prev, next] = pager.querySelectorAll('button');
   let page = 0;
   function draw() {
-    const slice = data.rows.slice(page * PAGE, page * PAGE + PAGE);
-    body.replaceChildren(...slice.map(row => {
-      const tr = document.createElement('tr');
-      row.forEach(cell => {
-        const td = document.createElement('td');
-        if (cell === null) { td.textContent = 'null'; td.className = 'null'; }
-        else { td.textContent = String(cell); }
-        tr.appendChild(td);
-      });
-      return tr;
-    }));
-    status.textContent = `Page ${page + 1} of ${pages} \\u00b7 ${data.rows.length} rows`;
-    prev.disabled = page === 0;
-    next.disabled = page >= pages - 1;
+    rows.forEach((row, index) => { row.hidden = Math.floor(index / size) !== page; });
+    // The status is a live region, so its text changes only with the page.
+    const text = `Page ${page + 1} of ${pages} \\u00b7 ${rows.length.toLocaleString('en-US')} rows`;
+    if (status.textContent !== text) status.textContent = text;
+    // aria-disabled keeps a button focusable, so focus stays put on the last page.
+    prev.setAttribute('aria-disabled', String(page === 0));
+    next.setAttribute('aria-disabled', String(page === pages - 1));
   }
   prev.addEventListener('click', () => { if (page > 0) { page--; draw(); } });
   next.addEventListener('click', () => { if (page < pages - 1) { page++; draw(); } });
   draw();
+  pager.hidden = false;
 }
-document.querySelectorAll('[data-table]').forEach(render);
+document.querySelectorAll('[data-table]').forEach(paginate);
 """
 
 
@@ -127,23 +125,31 @@ def _escape(value: object) -> str:
     return html.escape(str(value))
 
 
-def _json_cell(value: object) -> object:
-    """Make one cell safe for the page's `JSON.parse` without changing what it shows."""
-    if isinstance(value, float) and not math.isfinite(value):
-        return str(value)
-    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > _JS_SAFE_INTEGER:
-        return str(value)
-    if isinstance(value, list):
-        return [_json_cell(item) for item in cast("list[object]", value)]
-    if isinstance(value, dict):
-        return {key: _json_cell(item) for key, item in cast("dict[str, object]", value).items()}
-    return value
+def _cell(value: object) -> str:
+    """Render one table cell: `null` for a missing value, and booleans in lowercase."""
+    if value is None:
+        return "<td class='null'>null</td>"
+    if isinstance(value, bool):
+        return f"<td>{'true' if value else 'false'}</td>"
+    return f"<td>{_escape(value)}</td>"
+
+
+def _scroll_region(heading_id: str, table: str) -> str:
+    """Wrap a table that may scroll sideways in a region named by its heading.
+
+    The region takes keyboard focus, so arrow keys scroll a wide table.
+    """
+    return (
+        f"<div class='wrap' role='region' aria-labelledby='{heading_id}' tabindex='0'>{table}</div>"
+    )
 
 
 def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
-    """Render one paginated table section."""
+    """Render one table section, with every embedded row in the markup."""
+    heading_id = re.sub(r"\W+", "-", title.lower())
+    heading = f"<h2 id='{heading_id}'>{_escape(title)}</h2>"
     if frame.height == 0 or not frame.columns:
-        return f"<h2>{_escape(title)}</h2>\n<p class='empty'>No rows.</p>"
+        return f"{heading}\n<p class='empty'>No rows.</p>"
 
     shown = frame.head(max_rows)
     truncated = ""
@@ -153,19 +159,27 @@ def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
             "Export artifacts with <code>output_path</code> for the complete set.</p>"
         )
 
-    header = "".join(f"<th>{_escape(name)}</th>" for name in shown.columns)
-    rows = [[_json_cell(cell) for cell in row] for row in shown.iter_rows()]
-    # `<` is escaped so no string can close the script element and inject markup.
-    # A non-finite float raises rather than producing JSON the browser cannot parse.
-    payload = json.dumps({"rows": rows}, default=str, allow_nan=False).replace("<", "\\u003c")
+    header = "".join(f"<th scope='col'>{_escape(name)}</th>" for name in shown.columns)
+    body = "".join(f"<tr>{''.join(map(_cell, row))}</tr>" for row in shown.iter_rows())
+    table = f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+
+    # The script shows the pager. Without JavaScript, every row shows at once.
+    pager = ""
+    pages = math.ceil(shown.height / _PAGE_SIZE)
+    if pages > 1:
+        label = _escape(title.lower())
+        pager = (
+            "\n<div class='pager' hidden>"
+            f"<button type='button' aria-label='Previous page of {label}'>Previous</button>"
+            f"<button type='button' aria-label='Next page of {label}'>Next</button>"
+            f"<span class='status' role='status'>Page 1 of {pages} &middot; "
+            f"{shown.height:,} rows</span></div>"
+        )
 
     return (
-        f"<h2>{_escape(title)}</h2>\n{truncated}"
-        f"<div data-table>\n"
-        f'<script type="application/json">{payload}</script>\n'
-        f"<div class='wrap'><table><thead><tr>{header}</tr></thead><tbody></tbody></table></div>\n"
-        "<div class='pager'><button type='button'>Previous</button>"
-        "<button type='button'>Next</button><span class='status'></span></div>\n"
+        f"{heading}\n{truncated}"
+        f"<div data-table data-page-size='{_PAGE_SIZE}'>\n"
+        f"{_scroll_region(heading_id, table)}{pager}\n"
         "</div>"
     )
 
@@ -232,9 +246,10 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
         rows = "".join(
             f"<tr><td>{_escape(col)}</td><td>{count:,}</td></tr>" for col, count in ranked
         )
-        drift = (
-            "<div class='wrap'><table><thead><tr><th>Column</th>"
-            f"<th>Mismatches</th></tr></thead><tbody>{rows}</tbody></table></div>"
+        drift = _scroll_region(
+            "column-level-drift",
+            "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Mismatches</th>"
+            f"</tr></thead><tbody>{rows}</tbody></table>",
         )
 
     tables = "\n".join(
@@ -254,15 +269,17 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
 <style>{_STYLE}</style>
 </head>
 <body>
+<main>
 <h1>Veridelta Report</h1>
 <p class="sub">
   <span class="verdict {verdict.lower()}">{verdict}</span> &middot; generated {generated}
 </p>
 {keys_note}
 <div class="cards">{cards}</div>
-<h2>Column-level drift</h2>
+<h2 id="column-level-drift">Column-level drift</h2>
 {drift}
 {tables}
+</main>
 <script>{_SCRIPT}</script>
 </body>
 </html>

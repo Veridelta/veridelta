@@ -17,33 +17,28 @@ People read four parts of Veridelta:
 - **Plain text on the command line.** The command line prints plain text, with no color, symbol, or animation that carries meaning. The verdict is also an [exit code](https://veridelta.github.io/veridelta/cli/#exit-codes), and `--json` prints every result in a form any tool can read.
 - **Words for every verdict.** The HTML report and the Markdown summary say `PASSED` or `FAILED` in words. Color never carries a result alone.
 - **Structure.** Pages and reports use headings in order, real tables, and link text that names its target. The diagram on the home page is described in the paragraph after it.
-- **Keyboard.** Each control in the HTML report is a native button, reached with Tab and shown with the browser's focus ring.
+- **Keyboard.** Each control in the HTML report is a native button, reached with Tab and shown with the browser's focus ring. A table wider than the screen takes focus too, so arrow keys scroll it.
+- **Without JavaScript.** The HTML report shows every row it holds. Its script only splits long tables into pages of 25 rows.
 
 ## How we checked
 
-On 2026-10-06, [axe-core](https://github.com/dequelabs/axe-core) 4.14 checked 12 pages of the documentation site and a sample HTML report. It ran the WCAG 2.2 A and AA rules and its own best practices, in Chromium, in light and dark mode.
+On 2026-10-06, [axe-core](https://github.com/dequelabs/axe-core) 4.14 checked every page of the documentation site and a sample HTML report. That is 17 pages, all five tutorials and the 404 page among them. It ran the WCAG 2.2 A and AA rules and its own best practices in Chromium. Each page ran in light and dark mode, at desktop and phone widths, and none had a violation. The home page's diagram could not load during that run, so the check saw its source rather than the drawing.
 
-Nobody has tested Veridelta with a screen reader, with a keyboard alone, or at high magnification yet. Automated checks find only part of the barriers a person meets.
+A script also drove the report and the documentation site by keyboard in Chromium:
+
+- Tab reached each button and each wide table, and arrow keys scrolled the table.
+- Enter paged a table, and the page status changed once per page.
+- Focus stayed on Next at the last page.
+- With JavaScript off, the report showed every row.
+
+No person has tested Veridelta with a screen reader, a keyboard alone, or high magnification yet. Automated checks find only part of the barriers a person meets.
 
 ## Known limitations
 
-In the HTML report:
+- On the documentation site without JavaScript, a table or code block wider than the screen cannot take keyboard focus. Only a mouse or touch scrolls it.
+- The diagram on the home page loads Mermaid from unpkg.com. Where that is blocked, the page shows the diagram's source, and the paragraph after it still describes it.
 
-- The report has no main landmark, so a screen reader's list of landmarks is empty.
-- The changed, added, and removed tables draw their rows with JavaScript. With JavaScript off, they show column headings and no rows. The counts and the column drift table still show.
-- Each table has its own Previous and Next buttons, with the same names. A list of buttons does not say which table each one pages.
-- The page status, such as "Page 2 of 4", changes without being announced.
-
-The same counts are in `veridelta run --json` and in the Markdown summary. The rows are in the [discrepancy files](https://veridelta.github.io/veridelta/results/#artifacts) a run writes.
-
-On the documentation site, mostly from the Material theme:
-
-- Links inside paragraphs differ from the text around them by color alone.
-- Some text falls short of the 4.5:1 contrast ratio, at 4.1:1 to 4.5:1. That covers the navigation tabs, the footer, and some code colors in the tutorials and the API reference.
-- The search dialog has no accessible name.
-- The navigation inside each code block repeats a landmark with no distinct name.
-
-The user guide, the AI agents page, and the roadmap are also in [`llms-full.txt`](https://veridelta.github.io/veridelta/llms-full.txt), as one plain text file. The page sources are Markdown files and notebooks in the repository's `docs` folder.
+A run's counts are also in `veridelta run --json` and in the Markdown summary, and its rows in the [discrepancy files](https://veridelta.github.io/veridelta/results/#artifacts) it writes. The user guide, the AI agents page, and the roadmap are also in [`llms-full.txt`](https://veridelta.github.io/veridelta/llms-full.txt), as one plain text file. The page sources are Markdown files and notebooks in the repository's `docs` folder.
 
 ## Supported environments
 
