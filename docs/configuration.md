@@ -165,7 +165,7 @@ To check a whole configuration file from the command line, use `veridelta valida
 
 ## Editor support
 
-Veridelta publishes a JSON Schema for configuration files. An editor that uses the YAML language server, such as VS Code with the Red Hat YAML extension, then completes keys, shows each field's description, and flags a typo such as `primary_key` or `absolute_tolerence` as you type.
+Veridelta publishes a JSON Schema for configuration files. An editor that uses the YAML language server, such as VS Code with the `redhat.vscode-yaml` extension, then completes keys, shows each field's description, and flags a typo such as `primary_key` or `absolute_tolerence` as you type.
 
 Point a file at the schema with a comment on its first line:
 
@@ -183,6 +183,16 @@ primary_keys: ["user_id"]
 
 A `$schema:` key does not work, because the loader rejects keys it does not know.
 
+To apply the schema to every configuration in a workspace without a modeline, map a file pattern to it in the YAML extension's settings, such as in `.vscode/settings.json`:
+
+```json
+{
+  "yaml.schemas": {
+    "https://veridelta.github.io/veridelta/schema/veridelta.schema.json": "**/veridelta*.yaml"
+  }
+}
+```
+
 The site's copy of the schema follows the main branch. To pin it to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.14.10/docs/schema/veridelta.schema.json`. Or print the installed version's schema to a file and point at that:
 
 ```bash
@@ -190,3 +200,53 @@ veridelta schema > veridelta.schema.json
 ```
 
 The schema is slightly stricter than the loader. The loader converts `threshold: "0.1"` to a number, and the schema flags the quotes. In `source` and `target`, every text field also accepts a `${NAME}` reference.
+
+### Validate from a task
+
+The schema flags a wrong key or value as you type. `veridelta validate` also checks what the schema cannot, such as a missing extra or a pattern Polars rejects; see [Checking a configuration](cli.md#checking-a-configuration). This VS Code task runs it on the file in the editor and lists the verdict in the Problems panel. Save it as `.vscode/tasks.json`, then run it from the Terminal menu with Run Task:
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Veridelta: validate this file",
+      "type": "shell",
+      "command": "veridelta",
+      "args": ["validate", "-c", "${file}"],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "veridelta",
+          "source": "veridelta",
+          "severity": "error",
+          "fileLocation": ["autoDetect", "${workspaceFolder}"],
+          "pattern": {
+            "regexp": "^(.+?): (\\d+ errors?, \\d+ warnings?\\.)$",
+            "kind": "file",
+            "file": 1,
+            "message": 2
+          }
+        },
+        {
+          "owner": "veridelta",
+          "source": "veridelta",
+          "severity": "warning",
+          "fileLocation": ["autoDetect", "${workspaceFolder}"],
+          "pattern": {
+            "regexp": "^(.+?): (valid, with \\d+ warnings?\\.)$",
+            "kind": "file",
+            "file": 1,
+            "message": 2
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+The panel shows one entry per file, with its counts of errors and warnings. The terminal shows each finding, as the command prints it. A valid file with no warnings adds no entry.

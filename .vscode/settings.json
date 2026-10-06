@@ -23,6 +23,9 @@
   ],
   "mypy-type-checker.reportingScope": "workspace",
   "mypy-type-checker.importStrategy": "fromEnvironment",
+  "yaml.schemas": {
+    "./docs/schema/veridelta.schema.json": "**/veridelta*.yaml"
+  },
   "files.exclude": {
     "**/__pycache__": true,
     "**/.pytest_cache": true,

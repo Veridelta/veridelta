@@ -10,7 +10,7 @@ generated: { by: claude-code, at: 2026-10-06T16:05:00Z }
 
 Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.md), sits here against the use case it serves in [who Veridelta serves](USERS.md), the page that describes it, and the metric in [the key metrics](KEY_METRICS.md) that proves it. A feature that serves no use case is justified at the end, or cut. A pull request names the use case its change serves, and a test holds the roadmap to the same rule.
 
-## Shipped at 0.14.0
+## Shipped
 
 ### Reading data
 
@@ -61,6 +61,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | :--- | :--- | :--- | :--- |
 | The GitHub Action, with one comment per configuration on the pull request | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md), [DR-03](metrics/DR-03.md) |
 | The JSON Schema for configuration files, for completion and checking in an editor | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
+| The schema mapped to `veridelta*.yaml` in VS Code, the YAML extension recommended, and a task that runs `veridelta validate` on the open file with its verdict in the Problems panel | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The AI agents page, `llms.txt`, and the installable agent skill | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
 
 ## On the roadmap
@@ -68,7 +69,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Item | Use case | Metric it would move |
 | :--- | :--- | :--- |
 | Pushdown for more SQL dialects, such as Redshift and Synapse | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [GR-01](metrics/GR-01.md) |
-| The schema wired into VS Code, then the extension, its run command, and its MCP registration | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
+| The VS Code extension, its run command, and its MCP registration | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
 | Schemas for the JSON the commands print | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
 | A tutorial comparing two model evaluation runs | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [NS-01](metrics/NS-01.md) |
 | A parsable section of the Action's pull request comment, and a recipe for an agent's fix loop | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |

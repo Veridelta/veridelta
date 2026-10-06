@@ -19,7 +19,8 @@
                 "charliermarsh.ruff",
                 "ms-python.mypy-type-checker",
                 "tamasfe.even-better-toml",
-                "ms-toolsai.jupyter"
+                "ms-toolsai.jupyter",
+                "redhat.vscode-yaml"
             ]
         }
     },
