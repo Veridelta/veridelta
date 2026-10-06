@@ -78,6 +78,45 @@ class TestYAMLConfigurationParsing:
         assert "unsupported_field" in error_msg
 
     @pytest.mark.parametrize(
+        ("blocks", "location"),
+        [
+            pytest.param(
+                "source:\n  path: a.csv\ntarget:\n  path: b.csv\n  format: xlsx\n",
+                "[target -> format]: Input should be",
+                id="target-format",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\n  format: xlsx\ntarget:\n  path: b.csv\n",
+                "[source -> format]: Input should be",
+                id="source-format",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\ntarget:\n  type: xlsx\n  path: b.csv\n",
+                "[target]: Input tag 'xlsx'",
+                id="target-type",
+            ),
+            pytest.param(
+                "source:\n  type: database\n  uri: sqlite://a.db\ntarget:\n  path: b.csv\n",
+                "[source]: Value error, A database source",
+                id="source-model",
+            ),
+        ],
+    )
+    def test_it_names_the_block_a_validation_failure_is_in(
+        self, tmp_path: Path, blocks: str, location: str
+    ) -> None:
+        """Ensure a failure in `source` or `target` names the block, not Pydantic's `type` tag.
+
+        Pydantic opens a location inside the chosen model with the tag, `file`, which
+        names neither side; a block no model matches has no location at all.
+        """
+        with pytest.raises(ConfigError, match="Configuration Validation Failed") as exc_info:
+            _load_yaml(tmp_path, blocks + "primary_keys:\n  - id\n")
+
+        assert location in str(exc_info.value)
+        assert "[file" not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
         "blocks",
         [
             pytest.param(
