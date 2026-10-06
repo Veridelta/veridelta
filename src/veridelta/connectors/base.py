@@ -19,6 +19,29 @@ FETCH_SCHEMA_DEPRECATED = (
 """The warning every `fetch_schema` emits; the method goes in 0.15.0."""
 
 
+def mask_secrets(text: str, *secrets: str | None) -> str:
+    """Replace each set secret in driver output with `***`, longest first.
+
+    Args:
+        text (str): Driver output that may repeat a credential.
+        secrets (str | None): The credentials a connector holds. An unset one is skipped.
+
+    Returns:
+        str: The text with every secret replaced.
+    """
+    # Longest first, so a secret containing another is masked whole.
+    for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
+        text = text.replace(secret, "***")
+    return text
+
+
+def read_subject(table: str | None) -> str:
+    """Name what a database or DuckDB side reads, without repeating any SQL."""
+    if table is not None:
+        return f"table '{table}'"
+    return "the configured query"
+
+
 def optional_module(name: str) -> ModuleType | None:
     """Import the module of an optional extra, or return None when it is not installed.
 

@@ -35,7 +35,9 @@ from veridelta.connectors.base import (
     FETCH_SCHEMA_DEPRECATED,
     PushdownQueryType,
     VerideltaConnector,
+    mask_secrets,
     optional_module,
+    read_subject,
 )
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_duckdb_select
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -126,7 +128,7 @@ class DuckDBConnector(VerideltaConnector):
             )
             raise ConnectorError(
                 f"DuckDB read of {self._subject} from '{self._config.database}' failed: "
-                f"{_scrubbed(str(exc), token)}"
+                f"{mask_secrets(str(exc), token)}"
             ) from None
         logger.info(
             "Read %d rows of %s from %s in %.3fs",
@@ -199,9 +201,7 @@ class DuckDBConnector(VerideltaConnector):
     @property
     def _subject(self) -> str:
         """Name what is read without repeating any SQL."""
-        if self._config.table is not None:
-            return f"table '{self._config.table}'"
-        return "the configured query"
+        return read_subject(self._config.table)
 
 
 class DuckDBPushdownSession(VerideltaConnector):
@@ -242,7 +242,7 @@ class DuckDBPushdownSession(VerideltaConnector):
             logger.warning("DuckDB connection to %s failed", self._config.database)
             raise ConnectorError(
                 f"DuckDB connection to '{self._config.database}' failed: "
-                f"{_scrubbed(str(exc), token)}"
+                f"{mask_secrets(str(exc), token)}"
             ) from None
         logger.info("Connected to DuckDB database %s", self._config.database)
         self._connection, self._token = connection, token
@@ -311,7 +311,7 @@ class DuckDBPushdownSession(VerideltaConnector):
             )
             raise ConnectorError(
                 f"DuckDB {query_type} statement on '{self._config.database}' failed: "
-                f"{_scrubbed(str(exc), self._token)}"
+                f"{mask_secrets(str(exc), self._token)}"
             ) from None
         logger.info(
             "Ran DuckDB %s statement on %s in %.3fs, %d rows",
@@ -321,11 +321,6 @@ class DuckDBPushdownSession(VerideltaConnector):
             frame.height,
         )
         return frame
-
-
-def _scrubbed(text: str, token: str | None) -> str:
-    """Replace the MotherDuck token, if there is one, in driver output."""
-    return text if token is None else text.replace(token, "***")
 
 
 def _token(config: DuckDBConfig) -> str | None:

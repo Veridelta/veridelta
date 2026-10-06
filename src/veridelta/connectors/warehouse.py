@@ -25,6 +25,7 @@ from veridelta.connectors.base import (
     FETCH_SCHEMA_DEPRECATED,
     PushdownQueryType,
     VerideltaConnector,
+    mask_secrets,
     optional_module,
 )
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
@@ -176,14 +177,6 @@ def _snowflake_credentials(config: SnowflakeConfig) -> dict[str, str | None]:
     return credentials
 
 
-def _mask(text: str, *secrets: str | None) -> str:
-    """Replace each set secret in driver output with `***`."""
-    # Longest first, so a secret containing another is masked whole.
-    for secret in sorted(filter(None, secrets), key=len, reverse=True):
-        text = text.replace(secret, "***")
-    return text
-
-
 class SnowflakeConnector(VerideltaConnector):
     """Snowflake SQL warehouse connector backed by the optional Snowflake extra.
 
@@ -235,7 +228,7 @@ class SnowflakeConnector(VerideltaConnector):
         except Exception as exc:
             logger.warning("Snowflake connection to account %s failed", config.account)
             # Not chained: a traceback would print the driver's message unmasked.
-            message = _mask(str(exc), config.password, config.private_key_passphrase)
+            message = mask_secrets(str(exc), config.password, config.private_key_passphrase)
             raise ConnectorError(f"Failed to connect to Snowflake: {message}") from None
         logger.info(
             "Connected to Snowflake account %s, warehouse %s",

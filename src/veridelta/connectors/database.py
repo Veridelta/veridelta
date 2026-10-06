@@ -34,7 +34,9 @@ from veridelta.connectors.base import (
     FETCH_SCHEMA_DEPRECATED,
     PushdownQueryType,
     VerideltaConnector,
+    mask_secrets,
     optional_module,
+    read_subject,
 )
 from veridelta.connectors.sql import (
     SQLDialect,
@@ -294,9 +296,7 @@ class DatabaseConnector(VerideltaConnector):
     @property
     def _subject(self) -> str:
         """Name what is read without repeating any SQL."""
-        if self._config.table is not None:
-            return f"table '{self._config.table}'"
-        return "the configured query"
+        return read_subject(self._config.table)
 
 
 class PostgresPushdownSession(VerideltaConnector):
@@ -486,10 +486,7 @@ def _scrub(config: DatabaseConfig, text: str) -> str:
     embedded = urlsplit(config.uri).password
     if embedded:
         secrets.update({embedded, unquote(embedded)})
-    # Longest first, so a secret containing another is masked whole.
-    for secret in sorted(secrets, key=len, reverse=True):
-        text = text.replace(secret, "***")
-    return text
+    return mask_secrets(text, *secrets)
 
 
 def _existing_sqlite_uri(uri: str) -> str:
