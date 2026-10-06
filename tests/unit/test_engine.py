@@ -3,6 +3,7 @@
 
 """Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
 
+import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
 from decimal import Decimal
@@ -92,6 +93,43 @@ class TestDataIngestorAndLoaders:
         loaded = LoaderFactory.load(SourceConfig(path=str(path), format=fmt))  # type: ignore[arg-type]
 
         assert loaded.collect().equals(frame)
+
+    @pytest.mark.parametrize("fmt", ["csv", "parquet", "json", "ndjson", "arrow", "avro", "excel"])
+    def test_it_names_a_missing_file_before_the_comparison_starts(
+        self, tmp_path: Path, fmt: str
+    ) -> None:
+        """Ensure a missing file fails as a `ConnectorError` that names it.
+
+        A scan reads nothing until it runs, so a missing file used to surface
+        during the comparison, where the CLI called it a bug in Veridelta.
+        """
+        path = tmp_path / f"missing.{fmt}"
+
+        with pytest.raises(
+            ConnectorError, match=re.escape(f"The {fmt} file '{path}' does not exist")
+        ):
+            LoaderFactory.load(SourceConfig(path=str(path), format=fmt))  # type: ignore[arg-type]
+
+    def test_it_names_a_pattern_that_matches_no_file(self, tmp_path: Path) -> None:
+        """Ensure a glob that finds nothing fails before the comparison, naming the pattern."""
+        pattern = tmp_path / "*.parquet"
+
+        with pytest.raises(
+            ConnectorError, match=re.escape(f"Reading the parquet file '{pattern}' failed")
+        ):
+            LoaderFactory.load(SourceConfig(path=str(pattern), format="parquet"))
+
+    def test_it_leaves_a_scan_lazy_once_its_file_opens(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure checking the file reads its schema only, never its rows."""
+        path = tmp_path / "data.csv"
+        pl.DataFrame({"id": [1, 2]}).write_csv(path)
+        collect = mocker.spy(pl.LazyFrame, "collect")
+
+        LoaderFactory.load(SourceConfig(path=str(path), format="csv"))
+
+        collect.assert_not_called()
 
     def test_it_reads_an_excel_workbook(self, tmp_path: Path) -> None:
         """Ensure the Excel loader materializes a sheet through the optional extra."""
