@@ -30,7 +30,7 @@ from typing import Any, Final, cast
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
+from veridelta.connectors.base import PushdownQueryType, VerideltaConnector, optional_module
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_duckdb_select
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
@@ -38,16 +38,9 @@ from veridelta.models import DuckDBConfig
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-# Which branch of the probe runs depends on the extras installed in the
-# environment, so neither is a coverage target; the tests patch the module
-# attribute instead.
-duckdb: Any = None
-try:
-    import duckdb as _duckdb
-except ImportError:  # pragma: no cover
-    pass
-else:  # pragma: no cover
-    duckdb = _duckdb
+# The tests patch each module attribute below, so no test depends on the
+# extras installed where it runs.
+duckdb: Any = optional_module("duckdb")
 
 _DUCKDB_EXTRA = "DuckDB extra is not installed. Install it with: uv add 'veridelta[duckdb]'"
 _UNCONNECTED = "DuckDB connector is not connected. Call connect() first."

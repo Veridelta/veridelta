@@ -7,7 +7,6 @@ Holds the file loaders, the `DataIngestor` that prepares each side, and the
 `DiffEngine` that compares the two sides with Polars.
 """
 
-import importlib
 import logging
 import re
 from abc import ABC, abstractmethod
@@ -37,7 +36,7 @@ import polars as pl
 from veridelta.connectors import database as database_connectors
 from veridelta.connectors import duckdb as duckdb_connectors
 from veridelta.connectors import warehouse as warehouse_connectors
-from veridelta.connectors.base import PushdownQueryType, PushdownSession
+from veridelta.connectors.base import PushdownQueryType, PushdownSession, optional_module
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
@@ -86,19 +85,11 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
-def _optional_module(name: str) -> ModuleType | None:
-    """Import an optional extra, or return None when it is not installed."""
-    try:
-        return importlib.import_module(name)
-    except ImportError:
-        return None
-
-
-fastexcel = _optional_module("fastexcel")
+fastexcel = optional_module("fastexcel")
 """Presence probe for the `excel` extra. Polars imports this itself, but only
 at call time, so checking here turns a bare ImportError into an install hint."""
 
-rapidfuzz_distance = _optional_module("rapidfuzz.distance")
+rapidfuzz_distance = optional_module("rapidfuzz.distance")
 """Presence probe for the `fuzzy` extra, whose scorers evaluate
 `max_levenshtein_distance` and `min_jaro_winkler_similarity` locally."""
 

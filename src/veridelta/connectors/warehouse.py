@@ -20,7 +20,7 @@ from typing import Any, Final
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
+from veridelta.connectors.base import PushdownQueryType, VerideltaConnector, optional_module
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.exceptions import ConnectorError
 from veridelta.models import BigQueryConfig, DatabricksConfig, SnowflakeConfig
@@ -28,24 +28,11 @@ from veridelta.models import BigQueryConfig, DatabricksConfig, SnowflakeConfig
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-# Which branch of each probe runs depends on the extras installed in the
-# environment, so neither is a coverage target; the tests patch the module
-# attribute instead.
-snowflake_connector: Any = None
-try:
-    import snowflake.connector as _snowflake_connector
-except ImportError:  # pragma: no cover
-    pass
-else:  # pragma: no cover
-    snowflake_connector = _snowflake_connector
+# The tests patch each module attribute below, so no test depends on the
+# extras installed where it runs.
+snowflake_connector: Any = optional_module("snowflake.connector")
 
-databricks_sql: Any = None
-try:
-    import databricks.sql as _databricks_sql
-except ImportError:  # pragma: no cover
-    pass
-else:  # pragma: no cover
-    databricks_sql = _databricks_sql
+databricks_sql: Any = optional_module("databricks.sql")
 
 _SNOWFLAKE_EXTRA = (
     "Snowflake extra is not installed. Install it with: uv add 'veridelta[snowflake]'"

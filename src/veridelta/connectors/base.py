@@ -3,13 +3,33 @@
 
 """Abstract connector interface for warehouse and lakehouse backends."""
 
+import importlib
 from abc import ABC, abstractmethod
-from types import TracebackType
+from types import ModuleType, TracebackType
 from typing import Literal, Protocol, Self, runtime_checkable
 
 import polars as pl
 
 from veridelta.connectors.sql import SQLPushdownCompiler
+
+
+def optional_module(name: str) -> ModuleType | None:
+    """Import the module of an optional extra, or return None when it is not installed.
+
+    A module that reads through an extra binds the result to a module attribute,
+    which its tests patch, so no test depends on the extras installed where it runs.
+
+    Args:
+        name (str): The module to import, such as `snowflake.connector`.
+
+    Returns:
+        ModuleType | None: The module, or `None` when the import fails.
+    """
+    try:
+        return importlib.import_module(name)
+    except ImportError:
+        return None
+
 
 PushdownQueryType = Literal[
     "mismatch",
