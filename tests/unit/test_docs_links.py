@@ -25,6 +25,8 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DOCS = _ROOT / "docs"
+_GENERATED = {name: _ROOT / "hooks" / "llms_txt.py" for name in ("llms.txt", "llms-full.txt")}
+"""Files the docs build writes, each mapped to the hook that writes it."""
 
 _SITE_URL = re.compile(
     r"https://veridelta\.github\.io/veridelta/([^)\s#\"'`<>]*)(?:#([^)\s\"'`<>]*))?",
@@ -87,8 +89,11 @@ def _resolve(path: str) -> Path | None:
         path (str): The URL path after the site root, such as `rules/`.
 
     Returns:
-        Path | None: A Markdown page, a notebook, or a published file.
+        Path | None: A Markdown page, a notebook, a published file, or the hook
+            that writes a generated file.
     """
+    if path in _GENERATED:
+        return _GENERATED[path]
     if "." in path.rsplit("/", 1)[-1]:
         candidates = [_DOCS / path]
     else:

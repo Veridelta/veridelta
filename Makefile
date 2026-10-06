@@ -6,12 +6,12 @@ install:
 	uv run pre-commit install --hook-type commit-msg
 
 format:
-	uv run ruff format src/ tests/
-	uv run ruff check src/ tests/ --select I
+	uv run ruff format src/ tests/ hooks/
+	uv run ruff check src/ tests/ hooks/ --select I
 
 lint:
-	uv run ruff check src/ tests/
-	uv run mypy src/ tests/
+	uv run ruff check src/ tests/ hooks/
+	uv run mypy src/ tests/ hooks/
 	uv run pyright src/
 
 test:

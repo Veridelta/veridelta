@@ -43,6 +43,10 @@ plugins:
             show_source: true
             show_root_heading: true
 
+# Writes llms.txt and llms-full.txt into the site, for language models.
+hooks:
+  - hooks/llms_txt.py
+
 extra:
   version: 0.13.0
 
@@ -78,5 +82,6 @@ nav:
     - Results: results.md
     - Command line: cli.md
     - CI integrations: ci.md
+    - AI agents: agents.md
   - API reference: api.md
   - Roadmap: roadmap.md
