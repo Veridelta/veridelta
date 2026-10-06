@@ -265,6 +265,62 @@ primary_keys: [id]
         assert result.returncode == 1, result.stderr
         assert "Changed:       1" in result.stdout
 
+    def test_e2e_delta_table_is_compared_with_a_csv_file(self, tmp_path: Path) -> None:
+        """Ensure `veridelta run` reads a Delta table named in the configuration."""
+        legacy = tmp_path / "legacy_orders"
+        pl.DataFrame({"id": [1, 2], "status": ["open", "closed"]}).write_delta(legacy)
+        modern = tmp_path / "modern.csv"
+        pl.DataFrame({"id": [1, 2], "status": ["open", "shipped"]}).write_csv(modern)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  type: delta
+  table_uri: {legacy}
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 1, result.stderr
+        assert "Changed:       1" in result.stdout
+
+    def test_e2e_missing_delta_table_is_named_not_reported_as_a_bug(self, tmp_path: Path) -> None:
+        """Ensure a table that does not exist fails as a scan, with its URI.
+
+        Polars defers the scan, so the error used to surface mid-run, and the
+        CLI asked the user to report it as a bug in Veridelta.
+        """
+        modern = tmp_path / "modern.csv"
+        pl.DataFrame({"id": [1], "status": ["open"]}).write_csv(modern)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  type: delta
+  table_uri: {tmp_path / "missing"}
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 1
+        assert "ConnectorError" in result.stderr
+        assert "Delta Lake scan of" in result.stderr
+        assert "Unexpected System Error" not in result.stderr
+
     def test_e2e_unset_environment_variable_is_a_configuration_error(self, tmp_path: Path) -> None:
         """Ensure a missing variable stops the run with a configuration error that names it."""
         config_file = tmp_path / "config.yaml"
