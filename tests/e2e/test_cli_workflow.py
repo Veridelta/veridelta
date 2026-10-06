@@ -389,6 +389,35 @@ primary_keys: [id]
         assert "Delta Lake scan of" in result.stderr
         assert "Unexpected System Error" not in result.stderr
 
+    def test_e2e_missing_key_names_the_format_the_file_was_read_as(self, tmp_path: Path) -> None:
+        """Ensure a `.parquet` path with no `format` fails naming the cause: it was read as CSV.
+
+        `format` defaults to `csv`, so the key is not among the columns read. The message
+        used to name only the missing key, which sent the user to the wrong setting.
+        """
+        legacy, modern = tmp_path / "legacy.parquet", tmp_path / "modern.parquet"
+        pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(legacy)
+        pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(modern)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  path: {legacy}
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 3
+        assert "Configuration Error" in result.stderr
+        assert f"`{legacy}` read as csv since `format` is not set" in result.stderr
+
     def test_e2e_unset_environment_variable_is_a_configuration_error(self, tmp_path: Path) -> None:
         """Ensure a missing variable stops the run with a configuration error that names it."""
         config_file = tmp_path / "config.yaml"

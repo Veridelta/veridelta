@@ -333,6 +333,36 @@ class ExcelLoader(BaseLoader):
         return loaded.lazy()
 
 
+def _describe_source(config: SourceRef) -> str:
+    """Name a side by the settings the user wrote, and never by a credential.
+
+    Args:
+        config (SourceRef): The side's configuration.
+
+    Returns:
+        str: The file and the format it was read as, or the table, query, or
+            table URI under the `type` the user wrote.
+    """
+    if isinstance(config, SourceConfig):
+        described = f"`{config.path}` read as {config.format}"
+        if "format" in config.model_fields_set:
+            return described
+        return f"{described} since `format` is not set"
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return f"the `{config.type}` source `{config.table_uri}`"
+    if config.table is not None:
+        return f"the `{config.type}` table `{config.table}`"
+    return f"the `{config.type}` query"
+
+
+def _quoted_list(names: Sequence[str]) -> str:
+    """Join names as `'a'`, `'a' and 'b'`, or `'a', 'b', and 'c'`."""
+    quoted = [repr(name) for name in names]
+    if len(quoted) < 3:
+        return " and ".join(quoted)
+    return f"{', '.join(quoted[:-1])}, and {quoted[-1]}"
+
+
 class LoaderFactory:
     """Resolve a file, lakehouse, database, or DuckDB `SourceRef` to a LazyFrame.
 
@@ -1594,31 +1624,6 @@ def _schema_frame(config: SourceRef) -> pl.LazyFrame:
     return pl.LazyFrame(schema=LoaderFactory.load(config).collect_schema())
 
 
-def _local_schema_findings(
-    diff: DiffConfig, source: SourceRef, target: SourceRef
-) -> list[ConfigFinding]:
-    """Check the rules against two local sides' stored columns."""
-    queries = [
-        _warning(
-            f"The {label} reads a query, which validate does not run, so the rules were "
-            "not checked against stored columns."
-        )
-        for label, config in (("source", source), ("target", target))
-        if isinstance(config, (DatabaseConfig, DuckDBConfig)) and config.query is not None
-    ]
-    if queries:
-        return queries
-    try:
-        source_frame, target_frame = _schema_frame(source), _schema_frame(target)
-    except (VerideltaError, OSError, pl.exceptions.PolarsError) as exc:
-        return [_error(f"Could not read the schemas: {exc}")]
-    try:
-        DiffEngine.validate_rules(diff, source_frame, target_frame)
-    except ConfigError as exc:
-        return [_error(str(exc))]
-    return []
-
-
 def _pushdown_schema_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
     """Probe a warehouse pair and compile its statements without running them."""
     try:
@@ -1921,6 +1926,16 @@ class DiffEngine:
         self.config = config
         self.source = source_df
         self.target = target_df
+        # How each side was read, set by the entry points that load a `SourceRef`,
+        # so an error can name the file and its format rather than only a column.
+        self._sides: dict[str, str] | None = None
+
+    @classmethod
+    def _on_sources(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> "DiffEngine":
+        """Load both sides and build an engine whose errors name them."""
+        engine = cls(diff, LoaderFactory.load(source), LoaderFactory.load(target))
+        engine._sides = {"source": _describe_source(source), "target": _describe_source(target)}
+        return engine
 
     @classmethod
     def run_from_configs(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
@@ -1958,7 +1973,7 @@ class DiffEngine:
         # `run()` normalizes headers and applies renames exactly once. Loading
         # through `DataIngestor` would align first and have `run()` rename the
         # aligned frames again, which undoes a swap and collapses a chain.
-        return cls(diff, LoaderFactory.load(source), LoaderFactory.load(target)).run()
+        return cls._on_sources(diff, source, target).run()
 
     @classmethod
     def validate_schemas(
@@ -2060,8 +2075,35 @@ class DiffEngine:
         if any(finding.severity == "error" for finding in findings):
             return [*findings, _warning("Schemas were not checked, because of the errors above.")]
         if pair is None:
-            return findings + _local_schema_findings(diff, source, target)
+            return findings + DiffEngine._local_schema_findings(diff, source, target)
         return findings + _pushdown_schema_findings(diff, pair)
+
+    @classmethod
+    def _local_schema_findings(
+        cls, diff: DiffConfig, source: SourceRef, target: SourceRef
+    ) -> list[ConfigFinding]:
+        """Check the rules against two local sides' stored columns."""
+        queries = [
+            _warning(
+                f"The {label} reads a query, which validate does not run, so the rules were "
+                "not checked against stored columns."
+            )
+            for label, config in (("source", source), ("target", target))
+            if isinstance(config, (DatabaseConfig, DuckDBConfig)) and config.query is not None
+        ]
+        if queries:
+            return queries
+        try:
+            source_frame, target_frame = _schema_frame(source), _schema_frame(target)
+        except (VerideltaError, OSError, pl.exceptions.PolarsError) as exc:
+            return [_error(f"Could not read the schemas: {exc}")]
+        engine = cls(diff, source_frame, target_frame)
+        engine._sides = {"source": _describe_source(source), "target": _describe_source(target)}
+        try:
+            engine._plan()
+        except ConfigError as exc:
+            return [_error(str(exc))]
+        return []
 
     @classmethod
     def propose_value_maps_from_configs(
@@ -2116,7 +2158,7 @@ class DiffEngine:
                     sample_fraction=sample_fraction,
                 )
             )
-        engine = cls(diff, LoaderFactory.load(source), LoaderFactory.load(target))
+        engine = cls._on_sources(diff, source, target)
         return engine.propose_value_maps(
             min_confidence=min_confidence,
             min_support=min_support,
@@ -2169,6 +2211,7 @@ class DiffEngine:
         """
         _check_value_map_thresholds(min_confidence, min_support, sample_fraction)
         prepared = type(self)(self.config, self.source, self.target)
+        prepared._sides = self._sides
         prepared._align_structure()
         prepared._validate_schema()
         stored = prepared.source.collect_schema()
@@ -2432,18 +2475,45 @@ class DiffEngine:
         self.source = self.source.drop(list(src_drop)).rename(src_rename)
         self.target = self.target.drop(list(tgt_drop))
 
+    def _missing_keys(self, side: str, columns: list[str]) -> str | None:
+        """Say which primary keys a side lacks, and what it holds instead.
+
+        Args:
+            side (str): `source` or `target`.
+            columns (list[str]): The side's columns after alignment.
+
+        Returns:
+            str | None: The message, or `None` when every key is present.
+        """
+        present = set(columns)
+        missing = [key for key in self.config.primary_keys if key not in present]
+        if not missing:
+            return None
+        where = f"the {side}"
+        if self._sides is not None:
+            where += f", {self._sides[side]}"
+        keys = _quoted_list(missing)
+        noun, verb = ("key", "is") if len(missing) == 1 else ("keys", "are")
+        if not columns:
+            return f"The primary {noun} {keys} {verb} not among the columns of {where}. No column was read."
+        shown = ", ".join(repr(column)[:60] for column in columns[:10])
+        if len(columns) > 10:
+            shown += f", and {len(columns) - 10} more"
+        return (
+            f"The primary {noun} {keys} {verb} not among the columns of {where}. "
+            f"The columns read are: {shown}."
+        )
+
     def _validate_schema(self) -> None:
         """Enforce the configured `SchemaMode` before comparison."""
-        source_cols = set(self.source.collect_schema().names())
-        target_cols = set(self.target.collect_schema().names())
-        pks = set(self.config.primary_keys)
+        source_names = self.source.collect_schema().names()
+        target_names = self.target.collect_schema().names()
+        source_cols, target_cols = set(source_names), set(target_names)
 
-        if not pks.issubset(source_cols):
-            raise ConfigError(
-                f"Primary keys missing in SOURCE after alignment: {pks - source_cols}"
-            )
-        if not pks.issubset(target_cols):
-            raise ConfigError(f"Primary keys missing in TARGET: {pks - target_cols}")
+        for side, names in (("source", source_names), ("target", target_names)):
+            message = self._missing_keys(side, names)
+            if message is not None:
+                raise ConfigError(message)
 
         if self.config.schema_mode == "exact" and source_cols != target_cols:
             raise ConfigError(

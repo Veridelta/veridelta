@@ -37,7 +37,7 @@ uv add 'veridelta[all]'
 
 ## Files
 
-A file source reads `path` in one of these formats: `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, or `excel`. Any other `format` is rejected when the configuration loads.
+A file source reads `path` in one of these formats: `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, or `excel`. Any other `format` is rejected when the configuration loads. A file read as the wrong format seldom holds the primary keys, and the error that stops the run names the file, the format it was read as, and the columns it found.
 
 `options` go to the matching Polars reader. `{"separator": ";"}` reaches `scan_csv`, and `{"sheet_name": "Q3"}` reaches `read_excel`.
 

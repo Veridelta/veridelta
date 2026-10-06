@@ -25,6 +25,7 @@ from veridelta.engine import (
     LoaderFactory,
     _alignment_maps,
     _column_mismatches_from_frame,
+    _describe_source,
     _fold_rule_defaults,
     _match_rule,
     _normalized_dtype,
@@ -41,10 +42,15 @@ from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
     CastTarget,
+    DatabaseConfig,
+    DeltaLakeConfig,
     DiffConfig,
     DiffRule,
+    DuckDBConfig,
+    IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
+    SourceRef,
     SourceType,
     ValueMapProposal,
 )
@@ -293,7 +299,13 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"modern_id": [1]})
         config = DiffConfig(primary_keys=["modern_id"])
 
-        with pytest.raises(ConfigError, match="Primary keys missing in SOURCE"):
+        with pytest.raises(
+            ConfigError,
+            match=re.escape(
+                "The primary key 'modern_id' is not among the columns of the source. "
+                "The columns read are: 'legacy_id'."
+            ),
+        ):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
     def test_it_aborts_with_config_error_when_target_is_missing_primary_keys(self) -> None:
@@ -302,8 +314,108 @@ class TestStructuralAlignment:
         tgt = pl.DataFrame({"wrong_id": [1]})
         config = DiffConfig(primary_keys=["id"])
 
-        with pytest.raises(ConfigError, match="Primary keys missing in TARGET"):
+        with pytest.raises(
+            ConfigError,
+            match=re.escape(
+                "The primary key 'id' is not among the columns of the target. "
+                "The columns read are: 'wrong_id'."
+            ),
+        ):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+    def test_it_names_what_a_side_read_when_a_primary_key_is_missing(self, tmp_path: Path) -> None:
+        """Ensure a `.parquet` path with no `format` fails naming the cause: it was read as CSV.
+
+        `format` defaults to `csv`, so the file is scanned as text and the key is not
+        among the columns. The message names the file, the format, that it is the
+        default, and what was read instead, so the user changes `format` and not the key.
+        """
+        legacy, modern = tmp_path / "legacy.parquet", tmp_path / "modern.parquet"
+        pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(legacy)
+        pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(modern)
+
+        with pytest.raises(ConfigError) as caught:
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"]),
+                SourceConfig(path=str(legacy)),
+                SourceConfig(path=str(modern)),
+            )
+
+        assert str(caught.value).startswith(
+            f"The primary key 'id' is not among the columns of the source, `{legacy}` read as "
+            "csv since `format` is not set. The columns read are: 'PAR1"
+        )
+
+    def test_it_names_the_target_and_a_format_the_user_set(self, tmp_path: Path) -> None:
+        """Ensure the target is named too, and a `format` the user wrote is not called a default."""
+        source, target = tmp_path / "source.csv", tmp_path / "target.csv"
+        pl.DataFrame({"id": [1], "amount": [1]}).write_csv(source)
+        pl.DataFrame({"key": [1], "amount": [1]}).write_csv(target)
+
+        with pytest.raises(
+            ConfigError,
+            match=re.escape(
+                f"The primary key 'id' is not among the columns of the target, `{target}` read "
+                "as csv. The columns read are: 'key', 'amount'."
+            ),
+        ):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"]),
+                SourceConfig(path=str(source), format="csv"),
+                SourceConfig(path=str(target), format="csv"),
+            )
+
+    def test_it_lists_every_missing_key_and_caps_the_columns_it_shows(self) -> None:
+        """Ensure two missing keys are both named, and a wide frame is summarized."""
+        wide = pl.DataFrame({f"c{index}": [1] for index in range(12)}).lazy()
+
+        with pytest.raises(
+            ConfigError,
+            match=re.escape(
+                "The primary keys 'a' and 'b' are not among the columns of the source. The "
+                "columns read are: 'c0', 'c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8', 'c9', "
+                "and 2 more."
+            ),
+        ):
+            DiffEngine(DiffConfig(primary_keys=["a", "b"]), wide, wide).run()
+
+    def test_it_says_when_a_side_has_no_columns(self) -> None:
+        """Ensure an empty frame is reported as empty rather than as a blank list."""
+        empty = pl.LazyFrame()
+
+        with pytest.raises(
+            ConfigError,
+            match=re.escape(
+                "The primary keys 'a', 'b', and 'c' are not among the columns of the source. "
+                "No column was read."
+            ),
+        ):
+            DiffEngine(DiffConfig(primary_keys=["a", "b", "c"]), empty, empty).run()
+
+    @pytest.mark.parametrize(
+        ("config", "described"),
+        [
+            (SourceConfig(path="a.parquet"), "`a.parquet` read as csv since `format` is not set"),
+            (SourceConfig(path="a.parquet", format="parquet"), "`a.parquet` read as parquet"),
+            (SourceConfig(path="a.txt", format="csv"), "`a.txt` read as csv"),
+            (
+                DeltaLakeConfig(table_uri="s3://lake/orders"),
+                "the `delta` source `s3://lake/orders`",
+            ),
+            (IcebergConfig(table_uri="sales.orders"), "the `iceberg` source `sales.orders`"),
+            (
+                DatabaseConfig(uri="postgresql://user:secret@host/db", table="orders"),
+                "the `database` table `orders`",
+            ),
+            (DuckDBConfig(database="local.duckdb", query="select 1"), "the `duckdb` query"),
+        ],
+        ids=["default-format", "parquet", "explicit-csv", "delta", "iceberg", "table", "query"],
+    )
+    def test_it_describes_a_side_as_the_user_wrote_it(
+        self, config: SourceRef, described: str
+    ) -> None:
+        """Ensure a side is named by its own settings, and never by a credential."""
+        assert _describe_source(config) == described
 
     def test_schema_mode_exact_fails_when_target_has_unmapped_columns(self) -> None:
         """Ensure 'exact' schema mode prevents comparisons when schemas deviate at all."""
@@ -2240,6 +2352,19 @@ class TestValueMapProposals:
 
         assert proposal.value_map == {"M": "Male"}
 
+    def test_it_names_what_a_side_read_when_a_key_is_missing(self, tmp_path: Path) -> None:
+        """Ensure a proposal run fails as a comparison does, naming the file and its format."""
+        src, tgt = _codes(["M"] * 5, ["Male"] * 5)
+        src.write_parquet(tmp_path / "source.parquet")
+        tgt.write_parquet(tmp_path / "target.parquet")
+
+        with pytest.raises(ConfigError, match="read as csv since `format` is not set"):
+            DiffEngine.propose_value_maps_from_configs(
+                DiffConfig(primary_keys=["id"]),
+                SourceConfig(path=str(tmp_path / "source.parquet")),
+                SourceConfig(path=str(tmp_path / "target.parquet"), format="parquet"),
+            )
+
     def test_it_refuses_a_warehouse_paired_with_a_file_without_connecting(
         self, mocker: MockerFixture
     ) -> None:
@@ -2532,7 +2657,9 @@ class TestRuleDryRun:
         src = pl.DataFrame(schema={"id": pl.Int64}).lazy()
         tgt = pl.DataFrame(schema={"key": pl.Int64}).lazy()
 
-        with pytest.raises(ConfigError, match="Primary keys missing in TARGET"):
+        with pytest.raises(
+            ConfigError, match="The primary key 'id' is not among the columns of the target"
+        ):
             DiffEngine.validate_rules(DiffConfig(primary_keys=["id"]), src, tgt)
 
 
