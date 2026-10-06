@@ -1,3 +1,18 @@
+## v0.14.2 (2026-10-06)
+
+A missing primary key now names what each side read. `format` defaults to `csv`, so a
+`.parquet` path without it is scanned as text, and the run stopped with "Primary keys
+missing in SOURCE", which named a symptom. The error now names the side, the file, and the
+format it was read as, and says when `format` was not set. It lists the columns it found,
+so a newcomer changes `format` rather than the key. A Delta Lake or Iceberg side is named
+by its table URI, and a database or DuckDB side by its table or as a query, never by a
+credential. `validate --schemas` reports the same message.
+
+### Fix
+
+- name the side, the file, the format it was read as, and the columns found when a
+  primary key is missing, in `run`, `crosswalk`, and `validate --schemas`
+
 ## v0.14.1 (2026-10-06)
 
 The package is the one 0.14.0 shipped: no command, rule, connector, or report changed.
