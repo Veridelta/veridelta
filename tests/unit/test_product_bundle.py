@@ -8,7 +8,8 @@ Open Knowledge Format bundle: one concept per Markdown file, each opening with
 frontmatter that says what it is, who wrote it, and where it stands. Ids tie
 the concepts together: a persona is `P-01`, a use case `UC-01`, a metric
 `NS-01`, `DR-01`, or `GR-01`. These tests check the frontmatter, the indexes,
-the log, the links, and the trace from the north star down to the use cases.
+the log, the links, and the trace from the north star down to the use cases,
+the features that serve them, and the roadmap items that name them.
 """
 
 import re
@@ -22,6 +23,9 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BUNDLE = _ROOT / "product"
+_ROADMAP = _ROOT / "docs" / "roadmap.md"
+_NO_USE_CASE = "No use case yet"
+"""What a roadmap item says instead of a use case, with the reason it stays listed."""
 _RESERVED = {"index.md", "log.md"}
 _PAGES = sorted(_BUNDLE.rglob("*.md"))
 _CONCEPTS = [page for page in _PAGES if page.name not in _RESERVED]
@@ -42,6 +46,7 @@ _DATE_HEADING = re.compile(r"^## (\d{4}-\d{2}-\d{2})$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _INLINE_CODE = re.compile(r"(`+).*?\1")
 _LINK = re.compile(r"\]\(([^)\s]+)\)")
+_LIST_ITEM = re.compile(r"^\s*[-*] ")
 _ROLE_BY_PREFIX = {"NS": "north-star", "DR": "driver", "GR": "guardrail"}
 
 
@@ -125,6 +130,7 @@ class TestProductBundle:
         """Ensure a moved folder cannot empty every other check."""
         assert _BUNDLE / "USERS.md" in _CONCEPTS
         assert _BUNDLE / "KEY_METRICS.md" in _CONCEPTS
+        assert _BUNDLE / "FEATURES.md" in _CONCEPTS
         assert _METRICS
 
     @pytest.mark.parametrize("concept", _CONCEPTS, ids=_label)
@@ -227,6 +233,28 @@ class TestProductBundle:
 
         assert personas, "USERS.md defines no persona."
         assert not unused, "No use case names these personas:\n" + "\n".join(unused)
+
+    def test_every_use_case_is_served_by_a_feature(self) -> None:
+        """Ensure the feature map names every use case, so none is a promise nothing keeps."""
+        use_cases = set(_sections(_BUNDLE / "USERS.md", "UC"))
+        served = set(_ID.findall("\n".join(_prose(_BUNDLE / "FEATURES.md"))))
+        unserved = sorted(use_cases - served)
+
+        assert use_cases, "USERS.md defines no use case."
+        assert not unserved, "No feature serves these use cases:\n" + "\n".join(unserved)
+
+    def test_every_roadmap_item_names_a_use_case(self) -> None:
+        """Ensure each roadmap item serves a use case, or says that none asks for it yet."""
+        use_cases = set(_sections(_BUNDLE / "USERS.md", "UC"))
+        items = [line for line in _prose(_ROADMAP) if _LIST_ITEM.match(line)]
+        unjustified = [
+            line.strip()[:80]
+            for line in items
+            if not (set(_ID.findall(line)) & use_cases) and _NO_USE_CASE not in line
+        ]
+
+        assert items, "The roadmap lists nothing."
+        assert not unjustified, "These roadmap items name no use case:\n" + "\n".join(unjustified)
 
     @pytest.mark.parametrize("directory", _DIRECTORIES, ids=lambda path: path.name)
     def test_each_directory_index_lists_its_concepts(self, directory: Path) -> None:
