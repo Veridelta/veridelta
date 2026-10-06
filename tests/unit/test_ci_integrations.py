@@ -58,17 +58,22 @@ def _run_script() -> str:
     return script
 
 
-def _cli_arguments(script: str) -> list[str]:
+_OTEL_SEND_SWITCH = 'if [ "$VERIDELTA_OTEL_SEND" = "true" ]; then send="--otel-send"; fi'
+"""The line that sets `$send`, which the run command expands unquoted."""
+
+
+def _cli_arguments(script: str, send: str = "") -> list[str]:
     """Extract the `veridelta run` arguments from a script, with variables filled in.
 
     Args:
         script (str): Shell script containing one `veridelta run` invocation.
+        send (str): What the unquoted `$send` expands to: nothing, or `--otel-send`.
 
     Returns:
         list[str]: The arguments after `veridelta`, as the CLI parser sees them.
     """
     line = next(line for line in script.splitlines() if "veridelta run" in line)
-    command = line[line.index("veridelta run") :].split(">", 1)[0]
+    command = line[line.index("veridelta run") :].split(">", 1)[0].replace(" $send ", f" {send} ")
     # Row caps must be numbers for the parser; every other value is a path or name.
     filled = re.sub(
         r"\$\{?[A-Z_]*MAX_ROWS\}?|\$\[\[\s*inputs\.html-max-rows\s*\]\]", "1000", command
@@ -128,6 +133,19 @@ class TestGitHubAction:
         assert parsed.markdown == "placeholder/summary.md"
         assert parsed.markdown_max_rows == 1000
         assert parsed.otel == "placeholder/otel-metrics.json"
+        assert parsed.otel_send is False
+
+    def test_it_sends_the_metrics_only_when_asked(self) -> None:
+        """Ensure `otel-send` defaults off, and when true adds the flag the CLI parses."""
+        inputs = _action()["inputs"]
+        step = next(step for step in _steps() if step.get("id") == "run")
+        script = _run_script()
+
+        assert inputs["otel-send"]["default"] == "false"
+        assert step["env"]["VERIDELTA_OTEL_SEND"] == "${{ inputs.otel-send }}"
+        assert script.index(_OTEL_SEND_SWITCH) < script.index("veridelta run")
+        parsed = build_parser().parse_args(_cli_arguments(script, "--otel-send"))
+        assert parsed.otel_send is True
 
     def test_it_exposes_the_metrics_file_only_for_a_finished_run(self) -> None:
         """Ensure `otel-metrics` names the export after a match or drift, and is empty on error."""
@@ -180,6 +198,22 @@ class TestGitLabTemplate:
         assert parsed.markdown == "veridelta-report/summary.md"
         assert parsed.markdown_max_rows == 1000
         assert parsed.otel == "veridelta-report/otel-metrics.json"
+        assert parsed.otel_send is False
+
+    def test_it_sends_the_metrics_only_when_asked(self) -> None:
+        """Ensure `otel-send` defaults off, and when true adds the flag the CLI parses."""
+        header, _ = _gitlab()
+        script = _gitlab_job()["script"][0]
+
+        assert header["spec"]["inputs"]["otel-send"] == {
+            "description": header["spec"]["inputs"]["otel-send"]["description"],
+            "type": "boolean",
+            "default": False,
+        }
+        assert _gitlab_job()["variables"]["VERIDELTA_OTEL_SEND"] == "$[[ inputs.otel-send ]]"
+        assert script.index(_OTEL_SEND_SWITCH) < script.index("veridelta run")
+        parsed = build_parser().parse_args(_cli_arguments(script, "--otel-send"))
+        assert parsed.otel_send is True
 
     def test_it_installs_the_release_it_ships_with(self) -> None:
         """Ensure commitizen keeps the default version in step with the package.

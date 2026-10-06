@@ -77,17 +77,18 @@ CI posts the summary where more people may read it than may read the data. Ask f
 
 ## OpenTelemetry metrics
 
-`veridelta run --otel otel-metrics.json` writes the run's metrics for an observability backend, such as Datadog or Grafana, through an OpenTelemetry Collector or any OTLP/HTTP endpoint. It needs no OpenTelemetry package. From Python:
+`veridelta run --otel otel-metrics.json` writes the run's metrics to a file, and `--otel-send` sends them to an OTLP/HTTP endpoint. Either reaches an observability backend, such as Datadog or Grafana, through an OpenTelemetry Collector or the backend's own OTLP intake. Neither needs an OpenTelemetry package. From Python:
 
 ```python
-from veridelta.telemetry import write_otlp_metrics
+from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
 write_otlp_metrics(
     result, "reports/otel-metrics.json", config_path="veridelta.yaml", source=source, target=target
 )
+send_otlp_metrics(result, config_path="veridelta.yaml", source=source, target=target)
 ```
 
-Every metric is a gauge stamped with the time the file is written, so each run adds one point to each series:
+Every metric is a gauge stamped with the time of the run's export, so each run adds one point to each series:
 
 | Metric | Unit | Attributes | Value |
 | :--- | :--- | :--- | :--- |
@@ -106,14 +107,29 @@ Resource attributes say which comparison ran:
 
 A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run. An Azure `abfss://container@account` path keeps its container, which sits where a user would. A database `query` source has no name.
 
-Like the Markdown summary by default, the file holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file.
+Like the Markdown summary by default, the export holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file and sends nothing.
 
-The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file exporter format](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/file-exporter.md) specifies. The Collector's OTLP JSON file receiver, in its contrib distribution, can read it. The same line is the body an OTLP/HTTP endpoint accepts:
+The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file exporter format](https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/file-exporter.md) specifies. The Collector's OTLP JSON file receiver, in its contrib distribution, can read it. The same line is the body `--otel-send` posts.
 
-```bash
-curl --fail -X POST -H "Content-Type: application/json" \
-  --data-binary @otel-metrics.json "$OTLP_ENDPOINT/v1/metrics"
-```
+### Sending to an endpoint
+
+`--otel-send` posts the export to an OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. The standard OpenTelemetry variables configure it:
+
+| Variable | Default | Meaning |
+| :--- | :--- | :--- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | Base URL. `/v1/metrics` is added to its path. |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | | Full URL, used as written in place of the base URL. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | | Request headers, such as an API key, as comma-separated `key=value` items. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | Milliseconds to wait for the endpoint. |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/json` | The protocol. Only `http/json` is supported. |
+
+`HEADERS`, `TIMEOUT`, and `PROTOCOL` also have a metrics form, such as `OTEL_EXPORTER_OTLP_METRICS_HEADERS`. The metrics form wins over the general one, as it does in the OpenTelemetry SDKs.
+
+Header keys and values are percent-encoded, as in `OTEL_RESOURCE_ATTRIBUTES`, so `Bearer <token>` is written `Bearer%20<token>`. No header value appears in a log line or an error, and neither does the endpoint's query. The send follows no redirect, so a header never reaches a second host. Over HTTPS, the endpoint's certificate is checked against the system's trust store.
+
+The send is one attempt, with no retry. When it fails, such as on an unreachable endpoint, an HTTP error, or the timeout, the run exits `3` after writing its files. Under `--json`, stdout then holds the error object instead of the summary. An unusable variable, or a protocol other than `http/json`, fails the run the same way before anything is sent.
+
+`--otel` and `--otel-send` together write and send the same export.
 
 ### Attributes from the environment
 
@@ -124,7 +140,7 @@ The standard OpenTelemetry variables add resource attributes, so a run can carry
 
 When the environment sets a key that Veridelta also sets, Veridelta's value wins, except for `service.name`. The instrumentation scope stays `veridelta`. The values are exported as written, so keep secrets out of them.
 
-A malformed `OTEL_RESOURCE_ATTRIBUTES`, such as an item without `=` or a `%` that starts no valid escape, is ignored whole, as the specification recommends. The `veridelta.telemetry` logger then warns without repeating the value. The command line configures no logging, so there the variable is dropped silently.
+A malformed `OTEL_RESOURCE_ATTRIBUTES`, such as an item without `=` or a `%` that starts no valid escape, is ignored whole, as the specification recommends. The `veridelta.telemetry` logger then warns without repeating the value. On the command line, `--verbose` prints that warning. Without it, the variable is dropped silently.
 
 ## Artifacts
 

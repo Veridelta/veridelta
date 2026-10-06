@@ -6,6 +6,7 @@
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib.parse import quote
@@ -15,6 +16,7 @@ import pytest
 import yaml
 from pytest_mock import MockerFixture
 
+from tests.otlp_collector import running_collector
 from veridelta.cli import build_parser, crosswalk, main, run, validate
 from veridelta.config import config_json_schema
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -38,6 +40,7 @@ class TestCommandLineInterface:
             markdown=None,
             markdown_max_rows=0,
             otel=None,
+            otel_send=False,
         )
 
     def test_it_returns_exit_code_zero_when_datasets_match(
@@ -362,6 +365,7 @@ class TestCommandLineInterface:
         source, target = MagicMock(), MagicMock()
         mock_load.return_value = (MagicMock(output_path=None), source, target)
         mock_engine.run_from_configs.return_value = mock_result
+        mocker.patch("veridelta.cli.time.time_ns", return_value=1_790_000_000_000_000_000)
         default_args.otel = "otel-metrics.json"
 
         exit_code = run(default_args)
@@ -374,6 +378,7 @@ class TestCommandLineInterface:
             config_path="dummy.yaml",
             source=source,
             target=target,
+            time_unix_nano=1_790_000_000_000_000_000,
         )
         assert "OpenTelemetry metrics saved to" in captured.err
         assert "OpenTelemetry metrics saved to" not in captured.out
@@ -1152,3 +1157,83 @@ class TestVerboseLogging:
         printed = captured.out + captured.err
         assert _DATABASE_PASSWORD not in printed
         assert encoded not in printed
+
+
+_DRIFT_CONFIG = """\
+source:
+  path: source.csv
+target:
+  path: target.csv
+primary_keys: [id]
+"""
+"""Two CSV files in the working directory that differ in one value."""
+
+
+class TestOTLPSend:
+    """Validate `run --otel-send`, which sends the metrics `--otel` writes."""
+
+    @pytest.fixture(autouse=True)
+    def _drifting_files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Write the drifting pair, and clear any OpenTelemetry variable the shell sets."""
+        for name in list(os.environ):
+            if name.startswith("OTEL_"):
+                monkeypatch.delenv(name)
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "veridelta.yaml").write_text(_DRIFT_CONFIG)
+        pl.DataFrame({"id": [1, 2], "val": ["A", "B"]}).write_csv(tmp_path / "source.csv")
+        pl.DataFrame({"id": [1, 2], "val": ["A", "X"]}).write_csv(tmp_path / "target.csv")
+
+    @staticmethod
+    def _main(mocker: MockerFixture, *flags: str) -> object:
+        """Run `veridelta run` with the flags given, and return its exit code."""
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "run", *flags])
+        with pytest.raises(SystemExit) as stopped:
+            main()
+        return stopped.value.code
+
+    def test_it_takes_the_flag_only_on_run(self) -> None:
+        """Ensure `--otel-send` parses on `run`, and defaults off."""
+        assert build_parser().parse_args(["run", "--otel-send"]).otel_send is True
+        assert build_parser().parse_args(["run"]).otel_send is False
+
+    def test_it_sends_the_export_it_writes(
+        self,
+        tmp_path: Path,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure the request body and the file hold the same bytes, one timestamp included."""
+        with running_collector() as collector:
+            monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.url)
+
+            code = self._main(mocker, "--otel", "otel-metrics.json", "--otel-send")
+
+        assert code == 1
+        (request,) = collector.received
+        assert request.body + b"\n" == (tmp_path / "otel-metrics.json").read_bytes()
+        assert (
+            f"OpenTelemetry metrics sent to: {collector.url}/v1/metrics" in capsys.readouterr().err
+        )
+
+    def test_a_failed_send_stops_the_run_with_an_error(
+        self,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure a send that fails exits 3, and `--json` prints the error in place of the summary."""
+        with running_collector() as collector:
+            collector.status = 503
+            monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.url)
+
+            code = self._main(mocker, "--json", "--otel-send")
+
+        assert code == 3
+        error = json.loads(capsys.readouterr().out)["error"]
+        assert error["type"] == "ConnectorError"
+        assert error["message"] == (
+            f"Sending metrics to {collector.url}/v1/metrics failed: "
+            "the endpoint answered with HTTP 503 Service Unavailable."
+        )

@@ -30,7 +30,8 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | `--html-max-rows N` | Rows per table in the HTML report, zero or more. Default 1000, so a large diff cannot produce a file too large to open. |
 | `--markdown PATH` | Also write the [Markdown summary](results.md#markdown-summary) that the [CI integrations](ci.md) post. |
 | `--markdown-max-rows N` | Changed values to list in the Markdown summary, lowest keys first. Default 0, which lists none. |
-| `--otel PATH` | Also write the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). |
+| `--otel PATH` | Also write the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics) to a file. |
+| `--otel-send` | Also send the metrics to an OTLP/HTTP endpoint. See [Sending to an endpoint](results.md#sending-to-an-endpoint). |
 
 Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one, and so does a Markdown summary that lists values.
 
@@ -43,7 +44,7 @@ Every command exits `2` for invalid arguments, and `3` when it cannot finish:
 | `0` | A match within `threshold`. | No errors. Warnings are allowed. | Proposals computed, whether or not any were found. |
 | `1` | Drift. | At least one error. | Not used. |
 | `2` | Invalid arguments. | Invalid arguments. | Invalid arguments. |
-| `3` | The run could not finish, such as on a configuration error, an unreachable source, or a missing extra. | The check could not finish, such as when `--schemas` cannot reach a source. | The proposals could not be computed. |
+| `3` | The run could not finish, such as on a configuration error, an unreachable source, a missing extra, or metrics `--otel-send` could not send. | The check could not finish, such as when `--schemas` cannot reach a source. | The proposals could not be computed. |
 
 A command that cannot finish explains why on stderr. With `--json`, it also prints the error on stdout, as one JSON object in place of its usual output:
 
@@ -56,7 +57,7 @@ A command that cannot finish explains why on stderr. With `--json`, it also prin
 }
 ```
 
-`type` names the error. A `ConfigError` is a problem with the configuration file. A `ConnectorError` or a `DataIntegrityError` comes from a source or its data. Any other type is a bug or an unsupported input: please [report it](https://github.com/Veridelta/veridelta/issues). An error `validate` finds in the file is a finding at exit `1`, in its usual output, not an error object.
+`type` names the error. A `ConfigError` is a problem with the configuration file. A `ConnectorError` comes from a source, or from the endpoint `--otel-send` posts to. A `DataIntegrityError` comes from a source's data. Any other type is a bug or an unsupported input: please [report it](https://github.com/Veridelta/veridelta/issues). An error `validate` finds in the file is a finding at exit `1`, in its usual output, not an error object.
 
 ## Logging
 

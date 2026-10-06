@@ -38,6 +38,10 @@ spec:
       description: Changed values to list in the Markdown summary, which reaches the job log and the merge request note. 0 lists none.
       type: number
       default: 0
+    otel-send:
+      description: Also send the run's OpenTelemetry metrics to the OTLP/HTTP endpoint that the OTEL_EXPORTER_OTLP_* variables set. A send that fails is an error.
+      type: boolean
+      default: false
     fail-on-mismatch:
       description: Fail the job when the comparison finds drift. An error always fails it.
       type: boolean
@@ -57,6 +61,7 @@ spec:
     VERIDELTA_EXTRAS: "$[[ inputs.extras ]]"
     VERIDELTA_HTML_MAX_ROWS: "$[[ inputs.html-max-rows ]]"
     VERIDELTA_MARKDOWN_MAX_ROWS: "$[[ inputs.markdown-max-rows ]]"
+    VERIDELTA_OTEL_SEND: "$[[ inputs.otel-send ]]"
     VERIDELTA_FAIL_ON_MISMATCH: "$[[ inputs.fail-on-mismatch ]]"
     VERIDELTA_COMMENT: "$[[ inputs.comment ]]"
   script:
@@ -65,7 +70,10 @@ spec:
       mkdir -p veridelta-report
       extras=$(printf '%s' "$VERIDELTA_EXTRAS" | tr -d ' ')
       spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
-      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel veridelta-report/otel-metrics.json > veridelta-report/summary.json
+      # Left unquoted in the command, so an empty value adds no argument.
+      send=""
+      if [ "$VERIDELTA_OTEL_SEND" = "true" ]; then send="--otel-send"; fi
+      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel veridelta-report/otel-metrics.json $send > veridelta-report/summary.json
       code=$?
       # A pinned older release exits 1 on a failure too, so 1 is drift only
       # when the summary says so. Any other code, such as 3, is an error.
