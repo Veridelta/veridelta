@@ -8,6 +8,7 @@ Holds the file loaders, the `DataIngestor` that prepares each side, and the
 """
 
 import importlib
+import logging
 import re
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -80,6 +81,9 @@ from veridelta.models import (
     WhitespaceMode,
 )
 from veridelta.sentinels import usable_sentinels
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 def _optional_module(name: str) -> ModuleType | None:
@@ -451,7 +455,7 @@ class LoaderFactory:
                 frame = loader.load(config)
                 # A scan reads nothing until the comparison runs, where a missing file
                 # would fail unexplained. Reading the schema opens the file now.
-                frame.collect_schema()
+                columns = len(frame.collect_schema())
             except FileNotFoundError as exc:
                 raise ConnectorError(
                     f"The {config.format} file '{config.path}' does not exist."
@@ -460,6 +464,7 @@ class LoaderFactory:
                 raise ConnectorError(
                     f"Reading the {config.format} file '{config.path}' failed: {exc}"
                 ) from exc
+            logger.info("Opened the %s file '%s' (%d columns)", config.format, config.path, columns)
             return frame
         raise ConnectorError(
             "Warehouse sources cannot be loaded via LoaderFactory; "

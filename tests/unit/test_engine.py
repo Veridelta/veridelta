@@ -3,6 +3,7 @@
 
 """Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
 
+import logging
 import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta
@@ -60,6 +61,18 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 class TestDataIngestorAndLoaders:
     """Validate data ingestion, loader factories, and pre-engine dataset preparation."""
+
+    def test_it_logs_each_file_it_opens(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure a file read logs its path, format, and width, as a connector's read does."""
+        path = tmp_path / "orders.parquet"
+        pl.DataFrame({"id": [1], "amount": [2]}).write_parquet(path)
+
+        with caplog.at_level(logging.INFO, logger="veridelta.engine"):
+            LoaderFactory.load(SourceConfig(path=str(path), format="parquet"))
+
+        assert caplog.messages == [f"Opened the parquet file '{path}' (2 columns)"]
 
     def test_it_raises_config_error_for_unsupported_source_types(self) -> None:
         """Ensure an unloadable format fails as configuration, naming what works."""
