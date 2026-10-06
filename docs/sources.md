@@ -49,6 +49,8 @@ Most formats are read lazily, in streaming batches. Three are read whole into me
 
 Avro columns keep the types in the file's schema. Its `options` take `columns` and `n_rows`. The Avro reader takes a local path only; copy a file from object storage, such as `s3://`, before reading it.
 
+Veridelta reads each file's schema before the comparison starts. So a missing file, a pattern that matches none, or a file that cannot be read fails at once, with a `ConnectorError` that names it.
+
 ## Lakehouse tables
 
 A Delta Lake or Iceberg table is scanned lazily, as an unevaluated Polars `LazyFrame`. Install the `delta` or `iceberg` extra. This pair compares version 12 of a Delta table with one snapshot of an Iceberg table:

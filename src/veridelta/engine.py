@@ -336,8 +336,9 @@ class ExcelLoader(BaseLoader):
 class LoaderFactory:
     """Resolve a file, lakehouse, database, or DuckDB `SourceRef` to a LazyFrame.
 
-    A file source goes to the loader for its `format`. A Delta Lake or Iceberg
-    source returns its connector's lazy scan, and a database or DuckDB source is
+    A file source goes to the loader for its `format`, and its schema is read
+    before it returns, so a file that cannot be read fails here, by name. A
+    Delta Lake or Iceberg source returns its connector's lazy scan, and a database or DuckDB source is
     read once through its connector, which then closes. A warehouse source is
     refused: its comparison runs as SQL pushdown through
     `DiffEngine.run_from_configs`.
@@ -392,8 +393,9 @@ class LoaderFactory:
                 rows a database or DuckDB source read.
 
         Raises:
-            ConnectorError: If `config` is a warehouse source, or a lakehouse
-                scan, database read, or DuckDB read fails.
+            ConnectorError: If `config` is a warehouse source, a file is missing
+                or cannot be read, or a lakehouse scan, database read, or DuckDB
+                read fails.
             ConfigError: If the file format has no loader, or a database
                 `table` names a scheme Veridelta cannot quote for.
         """
@@ -414,7 +416,21 @@ class LoaderFactory:
                 duck.connect()
                 return duck.lazyframe()
         if isinstance(config, SourceConfig):
-            return cls.get_loader(config.format).load(config)
+            loader = cls.get_loader(config.format)
+            try:
+                frame = loader.load(config)
+                # A scan reads nothing until the comparison runs, where a missing file
+                # would fail unexplained. Reading the schema opens the file now.
+                frame.collect_schema()
+            except FileNotFoundError as exc:
+                raise ConnectorError(
+                    f"The {config.format} file '{config.path}' does not exist."
+                ) from exc
+            except (OSError, pl.exceptions.PolarsError) as exc:
+                raise ConnectorError(
+                    f"Reading the {config.format} file '{config.path}' failed: {exc}"
+                ) from exc
+            return frame
         raise ConnectorError(
             "Warehouse sources cannot be loaded via LoaderFactory; "
             "use DiffEngine.run_from_configs for SQL pushdown."
