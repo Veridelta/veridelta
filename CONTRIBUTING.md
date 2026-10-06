@@ -90,7 +90,7 @@ axe-core comes from npm, pinned by version and digest, and Dependabot cannot bum
 
 ### The recording
 
-The README embeds a recording of the quick start, rendered from `demo/veridelta.tape` by [vhs](https://github.com/charmbracelet/vhs). `make demo` writes `docs/assets/demo.gif`; run it after a change to the quick start or to the run summary, with vhs installed from `brew install vhs` or its release binary. The tape types four commands at real speed on the two CI fixture files copied into `demo/`, and `tests/unit/test_demo_tape.py` holds those commands to the CLI and the data to the fixtures. Commit the new GIF with the change that moved it.
+The README embeds a recording of the quick start, and the docs home plays it with captions, both rendered from `demo/veridelta.tape` by [vhs](https://github.com/charmbracelet/vhs). `make demo` writes `docs/assets/demo.gif` and `docs/assets/demo.mp4`; run it after a change to the quick start or to the run summary, with vhs installed from `brew install vhs` or its release binary. The tape types four commands at real speed on the two CI fixture files copied into `demo/`. The captions in `docs/assets/demo.vtt` and the transcript on `docs/index.md` are written by hand, and `tests/unit/test_demo_tape.py` holds the commands to the CLI, the data to the fixtures, the captions to the tape's timing, and the transcript to what the commands print. Commit the new GIF and MP4, with the captions and the transcript that match them, in the change that moved the output.
 
 ## Commit messages
 

@@ -1,5 +1,6 @@
 # The quick start, as the README shows it. `make demo` renders this tape with vhs.
 Output ../docs/assets/demo.gif
+Output ../docs/assets/demo.mp4
 
 Set Shell "bash"
 Set FontSize 16
