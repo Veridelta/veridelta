@@ -4,6 +4,8 @@ Contributions are welcome. Every change passes the same typing, formatting, and 
 
 Everyone who takes part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
+Coding agents read [AGENTS.md](AGENTS.md), which sums up this guide and links the detailed rules. Update both when a rule changes.
+
 ## Development environment
 
 Veridelta uses [uv](https://docs.astral.sh/uv/) for its environment and dependencies. A native setup is recommended. A Dev Container gives an isolated one.
