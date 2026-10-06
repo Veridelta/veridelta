@@ -8,7 +8,7 @@ Each connector accepts the fields below and rejects any other key:
 
 | `type` | Required | Optional |
 | :--- | :--- | :--- |
-| `file` (default) | `path` | `format` (default `csv`), `options` |
+| `file` (default) | `path` | `format` (from the suffix, else `csv`), `options` |
 | `snowflake` | `table`, `account`, `user`, `warehouse`, `database`, `schema_name` | `password`, `private_key_path`, `private_key_passphrase`, `role` |
 | `databricks` | `table`, `server_hostname`, `http_path` | `access_token`, `catalog`, `schema_name` |
 | `bigquery` | `table`, `project` | `dataset`, `location`, `credentials_path`, `maximum_bytes_billed` |
@@ -37,7 +37,7 @@ uv add 'veridelta[all]'
 
 ## Files
 
-A file source reads `path` in one of these formats: `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, or `excel`. Any other `format` is rejected when the configuration loads. A file read as the wrong format seldom holds the primary keys, and the error that stops the run names the file, the format it was read as, and the columns it found.
+A file source reads `path` in one of these formats: `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, or `excel`. Any other `format` is rejected when the configuration loads. When `format` is absent, the file's suffix decides it: `.csv`; `.parquet` or `.pq`; `.json`; `.ndjson` or `.jsonl`; `.arrow`, `.ipc`, or `.feather`; `.avro`; and `.xlsx` or `.xls`, in any case and before any `?` in the path. A suffix not in that list, or none, reads as `csv`. A `format` you write always wins. A file read as the wrong format seldom holds the primary keys, and the error that stops the run names the file, the format it was read as, and the columns it found.
 
 `options` go to the matching Polars reader. `{"separator": ";"}` reaches `scan_csv`, and `{"sheet_name": "Q3"}` reaches `read_excel`.
 

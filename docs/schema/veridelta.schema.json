@@ -872,7 +872,7 @@
     },
     "SourceConfig": {
       "additionalProperties": false,
-      "description": "Settings for a file source.\n\nAttributes:\n    type (Literal[\"file\"]): Source kind. A YAML file source may omit it.\n    path (str): Local path or URI of the file.\n    format (SourceType): File format, such as `parquet`. Defaults to `csv`.\n    options (dict[str, Any]): Keyword arguments for the Polars reader, such as\n        `{'separator': ';'}`. A nested `storage_options` map is left out when the\n        config is printed, but kept by `model_dump()`, which the reader needs.",
+      "description": "Settings for a file source.\n\nAttributes:\n    type (Literal[\"file\"]): Source kind. A YAML file source may omit it.\n    path (str): Local path or URI of the file.\n    format (SourceType): File format, such as `parquet`. When absent, the path's\n        suffix decides it, and `csv` is the default for a suffix Veridelta does\n        not know.\n    options (dict[str, Any]): Keyword arguments for the Polars reader, such as\n        `{'separator': ';'}`. A nested `storage_options` map is left out when the\n        config is printed, but kept by `model_dump()`, which the reader needs.",
       "properties": {
         "type": {
           "const": "file",
@@ -888,7 +888,7 @@
         },
         "format": {
           "title": "Format",
-          "description": "The format of the file.",
+          "description": "The format of the file. When absent, the path's suffix decides it, and csv is the default for a suffix Veridelta does not know.",
           "default": "csv",
           "anyOf": [
             {

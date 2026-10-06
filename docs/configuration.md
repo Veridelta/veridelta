@@ -7,16 +7,14 @@ The smallest file names a source, a target, and the primary keys:
 ```yaml
 source:
   path: "legacy_system.csv"
-  format: "csv"
 
 target:
   path: "modern_system.parquet"
-  format: "parquet"
 
 primary_keys: ["user_id"]
 ```
 
-A source without a `type` is a file, read from `path` in the given `format` with optional reader `options`. Set `type` to read a lakehouse table, a database, or a warehouse table instead; see [Sources](sources.md). To change how particular columns are compared, add `rules`; see [Rules](rules.md).
+A source without a `type` is a file, read from `path` in the `format` its suffix names, or the one you give, with optional reader `options`. Set `type` to read a lakehouse table, a database, or a warehouse table instead; see [Sources](sources.md). To change how particular columns are compared, add `rules`; see [Rules](rules.md).
 
 ## Primary keys
 
