@@ -14,10 +14,11 @@ logger; log lines carry the table URI and pin, never `storage_options`.
 """
 
 import logging
+import warnings
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
+from veridelta.connectors.base import FETCH_SCHEMA_DEPRECATED, PushdownQueryType, VerideltaConnector
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
@@ -108,6 +109,7 @@ class DeltaLakeConnector(VerideltaConnector):
         Raises:
             ConnectorError: If `connect()` has not been called.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         return self.lazyframe().collect_schema()
 
     def lazyframe(self) -> pl.LazyFrame:
@@ -209,6 +211,7 @@ class IcebergConnector(VerideltaConnector):
         Raises:
             ConnectorError: If `connect()` has not been called.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         return self.lazyframe().collect_schema()
 
     def lazyframe(self) -> pl.LazyFrame:

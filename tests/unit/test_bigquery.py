@@ -21,7 +21,11 @@ from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import BigQueryConfig, DiffConfig, DiffRule, SnowflakeConfig
 
-pytestmark = [pytest.mark.unit, pytest.mark.fast]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.fast,
+    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
+]
 
 _BASE: dict[str, Any] = {"project": "analytics-prod", "table": "sales.orders"}
 """The fields every BigQuery config needs."""

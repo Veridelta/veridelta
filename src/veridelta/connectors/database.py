@@ -22,6 +22,7 @@ error as the cause.
 
 import logging
 import time
+import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final, cast
@@ -29,7 +30,12 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector, optional_module
+from veridelta.connectors.base import (
+    FETCH_SCHEMA_DEPRECATED,
+    PushdownQueryType,
+    VerideltaConnector,
+    optional_module,
+)
 from veridelta.connectors.sql import (
     SQLDialect,
     SQLPushdownCompiler,
@@ -176,6 +182,7 @@ class DatabaseConnector(VerideltaConnector):
         Raises:
             ConnectorError: If `connect()` has not been called.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         return self.lazyframe().collect_schema()
 
     def lazyframe(self) -> pl.LazyFrame:
@@ -366,6 +373,7 @@ class PostgresPushdownSession(VerideltaConnector):
         Raises:
             ConnectorError: If the session is not connected or nothing has run yet.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         uri = self._connected_uri()
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)

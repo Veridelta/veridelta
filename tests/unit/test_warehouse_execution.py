@@ -17,7 +17,11 @@ from veridelta.connectors.sql import SQLDialect
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DatabricksConfig, DiffRule, SnowflakeConfig
 
-pytestmark = [pytest.mark.unit, pytest.mark.fast]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.fast,
+    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
+]
 
 
 def _snowflake_config() -> SnowflakeConfig:

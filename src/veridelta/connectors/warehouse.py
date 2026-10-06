@@ -15,12 +15,18 @@ and timings, never SQL text or credentials.
 import importlib
 import logging
 import time
+import warnings
 from collections.abc import Mapping
 from typing import Any, Final
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector, optional_module
+from veridelta.connectors.base import (
+    FETCH_SCHEMA_DEPRECATED,
+    PushdownQueryType,
+    VerideltaConnector,
+    optional_module,
+)
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.exceptions import ConnectorError
 from veridelta.models import BigQueryConfig, DatabricksConfig, SnowflakeConfig
@@ -275,6 +281,7 @@ class SnowflakeConnector(VerideltaConnector):
         Raises:
             ConnectorError: If the session is missing or no statement has run.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         self._require_session()
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)
@@ -398,6 +405,7 @@ class DatabricksConnector(VerideltaConnector):
         Raises:
             ConnectorError: If the session is missing or no statement has run.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         self._require_session()
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)
@@ -526,6 +534,7 @@ class BigQueryConnector(VerideltaConnector):
             ConnectorError: If the connector is not connected or no statement
                 has run.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         self._require_client()
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)

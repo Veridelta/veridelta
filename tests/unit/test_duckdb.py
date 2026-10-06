@@ -16,7 +16,11 @@ from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
 
-pytestmark = [pytest.mark.unit, pytest.mark.fast]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.fast,
+    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
+]
 
 _SECRET = "md-token-do-not-print"
 
