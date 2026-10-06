@@ -17,6 +17,7 @@ import pytest
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
+from veridelta.connectors.base import optional_module
 from veridelta.engine import (
     _ARTIFACT_WRITERS,
     _CAST_TARGETS,
@@ -30,7 +31,6 @@ from veridelta.engine import (
     _fold_rule_defaults,
     _match_rule,
     _normalized_dtype,
-    _optional_module,
     _polars_datetime_format,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
@@ -234,8 +234,9 @@ class TestDataIngestorAndLoaders:
         assert aligned.collect_schema().names() == ["user_id", "val"]
 
     def test_it_treats_a_missing_optional_module_as_absent(self) -> None:
-        """Ensure the excel extra probe degrades to None instead of raising."""
-        assert _optional_module("veridelta_no_such_optional_module") is None
+        """Ensure an extra's probe degrades to None instead of raising, and finds what is there."""
+        assert optional_module("veridelta_no_such_optional_module") is None
+        assert optional_module("json") is not None
 
 
 class TestStructuralAlignment:

@@ -29,7 +29,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
+from veridelta.connectors.base import PushdownQueryType, VerideltaConnector, optional_module
 from veridelta.connectors.sql import (
     SQLDialect,
     SQLPushdownCompiler,
@@ -47,16 +47,9 @@ from veridelta.models import DatabaseConfig
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-# Which branch of the probe runs depends on the extras installed in the
-# environment, so neither is a coverage target; the tests patch the module
-# attribute instead.
-connectorx: Any = None
-try:
-    import connectorx as _connectorx
-except ImportError:  # pragma: no cover
-    pass
-else:  # pragma: no cover
-    connectorx = _connectorx
+# The tests patch each module attribute below, so no test depends on the
+# extras installed where it runs.
+connectorx: Any = optional_module("connectorx")
 
 _DATABASE_EXTRA = "Database extra is not installed. Install it with: uv add 'veridelta[database]'"
 _UNCONNECTED = "Database connector is not connected. Call connect() first."
