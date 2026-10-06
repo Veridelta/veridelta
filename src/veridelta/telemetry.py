@@ -522,6 +522,8 @@ def send_otlp_metrics(
             else f"HTTP {exc.code} {exc.reason}"
         )
         failure = f"the endpoint answered with {answer}"
+        # The error holds the answer open, and Python 3.14 warns when one is never closed.
+        exc.close()
     except TimeoutError:
         failure = f"no answer came within {timeout:g} seconds"
     except urllib.error.URLError as exc:

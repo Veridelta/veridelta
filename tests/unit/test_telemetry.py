@@ -3,6 +3,7 @@
 
 """Unit tests for the OpenTelemetry metrics export."""
 
+import io
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from email.message import Message
 from pathlib import Path
 from urllib.parse import quote
 
@@ -936,6 +938,19 @@ class TestSendOTLPMetrics:
             "the endpoint answered with HTTP 500 Internal Server Error."
         )
         assert info.value.__cause__ is None
+
+    def test_it_closes_the_answer_an_http_error_holds(self, mocker: MockerFixture) -> None:
+        """Ensure a refused send releases the response, which Python 3.14 warns about otherwise."""
+        answer = io.BytesIO(b"{}")
+        refusal = urllib.error.HTTPError(
+            "http://localhost:4318/v1/metrics", 503, "Service Unavailable", Message(), answer
+        )
+        mocker.patch.object(urllib.request.OpenerDirector, "open", side_effect=refusal)
+
+        with pytest.raises(ConnectorError, match="HTTP 503 Service Unavailable"):
+            send_otlp_metrics(_drift())
+
+        assert answer.closed
 
     def test_it_refuses_a_redirect_so_no_header_reaches_another_host(
         self, collector: Collector, monkeypatch: pytest.MonkeyPatch
