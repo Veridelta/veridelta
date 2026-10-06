@@ -3,6 +3,8 @@
 
 """Unit tests for Veridelta configuration and result data models."""
 
+from typing import get_args
+
 import polars as pl
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -10,7 +12,8 @@ from pytest_mock import MockerFixture
 
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
-from veridelta.models import (
+from veridelta.models import (  # pyright: ignore[reportPrivateUsage]
+    _SUFFIX_FORMATS,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -22,6 +25,7 @@ from veridelta.models import (
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
+    SourceType,
     ValueMapEntry,
     ValueMapProposal,
 )
@@ -324,6 +328,53 @@ class TestDiffConfigNormalization:
         """Ensure configuration values remain untouched if normalization is False."""
         config = DiffConfig(primary_keys=["User_ID"], normalize_column_names=False)
         assert config.primary_keys == ["User_ID"]
+
+
+class TestSourceFormatInference:
+    """Validate that a file's suffix names its format when `format` is absent."""
+
+    @pytest.mark.parametrize(
+        ("path", "expected"),
+        [
+            pytest.param("legacy.parquet", "parquet", id="parquet"),
+            pytest.param("DATA.PARQUET", "parquet", id="uppercase"),
+            pytest.param("s3://bucket/dir/data.parquet?version=3", "parquet", id="query-string"),
+            pytest.param("C:\\data\\events.pq", "parquet", id="windows-path"),
+            pytest.param("rows.jsonl", "ndjson", id="jsonl"),
+            pytest.param("table.feather", "arrow", id="feather"),
+            pytest.param("sheet.xlsx", "excel", id="excel"),
+        ],
+    )
+    def test_it_reads_the_format_from_the_suffix(self, path: str, expected: SourceType) -> None:
+        """Ensure the suffix decides the format, whatever its case, path, or query string."""
+        config = SourceConfig(path=path)
+
+        assert config.format == expected
+        assert "format" in config.model_fields_set
+
+    @pytest.mark.parametrize("path", ["notes.txt", "export", "dir.v2/file", ".csv"])
+    def test_a_suffix_it_does_not_know_keeps_the_default(self, path: str) -> None:
+        """Ensure an unknown or absent suffix reads as CSV, with `format` left unset."""
+        config = SourceConfig(path=path)
+
+        assert config.format == "csv"
+        assert "format" not in config.model_fields_set
+
+    def test_a_format_the_user_wrote_wins(self) -> None:
+        """Ensure an explicit `format` is never second-guessed by the suffix."""
+        config = SourceConfig(path="export.parquet", format="csv")
+
+        assert config.format == "csv"
+
+    def test_it_leaves_an_input_that_is_no_mapping_to_pydantic(self) -> None:
+        """Ensure a bare path, with no mapping to fill, fails as Pydantic reports it."""
+        with pytest.raises(ValidationError, match="dictionary"):
+            SourceConfig.model_validate("legacy.parquet")
+
+    def test_it_names_a_suffix_for_every_format(self) -> None:
+        """Ensure the suffix table and `SourceType` cannot drift apart."""
+        assert set(_SUFFIX_FORMATS.values()) == set(get_args(SourceType))
+        assert all(key == key.lower() and key.startswith(".") for key in _SUFFIX_FORMATS)
 
 
 class TestModelStrictness:

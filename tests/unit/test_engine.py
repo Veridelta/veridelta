@@ -341,13 +341,14 @@ class TestStructuralAlignment:
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
     def test_it_names_what_a_side_read_when_a_primary_key_is_missing(self, tmp_path: Path) -> None:
-        """Ensure a `.parquet` path with no `format` fails naming the cause: it was read as CSV.
+        """Ensure a Parquet file under a suffix that names no format fails naming the cause.
 
-        `format` defaults to `csv`, so the file is scanned as text and the key is not
-        among the columns. The message names the file, the format, that it is the
-        default, and what was read instead, so the user changes `format` and not the key.
+        With no `format` and no suffix to read one from, the file is scanned as CSV
+        and the key is not among the columns. The message names the file, the
+        format, that it is the default, and what was read instead, so the user
+        sets `format` and not the key.
         """
-        legacy, modern = tmp_path / "legacy.parquet", tmp_path / "modern.parquet"
+        legacy, modern = tmp_path / "legacy.data", tmp_path / "modern.data"
         pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(legacy)
         pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(modern)
 
@@ -412,7 +413,8 @@ class TestStructuralAlignment:
     @pytest.mark.parametrize(
         ("config", "described"),
         [
-            (SourceConfig(path="a.parquet"), "`a.parquet` read as csv since `format` is not set"),
+            (SourceConfig(path="a.parquet"), "`a.parquet` read as parquet"),
+            (SourceConfig(path="a.data"), "`a.data` read as csv since `format` is not set"),
             (SourceConfig(path="a.parquet", format="parquet"), "`a.parquet` read as parquet"),
             (SourceConfig(path="a.txt", format="csv"), "`a.txt` read as csv"),
             (
@@ -426,7 +428,16 @@ class TestStructuralAlignment:
             ),
             (DuckDBConfig(database="local.duckdb", query="select 1"), "the `duckdb` query"),
         ],
-        ids=["default-format", "parquet", "explicit-csv", "delta", "iceberg", "table", "query"],
+        ids=[
+            "inferred-parquet",
+            "default-format",
+            "parquet",
+            "explicit-csv",
+            "delta",
+            "iceberg",
+            "table",
+            "query",
+        ],
     )
     def test_it_describes_a_side_as_the_user_wrote_it(
         self, config: SourceRef, described: str
@@ -2372,13 +2383,13 @@ class TestValueMapProposals:
     def test_it_names_what_a_side_read_when_a_key_is_missing(self, tmp_path: Path) -> None:
         """Ensure a proposal run fails as a comparison does, naming the file and its format."""
         src, tgt = _codes(["M"] * 5, ["Male"] * 5)
-        src.write_parquet(tmp_path / "source.parquet")
+        src.write_parquet(tmp_path / "source.data")
         tgt.write_parquet(tmp_path / "target.parquet")
 
         with pytest.raises(ConfigError, match="read as csv since `format` is not set"):
             DiffEngine.propose_value_maps_from_configs(
                 DiffConfig(primary_keys=["id"]),
-                SourceConfig(path=str(tmp_path / "source.parquet")),
+                SourceConfig(path=str(tmp_path / "source.data")),
                 SourceConfig(path=str(tmp_path / "target.parquet"), format="parquet"),
             )
 

@@ -423,13 +423,38 @@ primary_keys: [id]
         assert "Delta Lake scan of" in result.stderr
         assert "Unexpected System Error" not in result.stderr
 
-    def test_e2e_missing_key_names_the_format_the_file_was_read_as(self, tmp_path: Path) -> None:
-        """Ensure a `.parquet` path with no `format` fails naming the cause: it was read as CSV.
-
-        `format` defaults to `csv`, so the key is not among the columns read. The message
-        used to name only the missing key, which sent the user to the wrong setting.
-        """
+    def test_e2e_a_parquet_pair_needs_no_format(self, tmp_path: Path) -> None:
+        """Ensure two `.parquet` paths compare with no `format` key, read from the suffix."""
         legacy, modern = tmp_path / "legacy.parquet", tmp_path / "modern.parquet"
+        pl.DataFrame({"id": [1, 2], "status": ["open", "closed"]}).write_parquet(legacy)
+        pl.DataFrame({"id": [1, 2], "status": ["open", "closed"]}).write_parquet(modern)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  path: {legacy}
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0
+        assert "Total Issues:  0" in result.stdout
+
+    def test_e2e_missing_key_names_the_format_the_file_was_read_as(self, tmp_path: Path) -> None:
+        """Ensure a Parquet file under a suffix that names no format fails naming the cause.
+
+        With no `format` and no suffix to read one from, the file is read as CSV and
+        the key is not among the columns. The message used to name only the missing
+        key, which sent the user to the wrong setting.
+        """
+        legacy, modern = tmp_path / "legacy.data", tmp_path / "modern.data"
         pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(legacy)
         pl.DataFrame({"id": [1], "status": ["open"]}).write_parquet(modern)
         config_file = tmp_path / "config.yaml"

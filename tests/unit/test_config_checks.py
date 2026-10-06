@@ -431,14 +431,15 @@ class TestLiveSchemaChecks:
     def test_it_names_what_a_side_read_when_a_key_is_missing(self, tmp_path: Path) -> None:
         """Ensure the schema check names a file and its format, as a run does."""
         source, _ = _parquet_pair(tmp_path)
-        target = SourceConfig(path=str(tmp_path / "target.parquet"))
+        unnamed = (tmp_path / "target.parquet").rename(tmp_path / "target.data")
+        target = SourceConfig(path=str(unnamed))
 
         [(severity, message)] = _check(source, target, schemas=True)
 
         assert severity == "error"
         assert message.startswith(
             f"The primary key 'id' is not among the columns of the target, "
-            f"`{tmp_path / 'target.parquet'}` read as csv since `format` is not set."
+            f"`{unnamed}` read as csv since `format` is not set."
         )
 
     def test_it_reports_a_file_it_cannot_open(self, tmp_path: Path) -> None:
