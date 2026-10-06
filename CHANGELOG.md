@@ -1,3 +1,15 @@
+## v0.14.7 (2026-10-06)
+
+Every connector's `fetch_schema` now warns that it goes in 0.15.0. The method has nine
+implementations and no caller in the package: the engine reads a side's columns from the
+frame it loads. The method, its implementations, and the code that serves only it stay
+until 0.15.0, where the removal ships as a breaking change. Nothing else changed.
+
+### Refactor
+
+- deprecate `fetch_schema` on every connector with a warning, ahead of its removal in
+  0.15.0
+
 ## v0.14.6 (2026-10-06)
 
 `DataIngestor` now warns on construction that it goes in 0.15.0. No code in the package
