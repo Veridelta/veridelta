@@ -17,13 +17,16 @@ from veridelta.exceptions import DatasetError
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-try:
-    __version__ = importlib.metadata.version("veridelta")
-    git_ref = f"v{__version__}"
-except importlib.metadata.PackageNotFoundError:
-    git_ref = "main"
 
-_GIT_REF = git_ref
+def _git_ref() -> str:
+    """Name the ref the sample is read from: the installed release, or `main` from a checkout."""
+    try:
+        return f"v{importlib.metadata.version('veridelta')}"
+    except importlib.metadata.PackageNotFoundError:
+        return "main"
+
+
+_GIT_REF = _git_ref()
 
 _TAXI_URL = f"https://raw.githubusercontent.com/Veridelta/veridelta/{_GIT_REF}/docs/assets/data/sample_taxi_data.parquet"
 
@@ -51,7 +54,7 @@ def load_nyc_taxi() -> pl.DataFrame:
     cache_path = _get_cache_dir() / "sample_taxi_data.parquet"
 
     def _download_file() -> None:
-        logger.warning(f"Downloading NYC Taxi dataset to {cache_path}...")
+        logger.info("Downloading the NYC taxi sample to %s", cache_path)
         try:
             req = urllib.request.Request(_TAXI_URL)
             with (
@@ -73,7 +76,9 @@ def load_nyc_taxi() -> pl.DataFrame:
     try:
         return pl.read_parquet(cache_path)
     except pl.exceptions.PolarsError:
-        logger.warning("Cached dataset is corrupted. Evicting and re-downloading...")
+        logger.warning(
+            "The cached NYC taxi sample is corrupted; it is evicted and downloaded again."
+        )
         cache_path.unlink(missing_ok=True)
 
         _download_file()
