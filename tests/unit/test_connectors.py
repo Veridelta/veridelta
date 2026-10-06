@@ -34,6 +34,7 @@ from veridelta.connectors import (
     SQLDialect,
     VerideltaConnector,
 )
+from veridelta.connectors.base import mask_secrets, read_subject
 from veridelta.connectors.sql import compile_postgres_columns_query
 from veridelta.exceptions import ConfigError, ConnectorError
 
@@ -114,6 +115,22 @@ class TestConnectorConfigValidation:
             delta.table_uri = "s3://other"  # type: ignore[misc]
         with pytest.raises(ValidationError, match="frozen"):
             iceberg.table_uri = "s3://other"  # type: ignore[misc]
+
+
+class TestSharedHelpers:
+    """Validate the helpers every connector shares for its messages."""
+
+    def test_it_masks_each_set_secret_longest_first(self) -> None:
+        """Ensure a secret inside another is masked whole, and an unset one changes nothing."""
+        masked = mask_secrets("key=hunter22 pass=hunter2 token=", "hunter2", "hunter22", None, "")
+
+        assert masked == "key=*** pass=*** token="
+        assert mask_secrets("nothing set", None) == "nothing set"
+
+    def test_it_names_a_table_or_the_query(self) -> None:
+        """Ensure a message names the table it read, and never repeats a query."""
+        assert read_subject("orders") == "table 'orders'"
+        assert read_subject(None) == "the configured query"
 
 
 class TestConnectorInterface:
