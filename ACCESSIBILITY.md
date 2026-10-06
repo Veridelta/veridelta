@@ -31,6 +31,8 @@ A script also drove the report and the documentation site by keyboard in Chromiu
 - Focus stayed on Next at the last page.
 - With JavaScript off, the report showed every row.
 
+CI's Accessibility job runs the axe-core checks and the report's keyboard checks on every pull request, with `make accessibility`. Its browser reaches only the local site, so it too sees the diagram's source.
+
 No person has tested Veridelta with a screen reader, a keyboard alone, or high magnification yet. Automated checks find only part of the barriers a person meets.
 
 ## Known limitations
@@ -86,7 +88,7 @@ In anything people read:
 - never let color, a symbol, or position carry meaning alone;
 - keep the command line plain text, and put anything a script reads in `--json`.
 
-No CI check covers accessibility yet.
+CI's Accessibility job checks every docs page and a sample report with axe-core, and drives the report by keyboard. Run it locally with `make accessibility`, after installing the browser as [CONTRIBUTING.md](CONTRIBUTING.md#accessibility) says.
 
 ## Ownership
 

@@ -70,6 +70,24 @@ make databases
 
 A server whose variable is not set is skipped. CI runs the tests against a `mysql:8.4` service and a SQL Server 2022 service on every pull request. Both passwords there hold `@`, `:`, `/`, and `#`, so each read checks that a password reaches the driver intact.
 
+### Accessibility
+
+`make accessibility` builds the docs site and a sample HTML report, then checks both in Chromium:
+
+- axe-core runs on every page, in light and dark mode, at desktop and phone widths. Any violation of WCAG 2.2 A or AA, or of axe-core's best practices, fails the check.
+- A keyboard pages the report, and the report is read with JavaScript off.
+
+The tests drive the browser with Python's Playwright, from the `accessibility` dependency group. Install its Chromium once, adding `--with-deps` on Linux for the system libraries:
+
+```bash
+uv run --group accessibility playwright install chromium
+make accessibility
+```
+
+The browser fetches only the local site, so a font or a diagram from a CDN never changes a result. CI runs the same checks on every pull request.
+
+axe-core comes from npm, pinned by version and digest, and Dependabot cannot bump it. To move to a new release, read `https://registry.npmjs.org/axe-core/<version>`. Copy its `dist.tarball` into `_AXE_CORE` and its `dist.integrity` into `_AXE_CORE_INTEGRITY`, both in `tests/accessibility/test_accessibility.py`.
+
 ## Commit messages
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), and the `commit-msg` hook rejects any other form:

@@ -269,6 +269,32 @@ jobs:
       - name: Read Real MySQL and SQL Server Tables
         run: make databases
 
+  test-accessibility:
+    name: Accessibility
+    needs: test-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras --group accessibility
+
+      - name: Install Chromium
+        run: uv run --group accessibility playwright install --with-deps chromium
+
+      # axe-core on every docs page and a sample report, then the report by keyboard.
+      - name: Check the Docs Site and the HTML Report
+        run: make accessibility
+
   action:
     name: GitHub Action (${{ matrix.os }})
     needs: test-smoke
@@ -350,7 +376,7 @@ jobs:
   ci-passed:
     name: CI Passed
     if: always()
-    needs: [static-analysis, docs, test-smoke, test-core, test-e2e, test-notebooks, test-postgres, test-databases, action]
+    needs: [static-analysis, docs, test-smoke, test-core, test-e2e, test-notebooks, test-postgres, test-databases, test-accessibility, action]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

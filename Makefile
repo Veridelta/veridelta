@@ -1,4 +1,4 @@
-.PHONY: install format lint test notebooks postgres live databases docs docs-serve schema all clean
+.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean
 
 install:
 	uv sync --all-extras
@@ -32,6 +32,9 @@ live:
 databases:
 	@test -n "$$VERIDELTA_MYSQL_URI$$VERIDELTA_MSSQL_URI" || { echo "Set VERIDELTA_MYSQL_URI or VERIDELTA_MSSQL_URI to a server the tests may create tables on."; exit 1; }
 	uv run --group databases pytest tests/integration/test_database_servers.py --no-cov
+
+accessibility:
+	VERIDELTA_ACCESSIBILITY=1 uv run --group accessibility pytest tests/accessibility --no-cov
 
 schema:
 	uv run veridelta schema > docs/schema/veridelta.schema.json

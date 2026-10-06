@@ -15,6 +15,7 @@ The project uses [uv](https://docs.astral.sh/uv/) and a Makefile:
 | `make postgres` | Runs the parity suite inside a live Postgres, after a change to the SQL compiler. |
 | `make live` | Runs the parity suite inside one live warehouse, with that service's account. A release needs it to pass. |
 | `make databases` | Reads real MySQL and SQL Server tables, after a change to the database connector. |
+| `make accessibility` | Checks the docs site and the HTML report with axe-core and a keyboard, in Chromium, after a change to either. |
 
 Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip`, `poetry`, or `conda`.
 
@@ -44,6 +45,7 @@ Read the rules for the files a change touches:
 
 Each of these choices has a record in `decisions/`, with what it was chosen over and how to reverse it. Do not reopen one without the maintainer:
 
+- [The accessibility check runs axe-core from Python, with a pinned download](decisions/accessibility-check-in-python.md)
 - [AGENTS.md holds the rules for coding agents](decisions/agents-md-is-canonical.md)
 - [The MySQL and SQL Server test drivers sit in their own dependency group](decisions/database-drivers-in-their-own-group.md)
 - [llms.txt comes from a hook in the repository](decisions/llms-txt-from-a-hook.md)
