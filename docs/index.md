@@ -2,6 +2,50 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
+<video controls muted playsinline preload="metadata" width="900" height="800">
+  <source src="assets/demo.mp4" type="video/mp4">
+  <track kind="captions" src="assets/demo.vtt" srclang="en" label="English" default>
+  This browser does not play the video. The transcript below shows the same run.
+</video>
+
+The recording runs the quick start on two small files, as the transcript shows:
+
+```text
+> cat veridelta.yaml
+primary_keys: [id]
+source:
+  path: legacy.csv
+target:
+  path: modern.csv
+> veridelta validate -c veridelta.yaml
+veridelta.yaml: valid.
+> veridelta run -c veridelta.yaml
+Loading configuration from veridelta.yaml...
+Executing semantic diff...
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    0.0%
+Source Rows:   3
+Target Rows:   3
+Volume Shift:  +0 rows
+
+Row-Level Discrepancies:
+---------------------------
+Added:         1
+Removed:       1
+Changed:       1
+Total Issues:  3
+
+Top Column-Level Drifts:
+---------------------------
+- status: 1 mismatches
+
+> echo $?
+1
+```
+
 Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, as are two Postgres or DuckDB tables that set `pushdown`. Only counts and keys come back.
 
 ## Install

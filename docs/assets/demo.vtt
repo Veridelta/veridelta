@@ -1,0 +1,17 @@
+WEBVTT
+
+1
+00:00.000 --> 00:02.900
+cat veridelta.yaml prints the configuration: the primary key, the source file, and the target file, in five lines.
+
+2
+00:02.900 --> 00:07.200
+veridelta validate -c veridelta.yaml checks the file without reading a row and prints: veridelta.yaml: valid.
+
+3
+00:07.200 --> 00:12.750
+veridelta run -c veridelta.yaml compares the files and prints the summary: FAILED, one row added, one removed, one changed, in the status column.
+
+4
+00:12.750 --> 00:16.100
+echo $? prints the exit code, 1, which fails a CI job.
