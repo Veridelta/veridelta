@@ -29,7 +29,14 @@ from tests.integration.parity_strategies import comparison_cases
 from veridelta.exceptions import ConnectorError, VerideltaError
 from veridelta.models import DiffConfig, DiffResult
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.only_on(
+        "duckdb",
+        "postgres",
+        reason="The fuzzer stays on DuckDB and Postgres: its drawn cases would cost a warehouse.",
+    ),
+]
 
 settings.register_profile(
     "ci",

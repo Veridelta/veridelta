@@ -54,7 +54,7 @@ export VERIDELTA_POSTGRES_URI=postgresql://postgres:postgres@localhost:5432/post
 make postgres
 ```
 
-Cases that Postgres pushdown refuses, or whose data Postgres cannot store, carry the `duckdb_only` marker with the reason, and `make postgres` leaves them out. CI runs the suite against a `postgres:16` service on every pull request.
+Cases that Postgres pushdown refuses, or whose data Postgres cannot store, carry a `skip_on("postgres")` marker with the reason, and the suite skips them there. A case that pins one backend's own behavior carries `only_on` instead. CI runs the suite against a `postgres:16` service on every pull request.
 
 ### Database servers
 
@@ -92,13 +92,44 @@ The hooks also format the code and add the Apache-2.0 license header. If a hook 
 5. CI runs on every pull request, whatever its base branch, so a pull request stacked on another one is checked too. Merge the base pull request first and delete its branch: GitHub then retargets the stacked one to `main`. Merging a stacked pull request while its base branch still exists lands it on that branch instead of `main`.
 6. Workflows and `action.yml` run third-party actions pinned to a commit, with the release in a comment (`actions/checkout@<sha> # v5.1.0`). A moved tag upstream then cannot change what CI runs or what a release publishes. Pin any action you add the same way; `tests/unit/test_ci_integrations.py` checks it. Dependabot proposes newer pins and a refreshed `uv.lock` once a week, never higher floors in `pyproject.toml`.
 
+## Live warehouse tests
+
+The parity suite also runs inside the services pushdown supports: BigQuery, Databricks, MotherDuck, and Snowflake. Each case loads its frames into fresh tables, compares them there and locally, and drops them. A run first drops the tables a failed run left behind, once they are a day old.
+
+The `Live Warehouses` workflow runs the suite. It starts only by hand, from the Actions tab with **Run workflow**, against one service or all of them. Each job then waits for a maintainer to approve its `live` deployment. GitHub offers **Run workflow** only for a workflow on the default branch.
+
+Each service needs an account, a repository variable set to `true` that turns its job on, and secrets in the `live` environment. A service whose variable is not `true` shows as skipped.
+
+| Service | Repository variable | Secrets in `live` |
+| :--- | :--- | :--- |
+| BigQuery | `LIVE_BIGQUERY` | `BQ_PROJECT`, `BQ_CREDENTIALS_JSON` |
+| Databricks | `LIVE_DATABRICKS` | `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN` |
+| MotherDuck | `LIVE_MOTHERDUCK` | `MOTHERDUCK_TOKEN` |
+| Snowflake | `LIVE_SNOWFLAKE` | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_ROLE`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE` |
+
+Create the `live` environment under Settings, then Environments, with a maintainer as its required reviewer, and add the secrets there. Add the variables under Settings, then Secrets and variables, then Actions, as repository variables, which the job conditions read.
+
+- **BigQuery.** The free sandbox works and needs no card. Create a project and a dataset named `veridelta_live` in it. Then create a service account with the BigQuery Job User and BigQuery Data Editor roles, and a JSON key for it. `BQ_PROJECT` is the project ID, and `BQ_CREDENTIALS_JSON` holds the key file. Each query may bill 1 GB at most.
+- **Databricks.** The Free Edition works. Create the schema `veridelta_live` in the `workspace` catalog. The SQL warehouse's Connection details tab gives `DATABRICKS_HOST`, the server hostname, and `DATABRICKS_HTTP_PATH`. `DATABRICKS_TOKEN` is a personal access token.
+- **MotherDuck.** The free plan works. Create the database `veridelta_live`, and an access token for `MOTHERDUCK_TOKEN`.
+- **Snowflake.** A 30-day trial works. Create it last, since the trial starts at sign-up. Create an X-Small warehouse that suspends after 60 seconds, with a resource monitor that caps its credits. Then create a database, and a service user with its own role and a key pair. The tables go in the database's `PUBLIC` schema, so the role needs `USAGE` on the warehouse, the database, and the schema, and `CREATE TABLE` on the schema. `SNOWFLAKE_PRIVATE_KEY` holds the private key in PEM form, and an encrypted key also needs `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`.
+
+To run one service from a terminal, set `VERIDELTA_PARITY_BACKEND` and the service's settings, then run `make live`. There, BigQuery reads a key file from `BQ_CREDENTIALS_PATH`, or the default credentials without one, and Snowflake reads its key from `SNOWFLAKE_PRIVATE_KEY_PATH`. `MOTHERDUCK_DATABASE` can name a DuckDB file instead of `md:veridelta_live`, which runs the MotherDuck backend without an account:
+
+```bash
+VERIDELTA_PARITY_BACKEND=motherduck MOTHERDUCK_DATABASE=/tmp/live.duckdb make live
+```
+
+A case that a service refuses, or whose data it cannot store, carries a `skip_on` marker with the reason, as for Postgres.
+
 ## Releasing
 
 A release is a pull request that changes the version. Merging it does the rest.
 
-1. On a branch from `main`, check the version `uv run cz bump --dry-run` proposes, as described below. Then run `uv run cz bump --version-files-only --yes`. It writes the new version into `pyproject.toml`, `src/veridelta/__init__.py`, `mkdocs.yml`, and the GitLab template, and prepends a generated block to `CHANGELOG.md`. Run `uv lock` to sync the lockfile, rewrite the generated block in the style of the earlier entries, and open a pull request titled `chore(release): X.Y.Z`.
-2. Merge it once CI passes. The release workflow sees a version PyPI does not have, tags the merge commit `vX.Y.Z`, and starts a publishing run on that tag.
-3. A maintainer approves that run's `pypi` deployment. It then builds the tagged commit, uploads the package, and creates the GitHub Release with generated notes, marked Latest when it is the newest version.
+1. Run the `Live Warehouses` workflow on `main` against all services, and wait until each configured one passes. A difference it finds is fixed, or documented in `docs/pushdown.md` with a test that pins it, first.
+2. On a branch from `main`, check the version `uv run cz bump --dry-run` proposes, as described below. Then run `uv run cz bump --version-files-only --yes`. It writes the new version into `pyproject.toml`, `src/veridelta/__init__.py`, `mkdocs.yml`, and the GitLab template, and prepends a generated block to `CHANGELOG.md`. Run `uv lock` to sync the lockfile, rewrite the generated block in the style of the earlier entries, and open a pull request titled `chore(release): X.Y.Z`.
+3. Merge it once CI passes. The release workflow sees a version PyPI does not have, tags the merge commit `vX.Y.Z`, and starts a publishing run on that tag.
+4. A maintainer approves that run's `pypi` deployment. It then builds the tagged commit, uploads the package, and creates the GitHub Release with generated notes, marked Latest when it is the newest version.
 
 Commitizen picks the version from every line of every commit message since the last tag, not only the titles. A squash merge's body lists the commits it squashed, and a Dependabot body quotes upstream release notes. So a stray `feat` line can propose a minor version where a patch is due. When the dry run proposes the wrong version, pass `--increment PATCH` or `--increment MINOR` to both commands.
 

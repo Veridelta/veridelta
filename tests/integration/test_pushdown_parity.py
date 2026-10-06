@@ -25,11 +25,13 @@ from veridelta.models import DiffConfig, DiffRule, ValueMapProposal
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
-_REFUSED_PARSE = pytest.mark.duckdb_only(
-    reason="Postgres refuses datetime_format pushdown: it has no parse that yields NULL."
+_REFUSED_PARSE = pytest.mark.skip_on(
+    "postgres",
+    reason="Postgres refuses datetime_format pushdown: it has no parse that yields NULL.",
 )
-_REFUSED_EDIT_DISTANCE = pytest.mark.duckdb_only(
-    reason="Postgres refuses max_levenshtein_distance pushdown: levenshtein needs fuzzystrmatch."
+_REFUSED_EDIT_DISTANCE = pytest.mark.skip_on(
+    "postgres",
+    reason="Postgres refuses max_levenshtein_distance pushdown: levenshtein needs fuzzystrmatch.",
 )
 
 
@@ -1592,7 +1594,7 @@ class TestSimilarityParity:
 
         assert summary.changed_count == expected_changed
 
-    @pytest.mark.duckdb_only(reason="It pins how DuckDB itself counts edits.")
+    @pytest.mark.only_on("duckdb", "motherduck", reason="It pins how DuckDB itself counts edits.")
     def test_it_counts_bytes_on_the_duckdb_stand_in(self) -> None:
         """Pin why DuckDB pushdown refuses edit distances.
 

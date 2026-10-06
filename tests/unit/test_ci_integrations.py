@@ -10,6 +10,7 @@ they build still parses with the CLI's own parser, and a release publishes only
 a new version, only from its tag, with no more permission than each job needs.
 They also pin the CI safeguards: one required check covers every job, jobs have
 time limits and a read-only token, and only jobs GitHub never started are re-run.
+The live warehouse workflow starts only by hand and waits for a maintainer.
 """
 
 import re
@@ -20,6 +21,7 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.integration import warehouse_harness
 from veridelta import __version__
 from veridelta.cli import build_parser
 
@@ -34,6 +36,7 @@ _DEPENDABOT = _ROOT / ".github" / "dependabot.yml"
 _DOCS = _ROOT / ".github" / "workflows" / "docs.yml"
 _CI = _ROOT / ".github" / "workflows" / "ci.yml"
 _RERUN = _ROOT / ".github" / "workflows" / "rerun-dropped.yml"
+_LIVE = _ROOT / ".github" / "workflows" / "live.yml"
 _COMMIT_PIN = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
@@ -389,6 +392,7 @@ class TestWorkflowPins:
         assert {path.name for path in _WORKFLOWS} >= {
             "ci.yml",
             "docs.yml",
+            "live.yml",
             "release.yml",
             "rerun-dropped.yml",
         }
@@ -504,6 +508,68 @@ class TestCIWorkflow:
         assert set(jobs["test-e2e"]["strategy"]["matrix"]["os"]) == set(
             jobs["test-core"]["strategy"]["matrix"]["os"]
         )
+
+
+def _live_triggers() -> dict[str, Any]:
+    """Return the live warehouse workflow's triggers, under the key PyYAML reads `on` as."""
+    workflow = _workflow(_LIVE)
+    triggers: dict[str, Any] = workflow[True] if True in workflow else workflow["on"]
+    return triggers
+
+
+class TestLiveWorkflow:
+    """Pin the workflow that runs the parity suite inside live warehouses.
+
+    Its jobs read credentials for services that bill, so it starts only by
+    hand, waits for a maintainer, and runs only for a service with an account.
+    """
+
+    def test_it_starts_only_by_hand(self) -> None:
+        """Ensure no push, pull request, or schedule spends a warehouse's credits."""
+        assert set(_live_triggers()) == {"workflow_dispatch"}
+
+    def test_it_has_a_job_for_each_live_warehouse(self) -> None:
+        """Ensure each warehouse the harness supports has a job, and the input picks among them."""
+        backend = _live_triggers()["workflow_dispatch"]["inputs"]["backend"]
+
+        assert set(_workflow(_LIVE)["jobs"]) == set(warehouse_harness.SERVICES)
+        assert backend["type"] == "choice"
+        assert set(backend["options"]) == {"all", *warehouse_harness.SERVICES}
+
+    def test_each_job_waits_for_approval_and_skips_a_service_with_no_account(self) -> None:
+        """Ensure a job reads its secrets only once approved, and only when its variable is true.
+
+        A job condition runs before the job enters its environment, so it reads
+        a repository variable, and a skipped job never asks for approval.
+        """
+        for name, job in _workflow(_LIVE)["jobs"].items():
+            assert job["environment"] == "live", name
+            assert job["if"] == (
+                f"vars.LIVE_{name.upper()} == 'true' && "
+                f"(inputs.backend == 'all' || inputs.backend == '{name}')"
+            )
+
+    def test_each_job_runs_the_suite_in_its_own_warehouse(self) -> None:
+        """Ensure no job runs another warehouse's suite under its own name."""
+        for name, job in _workflow(_LIVE)["jobs"].items():
+            [step] = [step for step in job["steps"] if step.get("run") == "make live"]
+            assert step["env"]["VERIDELTA_PARITY_BACKEND"] == name
+
+    def test_every_job_gets_a_read_only_token_and_a_time_limit(self) -> None:
+        """Ensure the drivers it runs cannot write to the repository, and a hung run stops."""
+        workflow = _workflow(_LIVE)
+
+        assert workflow["permissions"] == {"contents": "read"}
+        for name, job in workflow["jobs"].items():
+            assert "permissions" not in job, name
+            assert job["timeout-minutes"] == 45, name
+
+    def test_it_runs_one_at_a_time(self) -> None:
+        """Ensure two runs never load tables into one account together."""
+        assert _workflow(_LIVE)["concurrency"] == {
+            "group": "live-warehouses",
+            "cancel-in-progress": False,
+        }
 
 
 def _rerun_script() -> str:

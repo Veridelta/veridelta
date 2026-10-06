@@ -19,8 +19,8 @@ unsigned integers, so `Int8` and `UInt8` become `smallint`, `UInt16` becomes
 `integer`, `UInt32` becomes `bigint`, and `UInt64` becomes `numeric(20, 0)`.
 A local run reads each `numeric` back at its declared precision and scale. A
 dtype with no counterpart, or a column name past Postgres' 63-byte identifier
-limit, raises `NotImplementedError`; the tests that need one carry the
-`duckdb_only` marker.
+limit, raises `NotImplementedError`; the tests that need one carry a
+`skip_on("postgres")` marker.
 """
 
 from __future__ import annotations

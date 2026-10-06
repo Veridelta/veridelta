@@ -22,9 +22,13 @@ counts UTF-8 bytes. The edit-distance parity cases restore the function and
 use ASCII text, on which bytes and characters agree, so DuckDB still checks
 the SQL the warehouses that count characters run.
 
-Setting `VERIDELTA_PARITY_BACKEND=postgres` runs the same cases against a live
-Postgres through `postgres_harness` instead: the comparison runs inside
-Postgres, and the local engine reads the same tables back.
+`VERIDELTA_PARITY_BACKEND` picks where the pushdown side runs, from `BACKENDS`.
+`postgres` runs the same cases against a live Postgres through
+`postgres_harness`, and `bigquery`, `databricks`, `motherduck`, and
+`snowflake` against a live warehouse through `warehouse_harness`. In each,
+the comparison runs inside the database, and the local engine reads the same
+tables back. A case one backend refuses or cannot store carries a `skip_on`
+marker, and one that pins a single backend's behavior an `only_on` marker.
 """
 
 from __future__ import annotations
@@ -33,17 +37,17 @@ import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, NamedTuple, Protocol
 
 import duckdb
 
-from tests.integration import postgres_harness
+from tests.integration import postgres_harness, warehouse_harness
 from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.engine import DiffEngine, _collect_pushdown_summary, _collect_value_map_proposals
 from veridelta.models import DuckDBConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     import polars as pl
 
@@ -57,19 +61,39 @@ TARGET_TABLE = "tgt_data"
 """Table the harness writes the target frame to."""
 
 PARITY_BACKEND = os.environ.get("VERIDELTA_PARITY_BACKEND", "duckdb")
-"""Database the pushdown side runs in: `duckdb`, or `postgres` for a live server."""
+"""Database the pushdown side runs in, a key of `BACKENDS`."""
 
-if PARITY_BACKEND not in {"duckdb", "postgres"}:
-    raise RuntimeError(
-        f"VERIDELTA_PARITY_BACKEND must be duckdb or postgres, not {PARITY_BACKEND!r}."
-    )
 
-REFUSED_RULES = (
-    postgres_harness.REFUSED_RULES
-    if PARITY_BACKEND == "postgres"
-    else frozenset({"max_levenshtein_distance"})
-)
-"""Rule fields the selected backend's pushdown refuses before running any query."""
+class _ValueMapRun(Protocol):
+    """Proposes value maps inside a database."""
+
+    def __call__(
+        self,
+        config: DiffConfig,
+        source: pl.DataFrame,
+        target: pl.DataFrame,
+        *,
+        min_confidence: float,
+        min_support: int,
+        sample_fraction: float,
+    ) -> tuple[list[ValueMapProposal], list[str]]:
+        """Return the proposals and the SQL that produced them."""
+
+
+class Backend(NamedTuple):
+    """The functions that run the parity cases in one database."""
+
+    refused_rules: frozenset[str]
+    """Rule fields its pushdown refuses before running any query."""
+
+    run_pushdown: Callable[[DiffConfig, pl.DataFrame, pl.DataFrame], tuple[DiffResult, list[str]]]
+    """Compares two frames inside the database, returning the result and its SQL."""
+
+    run_value_map_pushdown: _ValueMapRun
+    """Proposes value maps from two frames inside the database."""
+
+    run_local: Callable[[DiffConfig, pl.DataFrame, pl.DataFrame], DiffResult]
+    """Compares two frames through the local engine, as the database stores them."""
 
 
 class _RecordingSession(DuckDBPushdownSession):
@@ -108,6 +132,84 @@ def _duckdb_session(source: pl.DataFrame, target: pl.DataFrame) -> Iterator[_Rec
             session.close()
 
 
+def _duckdb_pushdown(
+    config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
+) -> tuple[DiffResult, list[str]]:
+    """Compare the frames inside a temporary DuckDB file."""
+    with _duckdb_session(source, target) as session:
+        result = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
+        return result, list(session.statements)
+
+
+def _duckdb_value_map_pushdown(
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    min_confidence: float,
+    min_support: int,
+    sample_fraction: float,
+) -> tuple[list[ValueMapProposal], list[str]]:
+    """Propose value maps from the frames inside a temporary DuckDB file."""
+    with _duckdb_session(source, target) as session:
+        proposals = _collect_value_map_proposals(
+            session,
+            SOURCE_TABLE,
+            TARGET_TABLE,
+            config,
+            min_confidence=min_confidence,
+            min_support=min_support,
+            sample_fraction=sample_fraction,
+        )
+        return proposals, list(session.statements)
+
+
+def _duckdb_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:
+    """Compare the frames through the local engine, as written."""
+    return DiffEngine(config, source.lazy(), target.lazy()).run()
+
+
+def _warehouse(name: str) -> Callable[[], Backend]:
+    """Return a factory for a live warehouse's backend, which reads its settings."""
+
+    def build() -> Backend:
+        live = warehouse_harness.backend(name)
+        return Backend(
+            live.refused_rules, live.run_pushdown, live.run_value_map_pushdown, live.run_local
+        )
+
+    return build
+
+
+BACKENDS: Final[dict[str, Callable[[], Backend]]] = {
+    "duckdb": lambda: Backend(
+        frozenset({"max_levenshtein_distance"}),
+        _duckdb_pushdown,
+        _duckdb_value_map_pushdown,
+        _duckdb_local,
+    ),
+    "postgres": lambda: Backend(
+        postgres_harness.REFUSED_RULES,
+        postgres_harness.run_pushdown,
+        postgres_harness.run_value_map_pushdown,
+        postgres_harness.run_local,
+    ),
+    **{name: _warehouse(name) for name in warehouse_harness.SERVICES},
+}
+"""Each database the pushdown side can run in. Only the selected one is built."""
+
+if PARITY_BACKEND not in BACKENDS:
+    raise RuntimeError(
+        f"VERIDELTA_PARITY_BACKEND must be one of {', '.join(sorted(BACKENDS))}, "
+        f"not {PARITY_BACKEND!r}."
+    )
+
+_BACKEND = BACKENDS[PARITY_BACKEND]()
+
+REFUSED_RULES = _BACKEND.refused_rules
+"""Rule fields the selected backend's pushdown refuses before running any query."""
+
+
 def run_pushdown(
     config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
 ) -> tuple[DiffResult, list[str]]:
@@ -122,11 +224,7 @@ def run_pushdown(
         tuple[DiffResult, list[str]]: The pushdown result and the SQL that
             produced it, in execution order.
     """
-    if PARITY_BACKEND == "postgres":
-        return postgres_harness.run_pushdown(config, source, target)
-    with _duckdb_session(source, target) as session:
-        result = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
-        return result, list(session.statements)
+    return _BACKEND.run_pushdown(config, source, target)
 
 
 def run_value_map_pushdown(
@@ -152,33 +250,21 @@ def run_value_map_pushdown(
         tuple[list[ValueMapProposal], list[str]]: The proposals and the SQL
             that produced them, in execution order.
     """
-    if PARITY_BACKEND == "postgres":
-        return postgres_harness.run_value_map_pushdown(
-            config,
-            source,
-            target,
-            min_confidence=min_confidence,
-            min_support=min_support,
-            sample_fraction=sample_fraction,
-        )
-    with _duckdb_session(source, target) as session:
-        proposals = _collect_value_map_proposals(
-            session,
-            SOURCE_TABLE,
-            TARGET_TABLE,
-            config,
-            min_confidence=min_confidence,
-            min_support=min_support,
-            sample_fraction=sample_fraction,
-        )
-        return proposals, list(session.statements)
+    return _BACKEND.run_value_map_pushdown(
+        config,
+        source,
+        target,
+        min_confidence=min_confidence,
+        min_support=min_support,
+        sample_fraction=sample_fraction,
+    )
 
 
 def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:
     """Execute the same comparison through the local Polars engine.
 
-    Against Postgres, the frames are loaded and read back first, so the local
-    engine sees the tables the pushdown side compared.
+    Against a live database, the frames are loaded and read back first, so the
+    local engine sees the tables the pushdown side compared.
 
     Args:
         config (DiffConfig): Comparison rules and keys.
@@ -188,9 +274,7 @@ def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) ->
     Returns:
         DiffResult: The local engine's verdict and discrepancy rows.
     """
-    if PARITY_BACKEND == "postgres":
-        return postgres_harness.run_local(config, source, target)
-    return DiffEngine(config, source.lazy(), target.lazy()).run()
+    return _BACKEND.run_local(config, source, target)
 
 
 def assert_parity(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffSummary:
