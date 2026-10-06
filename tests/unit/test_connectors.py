@@ -37,7 +37,11 @@ from veridelta.connectors import (
 from veridelta.connectors.sql import compile_postgres_columns_query
 from veridelta.exceptions import ConfigError, ConnectorError
 
-pytestmark = [pytest.mark.unit, pytest.mark.fast]
+pytestmark = [
+    pytest.mark.unit,
+    pytest.mark.fast,
+    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
+]
 
 
 def _snowflake_config() -> SnowflakeConfig:
@@ -151,6 +155,18 @@ class TestConnectorInterface:
 
 class TestLakehouseConnectors:
     """Validate lazy Delta and Iceberg scan wiring without optional extras."""
+
+    @pytest.mark.filterwarnings("error::DeprecationWarning")
+    def test_fetch_schema_warns_that_it_goes(self, mocker: MockerFixture) -> None:
+        """Ensure each call warns, since the method goes in 0.15.0 and nothing in the package calls it."""
+        mocker.patch("polars.scan_delta", return_value=pl.LazyFrame({"id": [1]}))
+        connector = DeltaLakeConnector(_delta_config())
+        connector.connect()
+
+        with pytest.warns(DeprecationWarning, match="fetch_schema is deprecated"):
+            schema = connector.fetch_schema()
+
+        assert schema == pl.Schema({"id": pl.Int64})
 
     def test_it_raises_when_fetching_schema_before_connect(self) -> None:
         """Ensure schema reads require an established lazy-scan handle."""

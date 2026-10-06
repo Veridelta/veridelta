@@ -12,6 +12,12 @@ import polars as pl
 
 from veridelta.connectors.sql import SQLPushdownCompiler
 
+FETCH_SCHEMA_DEPRECATED = (
+    "fetch_schema is deprecated and goes in 0.15.0 with the code that serves only it. "
+    "The engine reads a side's columns from the frame it loads."
+)
+"""The warning every `fetch_schema` emits; the method goes in 0.15.0."""
+
 
 def optional_module(name: str) -> ModuleType | None:
     """Import the module of an optional extra, or return None when it is not installed.
@@ -141,6 +147,10 @@ class VerideltaConnector(ABC):
     @abstractmethod
     def fetch_schema(self) -> pl.Schema:
         """Return column metadata without fully materializing the dataset.
+
+        Deprecated: every implementation warns, and the method goes in 0.15.0.
+        Nothing in the package calls it; the engine reads a side's columns from
+        the frame it loads.
 
         Returns:
             pl.Schema: Deterministic column names and dtypes.

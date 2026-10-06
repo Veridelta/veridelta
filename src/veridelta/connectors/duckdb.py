@@ -26,11 +26,17 @@ reported with the token replaced and without the driver's exception attached.
 import logging
 import os
 import time
+import warnings
 from typing import Any, Final, cast
 
 import polars as pl
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector, optional_module
+from veridelta.connectors.base import (
+    FETCH_SCHEMA_DEPRECATED,
+    PushdownQueryType,
+    VerideltaConnector,
+    optional_module,
+)
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_duckdb_select
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
@@ -159,6 +165,7 @@ class DuckDBConnector(VerideltaConnector):
         Raises:
             ConnectorError: If `connect()` has not been called.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         return self.lazyframe().collect_schema()
 
     def lazyframe(self) -> pl.LazyFrame:
@@ -270,6 +277,7 @@ class DuckDBPushdownSession(VerideltaConnector):
         Raises:
             ConnectorError: If the session is not connected or nothing has run yet.
         """
+        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
         if self._last_statement is None:
             raise ConnectorError(_NO_STATEMENT)
         probe = self.compiler.compile_result_schema_query(self._last_statement)
