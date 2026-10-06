@@ -301,6 +301,15 @@ version_files = [
     "src/veridelta/__init__.py:__version__",
     "mkdocs.yml:version",
     "ci/gitlab/veridelta.yml:veridelta-version",
+    # The pins a user copies, each selected by the text around it. A line that matches the
+    # pattern and holds the current version is rewritten; `tests/unit/test_version_pins.py`
+    # holds every one of them to `veridelta.__version__` between releases.
+    "ci/gitlab/veridelta.yml:Veridelta/veridelta/v",
+    "action.yml:Veridelta/veridelta@v",
+    ".github/ISSUE_TEMPLATE/bug_report.yml:placeholder: veridelta",
+    "docs/configuration.md:Veridelta/veridelta/v",
+    "docs/ci.md:Veridelta/veridelta@v|uvx veridelta@|Veridelta/veridelta/v|pin `v|such as `v|\\]==",
+    "docs/examples/05_validate_and_ci.ipynb:Veridelta/veridelta@v|Veridelta/veridelta/v|\\]==",
 ]
 update_changelog_on_bump = true
 major_version_zero = true
