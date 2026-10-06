@@ -171,5 +171,27 @@ The [Polars documentation](https://docs.pola.rs/) is the model: short declarativ
 - Keep sentences to about 25 words, with one idea each. State a limitation plainly, next to the feature it limits.
 - Keep test methodology and change history out of reference pages.
 - Write docstrings in Google style: a one-line imperative summary that ends in a period, then `Args`, `Returns`, `Raises`, and `Examples` as needed.
+- Describe behavior that exists in the repository. The roadmap lists only work that is not built, and when a feature ships, its how-to moves to the guide page and the roadmap item goes.
+- Keep every example valid against the current configuration and public API, and name the optional extra a feature needs where users meet it.
+- Name each link's target in its text, never "here". Tutorials and the README link to the site by absolute URL, which `tests/unit/test_docs_links.py` resolves.
+- Treat runtime output, such as the run summary and the error headers, as an interface that scripts parse. Change it on purpose, never as a style edit.
+- When a field joins `DiffConfig`, `DiffRule`, `SourceConfig`, or a connection model, describe it on the model's guide page, which `tests/unit/test_docs_coverage.py` checks, and run `make schema`.
 
 `tests/unit/test_docs_style.py` checks the dash, wording, and list rules across the docs, the README, the tutorials, docstrings, CLI help, and the CI templates.
+
+### Where each topic lives
+
+Link to the page that owns a topic instead of repeating it:
+
+- Install, the extras, and the quick start: `README.md`.
+- The configuration file, its settings, environment variables, and editor support: `docs/configuration.md`.
+- Files, lakehouse tables, databases, warehouses, their extras, connection fields, and logging: `docs/sources.md`.
+- Rule fields, the transform order, and each transform: `docs/rules.md`.
+- Comparing inside a warehouse, Postgres, or DuckDB, and how that differs from a local run: `docs/pushdown.md`.
+- `DiffResult`, reports, OpenTelemetry metrics, and artifacts: `docs/results.md`.
+- Commands, flags, exit codes, and `validate`: `docs/cli.md`.
+- The GitHub Action and the GitLab template: `docs/ci.md`, where macros are off so `${{ }}` renders as written.
+- How an agent runs Veridelta: `docs/agents.md`. The build writes `llms.txt` and `llms-full.txt` from every page through `hooks/llms_txt.py`.
+- The public Python surface: `docs/api.md`, generated from docstrings and never hand-copied.
+- Work that is not built: `docs/roadmap.md`.
+- Tutorials: the notebooks under `docs/examples/`.

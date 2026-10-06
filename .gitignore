@@ -32,3 +32,6 @@ coverage.xml
 site/
 .cache/mkdocs/
 .cache/mkdocs-jupyter/
+
+# A contributor's own agent permissions, which Claude Code writes here.
+.claude/settings.local.json
