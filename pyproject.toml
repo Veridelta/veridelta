@@ -120,6 +120,11 @@ databases = [
     # 2.3.8 is the first release with wheels for Python 3.11 to 3.14.
     "pymssql>=2.3.8",
 ]
+# Drives Chromium for the accessibility checks. Only `make accessibility` and the
+# Accessibility CI job install it.
+accessibility = [
+    "playwright>=1.56.0",
+]
 
 [project.scripts]
 veridelta = "veridelta.cli:main"
@@ -170,6 +175,8 @@ module = [
     "google.protobuf.*",
     "mkdocs",
     "mkdocs.*",
+    "playwright",
+    "playwright.*",
 ]
 ignore_missing_imports = true
 
