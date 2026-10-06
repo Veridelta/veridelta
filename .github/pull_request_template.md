@@ -5,6 +5,7 @@
 ## Checklist
 
 - [ ] The title follows [Conventional Commits](https://www.conventionalcommits.org/), such as `feat: read Avro files`.
+- [ ] The summary names the use case this change serves, such as `UC-01` in `product/USERS.md`, or says it is maintenance.
 - [ ] `make all` passes.
 - [ ] Tests cover new or changed behavior.
 - [ ] The documentation describes any change a user can see.

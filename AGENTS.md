@@ -43,14 +43,15 @@ Read the rules for the files a change touches:
 
 ## Product documents
 
-`product/` holds what the project knows about its users and its goals, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle: one concept per Markdown file. `product/USERS.md` holds the personas and use cases, `product/KEY_METRICS.md` and `product/metrics/` the north star with its drivers and guardrails, and `product/log.md` what changed and why. Each directory has an `index.md` that lists its concepts.
+`product/` holds what the project knows about its users and its goals, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle: one concept per Markdown file. `product/USERS.md` holds the personas and use cases, `product/KEY_METRICS.md` and `product/metrics/` the north star with its drivers and guardrails, `product/FEATURES.md` the map from each feature and roadmap item to the use case it serves, and `product/log.md` what changed and why. Each directory has an `index.md` that lists its concepts.
 
+- A change serves a use case, named in its pull request as `UC-nn`, or says it is maintenance. A roadmap item names its use case, or says that none asks for it yet.
 - A concept opens with frontmatter: `type`, `title`, a one-line `description`, `status`, and `generated`. A decision record under `decisions/` carries `generated` too.
 - `generated` names who wrote the text and when: `{ by: claude-code, at: 2026-10-06T09:45:00Z }`, or `human:<id>` for a person. Never a model.
 - Ids tie the documents together: a persona is `P-01`, a use case `UC-01`, a metric `NS-01`, `DR-01`, or `GR-01`. A heading or a metric's file name defines an id once. Name an id only once it is defined.
 - Write the documents with the `define-personas` and `define-key-metrics` skills in `.claude/skills/`, add a line to `product/log.md` under today's date, and follow the writing rules.
 
-`tests/unit/test_product_bundle.py` fails on a missing field, a producer that names a model, an id defined nowhere or twice, a second north star, a driver or guardrail that does not support it, a concept missing from its index, or a link that leads nowhere.
+`tests/unit/test_product_bundle.py` fails on a missing field, a producer that names a model, an id defined nowhere or twice, a second north star, a driver or guardrail that does not support it, a concept missing from its index, a link that leads nowhere, a use case that no feature serves, or a roadmap item that names no use case.
 
 ## Settled
 
@@ -59,6 +60,7 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [The accessibility check runs axe-core from Python, with a pinned download](decisions/accessibility-check-in-python.md)
 - [AGENTS.md holds the rules for coding agents](decisions/agents-md-is-canonical.md)
 - [The MySQL and SQL Server test drivers sit in their own dependency group](decisions/database-drivers-in-their-own-group.md)
+- [The GitLab CI template is frozen](decisions/gitlab-template-is-frozen.md)
 - [llms.txt comes from a hook in the repository](decisions/llms-txt-from-a-hook.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.
