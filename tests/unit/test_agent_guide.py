@@ -18,7 +18,6 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-import yaml
 
 from veridelta.cli import build_parser
 
@@ -42,22 +41,6 @@ def _load_hook() -> ModuleType:
 
 
 hook = _load_hook()
-
-
-class _MkDocsLoader(yaml.SafeLoader):
-    """Read `mkdocs.yml`, taking its `!!python/name:` tags as their dotted names."""
-
-
-_MkDocsLoader.add_multi_constructor(
-    "tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix
-)
-
-
-def _mkdocs_config() -> dict[str, Any]:
-    """Load `mkdocs.yml`."""
-    text = (_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
-    loaded: dict[str, Any] = yaml.load(text, Loader=_MkDocsLoader)
-    return loaded
 
 
 def _command_lines(path: Path) -> list[str]:
@@ -121,12 +104,16 @@ class TestAgentsPage:
         assert not refused, "The CLI refuses these command lines:\n" + "\n".join(refused)
 
     def test_the_site_lists_it_and_runs_the_hook(self) -> None:
-        """Ensure the page is in the nav, and the build writes `llms.txt`."""
-        config = _mkdocs_config()
-        guide = next(item["User guide"] for item in config["nav"] if "User guide" in item)
+        """Ensure the page is in the user guide's nav, and the build writes `llms.txt`.
 
-        assert {"AI agents": "agents.md"} in guide
-        assert config["hooks"] == ["hooks/llms_txt.py"]
+        `mkdocs.yml` is read as text: its `!!python/name:` tags need a custom
+        YAML loader, which mypy cannot check where PyYAML has no stubs.
+        """
+        text = (_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+        guide = text.split("  - User guide:\n", 1)[1].split("\n  - ", 1)[0]
+
+        assert "\n    - AI agents: agents.md" in f"\n{guide}"
+        assert "\nhooks:\n  - hooks/llms_txt.py\n" in text
 
 
 class TestLlmsTxt:
