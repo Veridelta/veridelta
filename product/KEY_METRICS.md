@@ -3,42 +3,54 @@ type: Key Metrics
 title: The key metrics
 description: One north star, the drivers that move it, and the guardrails against gaming it, each measured by a command this repository can run.
 status: draft
-generated: { by: claude-code, at: 2026-10-06T09:45:00Z }
+generated: { by: claude-code, at: 2026-10-06T15:10:00Z }
 ---
 
 # The key metrics
 
-Veridelta has no telemetry and adds none, so every metric here is measured from what the repository and its GitHub project can see: CI jobs, the parity suite, the Live Warehouses workflow, the GitHub API, and the command line itself. Each metric is a concept under [metrics/](metrics/index.md), named by its id. This revision holds the north star and one driver; the other drivers and the guardrails follow.
+Veridelta has no telemetry and adds none, so every metric here is measured from what the repository and its GitHub project can see: the command line itself, CI jobs, the parity suite, the Live Warehouses workflow, and the issue tracker. Each metric is a concept under [metrics/](metrics/index.md), named by its id. The set follows the maintainer's constraint in [who Veridelta serves](USERS.md#what-the-maintainer-said): the barrier of entry stays small, and Veridelta is never riddled with bugs.
 
 ## Overview
 
 | Id | Role | Supports | Proves | Metric |
 | :--- | :--- | :--- | :--- | :--- |
-| NS-01 | north star | | UC-01 | [Backends with the same verdict locally and in pushdown](metrics/NS-01.md) |
+| NS-01 | north star | | UC-01, UC-04 | [Steps to a correct verdict on the quick start](metrics/NS-01.md) |
 | DR-01 | driver | NS-01 | UC-01 | [Keys written before the first verdict](metrics/DR-01.md) |
+| DR-02 | driver | NS-01 | UC-01, UC-04 | [Quick-start mistakes that name their cause](metrics/DR-02.md) |
+| DR-03 | driver | NS-01 | UC-02 | [Days from a wrong verdict reported to its fix on PyPI](metrics/DR-03.md) |
+| GR-01 | guardrail | NS-01 | UC-05 | [Backends with the same verdict locally and in pushdown](metrics/GR-01.md) |
+| GR-02 | guardrail | NS-01 | UC-02, UC-03 | [Wrong verdicts open at a release](metrics/GR-02.md) |
+| GR-03 | guardrail | NS-01 | UC-03 | [Accessibility violations on the site and the report](metrics/GR-03.md) |
 
 ## North star
 
-[NS-01](metrics/NS-01.md) counts the pushdown backends on which the parity suite reached the same verdict as a local run, on the released version. The promise behind it is the README's: the same verdict in the warehouse as on a laptop.
+[NS-01](metrics/NS-01.md) counts the steps between a fresh machine and a correct verdict on the quick start: the keys a newcomer writes plus the shell lines they type. It is 7 today, and 5 is the target. The maintainer chose it over parity across backends on 2026-10-06, because the one known user is a newcomer with two CSV files, and the promise to them is a verdict with nothing to learn first.
 
 ## Drivers
 
-[DR-01](metrics/DR-01.md) counts the keys a user writes before a first verdict on two Parquet files. The fewer, the sooner a new user reaches the promise.
+- [DR-01](metrics/DR-01.md) counts the keys in the smallest configuration that compares two Parquet files: 5 today, and 3 once the format follows the file's suffix.
+- [DR-02](metrics/DR-02.md) counts the quick-start mistakes whose error names the cause and not a symptom: 3 of 4 today.
+- [DR-03](metrics/DR-03.md) measures how long a reported wrong verdict stays unfixed on PyPI. No such report exists yet.
 
 ## Guardrails
 
-None is written yet. Candidates: accessibility violations on the site and the report, which the Accessibility CI job counts; branch coverage of the core modules, which `make test` holds at 100%; and releases shipped without a green Live Warehouses run.
+- [GR-01](metrics/GR-01.md) counts the pushdown backends on which the parity suite reached the same verdict as a local run: 2 of 6 today, and 6 of 6 before a release. A faster verdict that differs by backend is worth nothing.
+- [GR-02](metrics/GR-02.md) counts the wrong verdicts reported and still open at a release: 0 today, and 0 at every release.
+- [GR-03](metrics/GR-03.md) counts the accessibility violations on the docs site and the HTML report: 0 today, and 0 at every release.
 
 ## Considered and rejected
 
 - **PyPI downloads.** They count mirrors, bots, and CI reinstalls, and nothing the project does on purpose moves them.
 - **GitHub stars.** Attention, not use.
-- **The number of connectors.** A connector nobody uses costs maintenance and proves nothing.
+- **The number of connectors or rules.** A feature nobody uses costs maintenance and proves nothing. The high ceiling the maintainer asked for is held by the rules a use case needs, not by a count.
 - **Lines of code and the test count.** Both grow with every change and say nothing about a user.
+- **Branch coverage of the core modules.** `make test` already fails below 100%, so it is a gate, not a number to watch.
 
 ## Where each metric is read
 
 | Metric | Where |
 | :--- | :--- |
-| NS-01 | The `test-core` and `test-postgres` jobs of the CI Pipeline on the release commit, and the latest run of the Live Warehouses workflow |
-| DR-01 | `veridelta run` on the smallest configuration that compares two Parquet files; the card has the commands |
+| NS-01, DR-01, DR-02 | `veridelta run` on the configurations each card gives. The recording in the README, once it exists, shows NS-01. |
+| DR-03, GR-02 | `gh issue list --label bug`, and the release dates on PyPI |
+| GR-01 | The `test-core` and `test-postgres` jobs of the CI Pipeline on the release commit, and the latest run of the Live Warehouses workflow |
+| GR-03 | The Accessibility job of the CI Pipeline on the release commit |
