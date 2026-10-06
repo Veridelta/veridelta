@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__github__issue_read",
+      "mcp__github__list_issues",
+      "mcp__github__list_pull_requests",
+      "mcp__github__actions_get",
+      "mcp__github__get_latest_release",
+      "mcp__claude-code-remote__list_repos"
+    ]
+  }
+}
