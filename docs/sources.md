@@ -152,7 +152,7 @@ MySQL has no boolean type, so a flag arrives as a number. These MySQL types arri
 | `DATETIME`, `TIMESTAMP` | `Datetime`, with no time zone |
 | `JSON` | `String` |
 
-A `cast_to` rule cannot turn `Binary` into a number or a boolean. To compare a `BIT` column as a number, read it with `CAST(column AS UNSIGNED)` in a `query`.
+A `cast_to` rule cannot turn `Binary` into a number or a boolean, and a run refuses one before it reads a row. To compare a `BIT` column as a number, read it with `CAST(column AS UNSIGNED)` in a `query`.
 
 SQL Server has a boolean type, `BIT`, and these of its types arrive as follows:
 
