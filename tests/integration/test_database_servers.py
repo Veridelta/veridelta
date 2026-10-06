@@ -203,7 +203,11 @@ def create_table(server: _Server) -> Iterator[_CreateTable]:
 
 
 def _types_rows(server: _Server) -> list[list[Any]]:
-    """Return a row of values, a row of NULLs, and a second row of values."""
+    """Return a row of values, a row of NULLs, and a second row of values.
+
+    SQL Server gets its times as text: pymssql writes a `datetime` parameter
+    with milliseconds only, and the server reads text at full precision.
+    """
     seen = datetime(2026, 1, 1, 12, 0, 0, 123456)
     if server.scheme == "mysql":
         return [
@@ -211,11 +215,12 @@ def _types_rows(server: _Server) -> list[list[Any]]:
             [2, None, None, None, None, None, None, None, None],
             [3, Decimal("-1.05"), 2.0, 0, b"\x00", "plain", date(2026, 1, 2), seen, 0],
         ]
+    seen_text = seen.isoformat(sep=" ")
     stamp = "2026-01-01 12:00:00.123 +02:00"
     return [
-        [1, Decimal("10.50"), 0.25, True, 255, _TEXT, date(2026, 1, 1), seen, stamp],
+        [1, Decimal("10.50"), 0.25, True, 255, _TEXT, date(2026, 1, 1), seen_text, stamp],
         [2, None, None, None, None, None, None, None, None],
-        [3, Decimal("-1.05"), 2.0, False, 0, "plain", date(2026, 1, 2), seen, stamp],
+        [3, Decimal("-1.05"), 2.0, False, 0, "plain", date(2026, 1, 2), seen_text, stamp],
     ]
 
 
