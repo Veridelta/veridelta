@@ -78,6 +78,10 @@ veridelta run -c veridelta.yaml
 - [API reference](https://veridelta.github.io/veridelta/api/): the public Python interface.
 - [Roadmap](https://veridelta.github.io/veridelta/roadmap/): work that is not built yet.
 
+## Accessibility
+
+[ACCESSIBILITY.md](https://github.com/Veridelta/veridelta/blob/main/ACCESSIBILITY.md) states what Veridelta aims for, the barriers known today, and how to report one.
+
 ## Contributing
 
 See [CONTRIBUTING.md](https://github.com/Veridelta/veridelta/blob/main/CONTRIBUTING.md) for the development setup and the checks a change must pass.

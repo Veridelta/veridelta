@@ -38,8 +38,9 @@ class TestIssueForms:
     """Validate each issue form against the rules GitHub enforces."""
 
     def test_it_offers_a_form_for_each_kind_of_report(self) -> None:
-        """Ensure the chooser lists bugs, feature requests, and documentation."""
+        """Ensure the chooser lists accessibility barriers, bugs, documentation, and features."""
         assert [path.stem for path in _forms()] == [
+            "accessibility",
             "bug_report",
             "documentation",
             "feature_request",

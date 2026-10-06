@@ -64,7 +64,10 @@ class _Text(NamedTuple):
 def _markdown_files() -> list[Path]:
     """Return the Markdown pages in scope."""
     pages = sorted((_ROOT / "docs").rglob("*.md"))
-    root = [_ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md", "AGENTS.md")]
+    root = [
+        _ROOT / name
+        for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md", "AGENTS.md", "ACCESSIBILITY.md")
+    ]
     records = sorted((_ROOT / "decisions").glob("*.md"))
     skills = sorted([*_ROOT.glob("skills/*/SKILL.md"), *_ROOT.glob(".claude/skills/*/SKILL.md")])
     return [*root, _ROOT / ".github" / "pull_request_template.md", *pages, *records, *skills]
@@ -166,6 +169,8 @@ class TestDocumentationStyle:
         assert {
             "README.md",
             "AGENTS.md",
+            "ACCESSIBILITY.md",
+            ".github/ISSUE_TEMPLATE/accessibility.yml",
             "docs/configuration.md",
             "src/veridelta/models.py",
             "skills/veridelta/SKILL.md",

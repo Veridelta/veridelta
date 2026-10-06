@@ -2,7 +2,7 @@
 
 Contributions are welcome. Every change passes the same typing, formatting, and test checks that CI runs.
 
-Everyone who takes part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+Everyone who takes part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md). A change to the HTML report or the documentation site meets the [accessibility expectations](ACCESSIBILITY.md#contributor-expectations).
 
 Coding agents read [AGENTS.md](AGENTS.md), which sums up this guide and links the detailed rules. Update both when a rule changes.
 

@@ -26,6 +26,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 - Leave `CHANGELOG.md` alone. The release pull request writes it.
 - Add no dependency without a concrete need.
 - Follow the [writing rules](CONTRIBUTING.md#writing-documentation) in docs, docstrings, CLI help, commit messages, and pull requests. `tests/unit/test_docs_style.py` checks some of them.
+- Meet the [accessibility expectations](ACCESSIBILITY.md#contributor-expectations) in a change to the HTML report or the docs site.
 
 ## Detailed rules
 
