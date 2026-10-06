@@ -113,7 +113,7 @@ def _notebook_markdown() -> Iterator[tuple[str, str]]:
 
 def _texts() -> Iterator[tuple[str, str]]:
     """Yield every text that can link to the site by absolute URL."""
-    for name in ("README.md", "CONTRIBUTING.md"):
+    for name in ("README.md", "CONTRIBUTING.md", "ACCESSIBILITY.md"):
         yield name, (_ROOT / name).read_text(encoding="utf-8")
     for page in sorted(_DOCS.rglob("*.md")):
         yield str(page.relative_to(_ROOT)), page.read_text(encoding="utf-8")
