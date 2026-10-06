@@ -8,7 +8,8 @@ would break: every input a step reads is declared, no input is expanded inside a
 shell script, third-party actions are pinned, the `veridelta run` command line
 they build still parses with the CLI's own parser, and a release publishes only
 a new version, only from its tag, with no more permission than each job needs.
-They also pin the CI safeguards: one required check covers every job, jobs have
+The GitLab template keeps an input for each of the Action's, with the same
+default, unless a listed reason exempts it. They also pin the CI safeguards: one required check covers every job, jobs have
 time limits and a read-only token, and only jobs GitHub never started are re-run.
 The live warehouse workflow starts only by hand and waits for a maintainer.
 """
@@ -172,6 +173,33 @@ def _gitlab_job() -> dict[str, Any]:
     return found
 
 
+def _gitlab_run_line() -> str:
+    """Return the line of the job's script that runs `veridelta run`."""
+    script: str = _gitlab_job()["script"][0]
+    return next(line for line in script.splitlines() if "veridelta run" in line)
+
+
+def _as_action_default(value: object) -> str:
+    """Write a typed GitLab default as the Action's text, such as `true` or `1000`."""
+    return str(value).lower() if isinstance(value, bool) else str(value)
+
+
+_GITLAB_EXEMPT = {
+    "github-token": "The merge request note reads the masked VERIDELTA_GITLAB_TOKEN variable.",
+    "artifact-name": "GitLab keeps each job's artifacts apart, so no name can collide.",
+}
+"""Action inputs the GitLab template lacks, and why it needs none."""
+
+_GITLAB_PLACEMENT = {"stage", "job-name", "image"}
+"""GitLab inputs that place the job in a pipeline, which a workflow does itself."""
+
+_GITLAB_OWN_DEFAULTS = {
+    "version": "Both install the release they ship with: the Action reads its ref, the template names it.",
+    "python-version": "The image already holds a Python, so the template asks for none unless told.",
+}
+"""Shared inputs whose GitLab default differs from the Action's, and why."""
+
+
 class TestGitLabTemplate:
     """Pin the GitLab CI template's contract."""
 
@@ -188,17 +216,105 @@ class TestGitLabTemplate:
         for line in _gitlab_job()["script"]:
             assert "$[[" not in line
 
+    def test_each_input_reaches_the_script_through_its_own_variable(self) -> None:
+        """Ensure each input the script needs arrives as a `VERIDELTA_` variable it reads."""
+        header, _ = _gitlab()
+        job = _gitlab_job()
+        expected = {
+            "VERIDELTA_" + name.upper().replace("-", "_"): f"$[[ inputs.{name} ]]"
+            for name in set(header["spec"]["inputs"]) - _GITLAB_PLACEMENT
+        }
+
+        assert job["variables"] == expected
+        for variable in expected:
+            assert "$" + variable in job["script"][0], variable
+
+    def test_it_has_an_input_for_each_action_input(self) -> None:
+        """Ensure the template keeps pace with the Action, unless a listed reason exempts an input."""
+        header, _ = _gitlab()
+        gitlab = set(header["spec"]["inputs"])
+        action = set(_action()["inputs"])
+
+        assert action - gitlab == set(_GITLAB_EXEMPT)
+        assert gitlab - action == _GITLAB_PLACEMENT
+
+    def test_its_defaults_match_the_action(self) -> None:
+        """Ensure a shared input starts from the Action's value, unless a listed reason differs."""
+        header, _ = _gitlab()
+        gitlab = header["spec"]["inputs"]
+        action = _action()["inputs"]
+
+        differ = {
+            name
+            for name in gitlab.keys() & action.keys()
+            if _as_action_default(gitlab[name]["default"]) != action[name]["default"]
+        }
+
+        assert differ == set(_GITLAB_OWN_DEFAULTS)
+
     def test_its_command_line_parses_with_the_cli(self) -> None:
         """Ensure a renamed CLI flag breaks this test instead of every pipeline."""
         arguments = _cli_arguments(_gitlab_job()["script"][0])
 
         parsed = build_parser().parse_args(arguments)
 
+        assert parsed.command == "run"
         assert parsed.json is True
-        assert parsed.markdown == "veridelta-report/summary.md"
+        assert parsed.html == "placeholder/report.html"
+        assert parsed.markdown == "placeholder/summary.md"
         assert parsed.markdown_max_rows == 1000
-        assert parsed.otel == "veridelta-report/otel-metrics.json"
+        assert parsed.otel == "placeholder/otel-metrics.json"
         assert parsed.otel_send is False
+
+    def test_it_runs_in_the_working_directory_with_the_python_asked_for(self) -> None:
+        """Ensure the run starts in `working-directory`, with `--python` only when one is set.
+
+        The `cd` runs in a subshell, so the note and the verdict that follow
+        still run from the project directory.
+        """
+        header, _ = _gitlab()
+
+        assert _gitlab_run_line().startswith(
+            '(cd "$VERIDELTA_WORKING_DIRECTORY" && uvx '
+            '${VERIDELTA_PYTHON_VERSION:+--python "$VERIDELTA_PYTHON_VERSION"} '
+            '--from "$spec" veridelta run '
+        )
+        assert header["spec"]["inputs"]["python-version"]["default"] == ""
+
+    def test_it_keeps_the_reports_as_artifacts_only_when_asked(self) -> None:
+        """Ensure kept reports land in the artifact path, and others in a temporary directory."""
+        header, _ = _gitlab()
+        job = _gitlab_job()
+        script = job["script"][0]
+        line = _gitlab_run_line()
+        (path,) = job["artifacts"]["paths"]
+        directory = path.rstrip("/")
+
+        assert header["spec"]["inputs"]["upload-artifact"] == {
+            "description": header["spec"]["inputs"]["upload-artifact"]["description"],
+            "type": "boolean",
+            "default": True,
+        }
+        assert job["artifacts"]["when"] == "always"
+        assert (
+            'if [ "$VERIDELTA_UPLOAD_ARTIFACT" = "true" ]; then\n'
+            f'  report="$CI_PROJECT_DIR/{directory}"\n'
+            "else\n"
+            "  report=$(mktemp -d)\n"
+            "fi\n"
+        ) in script
+        for name in ("report.html", "summary.md", "otel-metrics.json"):
+            assert f'"$report/{name}"' in line, name
+        assert line.endswith(' > "$report/summary.json")')
+        # Every later step reads the reports through `$report`, never the artifact path.
+        assert script.count(directory) == 1
+
+    def test_its_merge_request_note_reads_the_summary_wherever_it_lands(self) -> None:
+        """Ensure the note reads `summary.md` from the report directory, kept or not."""
+        script = _gitlab_job()["script"][0]
+
+        assert "VERIDELTA_REPORT=\"$report\" python3 - <<'PY'" in script
+        assert 'os.path.join(os.environ["VERIDELTA_REPORT"], "summary.md")' in script
 
     def test_it_sends_the_metrics_only_when_asked(self) -> None:
         """Ensure `otel-send` defaults off, and when true adds the flag the CLI parses."""

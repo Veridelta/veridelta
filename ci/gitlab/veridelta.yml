@@ -13,13 +13,19 @@
 spec:
   inputs:
     config:
-      description: Path to the Veridelta YAML configuration.
+      description: Path to the Veridelta YAML configuration, relative to working-directory.
       default: veridelta.yaml
+    working-directory:
+      description: Directory the comparison runs in. Relative paths in the configuration resolve from here.
+      default: "."
     version:
       description: Veridelta version to install from PyPI.
       default: "0.13.0" # veridelta-version: bumped with each release
     extras:
       description: Comma-separated optional extras, such as "snowflake" or "database,fuzzy".
+      default: ""
+    python-version:
+      description: Python version to run Veridelta with, such as "3.13", which uv downloads when the image lacks it. Empty runs the image's Python.
       default: ""
     stage:
       description: Pipeline stage the job runs in.
@@ -50,6 +56,10 @@ spec:
       description: Keep one summary note up to date on the merge request, when VERIDELTA_GITLAB_TOKEN is set.
       type: boolean
       default: true
+    upload-artifact:
+      description: Keep the JSON summary, Markdown summary, HTML report, and OpenTelemetry metrics as job artifacts.
+      type: boolean
+      default: true
 ---
 "$[[ inputs.job-name ]]":
   stage: $[[ inputs.stage ]]
@@ -57,37 +67,49 @@ spec:
   # Inputs reach the script as variables, never by interpolation into it.
   variables:
     VERIDELTA_CONFIG: "$[[ inputs.config ]]"
+    VERIDELTA_WORKING_DIRECTORY: "$[[ inputs.working-directory ]]"
     VERIDELTA_VERSION: "$[[ inputs.version ]]"
     VERIDELTA_EXTRAS: "$[[ inputs.extras ]]"
+    VERIDELTA_PYTHON_VERSION: "$[[ inputs.python-version ]]"
     VERIDELTA_HTML_MAX_ROWS: "$[[ inputs.html-max-rows ]]"
     VERIDELTA_MARKDOWN_MAX_ROWS: "$[[ inputs.markdown-max-rows ]]"
     VERIDELTA_OTEL_SEND: "$[[ inputs.otel-send ]]"
     VERIDELTA_FAIL_ON_MISMATCH: "$[[ inputs.fail-on-mismatch ]]"
     VERIDELTA_COMMENT: "$[[ inputs.comment ]]"
+    VERIDELTA_UPLOAD_ARTIFACT: "$[[ inputs.upload-artifact ]]"
   script:
     - |
       set +e
-      mkdir -p veridelta-report
+      # Reports land where the artifacts are collected only when they are kept.
+      if [ "$VERIDELTA_UPLOAD_ARTIFACT" = "true" ]; then
+        report="$CI_PROJECT_DIR/veridelta-report"
+      else
+        report=$(mktemp -d)
+      fi
+      mkdir -p "$report"
       extras=$(printf '%s' "$VERIDELTA_EXTRAS" | tr -d ' ')
       spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
       # Left unquoted in the command, so an empty value adds no argument.
       send=""
       if [ "$VERIDELTA_OTEL_SEND" = "true" ]; then send="--otel-send"; fi
-      uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel veridelta-report/otel-metrics.json $send > veridelta-report/summary.json
+      # The cd runs in a subshell, so the rest of the script stays in the project
+      # directory, and a directory that does not exist reads as an error. An empty
+      # python-version adds no --python, so the image's Python runs.
+      (cd "$VERIDELTA_WORKING_DIRECTORY" && uvx ${VERIDELTA_PYTHON_VERSION:+--python "$VERIDELTA_PYTHON_VERSION"} --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$report/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$report/summary.md" --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel "$report/otel-metrics.json" $send > "$report/summary.json")
       code=$?
       # A pinned older release exits 1 on a failure too, so 1 is drift only
       # when the summary says so. Any other code, such as 3, is an error.
       if [ "$code" -eq 0 ]; then
         status=match
-      elif [ "$code" -eq 1 ] && grep -q '"is_match": false' veridelta-report/summary.json; then
+      elif [ "$code" -eq 1 ] && grep -q '"is_match": false' "$report/summary.json"; then
         status=drift
       else
         status=error
       fi
       echo "Veridelta: $status (exit code $code)"
-      if [ -s veridelta-report/summary.md ]; then cat veridelta-report/summary.md; fi
+      if [ -s "$report/summary.md" ]; then cat "$report/summary.md"; fi
       if [ "$VERIDELTA_COMMENT" = "true" ] && [ -n "${VERIDELTA_GITLAB_TOKEN:-}" ] && [ -n "${CI_MERGE_REQUEST_IID:-}" ]; then
-        python3 - <<'PY' || echo "Veridelta could not post the merge request note; check that VERIDELTA_GITLAB_TOKEN has the api scope."
+        VERIDELTA_REPORT="$report" python3 - <<'PY' || echo "Veridelta could not post the merge request note; check that VERIDELTA_GITLAB_TOKEN has the api scope."
       import json
       import os
       import urllib.parse
@@ -110,7 +132,7 @@ spec:
 
       marker = "<!-- veridelta:" + urllib.parse.quote(os.environ["VERIDELTA_CONFIG"], safe="") + " -->"
       try:
-          with open("veridelta-report/summary.md", encoding="utf-8") as handle:
+          with open(os.path.join(os.environ["VERIDELTA_REPORT"], "summary.md"), encoding="utf-8") as handle:
               summary = handle.read()
       except OSError:
           summary = "### Veridelta: ERROR\n\n`veridelta run` did not write a summary. The job log has the error.\n"

@@ -116,15 +116,21 @@ The template defines one job, named `veridelta` by default, which:
 
 - installs the release the template ships with;
 - prints the summary to the job log;
-- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report";
+- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report", unless `upload-artifact` is `false`;
 - with `otel-send` set to `true`, also sends the metrics, to the endpoint that masked CI/CD variables such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` name.
 
-**Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports.
+**Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports. The job keeps one note per `config` path. Two jobs that run the same path from different working directories write over each other's note.
 
 **Inputs:**
 
-- `config`, `version`, `extras`, `html-max-rows`, `markdown-max-rows`, `otel-send`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action. With `markdown-max-rows` above `0`, values appear in the job log and the merge request note.
+- `config`, `working-directory`, `extras`, `html-max-rows`, `markdown-max-rows`, `otel-send`, `fail-on-mismatch`, `comment`, and `upload-artifact` mean what they do for the GitHub Action, with the same defaults. With `markdown-max-rows` above `0`, values appear in the job log and the merge request note.
+- `version` defaults to the release the template ships with.
+- `python-version` is empty by default, which runs the image's Python. Set it, such as to `"3.13"`, and uv downloads that version when the image lacks it.
 - `stage`, `job-name`, and `image` place the job in your pipeline.
+
+There is no `github-token` input, since the note reads the masked `VERIDELTA_GITLAB_TOKEN` variable. There is no `artifact-name` either, since GitLab keeps each job's artifacts apart.
+
+With `upload-artifact` set to `false`, the reports go to a temporary directory instead. GitLab then logs that no files match the artifact path, which does not change the job's result.
 
 **Credentials.** Set them as masked CI/CD variables; the configuration reads them as `${NAME}`.
 
