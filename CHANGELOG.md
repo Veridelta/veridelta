@@ -1,3 +1,14 @@
+## v0.14.4 (2026-10-06)
+
+`-v` now prints each file a local run opens, with its format and its width, on the
+`veridelta.engine` logger. Only the connectors logged before, so a run over two files
+printed nothing under `--verbose`, though the 0.14.0 changelog promised each read. A run
+without the flag prints no record, as before.
+
+### Fix
+
+- log each file a local run opens under `--verbose`, with its format and column count
+
 ## v0.14.3 (2026-10-06)
 
 A configuration failure inside `source` or `target` now names the block. A bad `format`
