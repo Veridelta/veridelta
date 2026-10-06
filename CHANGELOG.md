@@ -1,3 +1,17 @@
+## v0.14.5 (2026-10-06)
+
+The package behaves as 0.14.4 did: no command, rule, connector, or report changed. One
+helper, `optional_module` in `veridelta.connectors.base`, now probes every extra the
+connectors and the engine read through. Each probe was a `try` block of its own, with two
+coverage pragmas, eight in all, and the engine kept a private copy of the helper that the
+connectors could not import. Every probe keeps its name, so a test that patches one is
+unchanged.
+
+### Refactor
+
+- share one optional-import helper across the connectors and the engine, and drop the
+  eight coverage pragmas the old probes carried
+
 ## v0.14.4 (2026-10-06)
 
 `-v` now prints each file a local run opens, with its format and its width, on the
