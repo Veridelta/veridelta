@@ -30,6 +30,7 @@ from veridelta.connectors.sql import (
     compile_database_probe,
     compile_database_select,
     compile_duckdb_select,
+    compile_mssql_utc_select,
     compile_postgres_columns_query,
     compile_postgres_text_select,
 )
@@ -1941,6 +1942,30 @@ class TestPostgresDeclaredNumerics:
         sql = compile_postgres_text_select("orders", ["amount"], {"amount"}, probe=True)
 
         assert sql == 'SELECT CAST("amount" AS TEXT) AS "amount" FROM "orders" WHERE 1 = 0'
+
+
+class TestSqlServerUtcSelect:
+    """Validate the statement that reads a SQL Server `DATETIMEOFFSET` at offset zero."""
+
+    def test_it_switches_the_chosen_columns_to_offset_zero(self) -> None:
+        """Ensure every column is read in table order, the chosen ones moved to `+00:00`."""
+        sql = compile_mssql_utc_select("sales.dbo.orders", ["id", "placed", "seen"], {"placed"})
+
+        assert sql == (
+            "SELECT [id], SWITCHOFFSET([placed], '+00:00') AS [placed], [seen] "
+            "FROM [sales].[dbo].[orders]"
+        )
+
+    def test_it_doubles_a_bracket_inside_a_column_name(self) -> None:
+        """Ensure a column name from the server stays one bracketed identifier."""
+        sql = compile_mssql_utc_select("orders", ["at] UTC", "n"], {"at] UTC"})
+
+        assert sql == "SELECT SWITCHOFFSET([at]] UTC], '+00:00') AS [at]] UTC], [n] FROM [orders]"
+
+    def test_it_fails_closed_on_a_table_outside_the_allowlist(self) -> None:
+        """Ensure the table name is checked as every database read checks it."""
+        with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
+            compile_mssql_utc_select("orders]; DROP TABLE orders; --", ["id"], set())
 
 
 _VALUE_MAP_RULES = [

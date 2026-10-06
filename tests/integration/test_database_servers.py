@@ -60,8 +60,9 @@ class _Server:
         return os.environ.get(self.variable) or None
 
     def quoted(self, name: str) -> str:
-        """Quote a table or column name for this server."""
-        return f"{self.quotes[0]}{name}{self.quotes[1]}"
+        """Quote a table or column name for this server, doubling any closing quote in it."""
+        opening, closing = self.quotes
+        return f"{opening}{name.replace(closing, closing * 2)}{closing}"
 
     def connect(self) -> Any:
         """Open a connection through the server's own driver, committing each statement."""
@@ -233,8 +234,8 @@ class TestDatabaseServers:
     ) -> None:
         """Ensure each type arrives as the Polars type the docs give, NULLs included.
 
-        ConnectorX applies a `DATETIMEOFFSET` offset twice, as the docs say, so
-        `12:00 +02:00` arrives as 08:00 in UTC and `12:00 +00:00` as 12:00.
+        A `DATETIMEOFFSET` arrives at the instant it holds, in UTC, whatever its
+        offset: `12:00 +02:00` as 10:00, and `12:00 +00:00` as 12:00.
         """
         table = create_table(server.types, _types_rows(server))
 
@@ -246,26 +247,85 @@ class TestDatabaseServers:
         assert first["name"] == _TEXT
         assert first["seen"] == datetime(2026, 1, 1, 12, 0, 0, 123456)
         if "stamp" in first:
-            assert first["stamp"] == datetime(2026, 1, 1, 8, 0, 0, 123000, tzinfo=UTC)
+            assert first["stamp"] == datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)
             assert third["stamp"] == datetime(2026, 1, 1, 12, 0, 0, 123000, tzinfo=UTC)
         assert [value for key, value in empty.items() if key != "id"] == [None] * (
             len(server.types) - 1
         )
 
-    def test_it_reads_the_instant_a_datetimeoffset_holds_after_switchoffset(
+    @pytest.mark.parametrize("partitions", [None, 2], ids=["whole", "partitioned"])
+    def test_it_reads_the_instant_each_datetimeoffset_holds(
+        self, server: _Server, create_table: _CreateTable, partitions: int | None
+    ) -> None:
+        """Ensure a `table` read returns the instant each `DATETIMEOFFSET` holds, whole or split.
+
+        ConnectorX applies the offset a second time, so `12:00 +02:00` would
+        arrive as 08:00 in UTC. A partitioned read sends the rewritten select
+        through ConnectorX's own parser, so the column name holds a space.
+        """
+        if server.scheme != "mssql":
+            pytest.skip("DATETIMEOFFSET is a SQL Server type.")
+        table = create_table(
+            {"id": "INT NOT NULL", "Placed At": "DATETIMEOFFSET(3)"},
+            [
+                [1, "2026-01-01 12:00:00.123 +02:00"],
+                [2, "2026-01-01 12:00:00.123 -05:30"],
+                [3, None],
+            ],
+        )
+        split = {"partition_on": "id", "partitions": partitions} if partitions else {}
+
+        frame = LoaderFactory.load(server.source(table=table, **split)).collect().sort("id")
+
+        assert frame["Placed At"].to_list() == [
+            datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC),
+            datetime(2026, 1, 1, 17, 30, 0, 123000, tzinfo=UTC),
+            None,
+        ]
+
+    def test_it_reads_a_datetimeoffset_named_with_a_bracket(
         self, server: _Server, create_table: _CreateTable
     ) -> None:
-        """Ensure the docs' workaround for the doubled offset reads the stored instant."""
+        """Ensure a `]` in a column name is doubled inside its brackets, as SQL Server reads it.
+
+        A partitioned read would pass the name through ConnectorX's parser,
+        which writes it back undoubled, so that read is refused before any row.
+        """
+        if server.scheme != "mssql":
+            pytest.skip("DATETIMEOFFSET is a SQL Server type.")
+        table = create_table(
+            {"id": "INT NOT NULL", "at] UTC": "DATETIMEOFFSET(3)"},
+            [[1, "2026-01-01 12:00:00.123 +02:00"]],
+        )
+
+        frame = LoaderFactory.load(server.source(table=table)).collect()
+
+        assert frame["at] UTC"].to_list() == [datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)]
+        with pytest.raises(ConnectorError, match=r"Column 'at\] UTC' .* has '\]' in its name"):
+            LoaderFactory.load(server.source(table=table, partition_on="id", partitions=2))
+
+    def test_it_sends_a_query_as_written_so_a_datetimeoffset_needs_switchoffset(
+        self, server: _Server, create_table: _CreateTable
+    ) -> None:
+        """Ensure a `query` keeps ConnectorX's doubled offset, and the docs' workaround fixes it.
+
+        This pins what the docs say about a `query`. When ConnectorX reads the
+        offset once, the first assertion fails, and the docs need updating.
+        """
         if server.scheme != "mssql":
             pytest.skip("DATETIMEOFFSET is a SQL Server type.")
         table = create_table(
             {"id": "INT", "stamp": "DATETIMEOFFSET(3)"}, [[1, "2026-01-01 12:00:00.123 +02:00"]]
         )
-        query = f"SELECT SWITCHOFFSET(stamp, '+00:00') AS stamp FROM {server.quoted(table)}"
+        relation = server.quoted(table)
 
-        frame = LoaderFactory.load(server.source(query=query)).collect()
+        raw = LoaderFactory.load(server.source(query=f"SELECT stamp FROM {relation}")).collect()
+        switched = LoaderFactory.load(
+            server.source(query=f"SELECT SWITCHOFFSET(stamp, '+00:00') AS stamp FROM {relation}")
+        ).collect()
 
-        assert frame["stamp"].to_list() == [datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)]
+        assert raw["stamp"].to_list() == [datetime(2026, 1, 1, 8, 0, 0, 123000, tzinfo=UTC)]
+        assert switched["stamp"].to_list() == [datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)]
 
     def test_it_reads_a_mixed_case_table_by_its_quoted_name(
         self, server: _Server, create_table: _CreateTable

@@ -37,6 +37,7 @@ from veridelta.connectors.sql import (
     compile_database_partition_range,
     compile_database_probe,
     compile_database_select,
+    compile_mssql_utc_select,
     compile_postgres_columns_query,
     compile_postgres_text_select,
 )
@@ -70,6 +71,9 @@ _LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value
 
 _POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})
 """URI schemes whose `table` reads keep each `numeric` column's declared scale."""
+
+_MSSQL_SCHEME: Final = "mssql"
+"""URI scheme whose `table` reads move each `DATETIMEOFFSET` column to offset zero."""
 
 _MAX_DECIMAL_PRECISION: Final = 38
 """Widest decimal Polars holds. A wider `numeric` keeps ConnectorX's default read."""
@@ -123,6 +127,8 @@ class DatabaseConnector(VerideltaConnector):
         try:
             if scheme in _POSTGRES_SCHEMES and self._config.table is not None:
                 statement, declared = self._declared_statement(self._config.table, statement, uri)
+            elif scheme == _MSSQL_SCHEME and self._config.table is not None and not self._probe:
+                statement = self._utc_statement(self._config.table, statement, uri)
             frame = self._read(scheme, statement, uri)
         except ConnectorError:
             raise
@@ -257,6 +263,33 @@ class DatabaseConnector(VerideltaConnector):
             return statement, declared
         columns = catalog.get_column("attname").to_list()
         return compile_postgres_text_select(table, columns, declared, probe=self._probe), declared
+
+    def _utc_statement(self, table: str, statement: str, uri: str) -> str:
+        """Find a SQL Server table's `DATETIMEOFFSET` columns, and read them at offset zero.
+
+        ConnectorX shifts a `DATETIMEOFFSET` value by its offset a second time.
+        A read of the table's columns and no rows finds them, as the only
+        columns ConnectorX reads as a time in UTC. The read itself would type
+        them the same way, which a catalog query could only approximate.
+        """
+        columns = pl.read_database_uri(compile_database_probe(_MSSQL_SCHEME, table), uri).schema
+        in_utc = [
+            name
+            for name, dtype in columns.items()
+            if isinstance(dtype, pl.Datetime) and dtype.time_zone is not None
+        ]
+        if not in_utc:
+            return statement
+        bracketed = [name for name in columns if "]" in name]
+        if bracketed and self._config.partition_on is not None:
+            # ConnectorX parses a partitioned read to split it. Its parser reads a
+            # doubled `]` as one and writes it back undoubled, which SQL Server refuses.
+            raise ConnectorError(
+                f"Column '{bracketed[0]}' of {self._subject} has ']' in its name, which a "
+                "partitioned read cannot pass through ConnectorX. Remove 'partition_on' and "
+                "'partitions' to read the table in one piece."
+            )
+        return compile_mssql_utc_select(table, list(columns), in_utc)
 
     @property
     def _subject(self) -> str:
