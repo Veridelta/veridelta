@@ -44,6 +44,7 @@ Read the rules for the files a change touches:
 Each of these choices has a record in `decisions/`, with what it was chosen over and how to reverse it. Do not reopen one without the maintainer:
 
 - [AGENTS.md holds the rules for coding agents](decisions/agents-md-is-canonical.md)
+- [The MySQL and SQL Server test drivers sit in their own dependency group](decisions/database-drivers-in-their-own-group.md)
 - [llms.txt comes from a hook in the repository](decisions/llms-txt-from-a-hook.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.
