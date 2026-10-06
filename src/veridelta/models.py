@@ -905,9 +905,13 @@ class SnowflakeConfig(BaseModel):
         warehouse (str): Virtual warehouse that executes pushdown SQL.
         database (str): Default database for unqualified object names.
         schema_name (str): Default schema for unqualified object names.
-        password (str | None): Optional password, unset for SSO. Left out when
-            the config is printed, but kept by `model_dump()`, which the
-            connector needs.
+        password (str | None): Optional password or programmatic access
+            token, unset for a key pair or SSO. Left out when the config is
+            printed, but kept by `model_dump()`, which the connector needs.
+        private_key_path (str | None): Optional path to a PEM private key, for
+            key-pair sign-in instead of a password. Left out when printed.
+        private_key_passphrase (str | None): Passphrase of an encrypted
+            `private_key_path`. Left out when printed.
         role (str | None): Optional role assumed after authentication.
     """
 
@@ -926,11 +930,42 @@ class SnowflakeConfig(BaseModel):
     database: str = Field(..., description="Default database for unqualified object names.")
     schema_name: str = Field(..., description="Default schema for unqualified object names.")
     password: str | None = Field(
-        default=None, repr=False, description="Optional password; omitted when using SSO."
+        default=None,
+        repr=False,
+        description="Password or programmatic access token; omitted for a key pair or SSO.",
+    )
+    private_key_path: str | None = Field(
+        default=None,
+        repr=False,
+        description="Path to a PEM private key, for key-pair sign-in instead of a password.",
+    )
+    private_key_passphrase: str | None = Field(
+        default=None, repr=False, description="Passphrase of an encrypted private_key_path."
     )
     role: str | None = Field(
         default=None, description="Optional role assumed after authentication."
     )
+
+    @model_validator(mode="after")
+    def validate_sign_in(self) -> "SnowflakeConfig":
+        """Reject credentials that leave unclear how the session signs in.
+
+        Returns:
+            SnowflakeConfig: The validated instance.
+
+        Raises:
+            ValueError: If both `password` and `private_key_path` are set, or
+                `private_key_passphrase` is set without `private_key_path`.
+        """
+        if self.password is not None and self.private_key_path is not None:
+            raise ValueError(
+                "Snowflake signs in with a 'password' or a 'private_key_path', not both."
+            )
+        if self.private_key_passphrase is not None and self.private_key_path is None:
+            raise ValueError(
+                "'private_key_passphrase' decrypts 'private_key_path', which is not set."
+            )
+        return self
 
 
 class DatabricksConfig(BaseModel):

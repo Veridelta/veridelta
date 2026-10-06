@@ -4128,7 +4128,7 @@ requires-dist = [
     { name = "pyiceberg", marker = "extra == 'iceberg'", specifier = ">=0.6.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rapidfuzz", marker = "extra == 'fuzzy'", specifier = ">=3.0.0" },
-    { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.7.0" },
+    { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=3.8.0" },
     { name = "veridelta", extras = ["bigquery"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["database"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["databricks"], marker = "extra == 'all'" },
