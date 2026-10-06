@@ -1,6 +1,6 @@
 # Agent instructions
 
-This file holds the rules for coding agents that change this repository. It sums up [CONTRIBUTING.md](CONTRIBUTING.md), which people follow, and links the detailed rules in `.cursor/rules`.
+This file holds the rules for coding agents that change this repository. It sums up [CONTRIBUTING.md](CONTRIBUTING.md), which people follow, and links the rules that apply under `src/` and `tests/`.
 
 ## Commands
 
@@ -36,13 +36,12 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 
 ## Detailed rules
 
-Read the rules for the files a change touches:
+Two more files hold the rules for the code they sit beside. An agent that loads a folder's `AGENTS.md` sees them without a link; every other agent reads them from here:
 
 | Rules | Applies to |
 | :--- | :--- |
-| [Engine and models](.cursor/rules/100-engine-polars.mdc) | `src/veridelta/` |
-| [Testing standards](.cursor/rules/200-testing-standards.mdc) | `tests/` |
-| [Security](.cursor/rules/300-security.mdc) | `src/veridelta/`, above all the SQL in `connectors/sql.py` |
+| [Rules under `src/`](src/AGENTS.md) | `src/veridelta/`: the engine, the models, the loaders, and above all the SQL in `connectors/sql.py` |
+| [Rules under `tests/`](tests/AGENTS.md) | `tests/` |
 
 ## Product documents
 
