@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "veridelta"
-version = "0.14.2"
+version = "0.14.3"
 description = "Compare two datasets under declared rules, locally or inside the warehouse."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -294,7 +294,7 @@ exclude_lines = [
 
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.14.2"
+version = "0.14.3"
 tag_format = "v$version"
 version_files = [
     "pyproject.toml:version",
