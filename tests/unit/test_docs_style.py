@@ -65,7 +65,9 @@ def _markdown_files() -> list[Path]:
     """Return the Markdown pages in scope."""
     pages = sorted((_ROOT / "docs").rglob("*.md"))
     root = [_ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md", "AGENTS.md")]
-    return [*root, _ROOT / ".github" / "pull_request_template.md", *pages]
+    records = sorted((_ROOT / "decisions").glob("*.md"))
+    skills = sorted([*_ROOT.glob("skills/*/SKILL.md"), *_ROOT.glob(".claude/skills/*/SKILL.md")])
+    return [*root, _ROOT / ".github" / "pull_request_template.md", *pages, *records, *skills]
 
 
 def _notebook_cells() -> Iterator[_Text]:
@@ -166,7 +168,9 @@ class TestDocumentationStyle:
             "AGENTS.md",
             "docs/configuration.md",
             "src/veridelta/models.py",
+            "skills/veridelta/SKILL.md",
         } <= sources
+        assert any(source.startswith("decisions/") for source in sources)
         assert any(source.endswith(".ipynb") for source in sources)
 
     def test_it_uses_no_dash_characters(self) -> None:

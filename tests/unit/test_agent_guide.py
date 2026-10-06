@@ -18,6 +18,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+import yaml
 
 from veridelta.cli import build_parser
 
@@ -25,6 +26,10 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _ROOT = Path(__file__).resolve().parents[2]
 _PAGE = _ROOT / "docs" / "agents.md"
+_USER_SKILL = _ROOT / "skills" / "veridelta" / "SKILL.md"
+_SKILLS = [_USER_SKILL, *sorted((_ROOT / ".claude" / "skills").glob("*/SKILL.md"))]
+"""The skill users install, then the skills that contributors' agents load."""
+_SKILL_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 _SITE = "https://example.org/docs/"
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _INLINE_COMMAND = re.compile(r"`(veridelta [^`]+)`")
@@ -90,9 +95,10 @@ def _sample_pages() -> list[Any]:
 class TestAgentsPage:
     """Keep the commands the AI agents page gives an agent valid."""
 
-    def test_its_command_lines_parse_with_the_cli(self) -> None:
-        """Ensure a renamed command or flag fails here, not in an agent's run."""
-        lines = _command_lines(_PAGE)
+    @pytest.mark.parametrize("path", [_PAGE, _USER_SKILL], ids=["page", "skill"])
+    def test_its_command_lines_parse_with_the_cli(self, path: Path) -> None:
+        """Ensure a renamed command or flag fails here, in the page and the skill alike."""
+        lines = _command_lines(path)
         refused = []
         for line in lines:
             try:
@@ -114,6 +120,28 @@ class TestAgentsPage:
 
         assert "\n    - AI agents: agents.md" in f"\n{guide}"
         assert "\nhooks:\n  - hooks/llms_txt.py\n" in text
+
+
+class TestAgentSkills:
+    """Hold each skill to the format agents read: a name, a description, and a version."""
+
+    def test_it_finds_the_skills(self) -> None:
+        """Ensure a moved folder cannot empty the checks below."""
+        assert _USER_SKILL in _SKILLS
+        assert len(_SKILLS) >= 2
+
+    @pytest.mark.parametrize("path", _SKILLS, ids=lambda path: path.parent.name)
+    def test_each_skill_names_itself_and_says_when_to_use_it(self, path: Path) -> None:
+        """Ensure an agent can find the skill by its folder and tell when to load it."""
+        text = path.read_text(encoding="utf-8")
+        front_matter: dict[str, Any] = yaml.safe_load(text.split("---\n", 2)[1])
+
+        assert set(front_matter) == {"name", "description", "metadata"}
+        assert front_matter["name"] == path.parent.name
+        assert _SKILL_NAME.fullmatch(front_matter["name"])
+        assert "Use when" in front_matter["description"]
+        assert len(front_matter["description"]) <= 1024
+        assert re.fullmatch(r"\d+\.\d+\.\d+", front_matter["metadata"]["version"])
 
 
 class TestLlmsTxt:

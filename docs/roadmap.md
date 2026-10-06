@@ -21,7 +21,6 @@ An AI agent can drive Veridelta through the [command line](cli.md) today. `run`,
 ### Next
 
 - Errors as JSON. Under `--json`, a command that fails prints one JSON object on stdout, with the error's type and message. Its exit code also differs from the code for drift.
-- An agent skill: a `SKILL.md` file that an agent harness installs, with the same guidance as the [AI agents](agents.md) page.
 - Schemas for the JSON that `run`, `validate`, and `crosswalk` print, published as the configuration schema is.
 - A tutorial that compares two model evaluation runs, keyed by example ID, with tolerances and fuzzy text matching.
 - A section of the GitHub Action's pull request comment that an agent can parse.
