@@ -36,7 +36,7 @@ _GIF_URL = "https://veridelta.github.io/veridelta/assets/demo.gif"
 _PROMPT = "> "
 """The prompt vhs shows before each command."""
 
-_TYPED = re.compile(r'^Type "(.+)"$', re.MULTILINE)
+_TYPED = re.compile(r"^Type ([\"'])(.+)\1$", re.MULTILINE)
 _OUTPUT = re.compile(r"^Output (.+)$", re.MULTILINE)
 _TYPING_SPEED = re.compile(r"^Set TypingSpeed (\d+)ms$", re.MULTILINE)
 _SLEEP = re.compile(r"^Sleep ([\d.]+)s$", re.MULTILINE)
@@ -51,8 +51,8 @@ def _tape() -> str:
 
 
 def _typed() -> list[str]:
-    """Return every line the tape types, in order."""
-    return _TYPED.findall(_tape())
+    """Return every line the tape types, in order, whichever quotes the tape used."""
+    return [command for _, command in _TYPED.findall(_tape())]
 
 
 def _timing() -> list[tuple[float, float]]:
@@ -101,8 +101,9 @@ def _transcript(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[s
             captured = capsys.readouterr()
             # The progress lines reach stderr before the summary reaches stdout.
             shown += captured.err + captured.out
-        elif command == "echo $?":
-            shown += f"{code}\n"
+        elif command.startswith("echo "):
+            words = shlex.split(command)[1:]
+            shown += " ".join(words).replace("$?", str(code)) + "\n"
         else:
             raise AssertionError(f"This test cannot run {command!r}.")
     return shown
@@ -112,12 +113,14 @@ class TestDemoTape:
     """Hold the tape, its data, and its outputs together."""
 
     def test_it_types_the_quick_start(self) -> None:
-        """Ensure the recording shows the file, validates it, runs it, and shows the exit code."""
+        """Ensure the recording shows the configuration and the data, validates, runs, and shows the exit code."""
         assert _typed() == [
             "cat veridelta.yaml",
+            "cat legacy.csv",
+            "cat modern.csv",
             "veridelta validate -c veridelta.yaml",
             "veridelta run -c veridelta.yaml",
-            "echo $?",
+            'echo "exit code for CI: $? (0 match, 1 drift, 3 error)"',
         ]
 
     def test_every_veridelta_line_parses_with_the_cli(self) -> None:
