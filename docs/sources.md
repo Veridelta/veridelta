@@ -73,6 +73,8 @@ primary_keys: ["event_id"]
 
 `storage_options` is a map of strings passed to the scanner, such as credentials, the region, and other object store settings.
 
+The scan reads the table's transaction log or metadata when it opens. So a missing table, version, or snapshot fails before the comparison starts, with the table's URI in the error. Checking an Iceberg `snapshot_id` reads one row.
+
 ## Databases
 
 A `database` source reads a table, or the result of a query, from an operational database through [ConnectorX](https://github.com/sfu-db/connector-x). Install the `database` extra. The rows are compared locally. A database pairs with a file, a lakehouse table, or another database, and `crosswalk` reads it too. This pair compares a Postgres table with the result of a MySQL query:

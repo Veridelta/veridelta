@@ -4,12 +4,12 @@
 """Hold user-facing text to the writing rules a machine can check.
 
 The rules are in CONTRIBUTING.md, under "Writing documentation". This module
-checks four of them across the docs, the README, the tutorials, docstrings, CLI
-help, schema descriptions, the CI templates, and the issue and pull request
-templates: no dash characters, no spaced double hyphen used as a dash, no
-marketing words, and no list that Python Markdown would render as part of a
-paragraph. CHANGELOG.md is history, and CODE_OF_CONDUCT.md is the Contributor
-Covenant as published. Both are left as written.
+checks four of them across the docs, the README, AGENTS.md, the tutorials,
+docstrings, CLI help, schema descriptions, the CI templates, and the issue and
+pull request templates: no dash characters, no spaced double hyphen used as a
+dash, no marketing words, and no list that Python Markdown would render as part
+of a paragraph. CHANGELOG.md is history, and CODE_OF_CONDUCT.md is the
+Contributor Covenant as published. Both are left as written.
 """
 
 import ast
@@ -64,7 +64,7 @@ class _Text(NamedTuple):
 def _markdown_files() -> list[Path]:
     """Return the Markdown pages in scope."""
     pages = sorted((_ROOT / "docs").rglob("*.md"))
-    root = [_ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md")]
+    root = [_ROOT / name for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md", "AGENTS.md")]
     return [*root, _ROOT / ".github" / "pull_request_template.md", *pages]
 
 
@@ -161,7 +161,12 @@ class TestDocumentationStyle:
         """Ensure a moved folder cannot silently empty the scope of every check."""
         sources = {text.where.split(" ")[0].split(":")[0] for text in _all_text()}
 
-        assert {"README.md", "docs/configuration.md", "src/veridelta/models.py"} <= sources
+        assert {
+            "README.md",
+            "AGENTS.md",
+            "docs/configuration.md",
+            "src/veridelta/models.py",
+        } <= sources
         assert any(source.endswith(".ipynb") for source in sources)
 
     def test_it_uses_no_dash_characters(self) -> None:

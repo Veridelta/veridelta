@@ -106,6 +106,8 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-mock>=3.15.1",
     "ruff>=0.15.10",
+    # The SQL catalog the Iceberg tests write real tables through.
+    "sqlalchemy>=2.0.18",
     "types-pyyaml>=6.0.12.20260408",
     "xlsxwriter>=3.2.0",
 ]

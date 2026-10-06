@@ -9,7 +9,8 @@ the README, which GitHub and PyPI show away from the site. Both link to the
 published site by absolute URL, and this module resolves each URL against the
 page and the heading it names. Notebook links must be absolute: mkdocs-jupyter
 leaves a link as written, so `../rules.md` would point inside the notebook's
-own folder on the site.
+own folder on the site. `AGENTS.md` links files in the repository instead, and
+this module resolves those too.
 """
 
 import json
@@ -35,6 +36,7 @@ _LINK_TARGET = re.compile(r"\]\(([^)\s]+)\)")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
+_AGENTS = _ROOT / "AGENTS.md"
 
 
 def _slug(heading: str) -> str:
@@ -129,6 +131,19 @@ def _site_links() -> list[tuple[str, str, str | None]]:
     ]
 
 
+def _repository_links(page: Path) -> list[str]:
+    """Return the links on a Markdown file that point inside the repository.
+
+    Args:
+        page (Path): A Markdown file.
+
+    Returns:
+        list[str]: Each relative link target, with its `#anchor` if it has one.
+    """
+    text = page.read_text(encoding="utf-8")
+    return [target for target in _LINK_TARGET.findall(text) if "://" not in target]
+
+
 class TestDocumentationLinks:
     """Keep links outside the strict build pointing at real pages and headings."""
 
@@ -195,3 +210,30 @@ class TestDocumentationLinks:
     def test_it_slugs_headings_as_python_markdown_does(self, heading: str, anchor: str) -> None:
         """Ensure the slug rule matches the ids the site was built with."""
         assert _slug(heading) == anchor
+
+
+class TestAgentInstructions:
+    """Keep `AGENTS.md` pointing at the rules files and headings that exist."""
+
+    def test_it_links_every_rules_file(self) -> None:
+        """Ensure a new file in `.cursor/rules` cannot ship without a row in `AGENTS.md`."""
+        rules = {path.relative_to(_ROOT).as_posix() for path in _ROOT.glob(".cursor/rules/*.mdc")}
+        linked = {target.partition("#")[0] for target in _repository_links(_AGENTS)}
+
+        assert rules, "No rules files found under .cursor/rules."
+        assert rules <= linked, "Link these from AGENTS.md:\n" + "\n".join(sorted(rules - linked))
+
+    def test_it_resolves_every_repository_link(self) -> None:
+        """Ensure each file and heading that `AGENTS.md` links to exists."""
+        broken = []
+        for target in _repository_links(_AGENTS):
+            path, _, anchor = target.partition("#")
+            linked = _ROOT / path
+            if not linked.is_file() or (anchor and anchor not in _anchors(linked)):
+                broken.append(target)
+
+        assert not broken, "These AGENTS.md links name nothing:\n" + "\n".join(broken)
+
+    def test_claude_code_reads_it(self) -> None:
+        """Ensure `CLAUDE.md` only imports `AGENTS.md`, so the rules live in one file."""
+        assert (_ROOT / "CLAUDE.md").read_text(encoding="utf-8").split() == ["@AGENTS.md"]

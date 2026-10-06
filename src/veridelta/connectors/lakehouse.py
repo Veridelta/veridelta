@@ -50,18 +50,22 @@ class DeltaLakeConnector(VerideltaConnector):
         self._frame: pl.LazyFrame | None = None
 
     def connect(self) -> None:
-        """Open an unevaluated `pl.scan_delta` handle for the configured table.
+        """Open a lazy `pl.scan_delta` of the configured table and read its log.
 
         Raises:
-            ConnectorError: If the `deltalake` extra is missing or the scan fails.
+            ConnectorError: If the `deltalake` extra is missing, or the table
+                or version cannot be read.
         """
         storage_options = self._config.storage_options or None
         try:
-            self._frame = pl.scan_delta(
+            frame = pl.scan_delta(
                 self._config.table_uri,
                 version=self._config.version,
                 storage_options=storage_options,
             )
+            # Polars defers the scan, so read the log now: a missing table or
+            # version then fails here, named, instead of partway through a run.
+            frame.collect_schema()
         except ImportError as exc:
             raise ConnectorError(_DELTA_EXTRA) from exc
         except Exception as exc:
@@ -69,6 +73,7 @@ class DeltaLakeConnector(VerideltaConnector):
             raise ConnectorError(
                 f"Delta Lake scan of '{self._config.table_uri}' failed: {exc}"
             ) from exc
+        self._frame = frame
         logger.info(
             "Opened Delta Lake scan of %s (version=%s)",
             self._config.table_uri,
@@ -143,17 +148,25 @@ class IcebergConnector(VerideltaConnector):
         self._frame: pl.LazyFrame | None = None
 
     def connect(self) -> None:
-        """Open an unevaluated `pl.scan_iceberg` handle for the configured table.
+        """Open a lazy `pl.scan_iceberg` of the configured table and read its metadata.
 
         Raises:
-            ConnectorError: If the `pyiceberg` extra is missing or the scan fails.
+            ConnectorError: If the `pyiceberg` extra is missing, or the table
+                or snapshot cannot be read.
         """
         try:
-            self._frame = pl.scan_iceberg(
+            frame = pl.scan_iceberg(
                 self._config.table_uri,
                 snapshot_id=self._config.snapshot_id,
                 storage_options=self._config.storage_options or None,
             )
+            # Polars defers the scan, so read the metadata now: a missing table
+            # then fails here, named, instead of partway through a run. Polars
+            # looks a snapshot up only to read rows, so time travel reads one.
+            if self._config.snapshot_id is None:
+                frame.collect_schema()
+            else:
+                frame.head(1).collect()
         except ImportError as exc:
             raise ConnectorError(_ICEBERG_EXTRA) from exc
         except Exception as exc:
@@ -161,6 +174,7 @@ class IcebergConnector(VerideltaConnector):
             raise ConnectorError(
                 f"Iceberg scan of '{self._config.table_uri}' failed: {exc}"
             ) from exc
+        self._frame = frame
         logger.info(
             "Opened Iceberg scan of %s (snapshot_id=%s)",
             self._config.table_uri,
