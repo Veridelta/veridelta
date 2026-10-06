@@ -206,6 +206,61 @@ jobs:
       - name: Run the Parity Suite Inside Postgres
         run: make postgres
 
+  test-databases:
+    name: Database Servers
+    needs: test-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      # Both passwords hold @, :, / and #, so every read checks that the
+      # password Veridelta percent-encodes reaches each driver intact.
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: "Vd@pass:w/rd#1"
+          MYSQL_DATABASE: veridelta
+        ports:
+          - 3306:3306
+        # `mysqladmin ping` succeeds once the server accepts connections,
+        # even one it refuses to sign in.
+        options: >-
+          --health-cmd "mysqladmin ping --host=127.0.0.1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Vd@pass:w/rd#1"
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P $MSSQL_SA_PASSWORD -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 30
+    env:
+      VERIDELTA_MYSQL_URI: mysql://root:Vd%40pass%3Aw%2Frd%231@127.0.0.1:3306/veridelta
+      # The container's certificate is self-signed, so TLS skips its check.
+      VERIDELTA_MSSQL_URI: mssql://sa:Vd%40pass%3Aw%2Frd%231@127.0.0.1:1433/master?encrypt=true&trust_server_certificate=true
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras --group databases
+
+      - name: Read Real MySQL and SQL Server Tables
+        run: make databases
+
   action:
     name: GitHub Action (${{ matrix.os }})
     needs: test-smoke
@@ -283,7 +338,7 @@ jobs:
   ci-passed:
     name: CI Passed
     if: always()
-    needs: [static-analysis, docs, test-smoke, test-core, test-e2e, test-notebooks, test-postgres, action]
+    needs: [static-analysis, docs, test-smoke, test-core, test-e2e, test-notebooks, test-postgres, test-databases, action]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

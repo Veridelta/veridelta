@@ -111,6 +111,15 @@ dev = [
     "types-pyyaml>=6.0.12.20260408",
     "xlsxwriter>=3.2.0",
 ]
+# Drivers that load test tables into live MySQL and SQL Server servers. Only
+# `make databases` and the Database Servers CI job install them.
+databases = [
+    # 1.1.1 fixes CVE-2024-36039. The rsa extra signs in to MySQL 8's default
+    # caching_sha2_password over a connection without TLS.
+    "pymysql[rsa]>=1.1.1",
+    # 2.3.8 is the first release with wheels for Python 3.11 to 3.14.
+    "pymssql>=2.3.8",
+]
 
 [project.scripts]
 veridelta = "veridelta.cli:main"
@@ -151,6 +160,10 @@ module = [
     "jsonschema.*",
     "psycopg",
     "psycopg.*",
+    "pymysql",
+    "pymysql.*",
+    "pymssql",
+    "pymssql.*",
     "opentelemetry",
     "opentelemetry.*",
     "google.protobuf",
