@@ -5,13 +5,21 @@ WEBVTT
 cat veridelta.yaml prints the configuration: the primary key, the source file, and the target file, in five lines.
 
 2
-00:02.900 --> 00:07.200
-veridelta validate -c veridelta.yaml checks the file without reading a row and prints: veridelta.yaml: valid.
+00:02.900 --> 00:05.600
+cat legacy.csv prints the source: three rows, each with an id, a status, and an amount.
 
 3
-00:07.200 --> 00:12.750
-veridelta run -c veridelta.yaml compares the files and prints the summary: FAILED, one row added, one removed, one changed, in the status column.
+00:05.600 --> 00:08.800
+cat modern.csv prints the target: row 2 now reads shipped instead of closed, row 3 is gone, and row 4 is new.
 
 4
-00:12.750 --> 00:16.100
-echo $? prints the exit code, 1, which fails a CI job.
+00:08.800 --> 00:13.100
+veridelta validate -c veridelta.yaml checks the file without reading a row and prints: veridelta.yaml: valid.
+
+5
+00:13.100 --> 00:18.650
+veridelta run -c veridelta.yaml compares the files and prints the summary: FAILED, one row added, one removed, one changed, in the status column.
+
+6
+00:18.650 --> 00:24.400
+echo "exit code for CI: $? (0 match, 1 drift, 3 error)" prints the code CI reads, 1: the datasets drifted.

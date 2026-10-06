@@ -8,7 +8,7 @@ Veridelta compares two datasets on their primary keys and reports every row that
   This browser does not play the video. The transcript below shows the same run.
 </video>
 
-The recording runs the quick start on two small files, as the transcript shows:
+The recording prints the configuration and the two files, checks the configuration, runs the comparison, and prints the exit code, as the transcript shows:
 
 ```text
 > cat veridelta.yaml
@@ -17,6 +17,16 @@ source:
   path: legacy.csv
 target:
   path: modern.csv
+> cat legacy.csv
+id,status,amount
+1,open,10.0
+2,closed,20.5
+3,open,7.25
+> cat modern.csv
+id,status,amount
+1,open,10.0
+2,shipped,20.5
+4,open,7.25
 > veridelta validate -c veridelta.yaml
 veridelta.yaml: valid.
 > veridelta run -c veridelta.yaml
@@ -42,8 +52,8 @@ Top Column-Level Drifts:
 ---------------------------
 - status: 1 mismatches
 
-> echo $?
-1
+> echo "exit code for CI: $? (0 match, 1 drift, 3 error)"
+exit code for CI: 1 (0 match, 1 drift, 3 error)
 ```
 
 Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, as are two Postgres or DuckDB tables that set `pushdown`. Only counts and keys come back.

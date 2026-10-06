@@ -5,12 +5,20 @@ Output ../docs/assets/demo.mp4
 Set Shell "bash"
 Set FontSize 16
 Set Width 900
-Set Height 800
+Set Height 1000
 Set TypingSpeed 50ms
 
 Type "cat veridelta.yaml"
 Enter
 Sleep 2s
+
+Type "cat legacy.csv"
+Enter
+Sleep 2s
+
+Type "cat modern.csv"
+Enter
+Sleep 2.5s
 
 Type "veridelta validate -c veridelta.yaml"
 Enter
@@ -20,6 +28,6 @@ Type "veridelta run -c veridelta.yaml"
 Enter
 Sleep 4s
 
-Type "echo $?"
+Type 'echo "exit code for CI: $? (0 match, 1 drift, 3 error)"'
 Enter
 Sleep 3s
