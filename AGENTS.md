@@ -13,6 +13,7 @@ The project uses [uv](https://docs.astral.sh/uv/) and a Makefile:
 | `make notebooks` | Runs the tutorials, after a change to one. |
 | `make schema` | Regenerates `docs/schema/veridelta.schema.json`, after a change to a configuration model. |
 | `make postgres` | Runs the parity suite inside a live Postgres, after a change to the SQL compiler. |
+| `make databases` | Reads real MySQL and SQL Server tables, after a change to the database connector. |
 
 Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip`, `poetry`, or `conda`.
 
