@@ -204,9 +204,9 @@ class TestLakehouseConnectors:
         delta = DeltaLakeConnector(_delta_config())
         iceberg = IcebergConnector(_iceberg_config())
 
-        with pytest.raises(ConnectorError, match="warehouse-only"):
+        with pytest.raises(ConnectorError, match="compared locally"):
             delta.execute_pushdown("SELECT * FROM events")
-        with pytest.raises(ConnectorError, match="warehouse-only"):
+        with pytest.raises(ConnectorError, match="compared locally"):
             iceberg.execute_pushdown("SELECT * FROM events")
 
     def test_it_connects_delta_via_scan_delta_and_returns_schema(
