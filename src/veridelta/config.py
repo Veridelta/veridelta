@@ -179,11 +179,29 @@ def config_json_schema() -> dict[str, Any]:
     }
 
 
-def _validation_failure(error: ValidationError, unset: Sequence[str] = ()) -> ConfigError:
-    """Format a Pydantic failure as the loader's `ConfigError`."""
+def _validation_failure(
+    error: ValidationError,
+    unset: Sequence[str] = (),
+    *,
+    block: str | None = None,
+    tag: object = None,
+) -> ConfigError:
+    """Format a Pydantic failure as the loader's `ConfigError`.
+
+    Args:
+        error (ValidationError): The failure.
+        unset (Sequence[str]): Environment variables the block named that were not set.
+        block (str | None): The block the failure is in, `source` or `target`, which then
+            opens each location in place of the `type` tag Pydantic puts there.
+        tag (object): The block's `type`, which Pydantic names first in a location inside
+            the chosen model, and not at all when no model matches it.
+    """
     message = "Configuration Validation Failed:\n"
     for validation_error in error.errors():
-        location = " -> ".join(str(loc) for loc in validation_error["loc"])
+        parts = list(validation_error["loc"])
+        if block is not None:
+            parts = [block, *(parts[1:] if parts and parts[0] == tag else parts)]
+        location = " -> ".join(str(part) for part in parts)
         message += f"  - [{location}]: {validation_error['msg']}\n"
     if unset:
         message += (
@@ -206,7 +224,7 @@ def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -
     try:
         return _SOURCE_REF_ADAPTER.validate_python(payload)
     except ValidationError as e:
-        raise _validation_failure(e, guessed or ()) from e
+        raise _validation_failure(e, guessed or (), block=label, tag=payload["type"]) from e
 
 
 def load_config(
