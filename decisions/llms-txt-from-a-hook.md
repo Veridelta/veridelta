@@ -4,6 +4,7 @@ title: llms.txt comes from a hook in the repository
 description: Why the docs build writes llms.txt and llms-full.txt with its own MkDocs hook, not with the mkdocs-llmstxt plugin.
 status: stable
 decided: 2026-10-06
+generated: { by: claude-code, at: 2026-10-05T22:53:01-05:00 }
 ---
 
 **Claim:** `hooks/llms_txt.py`, registered under `hooks:` in `mkdocs.yml`, writes `llms.txt` and `llms-full.txt` into the site when the docs build.

@@ -21,7 +21,7 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 _ROOT = Path(__file__).resolve().parents[2]
 _RECORDS = sorted((_ROOT / "decisions").glob("*.md"))
 _FRONT_MATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
-_FIELDS = {"type", "title", "description", "status", "decided"}
+_FIELDS = {"type", "title", "description", "status", "decided", "generated"}
 _LABELS = ["Claim", "Evidence", "Alternative considered", "Why rejected", "How to reverse"]
 
 
@@ -42,7 +42,7 @@ class TestDecisionRecords:
 
     @pytest.mark.parametrize("record", _RECORDS, ids=lambda path: path.stem)
     def test_each_record_has_its_front_matter(self, record: Path) -> None:
-        """Ensure a record says what it is, when it was decided, and nothing about who wrote it."""
+        """Ensure a record says what it is, when it was decided, and who wrote it, but never which model."""
         fields = _front_matter(record)
 
         assert set(fields) == _FIELDS
@@ -50,6 +50,12 @@ class TestDecisionRecords:
         assert fields["status"] in {"draft", "stable", "deprecated"}
         assert isinstance(fields["decided"], date)
         assert "\n" not in str(fields["description"]).strip()
+        generated = fields["generated"]
+        assert isinstance(generated, dict)
+        assert set(generated) == {"by", "at"}
+        assert "/" not in str(generated["by"]), (
+            "The producer is named without a version or a model."
+        )
 
     @pytest.mark.parametrize("record", _RECORDS, ids=lambda path: path.stem)
     def test_each_record_holds_the_five_labels_in_order(self, record: Path) -> None:
