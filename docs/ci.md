@@ -60,6 +60,7 @@ jobs:
 | `python-version` | `3.12` | Python to run Veridelta with. |
 | `html-max-rows` | `1000` | Rows per table in the HTML report. |
 | `markdown-max-rows` | `0` | Changed values to list in the summary. See [Values in the summary](#values-in-the-summary). |
+| `otel-send` | `false` | Send the run's OpenTelemetry metrics to an OTLP/HTTP endpoint. See [Sending metrics to an observability backend](#sending-metrics-to-an-observability-backend). |
 | `fail-on-mismatch` | `true` | Fail the step on drift. An error always fails it. |
 | `comment` | `true` | Keep a summary comment on the pull request. |
 | `github-token` | `github.token` | Token used to comment. |
@@ -84,26 +85,20 @@ The summary lists counts and column names, never values, unless `markdown-max-ro
 
 ### Sending metrics to an observability backend
 
-The action also writes the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics). A later step can send them to any OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. `always()` sends a drifting run's metrics too, after the action's step has failed:
+The action writes the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics) on every run. Set `otel-send: true` to also send them to an OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. The step's `env` names the endpoint, and any header your backend requires, from secrets:
 
 ```yaml
       - uses: Veridelta/veridelta@v0.13.0
-        id: veridelta
         env:
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTLP_HEADERS }}
           OTEL_RESOURCE_ATTRIBUTES: deployment.environment=ci,team=data
         with:
           config: veridelta.yaml
-      - name: Send the metrics
-        if: always() && steps.veridelta.outputs.otel-metrics != ''
-        env:
-          OTLP_ENDPOINT: ${{ secrets.OTLP_ENDPOINT }}
-          METRICS: ${{ steps.veridelta.outputs.otel-metrics }}
-        run: >-
-          curl --fail -sS -X POST -H "Content-Type: application/json"
-          --data-binary "@$METRICS" "$OTLP_ENDPOINT/v1/metrics"
+          otel-send: true
 ```
 
-The step's `env` tags the run with [attributes from the environment](results.md#attributes-from-the-environment). Add any header your backend requires, such as an API key, from a secret.
+`OTLP_HEADERS` holds items such as `api-key=<key>`. [Sending to an endpoint](results.md#sending-to-an-endpoint) lists every variable. `OTEL_RESOURCE_ATTRIBUTES` tags the run with [attributes from the environment](results.md#attributes-from-the-environment). A send that fails makes the run an `error`, which fails the step even when the comparison matched.
 
 ## GitLab CI
 
@@ -121,13 +116,14 @@ The template defines one job, named `veridelta` by default, which:
 
 - installs the release the template ships with;
 - prints the summary to the job log;
-- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report". A later job can send `veridelta-report/otel-metrics.json` to an OTLP/HTTP endpoint as above. The job's `variables` can set the same OpenTelemetry variables.
+- keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report";
+- with `otel-send` set to `true`, also sends the metrics, to the endpoint that masked CI/CD variables such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` name.
 
 **Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports.
 
 **Inputs:**
 
-- `config`, `version`, `extras`, `html-max-rows`, `markdown-max-rows`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action. With `markdown-max-rows` above `0`, values appear in the job log and the merge request note.
+- `config`, `version`, `extras`, `html-max-rows`, `markdown-max-rows`, `otel-send`, `fail-on-mismatch`, and `comment` mean what they do for the GitHub Action. With `markdown-max-rows` above `0`, values appear in the job log and the merge request note.
 - `stage`, `job-name`, and `image` place the job in your pipeline.
 
 **Credentials.** Set them as masked CI/CD variables; the configuration reads them as `${NAME}`.
@@ -151,6 +147,6 @@ Both integrations read `veridelta run`'s exit code together with its JSON summar
 | :--- | :--- | :--- |
 | `match` | 0 | The comparison is within its threshold. |
 | `drift` | 1 | The JSON summary reports `is_match: false`. |
-| `error` | 3, or any other | The run did not finish, such as a configuration error, an unreachable source, or a missing extra. There is no summary, and the job always fails. |
+| `error` | 3, or any other | The run did not finish, such as a configuration error, an unreachable source, a missing extra, or metrics `otel-send` could not send. There is no summary, and the job always fails. |
 
 A pinned older release also exits `1` when it fails, so `1` counts as drift only when the summary says so.

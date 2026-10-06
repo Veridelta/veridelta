@@ -19,6 +19,8 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
 )
 
+from tests.otlp_collector import running_collector
+
 pytestmark = [pytest.mark.e2e]
 
 
@@ -201,6 +203,43 @@ primary_keys: [id]
         }
         assert kinds == {"added": 1, "removed": 1, "changed": 1}
         assert metrics["veridelta.diff.match"].gauge.data_points[0].as_int == 0
+
+    def test_e2e_otel_send_posts_the_run_to_a_collector(self, tmp_path: Path) -> None:
+        """Ensure `--otel-send` posts an export a collector accepts, with its headers, unprinted."""
+        src_file = tmp_path / "source.csv"
+        pl.DataFrame({"id": [1, 2], "val": ["A", "B"]}).write_csv(src_file)
+        tgt_file = tmp_path / "target.csv"
+        pl.DataFrame({"id": [1, 2], "val": ["A", "X"]}).write_csv(tgt_file)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  path: {src_file}
+target:
+  path: {tgt_file}
+primary_keys: [id]
+""")
+        env = {name: value for name, value in os.environ.items() if not name.startswith("OTEL_")}
+
+        with running_collector() as collector:
+            result = subprocess.run(
+                ["veridelta", "run", "-c", str(config_file), "--json", "--otel-send"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env={
+                    **env,
+                    "OTEL_EXPORTER_OTLP_ENDPOINT": collector.url,
+                    "OTEL_EXPORTER_OTLP_HEADERS": "authorization=Bearer%20s3cret-token",
+                    "NO_PROXY": "127.0.0.1,localhost",
+                },
+            )
+
+        assert result.returncode == 1, result.stderr
+        assert f"OpenTelemetry metrics sent to: {collector.url}/v1/metrics" in result.stderr
+        (request,) = collector.received
+        assert request.headers["authorization"] == "Bearer s3cret-token"
+        json_format.Parse(request.body.decode(), ExportMetricsServiceRequest())
+        assert "s3cret" not in result.stdout + result.stderr
 
     def test_e2e_config_reads_references_from_the_environment(self, tmp_path: Path) -> None:
         """Ensure `${NAME}` in the source and target blocks resolves from the CLI's environment."""

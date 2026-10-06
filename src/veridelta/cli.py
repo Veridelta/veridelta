@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -28,7 +29,7 @@ from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEn
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.models import ConfigFinding
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
-from veridelta.telemetry import write_otlp_metrics
+from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
 if TYPE_CHECKING:
     from veridelta.models import DiffRule, ValueMapProposal
@@ -196,6 +197,8 @@ def run(args: argparse.Namespace) -> int:
             summary_file = write_markdown(result, args.markdown, max_rows=args.markdown_max_rows)
             _progress(f"Markdown summary saved to: {summary_file.absolute()}", quiet=quiet)
 
+        # One timestamp, so the file and the export sent are the same bytes.
+        observed = time.time_ns()
         if args.otel:
             metrics_file = write_otlp_metrics(
                 result,
@@ -203,8 +206,19 @@ def run(args: argparse.Namespace) -> int:
                 config_path=args.config,
                 source=source_config,
                 target=target_config,
+                time_unix_nano=observed,
             )
             _progress(f"OpenTelemetry metrics saved to: {metrics_file.absolute()}", quiet=quiet)
+
+        if args.otel_send:
+            endpoint = send_otlp_metrics(
+                result,
+                config_path=args.config,
+                source=source_config,
+                target=target_config,
+                time_unix_nano=observed,
+            )
+            _progress(f"OpenTelemetry metrics sent to: {endpoint}", quiet=quiet)
 
         if args.json:
             # Last, so a file that cannot be written leaves only its error on stdout.
@@ -461,7 +475,15 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--otel",
         metavar="PATH",
-        help="Also write the run's metrics to PATH as OTLP/JSON, for an OpenTelemetry collector.",
+        help="Also write the run's metrics to the file PATH as OTLP/JSON. --otel-send sends them.",
+    )
+    run_parser.add_argument(
+        "--otel-send",
+        action="store_true",
+        help=(
+            "Also send the run's metrics as OTLP/JSON to the OTLP/HTTP endpoint the "
+            "OTEL_EXPORTER_OTLP_* variables set (default: http://localhost:4318/v1/metrics)."
+        ),
     )
 
     crosswalk_parser = subparsers.add_parser(

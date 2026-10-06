@@ -3,11 +3,18 @@
 
 """Unit tests for the OpenTelemetry metrics export."""
 
+import io
 import json
 import logging
+import os
+import socket
 import time
-from collections.abc import Callable
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Iterator
+from email.message import Message
 from pathlib import Path
+from urllib.parse import quote
 
 import polars as pl
 import pytest
@@ -16,9 +23,12 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
     ExportMetricsServiceRequest,
 )
 from opentelemetry.proto.metrics.v1.metrics_pb2 import MetricsData
+from pytest_mock import MockerFixture
 
+from tests.otlp_collector import Collector, running_collector
 from veridelta import __version__
 from veridelta.engine import DiffEngine
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
     BigQueryConfig,
     DatabaseConfig,
@@ -33,7 +43,7 @@ from veridelta.models import (
     SourceConfig,
     SourceRef,
 )
-from veridelta.telemetry import render_otlp_metrics, write_otlp_metrics
+from veridelta.telemetry import render_otlp_metrics, send_otlp_metrics, write_otlp_metrics
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -136,8 +146,9 @@ def _resource(text: str) -> dict[str, str]:
 @pytest.fixture(autouse=True)
 def _clear_otel_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unset the OpenTelemetry variables, so the shell running the tests cannot change an export."""
-    monkeypatch.delenv("OTEL_RESOURCE_ATTRIBUTES", raising=False)
-    monkeypatch.delenv("OTEL_SERVICE_NAME", raising=False)
+    for name in list(os.environ):
+        if name.startswith("OTEL_"):
+            monkeypatch.delenv(name)
 
 
 class TestOTLPShape:
@@ -695,3 +706,312 @@ class TestWriteOTLPMetrics:
         assert len(content.splitlines()) == 1
         assert content.isascii()
         assert _points(content, "veridelta.column.mismatched_rows") == dict.fromkeys(names, 1)
+
+
+_HEADER_SECRET = "s3cret token"
+"""An API key a header carries, with a space that the variable percent-encodes."""
+
+
+@pytest.fixture
+def collector(monkeypatch: pytest.MonkeyPatch) -> Iterator[Collector]:
+    """Serve a stand-in collector, reached without any proxy the shell sets."""
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    with running_collector() as stand_in:
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", stand_in.url)
+        yield stand_in
+
+
+def _closed_port() -> int:
+    """Return a local port that nothing listens on."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port: int = probe.getsockname()[1]
+    return port
+
+
+class TestSendOTLPMetrics:
+    """Validate `send_otlp_metrics`, which posts the export to an OTLP/HTTP endpoint."""
+
+    def test_it_posts_the_export_to_the_metrics_path_of_the_endpoint(
+        self, collector: Collector
+    ) -> None:
+        """Ensure the body is the export a file holds, sent as JSON to `/v1/metrics`."""
+        reached = send_otlp_metrics(
+            _drift(), config_path="veridelta.yaml", time_unix_nano=_OBSERVED
+        )
+
+        (request,) = collector.received
+        assert reached == f"{collector.url}/v1/metrics"
+        assert request.path == "/v1/metrics"
+        assert request.headers["content-type"] == "application/json"
+        expected = render_otlp_metrics(
+            _drift(), config_path="veridelta.yaml", time_unix_nano=_OBSERVED
+        )
+        assert request.body == expected.encode()
+        assert _request(request.body.decode()).resource_metrics
+
+    @pytest.mark.parametrize(
+        ("suffix", "path"),
+        [
+            pytest.param("/", "/v1/metrics", id="trailing-slash"),
+            pytest.param("/otlp", "/otlp/v1/metrics", id="base-path"),
+            pytest.param("/otlp/", "/otlp/v1/metrics", id="base-path-slash"),
+        ],
+    )
+    def test_it_appends_the_metrics_path_to_any_base(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch, suffix: str, path: str
+    ) -> None:
+        """Ensure a base endpoint gains `v1/metrics` once, after its own path."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", collector.url + suffix)
+
+        send_otlp_metrics(_drift())
+
+        assert [request.path for request in collector.received] == [path]
+
+    def test_it_posts_to_the_metrics_endpoint_as_written(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the metrics endpoint wins over the base one, and gains no path."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", f"{collector.url}/ingest")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", f"http://127.0.0.1:{_closed_port()}")
+
+        send_otlp_metrics(_drift())
+
+        assert [request.path for request in collector.received] == ["/ingest"]
+
+    def test_it_defaults_to_the_collector_port_on_this_machine(self, mocker: MockerFixture) -> None:
+        """Ensure no endpoint means the specification's default, `http://localhost:4318`."""
+        opened = mocker.patch.object(urllib.request.OpenerDirector, "open")
+
+        reached = send_otlp_metrics(_drift())
+
+        (request,) = opened.call_args.args
+        assert request.full_url == reached == "http://localhost:4318/v1/metrics"
+        assert opened.call_args.kwargs == {"timeout": 10.0}
+
+    def test_it_sends_the_headers_the_variables_set(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure each header arrives percent-decoded, and the content type stays JSON."""
+        monkeypatch.setenv(
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            f"api-key={quote(_HEADER_SECRET)},x-team=data,content-type=text/plain",
+        )
+
+        send_otlp_metrics(_drift())
+
+        (request,) = collector.received
+        assert request.headers["api-key"] == _HEADER_SECRET
+        assert request.headers["x-team"] == "data"
+        assert request.headers["content-type"] == "application/json"
+
+    def test_the_metrics_headers_replace_the_general_ones(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the metrics variable wins whole, as the OpenTelemetry SDKs read it."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "x-general=1")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_HEADERS", "x-metrics=1")
+
+        send_otlp_metrics(_drift())
+
+        (request,) = collector.received
+        assert "x-metrics" in request.headers
+        assert "x-general" not in request.headers
+
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            pytest.param(f"api-key{_HEADER_SECRET}", id="no-equals"),
+            pytest.param(f"api-key={_HEADER_SECRET}%zz", id="bad-escape"),
+            pytest.param(f"api key={quote(_HEADER_SECRET)}", id="bad-name"),
+            pytest.param(f"api-key={quote(_HEADER_SECRET)}%0D%0AX-Evil:%201", id="line-break"),
+        ],
+    )
+    def test_it_refuses_malformed_headers_without_repeating_them(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch, headers: str
+    ) -> None:
+        """Ensure an unusable header fails before any request, naming only the variable."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_HEADERS", headers)
+
+        with pytest.raises(ConfigError, match=r"^OTEL_EXPORTER_OTLP_METRICS_HEADERS must") as info:
+            send_otlp_metrics(_drift())
+
+        assert "s3cret" not in str(info.value)
+        assert info.value.__cause__ is None
+        assert collector.received == []
+
+    @pytest.mark.parametrize(
+        ("name", "protocol"),
+        [
+            pytest.param("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc", id="grpc"),
+            pytest.param("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf", id="protobuf"),
+            pytest.param("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf", id="metrics"),
+        ],
+    )
+    def test_it_refuses_a_protocol_it_does_not_send(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch, name: str, protocol: str
+    ) -> None:
+        """Ensure a configured protocol other than JSON over HTTP fails rather than goes ignored."""
+        monkeypatch.setenv(name, protocol)
+
+        with pytest.raises(ConfigError, match=f"{name} is '{protocol}'"):
+            send_otlp_metrics(_drift())
+
+        assert collector.received == []
+
+    def test_the_metrics_protocol_wins_over_the_general_one(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `http/json` for metrics sends, whatever the general protocol says."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/json")
+
+        send_otlp_metrics(_drift())
+
+        assert len(collector.received) == 1
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            pytest.param("localhost:4318", id="no-scheme"),
+            pytest.param("ftp://collector.internal", id="ftp"),
+            pytest.param("http://", id="no-host"),
+            pytest.param("http://collector.internal:port", id="bad-port"),
+            pytest.param("http://collector.internal:0", id="port-zero"),
+        ],
+    )
+    def test_it_refuses_an_endpoint_that_is_not_an_http_url(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint: str
+    ) -> None:
+        """Ensure a URL the standard library cannot post to fails with the variable named."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+
+        with pytest.raises(ConfigError, match=r"^OTEL_EXPORTER_OTLP_ENDPOINT must be an http"):
+            send_otlp_metrics(_drift())
+
+    def test_it_refuses_credentials_inside_the_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a password in the URL is refused without being repeated."""
+        monkeypatch.setenv(
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "https://ingest:s3cret@otlp.example.com/v1/m"
+        )
+
+        with pytest.raises(ConfigError, match="must hold no user name or password") as info:
+            send_otlp_metrics(_drift())
+
+        assert "s3cret" not in str(info.value)
+
+    @pytest.mark.parametrize("timeout", ["soon", "0", "-5", "1.5"])
+    def test_it_refuses_a_timeout_that_is_not_whole_milliseconds(
+        self, monkeypatch: pytest.MonkeyPatch, timeout: str
+    ) -> None:
+        """Ensure a timeout is a whole number of milliseconds above 0."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TIMEOUT", timeout)
+
+        with pytest.raises(ConfigError, match=r"^OTEL_EXPORTER_OTLP_TIMEOUT must be a whole"):
+            send_otlp_metrics(_drift())
+
+    def test_it_stops_waiting_when_the_timeout_ends(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a slow endpoint fails the send once the metrics timeout passes."""
+        collector.delay = 1.0
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_TIMEOUT", "100")
+
+        with pytest.raises(ConnectorError, match=r"no answer came within 0\.1 seconds"):
+            send_otlp_metrics(_drift())
+
+    def test_it_reports_an_http_error_without_any_secret(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a refusal names the status and the endpoint, but no header or query."""
+        collector.status = 500
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", f"{collector.url}/m?key=s3cret")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", f"api-key={quote(_HEADER_SECRET)}")
+
+        with pytest.raises(ConnectorError) as info:
+            send_otlp_metrics(_drift())
+
+        assert str(info.value) == (
+            f"Sending metrics to {collector.url}/m failed: "
+            "the endpoint answered with HTTP 500 Internal Server Error."
+        )
+        assert info.value.__cause__ is None
+
+    def test_it_closes_the_answer_an_http_error_holds(self, mocker: MockerFixture) -> None:
+        """Ensure a refused send releases the response, which Python 3.14 warns about otherwise."""
+        answer = io.BytesIO(b"{}")
+        refusal = urllib.error.HTTPError(
+            "http://localhost:4318/v1/metrics", 503, "Service Unavailable", Message(), answer
+        )
+        mocker.patch.object(urllib.request.OpenerDirector, "open", side_effect=refusal)
+
+        with pytest.raises(ConnectorError, match="HTTP 503 Service Unavailable"):
+            send_otlp_metrics(_drift())
+
+        assert answer.closed
+
+    def test_it_refuses_a_redirect_so_no_header_reaches_another_host(
+        self, collector: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a redirect fails the send, and the second host receives nothing."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", f"api-key={quote(_HEADER_SECRET)}")
+        with running_collector() as elsewhere:
+            collector.status = 307
+            collector.location = f"{elsewhere.url}/v1/metrics"
+
+            with pytest.raises(ConnectorError, match="redirect, which Veridelta does not follow"):
+                send_otlp_metrics(_drift())
+
+            assert elsewhere.received == []
+
+    def test_it_reports_an_endpoint_nothing_listens_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a refused connection is a connector error naming the endpoint."""
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+        url = f"http://127.0.0.1:{_closed_port()}"
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", url)
+
+        with pytest.raises(ConnectorError, match=f"^Sending metrics to {url}/v1/metrics failed: "):
+            send_otlp_metrics(_drift())
+
+    def test_it_reports_a_connection_that_timed_out(self, mocker: MockerFixture) -> None:
+        """Ensure a connection the timeout cut short reads as one, not as a raw socket error."""
+        mocker.patch.object(
+            urllib.request.OpenerDirector,
+            "open",
+            side_effect=urllib.error.URLError(TimeoutError("timed out")),
+        )
+
+        with pytest.raises(ConnectorError, match="no answer came within 10 seconds"):
+            send_otlp_metrics(_drift())
+
+    def test_it_reports_a_connection_closed_without_an_answer(self, collector: Collector) -> None:
+        """Ensure an endpoint that hangs up is a connector error, not a crash."""
+        collector.hang_up = True
+
+        with pytest.raises(ConnectorError, match=r"^Sending metrics to .* failed: "):
+            send_otlp_metrics(_drift())
+
+    def test_it_logs_the_endpoint_without_its_query(
+        self,
+        collector: Collector,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Ensure the log line names where the export went, and nothing secret."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", f"{collector.url}/m?key=s3cret")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", f"api-key={quote(_HEADER_SECRET)}")
+
+        with caplog.at_level(logging.INFO, logger="veridelta.telemetry"):
+            send_otlp_metrics(_drift())
+            collector.status = 503
+            with pytest.raises(ConnectorError):
+                send_otlp_metrics(_drift())
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages[0].startswith(f"Sent metrics to {collector.url}/m in ")
+        assert messages[1].startswith(f"Sending metrics to {collector.url}/m failed after ")
+        assert "s3cret" not in caplog.text
