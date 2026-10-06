@@ -1,0 +1,5 @@
+primary_keys: [id]
+source:
+  path: legacy.csv
+target:
+  path: modern.csv

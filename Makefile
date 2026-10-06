@@ -1,4 +1,4 @@
-.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean
+.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean demo
 
 install:
 	uv sync --all-extras
@@ -35,6 +35,9 @@ databases:
 
 accessibility:
 	VERIDELTA_ACCESSIBILITY=1 uv run --group accessibility pytest tests/accessibility --no-cov
+
+demo:
+	cd demo && vhs veridelta.tape
 
 schema:
 	uv run veridelta schema > docs/schema/veridelta.schema.json

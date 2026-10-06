@@ -7,6 +7,8 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
+![A terminal prints a five-line veridelta.yaml, validates it, runs the comparison, and shows one added, one removed, and one changed row.](https://veridelta.github.io/veridelta/assets/demo.gif)
+
 It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelta.github.io/veridelta/).
 
 ## Features
