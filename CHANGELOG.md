@@ -1,3 +1,17 @@
+## v0.14.3 (2026-10-06)
+
+A configuration failure inside `source` or `target` now names the block. A bad `format`
+in the target was reported as `[file -> format]`. Pydantic opens the location with the
+`type` tag of the model it chose, which names neither side. The location now opens
+with `source` or `target`, so the line reads `[target -> format]`, and a block whose
+`type` matches no model reads `[target]`. The comparison settings keep their locations,
+such as `[rules -> 0 -> case_insensitive]`.
+
+### Fix
+
+- name `source` or `target` in the location of a configuration failure inside either
+  block, in place of Pydantic's `type` tag
+
 ## v0.14.2 (2026-10-06)
 
 A missing primary key now names what each side read. `format` defaults to `csv`, so a
