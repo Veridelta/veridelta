@@ -88,6 +88,10 @@ The browser fetches only the local site, so a font or a diagram from a CDN never
 
 axe-core comes from npm, pinned by version and digest, and Dependabot cannot bump it. To move to a new release, read `https://registry.npmjs.org/axe-core/<version>`. Copy its `dist.tarball` into `_AXE_CORE` and its `dist.integrity` into `_AXE_CORE_INTEGRITY`, both in `tests/accessibility/test_accessibility.py`.
 
+### The recording
+
+The README embeds a recording of the quick start, rendered from `demo/veridelta.tape` by [vhs](https://github.com/charmbracelet/vhs). `make demo` writes `docs/assets/demo.gif`; run it after a change to the quick start or to the run summary, with vhs installed from `brew install vhs` or its release binary. The tape types four commands at real speed on the two CI fixture files copied into `demo/`, and `tests/unit/test_demo_tape.py` holds those commands to the CLI and the data to the fixtures. Commit the new GIF with the change that moved it.
+
 ## Commit messages
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), and the `commit-msg` hook rejects any other form:
