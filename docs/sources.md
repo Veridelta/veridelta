@@ -103,6 +103,8 @@ Two Postgres tables on one server can instead be compared inside Postgres; see [
 
 A SQLite URI is followed by a file path, as in `sqlite:///srv/data/legacy.db`, or `sqlite://C:/data/legacy.db` on Windows. The path must name an existing file. Veridelta refuses a missing one, which ConnectorX would otherwise create as an empty database.
 
+A SQL Server URI takes connection options as parameters. `?encrypt=true` requires TLS for the whole connection. A server with a self-signed certificate, such as a development container, also needs `trust_server_certificate=true`, which accepts the certificate without checking it.
+
 ### Table or query
 
 Set exactly one of `table` and `query`:
@@ -137,6 +139,20 @@ A SQLite column declared without a type cannot be typed when its first rows are 
 A Postgres `table` keeps the declared precision and scale of each `numeric` column, so `numeric(10, 2)` arrives as `Decimal(10, 2)` with every stored digit. Veridelta reads the declarations from the `pg_attribute` catalog before the rows, so a Postgres-compatible server without that catalog needs a `query`. A `NaN` has no decimal form and fails the read; leave it out with a `query`.
 
 Any other Postgres `numeric` arrives as `Decimal(38, 10)`. Its values are rounded to ten decimal places, and a value with more than 18 digits before the decimal point fails the read. That applies to every column of a `query`, to a `numeric` declared without a precision, and to one with a precision above 38 or a negative scale.
+
+A MySQL or SQL Server `DECIMAL` arrives as `Decimal(38, 10)` too, with the same limits, whether a `table` or a `query` reads it.
+
+MySQL has no boolean type, so a flag arrives as a number. These MySQL types arrive as follows:
+
+| MySQL type | Polars type |
+| :--- | :--- |
+| `TINYINT(1)`, which `BOOLEAN` stands for | `Int8` |
+| `BIT` | `Binary` |
+| `INT UNSIGNED` | `UInt32` |
+| `DATETIME`, `TIMESTAMP` | `Datetime`, with no time zone |
+| `JSON` | `String` |
+
+A `cast_to` rule cannot turn `Binary` into a number or a boolean. To compare a `BIT` column as a number, read it with `CAST(column AS UNSIGNED)` in a `query`.
 
 ### Parallel reads
 
