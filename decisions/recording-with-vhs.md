@@ -7,9 +7,9 @@ decided: 2026-10-06
 generated: { by: claude-code, at: 2026-10-06T20:55:00Z }
 ---
 
-**Claim:** `demo/veridelta.tape` is the one source of the recording: `make demo` renders `docs/assets/demo.gif` for the README and `docs/assets/demo.mp4` for the docs home from it with vhs, and a unit test runs the tape's commands on every pull request.
+**Claim:** `demo/veridelta.tape` is the one source of the recording: `make demo` renders `docs/assets/demo.gif`, which the README and the docs home embed, from it with vhs, and a unit test runs the tape's commands on every pull request.
 
-**Evidence:** The tape types the quick start's commands at real speed on the CI fixtures copied into `demo/`. `tests/unit/test_demo_tape.py` parses each `veridelta` line with the CLI's parser, runs the commands and holds the transcript on `docs/index.md` to what they print, and holds the cues in `docs/assets/demo.vtt` and the video's length to the tape's typing speed and pauses. The video plays without a script, and the transcript is plain text.
+**Evidence:** The tape types the quick start's commands at real speed on the CI fixtures copied into `demo/`. `tests/unit/test_demo_tape.py` parses each `veridelta` line with the CLI's parser, and runs the commands and holds `demo/transcript.txt`, the text the recording shows, to what they print. The image needs no script.
 
 **Alternative considered:** An asciinema cast, played on the docs home with the asciinema player and shown in the README as an SVG rendered from the cast.
 

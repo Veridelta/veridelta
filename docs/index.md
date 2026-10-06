@@ -2,59 +2,7 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs once the rules you declare are applied. Use it to verify a system migration, a model retrain, or a pipeline change.
 
-<video controls muted playsinline preload="metadata" width="900" height="800">
-  <source src="assets/demo.mp4" type="video/mp4">
-  <track kind="captions" src="assets/demo.vtt" srclang="en" label="English" default>
-  This browser does not play the video. The transcript below shows the same run.
-</video>
-
-The recording prints the configuration and the two files, checks the configuration, runs the comparison, and prints the exit code, as the transcript shows:
-
-```text
-> cat veridelta.yaml
-primary_keys: [id]
-source:
-  path: legacy.csv
-target:
-  path: modern.csv
-> cat legacy.csv
-id,status,amount
-1,open,10.0
-2,closed,20.5
-3,open,7.25
-> cat modern.csv
-id,status,amount
-1,open,10.0
-2,shipped,20.5
-4,open,7.25
-> veridelta validate -c veridelta.yaml
-veridelta.yaml: valid.
-> veridelta run -c veridelta.yaml
-Loading configuration from veridelta.yaml...
-Executing semantic diff...
-
-Veridelta Execution Summary
-===========================
-Status:        FAILED
-Match Rate:    0.0%
-Source Rows:   3
-Target Rows:   3
-Volume Shift:  +0 rows
-
-Row-Level Discrepancies:
----------------------------
-Added:         1
-Removed:       1
-Changed:       1
-Total Issues:  3
-
-Top Column-Level Drifts:
----------------------------
-- status: 1 mismatches
-
-> echo "exit code for CI: $? (0 match, 1 drift, 3 error)"
-exit code for CI: 1 (0 match, 1 drift, 3 error)
-```
+![A terminal prints a five-line veridelta.yaml and two three-row CSV files, validates the configuration, runs the comparison, shows one added, one removed, and one changed row, and prints the exit code for CI, 1, beside what 0, 1, and 3 mean.](assets/demo.gif)
 
 Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, as are two Postgres or DuckDB tables that set `pushdown`. Only counts and keys come back.
 
