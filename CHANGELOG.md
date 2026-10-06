@@ -1,3 +1,15 @@
+## v0.14.6 (2026-10-06)
+
+`DataIngestor` now warns on construction that it goes in 0.15.0. No code in the package
+calls it, and its own docstring warned against the one thing it is for: feeding its
+output to `DiffEngine` aligns both sides twice. `DiffEngine.run_from_configs(diff,
+source, target)` loads and aligns the sides itself. The class and its export stay until
+0.15.0, and nothing else changed.
+
+### Refactor
+
+- deprecate `DataIngestor` with a warning on construction, ahead of its removal in 0.15.0
+
 ## v0.14.5 (2026-10-06)
 
 The package behaves as 0.14.4 did: no command, rule, connector, or report changed. One
