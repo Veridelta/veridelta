@@ -10,7 +10,8 @@ need an account, so `storage_options` are covered by the unit tests alone.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -60,25 +61,33 @@ def _delta_table(path: Path) -> _LakehouseTable:
     return source
 
 
-def _catalog(path: Path) -> SqlCatalog:
-    """Open an Iceberg catalog with one namespace, kept in a SQLite file under `path`."""
-    catalog = SqlCatalog(
-        "veridelta", uri=f"sqlite:///{path / 'catalog.db'}", warehouse=path.as_uri()
-    )
-    catalog.create_namespace("lake")
-    return catalog
+@contextmanager
+def _catalog(path: Path) -> Iterator[SqlCatalog]:
+    """Open an Iceberg catalog with one namespace, kept in a SQLite file under `path`.
+
+    The warehouse is a plain path, since pyiceberg reads `file:///C:/...` as
+    `/C:/...`, which Windows rejects, but takes a drive path as local. The
+    catalog's SQLite connections close on exit: Python 3.13 warns about any
+    left open, and the test suite fails on every warning.
+    """
+    catalog = SqlCatalog("veridelta", uri=f"sqlite:///{path / 'catalog.db'}", warehouse=str(path))
+    try:
+        catalog.create_namespace("lake")
+        yield catalog
+    finally:
+        catalog.engine.dispose()
 
 
 def _iceberg_table(path: Path) -> _LakehouseTable:
     """Append `_EVENTS`, then overwrite it with `_CHANGED`, in an Iceberg table."""
-    catalog = _catalog(path)
-    table = catalog.create_table("lake.events", schema=_EVENTS.to_arrow().schema)
-    table.append(_EVENTS.to_arrow())
-    snapshot = table.current_snapshot()
-    assert snapshot is not None
-    first_id = snapshot.snapshot_id
-    table.overwrite(_CHANGED.to_arrow())
-    metadata = catalog.load_table("lake.events").metadata_location
+    with _catalog(path) as catalog:
+        table = catalog.create_table("lake.events", schema=_EVENTS.to_arrow().schema)
+        table.append(_EVENTS.to_arrow())
+        snapshot = table.current_snapshot()
+        assert snapshot is not None
+        first_id = snapshot.snapshot_id
+        table.overwrite(_CHANGED.to_arrow())
+        metadata = catalog.load_table("lake.events").metadata_location
 
     def source(first: bool) -> IcebergConfig:
         return IcebergConfig(table_uri=metadata, snapshot_id=first_id if first else None)
@@ -153,7 +162,8 @@ class TestEmptyLakehouseTables:
 
     def test_it_keeps_the_schema_of_an_iceberg_table_with_no_snapshot(self, tmp_path: Path) -> None:
         """Ensure a table that was created but never written reads as zero rows."""
-        table = _catalog(tmp_path).create_table("lake.empty", schema=_EVENTS.to_arrow().schema)
+        with _catalog(tmp_path) as catalog:
+            table = catalog.create_table("lake.empty", schema=_EVENTS.to_arrow().schema)
 
         frame = LoaderFactory.load(IcebergConfig(table_uri=table.metadata_location)).collect()
 
