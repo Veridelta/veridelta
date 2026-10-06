@@ -24,6 +24,8 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _ROOT = Path(__file__).resolve().parents[2]
 _DOCS = _ROOT / "docs"
+_GENERATED = {name: _ROOT / "hooks" / "llms_txt.py" for name in ("llms.txt", "llms-full.txt")}
+"""Files the docs build writes, each mapped to the hook that writes it."""
 
 _SITE_URL = re.compile(
     r"https://veridelta\.github\.io/veridelta/([^)\s#\"'`<>]*)(?:#([^)\s\"'`<>]*))?",
@@ -33,8 +35,6 @@ _LINK_TARGET = re.compile(r"\]\(([^)\s]+)\)")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
-_GENERATED = {name: _ROOT / "hooks" / "llms_txt.py" for name in ("llms.txt", "llms-full.txt")}
-"""Files the docs build writes, each mapped to the hook that writes it."""
 
 
 def _slug(heading: str) -> str:
