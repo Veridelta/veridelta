@@ -1,3 +1,16 @@
+## v0.14.10 (2026-10-06)
+
+`veridelta.datasets` computes its Git ref in one private function, where two public names
+nothing else used built it, and logs through the logger's own formatting rather than an
+f-string. The notice that the NYC taxi sample is downloading moved from WARNING to INFO,
+since a download a tutorial asks for is routine; a corrupted cache still logs at WARNING.
+Nothing else changed.
+
+### Refactor
+
+- tidy `datasets.py`: one private ref constant, and the download notice logged at INFO
+  without an f-string
+
 ## v0.14.9 (2026-10-06)
 
 The connector base now refuses SQL pushdown by default, with one message, so a reader
