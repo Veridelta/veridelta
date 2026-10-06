@@ -16,65 +16,65 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
-| CSV, Parquet, JSON, NDJSON, Arrow, Avro, and Excel files, read lazily where Polars can | UC-01 | [Sources](../docs/sources.md) | NS-01, DR-01 |
-| `format` and reader `options` on a file source | UC-01 | [Sources](../docs/sources.md) | DR-01, DR-02 |
-| Delta Lake and Iceberg tables, at a version or a snapshot | UC-01, for a table read like a file | [Sources](../docs/sources.md) | GR-02 |
-| Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases through ConnectorX, as a table or a query, in partitions | UC-01, for a table read like a file | [Sources](../docs/sources.md) | GR-02 |
-| DuckDB files and MotherDuck databases | UC-01 | [Sources](../docs/sources.md) | GR-02 |
-| `${NAME}` references to environment variables in any source field, so no credential sits in the file | UC-02 | [Configuration](../docs/configuration.md) | GR-02 |
+| CSV, Parquet, JSON, NDJSON, Arrow, Avro, and Excel files, read lazily where Polars can | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Sources](../docs/sources.md) | [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md) |
+| `format` and reader `options` on a file source | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Sources](../docs/sources.md) | [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) |
+| Delta Lake and Iceberg tables, at a version or a snapshot | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), for a table read like a file | [Sources](../docs/sources.md) | [GR-02](metrics/GR-02.md) |
+| Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases through ConnectorX, as a table or a query, in partitions | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), for a table read like a file | [Sources](../docs/sources.md) | [GR-02](metrics/GR-02.md) |
+| DuckDB files and MotherDuck databases | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Sources](../docs/sources.md) | [GR-02](metrics/GR-02.md) |
+| `${NAME}` references to environment variables in any source field, so no credential sits in the file | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Configuration](../docs/configuration.md) | [GR-02](metrics/GR-02.md) |
 
 ### Declaring what counts as a match
 
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
-| Rules selected by `column_names` or a `pattern`, with `ignore` and `rename_to` | UC-01 | [Rules](../docs/rules.md) | GR-02 |
-| Null sentinels with `null_values`, typed, and a default for every column | UC-01 | [Rules](../docs/rules.md) | GR-02 |
-| Regular expression replacement, whitespace stripping, and case folding | UC-01 | [Rules](../docs/rules.md) | GR-02 |
-| Value maps, and `crosswalk` to propose them from the data with their evidence | UC-01 | [Rules](../docs/rules.md), [Command line](../docs/cli.md) | GR-02 |
-| Zero padding, date parsing with `datetime_format` and `timezone`, and `cast_to` | UC-01 | [Rules](../docs/rules.md) | GR-02 |
-| Absolute and relative tolerances, with defaults | UC-01 | [Rules](../docs/rules.md) | GR-02 |
-| Fuzzy text matching by edit distance or Jaro-Winkler similarity, with the `fuzzy` extra | UC-01 | [Rules](../docs/rules.md) | GR-02 |
-| Null equality, `strict_types`, and `schema_mode` for columns on one side only | UC-01 | [Rules](../docs/rules.md), [Configuration](../docs/configuration.md) | GR-02 |
+| Rules selected by `column_names` or a `pattern`, with `ignore` and `rename_to` | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
+| Null sentinels with `null_values`, typed, and a default for every column | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
+| Regular expression replacement, whitespace stripping, and case folding | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
+| Value maps, and `crosswalk` to propose them from the data with their evidence | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md), [Command line](../docs/cli.md) | [GR-02](metrics/GR-02.md) |
+| Zero padding, date parsing with `datetime_format` and `timezone`, and `cast_to` | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
+| Absolute and relative tolerances, with defaults | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
+| Fuzzy text matching by edit distance or Jaro-Winkler similarity, with the `fuzzy` extra | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
+| Null equality, `strict_types`, and `schema_mode` for columns on one side only | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md), [Configuration](../docs/configuration.md) | [GR-02](metrics/GR-02.md) |
 
 ### Comparing
 
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
-| `DiffEngine` on two `LazyFrame`s, with `DiffConfig`, `DiffRule`, and `DiffResult` | UC-01 | [API reference](../docs/api.md) | GR-02 |
-| `veridelta run`, with the text summary and exit codes 0, 1, and 3 | UC-01, UC-02 | [Command line](../docs/cli.md) | NS-01, DR-02 |
-| `veridelta validate`, with `--schemas` and `--allow-missing-env`, before any row is read | UC-02, UC-04 | [Command line](../docs/cli.md) | DR-02 |
-| Pushdown inside Snowflake, Databricks, BigQuery, Postgres, and DuckDB, with only counts and keys coming back | UC-05 | [Pushdown](../docs/pushdown.md) | GR-01 |
-| `--verbose`, printing connector activity on stderr, never a credential | UC-02 | [Command line](../docs/cli.md) | DR-02 |
+| `DiffEngine` on two `LazyFrame`s, with `DiffConfig`, `DiffRule`, and `DiffResult` | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [API reference](../docs/api.md) | [GR-02](metrics/GR-02.md) |
+| `veridelta run`, with the text summary and exit codes 0, 1, and 3 | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Command line](../docs/cli.md) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
+| `veridelta validate`, with `--schemas` and `--allow-missing-env`, before any row is read | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |
+| Pushdown inside Snowflake, Databricks, BigQuery, Postgres, and DuckDB, with only counts and keys coming back | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [Pushdown](../docs/pushdown.md) | [GR-01](metrics/GR-01.md) |
+| `--verbose`, printing connector activity on stderr, never a credential | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |
 
 ### Reading the result
 
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
-| The JSON summary with `--json`, and one JSON object for a failure | UC-04 | [Command line](../docs/cli.md), [Results](../docs/results.md) | DR-02 |
-| The HTML report, readable without JavaScript and by keyboard, checked with axe-core | UC-03 | [Results](../docs/results.md) | GR-03 |
-| The Markdown summary for a pull request, with row values off unless asked | UC-02, UC-03 | [Results](../docs/results.md) | GR-03 |
-| Discrepancy files of the rows that differ, as CSV, Parquet, JSON, NDJSON, or Arrow | UC-01, UC-03 | [Results](../docs/results.md) | GR-02 |
+| The JSON summary with `--json`, and one JSON object for a failure | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Command line](../docs/cli.md), [Results](../docs/results.md) | [DR-02](metrics/DR-02.md) |
+| The HTML report, readable without JavaScript and by keyboard, checked with axe-core | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Results](../docs/results.md) | [GR-03](metrics/GR-03.md) |
+| The Markdown summary for a pull request, with row values off unless asked | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Results](../docs/results.md) | [GR-03](metrics/GR-03.md) |
+| Discrepancy files of the rows that differ, as CSV, Parquet, JSON, NDJSON, or Arrow | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Results](../docs/results.md) | [GR-02](metrics/GR-02.md) |
 
 ### Running it elsewhere
 
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
-| The GitHub Action, with one comment per configuration on the pull request | UC-02 | [CI integrations](../docs/ci.md) | GR-02, DR-03 |
-| The JSON Schema for configuration files, for completion and checking in an editor | UC-01 | [Configuration](../docs/configuration.md) | DR-02 |
-| The AI agents page, `llms.txt`, and the installable agent skill | UC-04 | [AI agents](../docs/agents.md) | DR-02 |
+| The GitHub Action, with one comment per configuration on the pull request | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md), [DR-03](metrics/DR-03.md) |
+| The JSON Schema for configuration files, for completion and checking in an editor | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
+| The AI agents page, `llms.txt`, and the installable agent skill | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
 
 ## On the roadmap
 
 | Item | Use case | Metric it would move |
 | :--- | :--- | :--- |
-| Pushdown for more SQL dialects, such as Redshift and Synapse | UC-05 | GR-01 |
-| The schema wired into VS Code, then the extension, its run command, and its MCP registration | UC-01, UC-03, UC-04 | NS-01, DR-02 |
-| Schemas for the JSON the commands print | UC-04 | DR-02 |
-| A tutorial comparing two model evaluation runs | UC-01 | NS-01 |
-| A parsable section of the Action's pull request comment, and a recipe for an agent's fix loop | UC-02, UC-04 | DR-02 |
-| `veridelta mcp` and its guardrails | UC-04 | DR-02 |
-| `veridelta suggest`, proposing rules from the pairs that differ, with no model | UC-01 | NS-01 |
-| Accepted drift with `run --baseline` | UC-02 | GR-02 |
+| Pushdown for more SQL dialects, such as Redshift and Synapse | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [GR-01](metrics/GR-01.md) |
+| The schema wired into VS Code, then the extension, its run command, and its MCP registration | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
+| Schemas for the JSON the commands print | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
+| A tutorial comparing two model evaluation runs | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [NS-01](metrics/NS-01.md) |
+| A parsable section of the Action's pull request comment, and a recipe for an agent's fix loop | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
+| `veridelta mcp` and its guardrails | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
+| `veridelta suggest`, proposing rules from the pairs that differ, with no model | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [NS-01](metrics/NS-01.md) |
+| Accepted drift with `run --baseline` | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [GR-02](metrics/GR-02.md) |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
 
 ## Served by no use case, and why they stay

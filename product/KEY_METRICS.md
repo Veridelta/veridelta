@@ -14,13 +14,13 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 
 | Id | Role | Supports | Proves | Metric |
 | :--- | :--- | :--- | :--- | :--- |
-| NS-01 | north star | | UC-01, UC-04 | [Steps to a correct verdict on the quick start](metrics/NS-01.md) |
-| DR-01 | driver | NS-01 | UC-01 | [Keys written before the first verdict](metrics/DR-01.md) |
-| DR-02 | driver | NS-01 | UC-01, UC-04 | [Quick-start mistakes that name their cause](metrics/DR-02.md) |
-| DR-03 | driver | NS-01 | UC-02 | [Days from a wrong verdict reported to its fix on PyPI](metrics/DR-03.md) |
-| GR-01 | guardrail | NS-01 | UC-05 | [Backends with the same verdict locally and in pushdown](metrics/GR-01.md) |
-| GR-02 | guardrail | NS-01 | UC-02, UC-03 | [Wrong verdicts open at a release](metrics/GR-02.md) |
-| GR-03 | guardrail | NS-01 | UC-03 | [Accessibility violations on the site and the report](metrics/GR-03.md) |
+| [NS-01](metrics/NS-01.md) | north star | | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Steps to a correct verdict on the quick start](metrics/NS-01.md) |
+| [DR-01](metrics/DR-01.md) | driver | [NS-01](metrics/NS-01.md) | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Keys written before the first verdict](metrics/DR-01.md) |
+| [DR-02](metrics/DR-02.md) | driver | [NS-01](metrics/NS-01.md) | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Quick-start mistakes that name their cause](metrics/DR-02.md) |
+| [DR-03](metrics/DR-03.md) | driver | [NS-01](metrics/NS-01.md) | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Days from a wrong verdict reported to its fix on PyPI](metrics/DR-03.md) |
+| [GR-01](metrics/GR-01.md) | guardrail | [NS-01](metrics/NS-01.md) | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [Backends with the same verdict locally and in pushdown](metrics/GR-01.md) |
+| [GR-02](metrics/GR-02.md) | guardrail | [NS-01](metrics/NS-01.md) | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Wrong verdicts open at a release](metrics/GR-02.md) |
+| [GR-03](metrics/GR-03.md) | guardrail | [NS-01](metrics/NS-01.md) | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Accessibility violations on the site and the report](metrics/GR-03.md) |
 
 ## North star
 
@@ -50,7 +50,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 
 | Metric | Where |
 | :--- | :--- |
-| NS-01, DR-01, DR-02 | `veridelta run` on the configurations each card gives. The recording in the README, once it exists, shows NS-01. |
-| DR-03, GR-02 | `gh issue list --label bug`, and the release dates on PyPI |
-| GR-01 | The `test-core` and `test-postgres` jobs of the CI Pipeline on the release commit, and the latest run of the Live Warehouses workflow |
-| GR-03 | The Accessibility job of the CI Pipeline on the release commit |
+| [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) | `veridelta run` on the configurations each card gives. The recording in the README, once it exists, shows [NS-01](metrics/NS-01.md). |
+| [DR-03](metrics/DR-03.md), [GR-02](metrics/GR-02.md) | `gh issue list --label bug`, and the release dates on PyPI |
+| [GR-01](metrics/GR-01.md) | The `test-core` and `test-postgres` jobs of the CI Pipeline on the release commit, and the latest run of the Live Warehouses workflow |
+| [GR-03](metrics/GR-03.md) | The Accessibility job of the CI Pipeline on the release commit |

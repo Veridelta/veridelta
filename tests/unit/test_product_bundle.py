@@ -46,6 +46,8 @@ _DATE_HEADING = re.compile(r"^## (\d{4}-\d{2}-\d{2})$")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _INLINE_CODE = re.compile(r"(`+).*?\1")
 _LINK = re.compile(r"\]\(([^)\s]+)\)")
+_LINKED = re.compile(r"\[[^\]]*\]\([^)\s]*\)")
+_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _LIST_ITEM = re.compile(r"^\s*[-*] ")
 _ROLE_BY_PREFIX = {"NS": "north-star", "DR": "driver", "GR": "guardrail"}
 
@@ -73,6 +75,29 @@ def _prose(path: Path) -> list[str]:
         elif not fenced:
             lines.append(_INLINE_CODE.sub("", line))
     return lines
+
+
+def _slug(heading: str) -> str:
+    """Return the anchor GitHub and Python Markdown give a heading: lowercase, punctuation dropped."""
+    plain = re.sub(r"`([^`]*)`", r"\1", heading)
+    plain = re.sub(r"[^\w\s-]", "", plain).strip().lower()
+    return re.sub(r"[-\s]+", "-", plain)
+
+
+def _anchors(page: Path) -> set[str]:
+    """Return the anchor of every heading on a page, with the suffix a repeated one gets."""
+    anchors: set[str] = set()
+    for line in _prose(page):
+        heading = _HEADING.match(line)
+        if heading is None:
+            continue
+        base = anchor = _slug(heading.group(2))
+        count = 0
+        while anchor in anchors:
+            count += 1
+            anchor = f"{base}_{count}"
+        anchors.add(anchor)
+    return anchors
 
 
 def _definitions() -> dict[str, list[str]]:
@@ -303,3 +328,32 @@ class TestProductBundle:
                     broken.append(target)
 
         assert not broken, f"These links on {_label(page)} lead nowhere:\n" + "\n".join(broken)
+
+    @pytest.mark.parametrize("page", _PAGES, ids=_label)
+    def test_every_anchor_names_a_heading(self, page: Path) -> None:
+        """Ensure each `#anchor` in a link names a heading on the page it points at."""
+        broken = []
+        for line in _prose(page):
+            for target in _LINK.findall(line):
+                path, _, anchor = target.partition("#")
+                if "://" in target or not anchor:
+                    continue
+                linked = page.parent / path if path else page
+                if not linked.is_file() or anchor not in _anchors(linked):
+                    broken.append(target)
+
+        assert not broken, f"These anchors on {_label(page)} name no heading:\n" + "\n".join(broken)
+
+    @pytest.mark.parametrize("page", [*_PAGES, _ROADMAP], ids=_label)
+    def test_every_named_id_is_a_link(self, page: Path) -> None:
+        """Ensure an id outside a heading links to its card, so a reader reaches it in one click."""
+        unlinked = [
+            f"{identifier} in: {line.strip()[:80]}"
+            for line in _prose(page)
+            if not line.startswith("#")
+            for identifier in _ID.findall(_LINKED.sub("", line))
+        ]
+
+        assert not unlinked, f"Link these ids on {_label(page)} to their cards:\n" + "\n".join(
+            unlinked
+        )

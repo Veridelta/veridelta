@@ -43,7 +43,7 @@ An anti-persona names who Veridelta refuses, and how the README, the docs or the
 
 For each use case, under its heading:
 
-- **The persona.** By id.
+- **The persona.** By id, as a link to its card.
 - **The moment.** What they were doing, and what made them ask.
 - **The question, in their words.**
 - **The data, and where it lives.**
@@ -52,7 +52,7 @@ For each use case, under its heading:
 - **The alternative it beats.** Name it: a hand-written SQL `EXCEPT`, `pandas.DataFrame.compare`, a notebook, a spreadsheet.
 - **Refusal behavior.** What Veridelta refuses to answer here, and how.
 - **The docs that describe it.** The page or the tutorial.
-- **The metric that proves it.** By id, from `product/KEY_METRICS.md`.
+- **The metric that proves it.** By id, as a link to its card in `product/metrics/`.
 
 A use case survives the question "would they choose this over what they open today?", or moves to "Considered and cut" with the reason.
 
