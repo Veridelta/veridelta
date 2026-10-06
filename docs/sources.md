@@ -163,6 +163,8 @@ SQL Server has a boolean type, `BIT`, and these of its types arrive as follows:
 | `DATETIME2` | `Datetime`, with no time zone |
 | `DATETIMEOFFSET` | `Datetime` in UTC |
 
+ConnectorX applies the offset of a `DATETIMEOFFSET` twice, which shifts any value with a nonzero offset. For example, `12:00 +02:00` arrives as `08:00` in UTC instead of `10:00`. To read the instant each value holds, select the column as `SWITCHOFFSET(column, '+00:00')` in a `query`.
+
 ### Parallel reads
 
 A large `table` reads faster in ranges, each over its own connection. Name an integer column to split on, and how many ranges to read:

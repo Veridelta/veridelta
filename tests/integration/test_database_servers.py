@@ -206,7 +206,8 @@ def _types_rows(server: _Server) -> list[list[Any]]:
     """Return a row of values, a row of NULLs, and a second row of values.
 
     SQL Server gets its times as text: pymssql writes a `datetime` parameter
-    with milliseconds only, and the server reads text at full precision.
+    with milliseconds only, and the server reads text at full precision. Its
+    two stamps differ only in their offsets, `+02:00` and `+00:00`.
     """
     seen = datetime(2026, 1, 1, 12, 0, 0, 123456)
     if server.scheme == "mysql":
@@ -216,11 +217,11 @@ def _types_rows(server: _Server) -> list[list[Any]]:
             [3, Decimal("-1.05"), 2.0, 0, b"\x00", "plain", date(2026, 1, 2), seen, 0],
         ]
     seen_text = seen.isoformat(sep=" ")
-    stamp = "2026-01-01 12:00:00.123 +02:00"
+    stamps = ("2026-01-01 12:00:00.123 +02:00", "2026-01-01 12:00:00.123 +00:00")
     return [
-        [1, Decimal("10.50"), 0.25, True, 255, _TEXT, date(2026, 1, 1), seen_text, stamp],
+        [1, Decimal("10.50"), 0.25, True, 255, _TEXT, date(2026, 1, 1), seen_text, stamps[0]],
         [2, None, None, None, None, None, None, None, None],
-        [3, Decimal("-1.05"), 2.0, False, 0, "plain", date(2026, 1, 2), seen_text, stamp],
+        [3, Decimal("-1.05"), 2.0, False, 0, "plain", date(2026, 1, 2), seen_text, stamps[1]],
     ]
 
 
@@ -230,21 +231,41 @@ class TestDatabaseServers:
     def test_it_reads_each_type_as_its_polars_type(
         self, server: _Server, create_table: _CreateTable
     ) -> None:
-        """Ensure each type arrives as the Polars type the docs give, NULLs included."""
+        """Ensure each type arrives as the Polars type the docs give, NULLs included.
+
+        ConnectorX applies a `DATETIMEOFFSET` offset twice, as the docs say, so
+        `12:00 +02:00` arrives as 08:00 in UTC and `12:00 +00:00` as 12:00.
+        """
         table = create_table(server.types, _types_rows(server))
 
         frame = LoaderFactory.load(server.source(table=table)).collect().sort("id")
 
         assert dict(frame.schema) == server.dtypes, f"Read as {dict(frame.schema)}"
-        first, empty, _ = frame.to_dicts()
+        first, empty, third = frame.to_dicts()
         assert first["amount"] == Decimal("10.50")
         assert first["name"] == _TEXT
         assert first["seen"] == datetime(2026, 1, 1, 12, 0, 0, 123456)
         if "stamp" in first:
-            assert first["stamp"] == datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)
+            assert first["stamp"] == datetime(2026, 1, 1, 8, 0, 0, 123000, tzinfo=UTC)
+            assert third["stamp"] == datetime(2026, 1, 1, 12, 0, 0, 123000, tzinfo=UTC)
         assert [value for key, value in empty.items() if key != "id"] == [None] * (
             len(server.types) - 1
         )
+
+    def test_it_reads_the_instant_a_datetimeoffset_holds_after_switchoffset(
+        self, server: _Server, create_table: _CreateTable
+    ) -> None:
+        """Ensure the docs' workaround for the doubled offset reads the stored instant."""
+        if server.scheme != "mssql":
+            pytest.skip("DATETIMEOFFSET is a SQL Server type.")
+        table = create_table(
+            {"id": "INT", "stamp": "DATETIMEOFFSET(3)"}, [[1, "2026-01-01 12:00:00.123 +02:00"]]
+        )
+        query = f"SELECT SWITCHOFFSET(stamp, '+00:00') AS stamp FROM {server.quoted(table)}"
+
+        frame = LoaderFactory.load(server.source(query=query)).collect()
+
+        assert frame["stamp"].to_list() == [datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)]
 
     def test_it_reads_a_mixed_case_table_by_its_quoted_name(
         self, server: _Server, create_table: _CreateTable
