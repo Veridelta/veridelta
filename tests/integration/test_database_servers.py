@@ -16,7 +16,7 @@ import os
 import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
@@ -145,11 +145,11 @@ _MSSQL = _Server(
         "stamp": "DATETIMEOFFSET(3)",
     },
     dtypes={
-        "id": pl.Int32(),
+        "id": pl.Int64(),
         "amount": pl.Decimal(38, 10),
         "ratio": pl.Float64(),
         "flag": pl.Boolean(),
-        "tiny": pl.UInt8(),
+        "tiny": pl.Int64(),
         "name": pl.String(),
         "opened": pl.Date(),
         "seen": pl.Datetime("us"),
@@ -235,6 +235,8 @@ class TestDatabaseServers:
         assert first["amount"] == Decimal("10.50")
         assert first["name"] == _TEXT
         assert first["seen"] == datetime(2026, 1, 1, 12, 0, 0, 123456)
+        if "stamp" in first:
+            assert first["stamp"] == datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)
         assert [value for key, value in empty.items() if key != "id"] == [None] * (
             len(server.types) - 1
         )
@@ -309,7 +311,7 @@ class TestDatabaseServers:
         )
         [finding] = DiffEngine.check_configs(broken, side, side, schemas=True)
         assert finding.severity == "error"
-        assert "Column 'qty' has type Int32, which cannot hold" in finding.message
+        assert f"Column 'qty' has type {server.dtypes['id']}, which cannot hold" in finding.message
 
     def test_it_keeps_the_password_out_of_a_failed_read(self, server: _Server) -> None:
         """Ensure a read the server refuses names the source, never the password."""

@@ -154,6 +154,15 @@ MySQL has no boolean type, so a flag arrives as a number. These MySQL types arri
 
 A `cast_to` rule cannot turn `Binary` into a number or a boolean. To compare a `BIT` column as a number, read it with `CAST(column AS UNSIGNED)` in a `query`.
 
+SQL Server has a boolean type, `BIT`, and these of its types arrive as follows:
+
+| SQL Server type | Polars type |
+| :--- | :--- |
+| `INT`, `TINYINT` | `Int64` |
+| `BIT` | `Boolean` |
+| `DATETIME2` | `Datetime`, with no time zone |
+| `DATETIMEOFFSET` | `Datetime` in UTC |
+
 ### Parallel reads
 
 A large `table` reads faster in ranges, each over its own connection. Name an integer column to split on, and how many ranges to read:
