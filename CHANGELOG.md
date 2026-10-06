@@ -1,3 +1,27 @@
+## v0.14.1 (2026-10-06)
+
+The package is the one 0.14.0 shipped: no command, rule, connector, or report changed.
+This release proves the shorter release path. A release now writes the version into
+every pin a user copies, from one list in `pyproject.toml`: the docs, the GitHub Action,
+and the bug report form. A test holds those pins to the package's version between
+releases, where 0.14.0 edited each by hand.
+
+The repository now says whom Veridelta serves. `product/USERS.md` holds the personas
+and use cases, and `product/KEY_METRICS.md` the north star with its drivers and
+guardrails. `product/FEATURES.md` maps every feature and roadmap item to the use case it
+serves, and each roadmap item names its use case or says that none asks for it yet. The
+GitLab CI template is frozen as it stands, until a GitLab user asks for more. The
+pushdown parity suite has still not run against the live warehouses. That run comes
+before 0.15.0, and a difference it finds ships as a 0.14 patch.
+
+### Chore
+
+- bump every version pin from one list in `pyproject.toml`, and hold each to the
+  package's version with a test
+- write the personas, use cases, key metrics, and feature map under `product/`, with a
+  test that ties them together
+- freeze the GitLab CI template, and name a use case on every roadmap item
+
 ## v0.14.0 (2026-10-06)
 
 `run`, `validate`, and `crosswalk` now exit with `3` when they cannot finish, such as on
