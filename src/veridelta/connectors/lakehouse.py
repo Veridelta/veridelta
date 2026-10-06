@@ -18,7 +18,7 @@ import warnings
 
 import polars as pl
 
-from veridelta.connectors.base import FETCH_SCHEMA_DEPRECATED, PushdownQueryType, VerideltaConnector
+from veridelta.connectors.base import FETCH_SCHEMA_DEPRECATED, VerideltaConnector
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 _UNCONNECTED = "Lakehouse connector is not connected. Call connect() first."
-_PUSHDOWN_UNSUPPORTED = "SQL pushdown is warehouse-only; lakehouse connectors use lazy scans."
 _DELTA_EXTRA = "Delta Lake extra is not installed. Install it with: uv add 'veridelta[delta]'"
 _ICEBERG_EXTRA = "Iceberg extra is not installed. Install it with: uv add 'veridelta[iceberg]'"
 
@@ -80,25 +79,6 @@ class DeltaLakeConnector(VerideltaConnector):
             self._config.table_uri,
             "latest" if self._config.version is None else self._config.version,
         )
-
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Reject SQL pushdown; lakehouse work stays on the lazy scan.
-
-        Args:
-            statement (str): Unused SQL payload reserved by the ABC.
-            query_type (PushdownQueryType): Unused warehouse round-trip tag.
-
-        Returns:
-            pl.LazyFrame: Never returned; lakehouse diffs use `connect()`.
-
-        Raises:
-            ConnectorError: Always; SQL pushdown is warehouse-only.
-        """
-        _ = statement
-        _ = query_type
-        raise ConnectorError(_PUSHDOWN_UNSUPPORTED)
 
     def fetch_schema(self) -> pl.Schema:
         """Return the Delta table schema without collecting the full dataset.
@@ -182,25 +162,6 @@ class IcebergConnector(VerideltaConnector):
             self._config.table_uri,
             "latest" if self._config.snapshot_id is None else self._config.snapshot_id,
         )
-
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Reject SQL pushdown; lakehouse work stays on the lazy scan.
-
-        Args:
-            statement (str): Unused SQL payload reserved by the ABC.
-            query_type (PushdownQueryType): Unused warehouse round-trip tag.
-
-        Returns:
-            pl.LazyFrame: Never returned; lakehouse diffs use `connect()`.
-
-        Raises:
-            ConnectorError: Always; SQL pushdown is warehouse-only.
-        """
-        _ = statement
-        _ = query_type
-        raise ConnectorError(_PUSHDOWN_UNSUPPORTED)
 
     def fetch_schema(self) -> pl.Schema:
         """Return the Iceberg table schema without collecting the full dataset.

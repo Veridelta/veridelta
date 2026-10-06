@@ -11,6 +11,13 @@ from typing import Literal, Protocol, Self, runtime_checkable
 import polars as pl
 
 from veridelta.connectors.sql import SQLPushdownCompiler
+from veridelta.exceptions import ConnectorError
+
+PUSHDOWN_UNSUPPORTED = (
+    "This source is compared locally and has no SQL pushdown. Call connect() and read its "
+    "frame instead."
+)
+"""The refusal every reader gives `execute_pushdown`; only a warehouse or pushdown session runs SQL."""
 
 FETCH_SCHEMA_DEPRECATED = (
     "fetch_schema is deprecated and goes in 0.15.0 with the code that serves only it. "
@@ -148,7 +155,6 @@ class VerideltaConnector(ABC):
             ConnectorError: If the backend is unimplemented or extras are missing.
         """
 
-    @abstractmethod
     def execute_pushdown(
         self, statement: str, query_type: PushdownQueryType = "mismatch"
     ) -> pl.LazyFrame:
@@ -164,8 +170,12 @@ class VerideltaConnector(ABC):
             pl.LazyFrame: Unevaluated result graph. Must not be collected here.
 
         Raises:
-            ConnectorError: If pushdown is unimplemented or not applicable.
+            ConnectorError: Always, for a reader that is compared locally and leaves
+                this default; a warehouse or pushdown session overrides it.
         """
+        _ = statement
+        _ = query_type
+        raise ConnectorError(PUSHDOWN_UNSUPPORTED)
 
     @abstractmethod
     def fetch_schema(self) -> pl.Schema:

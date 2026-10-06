@@ -54,11 +54,6 @@ _DUCKDB_EXTRA = "DuckDB extra is not installed. Install it with: uv add 'veridel
 _UNCONNECTED = "DuckDB connector is not connected. Call connect() first."
 _SESSION_UNCONNECTED = "DuckDB pushdown session is not connected. Call connect() first."
 _NO_STATEMENT = "No pushdown statement has run yet, so there is no result to describe."
-_PUSHDOWN_UNSUPPORTED = (
-    "DuckDB sources are compared locally; they have no SQL pushdown. "
-    "Call connect() and read the frame instead."
-)
-
 _TOKEN_VARIABLES: Final = ("MOTHERDUCK_TOKEN", "motherduck_token")
 """Environment variables a MotherDuck token is read from, in order.
 
@@ -138,25 +133,6 @@ class DuckDBConnector(VerideltaConnector):
             time.perf_counter() - started,
         )
         self._frame = frame.lazy()
-
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Reject SQL pushdown; a DuckDB source is compared locally.
-
-        Args:
-            statement (str): Unused SQL payload reserved by the ABC.
-            query_type (PushdownQueryType): Unused warehouse round-trip tag.
-
-        Returns:
-            pl.LazyFrame: Never returned; read the source through `connect()`.
-
-        Raises:
-            ConnectorError: Always.
-        """
-        _ = statement
-        _ = query_type
-        raise ConnectorError(_PUSHDOWN_UNSUPPORTED)
 
     def fetch_schema(self) -> pl.Schema:
         """Return the schema of the rows `connect()` read.

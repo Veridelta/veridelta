@@ -61,10 +61,6 @@ connectorx: Any = optional_module("connectorx")
 
 _DATABASE_EXTRA = "Database extra is not installed. Install it with: uv add 'veridelta[database]'"
 _UNCONNECTED = "Database connector is not connected. Call connect() first."
-_PUSHDOWN_UNSUPPORTED = (
-    "Database sources are compared locally; they have no SQL pushdown. "
-    "Call connect() and read the frame instead."
-)
 _SQLITE_PREFIX = "sqlite://"
 _POSTGRES_UNCONNECTED = "Postgres pushdown session is not connected. Call connect() first."
 _NO_STATEMENT = "No pushdown statement has run yet, so there is no result to describe."
@@ -155,25 +151,6 @@ class DatabaseConnector(VerideltaConnector):
             time.perf_counter() - started,
         )
         self._frame = _with_declared_scale(frame, declared, self._subject).lazy()
-
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Reject SQL pushdown; a database source is compared locally.
-
-        Args:
-            statement (str): Unused SQL payload reserved by the ABC.
-            query_type (PushdownQueryType): Unused warehouse round-trip tag.
-
-        Returns:
-            pl.LazyFrame: Never returned; read the source through `connect()`.
-
-        Raises:
-            ConnectorError: Always.
-        """
-        _ = statement
-        _ = query_type
-        raise ConnectorError(_PUSHDOWN_UNSUPPORTED)
 
     def fetch_schema(self) -> pl.Schema:
         """Return the schema of the rows `connect()` read.
