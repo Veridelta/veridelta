@@ -4,9 +4,10 @@
 """Hold user-facing text to the writing rules a machine can check.
 
 The rules are in CONTRIBUTING.md, under "Writing documentation". This module
-checks four of them across the docs, the README, AGENTS.md, the tutorials,
-docstrings, CLI help, schema descriptions, the CI templates, and the issue and
-pull request templates: no dash characters, no spaced double hyphen used as a
+checks four of them across the docs, the README, AGENTS.md, the product bundle,
+the decision records, the skills, the tutorials, docstrings, CLI help, schema
+descriptions, the CI templates, and the issue and pull request templates: no
+dash characters, no spaced double hyphen used as a
 dash, no marketing words, and no list that Python Markdown would render as part
 of a paragraph. CHANGELOG.md is history, and CODE_OF_CONDUCT.md is the
 Contributor Covenant as published. Both are left as written.
@@ -69,8 +70,10 @@ def _markdown_files() -> list[Path]:
         for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md", "AGENTS.md", "ACCESSIBILITY.md")
     ]
     records = sorted((_ROOT / "decisions").glob("*.md"))
+    product = sorted((_ROOT / "product").rglob("*.md"))
     skills = sorted([*_ROOT.glob("skills/*/SKILL.md"), *_ROOT.glob(".claude/skills/*/SKILL.md")])
-    return [*root, _ROOT / ".github" / "pull_request_template.md", *pages, *records, *skills]
+    template = _ROOT / ".github" / "pull_request_template.md"
+    return [*root, template, *pages, *records, *product, *skills]
 
 
 def _notebook_cells() -> Iterator[_Text]:
@@ -172,6 +175,7 @@ class TestDocumentationStyle:
             "ACCESSIBILITY.md",
             ".github/ISSUE_TEMPLATE/accessibility.yml",
             "docs/configuration.md",
+            "product/USERS.md",
             "src/veridelta/models.py",
             "skills/veridelta/SKILL.md",
         } <= sources

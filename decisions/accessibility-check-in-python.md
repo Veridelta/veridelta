@@ -4,6 +4,7 @@ title: The accessibility check runs axe-core from Python, with a pinned download
 description: Why the Accessibility job drives Chromium from pytest and fetches axe-core by version and digest, rather than with a Node toolchain or a Python wrapper that bundles axe-core.
 status: stable
 decided: 2026-10-06
+generated: { by: claude-code, at: 2026-10-06T03:06:27-05:00 }
 ---
 
 **Claim:** `tests/accessibility/` drives Chromium through Python's `playwright`, from the `accessibility` dependency group. It runs axe-core 4.14.0, fetched from npm and checked against its pinned sha512 digest.

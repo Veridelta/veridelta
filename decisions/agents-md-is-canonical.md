@@ -4,6 +4,7 @@ title: AGENTS.md holds the rules for coding agents
 description: Why contributors' coding agents read one rules file at the repository root, which CLAUDE.md imports.
 status: stable
 decided: 2026-10-06
+generated: { by: claude-code, at: 2026-10-05T22:53:01-05:00 }
 ---
 
 **Claim:** `AGENTS.md` is the one file of rules for coding agents. `CLAUDE.md` is the single line `@AGENTS.md`, and the detailed rules stay in `.cursor/rules`, which `AGENTS.md` links.

@@ -2,7 +2,7 @@
 name: defend-decision
 description: Writes a decision record under decisions/ (claim, evidence, alternative considered, why rejected, how to reverse) and adds it to the settled list in AGENTS.md. Use when a choice is non-obvious, likely to be questioned again, or made by an agent that will not remember why. Never for a small choice, and never to backfill an old one.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Record a decision
@@ -20,10 +20,11 @@ title: <the claim as a short sentence>
 description: <one sentence on one line: why this, and what it was chosen over>
 status: stable
 decided: <YYYY-MM-DD>
+generated: { by: <producer>, at: <time> }
 ---
 ```
 
-`status` is `draft`, `stable`, or `deprecated`. Leave out any field that names the model that wrote the record.
+`status` is `draft`, `stable`, or `deprecated`. `generated` says who wrote the text and when: the producer, such as `claude-code`, or a person as `human:<id>`, and a time in ISO 8601 with an offset. Leave out any field that names the model that wrote the record.
 
 ## The body
 

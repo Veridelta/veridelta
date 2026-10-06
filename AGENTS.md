@@ -41,6 +41,17 @@ Read the rules for the files a change touches:
 | [Security](.cursor/rules/300-security.mdc) | `src/veridelta/`, above all the SQL in `connectors/sql.py` |
 | [Documentation](.cursor/rules/400-docs.mdc) | `docs/`, `README.md`, and docstrings |
 
+## Product documents
+
+`product/` holds what the project knows about its users and its goals, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle: one concept per Markdown file. `product/USERS.md` holds the personas and use cases, `product/KEY_METRICS.md` and `product/metrics/` the north star with its drivers and guardrails, and `product/log.md` what changed and why. Each directory has an `index.md` that lists its concepts.
+
+- A concept opens with frontmatter: `type`, `title`, a one-line `description`, `status`, and `generated`. A decision record under `decisions/` carries `generated` too.
+- `generated` names who wrote the text and when: `{ by: claude-code, at: 2026-10-06T09:45:00Z }`, or `human:<id>` for a person. Never a model.
+- Ids tie the documents together: a persona is `P-01`, a use case `UC-01`, a metric `NS-01`, `DR-01`, or `GR-01`. A heading or a metric's file name defines an id once. Name an id only once it is defined.
+- Write the documents with the `define-personas` and `define-key-metrics` skills in `.claude/skills/`, add a line to `product/log.md` under today's date, and follow the writing rules.
+
+`tests/unit/test_product_bundle.py` fails on a missing field, a producer that names a model, an id defined nowhere or twice, a second north star, a driver or guardrail that does not support it, a concept missing from its index, or a link that leads nowhere.
+
 ## Settled
 
 Each of these choices has a record in `decisions/`, with what it was chosen over and how to reverse it. Do not reopen one without the maintainer:

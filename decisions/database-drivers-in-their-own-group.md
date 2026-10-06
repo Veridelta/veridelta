@@ -4,6 +4,7 @@ title: The MySQL and SQL Server test drivers sit in their own dependency group
 description: Why pymysql and pymssql install only for make databases and the Database Servers CI job, while psycopg is in the dev group.
 status: stable
 decided: 2026-10-06
+generated: { by: claude-code, at: 2026-10-05T23:22:00-05:00 }
 ---
 
 **Claim:** `pymysql` and `pymssql` sit in the `databases` dependency group. Only `make databases` and the Database Servers job install it.
