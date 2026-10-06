@@ -323,6 +323,8 @@ jobs:
           DRIFT_SUMMARY: ${{ steps.drift.outputs.summary-markdown }}
           DRIFT_OTEL: ${{ steps.drift.outputs.otel-metrics }}
           BROKEN_OUTCOME: ${{ steps.broken.outcome }}
+          BROKEN_STATUS: ${{ steps.broken.outputs.status }}
+          BROKEN_EXIT_CODE: ${{ steps.broken.outputs.exit-code }}
           BROKEN_OTEL: ${{ steps.broken.outputs.otel-metrics }}
         run: |
           set -x
@@ -337,6 +339,8 @@ jobs:
           grep -q '"name":"veridelta.diff.match"' "$DRIFT_OTEL"
           test "$(wc -l < "$DRIFT_OTEL")" -eq 1
           test "$BROKEN_OUTCOME" = failure
+          test "$BROKEN_STATUS" = error
+          test "$BROKEN_EXIT_CODE" = 3
           test -z "$BROKEN_OTEL"
 
   # Rulesets require this one check rather than each matrix job by name. It

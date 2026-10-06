@@ -5,7 +5,9 @@
 
 Progress and diagnostics go to stderr, and only the requested result goes to
 stdout. So `veridelta run --json | jq` needs no filtering, and the rules that
-`veridelta crosswalk` prints can be redirected straight into a file.
+`veridelta crosswalk` prints can be redirected straight into a file. Under
+`--json`, a command that cannot finish prints its error there as one JSON
+object, and exits with `EXIT_ERROR` rather than the code for drift.
 """
 
 import argparse
@@ -32,7 +34,10 @@ EXIT_MATCH = 0
 """Datasets agreed within `threshold`."""
 
 EXIT_MISMATCH = 1
-"""Datasets drifted, or the run could not complete. CI treats both as failure."""
+"""Datasets drifted, or `validate` found an error. CI treats it as failure."""
+
+EXIT_ERROR = 3
+"""The command could not finish, such as on a configuration error or an unreachable source."""
 
 
 def _progress(message: str, *, quiet: bool) -> None:
@@ -87,8 +92,17 @@ def _support(text: str) -> int:
     return value
 
 
-def _report_failure(exc: Exception) -> int:
-    """Explain on stderr why a command stopped."""
+def _report_failure(exc: Exception, *, as_json: bool) -> int:
+    """Explain on stderr why a command stopped, and as JSON on stdout under `--json`.
+
+    Args:
+        exc (Exception): What stopped the command.
+        as_json (bool): Whether stdout carries JSON, so the error goes there as
+            one object too: `{"error": {"type": ..., "message": ...}}`.
+
+    Returns:
+        int: `EXIT_ERROR`.
+    """
     if isinstance(exc, ConfigError):
         message = (
             f"\nConfiguration Error\n{exc}\n\nThis is a problem with the configuration "
@@ -106,7 +120,10 @@ def _report_failure(exc: Exception) -> int:
             "and this message."
         )
     print(message, file=sys.stderr)
-    return EXIT_MISMATCH
+    if as_json:
+        error = {"type": type(exc).__name__, "message": str(exc).strip()}
+        print(json.dumps({"error": error}, indent=2))
+    return EXIT_ERROR
 
 
 def run(args: argparse.Namespace) -> int:
@@ -118,7 +135,7 @@ def run(args: argparse.Namespace) -> int:
 
     Returns:
         int: `EXIT_MATCH` when the comparison falls within `threshold`,
-            `EXIT_MISMATCH` for drift or any failure.
+            `EXIT_MISMATCH` for drift, and `EXIT_ERROR` when it cannot finish.
     """
     # `--json` changes what stdout carries; `--quiet` controls stderr. Keeping
     # them separate means `run --json` can still report where it wrote files.
@@ -132,9 +149,7 @@ def run(args: argparse.Namespace) -> int:
         result = DiffEngine.run_from_configs(diff_config, source_config, target_config)
         summary = result.summary
 
-        if args.json:
-            print(summary.model_dump_json(indent=2))
-        else:
+        if not args.json:
             print(f"\n{summary.report_summary}")
 
         if diff_config.output_path and summary.artifacts_written:
@@ -160,10 +175,13 @@ def run(args: argparse.Namespace) -> int:
             )
             _progress(f"OpenTelemetry metrics saved to: {metrics_file.absolute()}", quiet=quiet)
 
+        if args.json:
+            # Last, so a file that cannot be written leaves only its error on stdout.
+            print(summary.model_dump_json(indent=2))
         return EXIT_MATCH if summary.is_match else EXIT_MISMATCH
 
     except Exception as exc:
-        return _report_failure(exc)
+        return _report_failure(exc, as_json=bool(args.json))
 
 
 def _merge_advice(rule: "DiffRule", column: str) -> str:
@@ -219,7 +237,7 @@ def crosswalk(args: argparse.Namespace) -> int:
 
     Returns:
         int: `EXIT_MATCH` once proposals are computed, whether or not any were
-            found, and `EXIT_MISMATCH` for any failure.
+            found, and `EXIT_ERROR` when they cannot be.
     """
     quiet = bool(args.quiet)
     try:
@@ -236,7 +254,7 @@ def crosswalk(args: argparse.Namespace) -> int:
             sample_fraction=args.sample_fraction,
         )
     except Exception as exc:
-        return _report_failure(exc)
+        return _report_failure(exc, as_json=bool(args.json))
 
     if args.json:
         print(json.dumps([proposal.model_dump(mode="json") for proposal in proposals], indent=2))
@@ -285,8 +303,9 @@ def validate(args: argparse.Namespace) -> int:
             `schemas`, `allow_missing_env`, `json`, and `quiet`.
 
     Returns:
-        int: `EXIT_MATCH` when there are no errors, warnings or not;
-            `EXIT_MISMATCH` otherwise.
+        int: `EXIT_MATCH` when there are no errors, warnings or not,
+            `EXIT_MISMATCH` when there is one, and `EXIT_ERROR` when the
+            check cannot finish.
     """
     unset: list[str] | None = [] if args.allow_missing_env else None
     try:
@@ -297,7 +316,7 @@ def validate(args: argparse.Namespace) -> int:
     except ConfigError as exc:
         findings = [ConfigFinding(severity="error", message=str(exc).strip())]
     except Exception as exc:
-        return _report_failure(exc)
+        return _report_failure(exc, as_json=bool(args.json))
     unset_findings = [
         ConfigFinding(
             severity="warning",
@@ -365,7 +384,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--json",
         action="store_true",
-        help="Print the summary as JSON on stdout instead of a formatted report.",
+        help="Print the summary as JSON on stdout instead of a formatted report, or the error "
+        "when the run cannot finish.",
     )
     run_parser.add_argument(
         "-q",
@@ -438,7 +458,8 @@ def build_parser() -> argparse.ArgumentParser:
     crosswalk_parser.add_argument(
         "--json",
         action="store_true",
-        help="Print the proposals and their evidence as JSON on stdout instead of YAML.",
+        help="Print the proposals and their evidence as JSON on stdout instead of YAML, or the "
+        "error when they cannot be computed.",
     )
     crosswalk_parser.add_argument(
         "-q",
@@ -470,7 +491,8 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument(
         "--json",
         action="store_true",
-        help="Print the findings as one JSON object on stdout.",
+        help="Print the findings as one JSON object on stdout, or the error when the check "
+        "cannot finish.",
     )
     validate_parser.add_argument(
         "-q",

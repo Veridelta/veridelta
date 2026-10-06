@@ -35,13 +35,27 @@ Progress messages always go to stderr, so `veridelta run --json | jq` needs no f
 
 ## Exit codes
 
-Every command exits `2` for invalid arguments:
+Every command exits `2` for invalid arguments, and `3` when it cannot finish:
 
 | Code | `run` | `validate` | `crosswalk` |
 | :--- | :--- | :--- | :--- |
 | `0` | A match within `threshold`. | No errors. Warnings are allowed. | Proposals computed, whether or not any were found. |
-| `1` | Drift, or any failure while running. | At least one error. | A failure. |
+| `1` | Drift. | At least one error. | Not used. |
 | `2` | Invalid arguments. | Invalid arguments. | Invalid arguments. |
+| `3` | The run could not finish, such as on a configuration error, an unreachable source, or a missing extra. | The check could not finish, such as when `--schemas` cannot reach a source. | The proposals could not be computed. |
+
+A command that cannot finish explains why on stderr. With `--json`, it also prints the error on stdout, as one JSON object in place of its usual output:
+
+```json
+{
+  "error": {
+    "type": "ConfigError",
+    "message": "Environment variable 'SNOWFLAKE_PASSWORD' is not set, but source -> password references it. Set it, or write ${NAME:-default} to give a fallback."
+  }
+}
+```
+
+`type` names the error. A `ConfigError` is a problem with the configuration file. A `ConnectorError` or a `DataIntegrityError` comes from a source or its data. Any other type is a bug or an unsupported input: please [report it](https://github.com/Veridelta/veridelta/issues). An error `validate` finds in the file is a finding at exit `1`, in its usual output, not an error object.
 
 ## Checking a configuration
 

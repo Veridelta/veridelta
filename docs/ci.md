@@ -151,4 +151,6 @@ Both integrations read `veridelta run`'s exit code together with its JSON summar
 | :--- | :--- | :--- |
 | `match` | 0 | The comparison is within its threshold. |
 | `drift` | 1 | The JSON summary reports `is_match: false`. |
-| `error` | anything else | The run did not finish, such as a configuration error, an unreachable source, or a missing extra. There is no summary, and the job always fails. |
+| `error` | 3, or any other | The run did not finish, such as a configuration error, an unreachable source, or a missing extra. There is no summary, and the job always fails. |
+
+A pinned older release also exits `1` when it fails, so `1` counts as drift only when the summary says so.

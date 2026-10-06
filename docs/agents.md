@@ -10,7 +10,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
     veridelta validate -c veridelta.yaml --json
     ```
 
-    The JSON holds `valid`, `errors`, and `warnings`, and the command exits `1` when there is an error. Fix each error before a run. `--allow-missing-env` checks a file whose secrets are not set, such as in a pull request job.
+    The JSON holds `valid`, `errors`, and `warnings`, and the command exits `1` when there is an error. Fix each error before a run. A check that cannot finish exits `3` and prints an `error` object instead. `--allow-missing-env` checks a file whose secrets are not set, such as in a pull request job.
 
 2. Run the comparison with `--json`, so stdout carries only the [summary](results.md#summary):
 
@@ -23,8 +23,11 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
     | Code | Meaning | stdout |
     | :--- | :--- | :--- |
     | `0` | A match within `threshold`. | The summary. |
-    | `1` | Drift, or a failure. | The summary after drift. Nothing after a failure, which stderr explains. |
+    | `1` | Drift. | The summary. |
     | `2` | Invalid arguments. | Nothing. |
+    | `3` | The run could not finish. | One object, `{"error": {"type": ..., "message": ...}}`, which stderr explains too. |
+
+    Read `type` before acting on `message`. A `ConfigError` means the configuration file needs a fix. Any type that is not a Veridelta error, such as one from a driver, is worth reporting to the user as a possible bug.
 
 4. Report counts and column names, which is all the summary holds. Leave row values out of a reply unless the user asks for them.
 

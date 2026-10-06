@@ -2,7 +2,7 @@
 name: veridelta
 description: Compares two datasets with the Veridelta command line and reports what differs, keeping row values out of the reply. Use when a task compares two tables or files, checks a data migration or pipeline change, or writes or fixes a veridelta.yaml file.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Compare two datasets with Veridelta
@@ -17,7 +17,7 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
     veridelta validate -c veridelta.yaml --json
     ```
 
-    Fix each entry in `errors` before a run. The command exits `1` while there is one.
+    Fix each entry in `errors` before a run. The command exits `1` while there is one, and `3`, with an `error` object, when the check cannot finish.
 
 2. Run the comparison, so stdout carries only the summary:
 
@@ -25,7 +25,7 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
     veridelta run -c veridelta.yaml --json
     ```
 
-3. Read the exit code before the output. `0` is a match within `threshold`. `1` is drift, or a failure: drift prints the summary on stdout, and a failure prints nothing there and explains itself on stderr. `2` is an invalid command line.
+3. Read the exit code before the output. `0` is a match within `threshold`, and `1` is drift: both print the summary on stdout. `3` is a run that could not finish: stdout holds one object, `{"error": {"type": ..., "message": ...}}`, and stderr explains it too. A `ConfigError` means the configuration needs a fix. `2` is an invalid command line.
 
 4. Report the counts, and the columns in `column_mismatches`, which is all the summary holds. Leave row values out of a reply unless the user asks for them. The discrepancy files, the HTML report, a Markdown summary that lists values, and the proposals of `veridelta crosswalk` all hold row values.
 

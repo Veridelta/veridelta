@@ -100,7 +100,7 @@ class TestInstallationAndBoot:
             check=False,
         )
 
-        assert result.returncode == 1
+        assert result.returncode == 3
 
         assert "Configuration Error" in result.stderr
         assert "Traceback" not in result.stderr
