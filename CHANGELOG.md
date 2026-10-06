@@ -1,3 +1,99 @@
+## v0.14.0 (2026-10-06)
+
+`run`, `validate`, and `crosswalk` now exit with `3` when they cannot finish, such as on
+a configuration error, an unreachable source, or a missing extra. `1` means drift, or a
+file `validate` finds invalid, and nothing else. Under `--json`, a failure prints one
+object, `{"error": {"type": ..., "message": ...}}`, on stdout, so a script reads one
+stream whatever happens. The GitHub Action and the GitLab CI template still read `1` as
+drift only when the summary says so, since either can pin an older release.
+
+Snowflake signs in with a key pair, from `private_key_path` and an optional
+`private_key_passphrase`, since Snowflake now requires strong sign-in for scripted
+users. `-v` or `--verbose` prints each connection, read, and pushdown statement on
+stderr, with their timings and never a credential. `run --otel-send` posts the run's
+OpenTelemetry metrics to the OTLP/HTTP endpoint that the standard `OTEL_EXPORTER_OTLP_*`
+variables name, so no separate `curl` step is needed. The GitHub Action and the GitLab
+CI template gain an `otel-send` input. The GitLab template also gains the Action's
+`working-directory`, `python-version`, and `upload-artifact` inputs.
+
+Three failures that the command line called a bug now name their cause before the
+comparison starts. One is a missing or unreadable file. Another is a Delta Lake or
+Iceberg table, version, or snapshot that cannot be read. The third is a `cast_to` that
+the column's type cannot take, which `validate --schemas` reports too. A SQL Server
+`table` read now reads each `DATETIMEOFFSET` at the instant it holds, where ConnectorX
+0.4.6 shifted it by its offset. A `query` still reads what ConnectorX returns, and the
+docs show the workaround.
+
+The HTML report reads without JavaScript: every row is in the page, and the script only
+splits long tables into pages of 25 rows. Each pager names its table and announces its
+page, and a wide table scrolls from the keyboard. Cells show Python's text for a value,
+so a float reads `1.0` and a struct shows its fields. On the docs site, text reaches the
+4.5:1 contrast ratio in both color schemes, links are underlined, and the search dialog
+has a name. `ACCESSIBILITY.md` says what Veridelta aims for, how it is checked, and how
+to report a barrier.
+
+Reads are now tested against real systems: Delta Lake and Iceberg tables each test
+writes, and MySQL 8.4 and SQL Server 2022 servers in CI. A suite started by hand runs
+the pushdown parity cases inside Snowflake, Databricks, BigQuery, and MotherDuck. This
+release ships before that suite's first run against those services. That run comes
+before 0.15.0, and a difference it finds ships as a 0.14 patch.
+
+For AI agents, the docs site publishes `llms.txt` and `llms-full.txt`, and a new page
+says how an agent should drive the command line. `skills/veridelta/SKILL.md` carries the
+same steps as an agent skill. Contributors' coding agents read one rules file,
+`AGENTS.md`, and settled choices keep short records under `decisions/`. A new CI job
+checks every docs page and a sample report with axe-core.
+
+### Feat
+
+- sign in to Snowflake with a key pair, from `private_key_path` and
+  `private_key_passphrase`
+- print each connection, read, and pushdown statement on stderr with `--verbose`
+- send a run's OpenTelemetry metrics to an OTLP/HTTP endpoint with `run --otel-send`,
+  and the `otel-send` input of the GitHub Action and the GitLab CI template
+- give the GitLab CI template the Action's `working-directory`, `python-version`, and
+  `upload-artifact` inputs
+- exit with `3` when a command cannot finish, and print the failure as one JSON object
+  under `--json`
+
+### Fix
+
+- report a missing or unreadable file before the comparison starts
+- report an unreadable Delta Lake or Iceberg table, version, or snapshot before the
+  comparison starts
+- refuse a `cast_to` the column's type cannot take before reading a row, and report it
+  in `validate --schemas`
+- read each SQL Server `DATETIMEOFFSET` in a `table` read at the instant it holds
+- render every row of the HTML report in the page, name each pager's buttons after its
+  table, announce its page, and let the keyboard scroll a wide table
+- show report cells as Python writes their values, such as `1.0` for a float
+- reach the 4.5:1 contrast ratio on the docs site in both color schemes, underline its
+  links, and name its search dialog
+- correct where the docs and the code disagreed
+
+### Test
+
+- read real Delta Lake and Iceberg tables
+- read real MySQL and SQL Server tables in CI
+- run the pushdown parity suite inside live warehouses, started by hand
+- check every docs page and a sample HTML report with axe-core and a keyboard in CI
+
+### Chore
+
+- publish `llms.txt`, `llms-full.txt`, and an AI agents page, and add AI workflows to
+  the roadmap
+- add an agent skill, `AGENTS.md` for contributors' coding agents, and decision records
+- add an accessibility statement, an accessibility issue form, and a funding file for
+  GitHub Sponsors
+- run the end-to-end tests on macOS, give CI jobs a read-only token, and update
+  vulnerable locked dependencies
+
+### BREAKING CHANGE
+
+- `run`, `validate`, and `crosswalk` exit with `3`, not `1`, when they cannot finish.
+  Under `--json`, a failure prints `{"error": {"type": ..., "message": ...}}` on stdout,
+  where it printed nothing.
+
 ## v0.13.0 (2026-10-05)
 
 A `duckdb` source reads a table, or the result of a query, from a DuckDB file or a
