@@ -27,6 +27,10 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 - Change behavior together with its tests. The suite fails on any warning, and the core modules keep 100% branch coverage.
 - Leave `CHANGELOG.md` alone. The release pull request writes it.
 - Add no dependency without a concrete need.
+- Make the smallest change that meets the need, with no abstraction for a case that does not exist yet.
+- Keep a public API as it is unless the task asks for a breaking change.
+- Never edit a generated file by hand. Run its generator, such as `make schema` for the configuration schema.
+- A `# type: ignore`, `# noqa`, or `# pyright: ignore` carries its reason on the same line.
 - Follow the [writing rules](CONTRIBUTING.md#writing-documentation) in docs, docstrings, CLI help, commit messages, and pull requests. `tests/unit/test_docs_style.py` checks some of them.
 - Meet the [accessibility expectations](ACCESSIBILITY.md#contributor-expectations) in a change to the HTML report or the docs site.
 
@@ -36,11 +40,9 @@ Read the rules for the files a change touches:
 
 | Rules | Applies to |
 | :--- | :--- |
-| [Core architecture](.cursor/rules/000-core-architecture.mdc) | Every change |
 | [Engine and models](.cursor/rules/100-engine-polars.mdc) | `src/veridelta/` |
 | [Testing standards](.cursor/rules/200-testing-standards.mdc) | `tests/` |
 | [Security](.cursor/rules/300-security.mdc) | `src/veridelta/`, above all the SQL in `connectors/sql.py` |
-| [Documentation](.cursor/rules/400-docs.mdc) | `docs/`, `README.md`, and docstrings |
 
 ## Product documents
 
