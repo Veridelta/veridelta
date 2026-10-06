@@ -267,7 +267,8 @@ markers = [
     "fast: CPU-bound tests that execute in milliseconds.",
     "slow: I/O bound or large-dataset tests.",
     "property: Hypothesis property tests that draw their own cases.",
-    "duckdb_only: Parity cases Postgres pushdown refuses or cannot store; make postgres deselects them.",
+    "skip_on(*backends, reason): Parity cases the named backends refuse or cannot store; the harness skips them there.",
+    "only_on(*backends, reason): Parity cases that pin the named backends' own behavior; the harness skips them elsewhere.",
 ]
 
 [tool.coverage.run]

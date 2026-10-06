@@ -1,0 +1,158 @@
+name: Live Warehouses
+
+# Runs the parity suite inside the live services pushdown supports. It starts
+# only by hand, and each job waits for a maintainer to approve the `live`
+# environment, which holds the secrets. CONTRIBUTING lists them under "Live
+# warehouse tests".
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: The warehouse to run the parity suite in, or all of them.
+        type: choice
+        options:
+          - all
+          - bigquery
+          - databricks
+          - motherduck
+          - snowflake
+        default: all
+
+# One run at a time, so two runs never load tables into one account together.
+concurrency:
+  group: live-warehouses
+  cancel-in-progress: false
+
+# Jobs install and run third-party drivers, so the token can only read the code.
+permissions:
+  contents: read
+
+# Each job runs only when its repository variable is `true`, so a service with
+# no account yet shows as skipped.
+jobs:
+  bigquery:
+    name: BigQuery
+    if: vars.LIVE_BIGQUERY == 'true' && (inputs.backend == 'all' || inputs.backend == 'bigquery')
+    runs-on: ubuntu-latest
+    environment: live
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras
+
+      - name: Write the Service Account Key
+        env:
+          BQ_CREDENTIALS_JSON: ${{ secrets.BQ_CREDENTIALS_JSON }}
+        run: |
+          umask 077
+          printf '%s' "$BQ_CREDENTIALS_JSON" > "$RUNNER_TEMP/bigquery.json"
+
+      - name: Run the Parity Suite
+        env:
+          VERIDELTA_PARITY_BACKEND: bigquery
+          BQ_PROJECT: ${{ secrets.BQ_PROJECT }}
+          BQ_CREDENTIALS_PATH: ${{ runner.temp }}/bigquery.json
+        run: make live
+
+  databricks:
+    name: Databricks
+    if: vars.LIVE_DATABRICKS == 'true' && (inputs.backend == 'all' || inputs.backend == 'databricks')
+    runs-on: ubuntu-latest
+    environment: live
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras
+
+      - name: Run the Parity Suite
+        env:
+          VERIDELTA_PARITY_BACKEND: databricks
+          DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+          DATABRICKS_HTTP_PATH: ${{ secrets.DATABRICKS_HTTP_PATH }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: make live
+
+  motherduck:
+    name: MotherDuck
+    if: vars.LIVE_MOTHERDUCK == 'true' && (inputs.backend == 'all' || inputs.backend == 'motherduck')
+    runs-on: ubuntu-latest
+    environment: live
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras
+
+      - name: Run the Parity Suite
+        env:
+          VERIDELTA_PARITY_BACKEND: motherduck
+          MOTHERDUCK_TOKEN: ${{ secrets.MOTHERDUCK_TOKEN }}
+        run: make live
+
+  snowflake:
+    name: Snowflake
+    if: vars.LIVE_SNOWFLAKE == 'true' && (inputs.backend == 'all' || inputs.backend == 'snowflake')
+    runs-on: ubuntu-latest
+    environment: live
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      - name: Install Dependencies
+        run: uv sync --all-extras
+
+      - name: Write the Private Key
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        run: |
+          umask 077
+          printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > "$RUNNER_TEMP/snowflake.p8"
+
+      - name: Run the Parity Suite
+        env:
+          VERIDELTA_PARITY_BACKEND: snowflake
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_PRIVATE_KEY_PATH: ${{ runner.temp }}/snowflake.p8
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: make live

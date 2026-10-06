@@ -203,6 +203,14 @@ jobs:
       - name: Install Dependencies
         run: uv sync --all-extras
 
+      # The live warehouse backends share one harness. A DuckDB file stands in
+      # for MotherDuck, so the harness runs on every pull request with no account.
+      - name: Run the Parity Suite Through the Warehouse Harness
+        env:
+          VERIDELTA_PARITY_BACKEND: motherduck
+          MOTHERDUCK_DATABASE: ${{ runner.temp }}/live.duckdb
+        run: make live
+
       - name: Run the Parity Suite Inside Postgres
         run: make postgres
 
