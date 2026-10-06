@@ -5,9 +5,12 @@
 
 import argparse
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock
+from urllib.parse import quote
 
+import polars as pl
 import pytest
 import yaml
 from pytest_mock import MockerFixture
@@ -1030,3 +1033,122 @@ class TestValidateCommand:
             True,
         )
         mock_exit.assert_called_once_with(0)
+
+
+_DATABASE_PASSWORD = "p@ss:w/rd %+&?#"
+"""A password holding every character a URI treats specially."""
+
+_DATABASE_CONFIG = """\
+source:
+  type: database
+  uri: mysql://analyst@db.internal/sales
+  password: ${VD_TEST_DB_PASSWORD}
+  table: orders
+target:
+  path: orders.csv
+primary_keys: [id]
+"""
+"""A MySQL table, read through a patched driver, against a CSV file in the working directory."""
+
+
+class TestVerboseLogging:
+    """Validate `--verbose`, which prints Veridelta's own log records on stderr."""
+
+    @pytest.fixture
+    def driver(
+        self, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> MagicMock:
+        """Write the configuration, and patch the driver to return two rows."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("VD_TEST_DB_PASSWORD", _DATABASE_PASSWORD)
+        (tmp_path / "veridelta.yaml").write_text(_DATABASE_CONFIG)
+        pl.DataFrame({"id": [1, 2], "status": ["open", "shipped"]}).write_csv(
+            tmp_path / "orders.csv"
+        )
+        mocker.patch("veridelta.connectors.database.connectorx", object())
+        return mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            return_value=pl.DataFrame({"id": [1, 2], "status": ["open", "closed"]}),
+        )
+
+    @staticmethod
+    def _main(mocker: MockerFixture, *flags: str) -> object:
+        """Run `veridelta run` with the flags given, and return its exit code."""
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "run", *flags])
+        with pytest.raises(SystemExit) as stopped:
+            main()
+        return stopped.value.code
+
+    @pytest.mark.parametrize("command", ["run", "validate", "crosswalk"])
+    @pytest.mark.parametrize("flag", ["-v", "--verbose"])
+    def test_it_takes_the_flag_on_each_command_that_reads_a_configuration(
+        self, command: str, flag: str
+    ) -> None:
+        """Ensure `-v` and `--verbose` parse wherever a configuration is read, and default off."""
+        assert build_parser().parse_args([command, flag]).verbose is True
+        assert build_parser().parse_args([command]).verbose is False
+
+    def test_it_prints_each_read_on_stderr(
+        self, driver: MagicMock, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a read logs its row count and source on stderr, and leaves no handler behind."""
+        logger = logging.getLogger("veridelta")
+        before = (list(logger.handlers), logger.level)
+
+        code = self._main(mocker, "--verbose")
+        captured = capsys.readouterr()
+
+        assert code == 1
+        assert (
+            "INFO veridelta.connectors.database: Read 2 rows of table 'orders' "
+            "from mysql://analyst@db.internal/sales in "
+        ) in captured.err
+        assert "veridelta.connectors" not in captured.out
+        assert (list(logger.handlers), logger.level) == before
+
+    def test_it_prints_no_record_without_the_flag(
+        self, driver: MagicMock, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a run stays as quiet as before unless asked."""
+        code = self._main(mocker)
+
+        assert code == 1
+        assert "veridelta.connectors" not in capsys.readouterr().err
+
+    def test_it_keeps_stdout_one_json_object(
+        self, driver: MagicMock, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `--json --verbose` sends the records to stderr, so stdout still parses."""
+        code = self._main(mocker, "--json", "--verbose")
+        captured = capsys.readouterr()
+
+        assert code == 1
+        assert json.loads(captured.out)["is_match"] is False
+        assert "INFO veridelta.connectors.database: Read 2 rows" in captured.err
+
+    def test_it_keeps_the_password_out_of_a_failed_read(
+        self, driver: MagicMock, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a failed read logs a warning naming the source, and no form of the password.
+
+        Drivers echo connection strings in their errors, so the stand-in error
+        repeats the password raw and percent-encoded.
+        """
+        encoded = quote(_DATABASE_PASSWORD, safe="")
+        driver.side_effect = RuntimeError(
+            f"Access denied for mysql://analyst:{encoded}@db.internal/sales "
+            f"with password {_DATABASE_PASSWORD}"
+        )
+
+        code = self._main(mocker, "--verbose")
+        captured = capsys.readouterr()
+
+        assert code == 3
+        assert (
+            "WARNING veridelta.connectors.database: Database read of table 'orders' "
+            "from mysql://analyst@db.internal/sales failed after "
+        ) in captured.err
+        assert "Access denied" in captured.err
+        printed = captured.out + captured.err
+        assert _DATABASE_PASSWORD not in printed
+        assert encoded not in printed

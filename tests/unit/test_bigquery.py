@@ -3,6 +3,7 @@
 
 """Unit tests for BigQuery: its connection model, SQL dialect, and connector."""
 
+import logging
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -333,6 +334,21 @@ class TestBigQueryConnector:
             "SELECT 1", job_config=driver.QueryJobConfig.return_value
         )
         assert frame.to_dict(as_series=False) == {"n": [1, 2]}
+
+    def test_it_logs_each_statement_by_its_kind_at_info(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure `--verbose` shows each round-trip and its timing, but never its SQL."""
+        _driver(mocker)
+        connector = BigQueryConnector(BigQueryConfig(**_BASE))
+        connector.connect()
+
+        with caplog.at_level(logging.INFO, logger="veridelta.connectors.warehouse"):
+            connector.execute_pushdown("SELECT 1 AS hidden_column", query_type="count")
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(m.startswith("BigQuery count statement completed in") for m in messages)
+        assert "hidden_column" not in caplog.text
 
     def test_it_keeps_the_columns_of_an_empty_result(self, mocker: MockerFixture) -> None:
         """Ensure a zero-row probe still reports its columns."""
