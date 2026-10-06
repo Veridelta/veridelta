@@ -60,26 +60,24 @@ jobs:
 
           # The last line is the peeled commit of an annotated tag.
           existing=$(git ls-remote --tags origin "refs/tags/${tag}" "refs/tags/${tag}^{}" | tail -n 1 | cut -f 1)
-          if [ -z "$existing" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
-            git push origin "refs/tags/${tag}"
-          elif [ "$existing" != "$GITHUB_SHA" ]; then
-            # A merge that lands before the release finishes keeps the version,
-            # so the tag still names what is released, and it is never moved.
-            echo "::notice::${tag} is on ${existing}, so that commit is released as ${version}."
-          fi
-
-          # The tag's own run releases it, and one waiting for the pypi approval
-          # is still under way. Start one only when none is, so an approval is
-          # never asked twice and a rejected or cancelled release starts again.
-          active=$(gh run list --workflow release.yml --branch "$tag" --json status \
-            --jq '[.[] | select(.status != "completed")] | length')
-          if [ "$active" -gt 0 ]; then
-            echo "A release run for ${tag} is already under way."
+          if [ -n "$existing" ]; then
+            # The tag's publish run started when the tag was made, so a merge
+            # that lands while that run waits for the pypi approval starts
+            # nothing here, which would ask for the approval again. A run that
+            # was rejected or cancelled is started again by hand, on the tag.
+            # The version keeps the tag, so the tag still names what is
+            # released, and it is never moved.
+            if [ "$existing" != "$GITHUB_SHA" ]; then
+              echo "::notice::${tag} is on ${existing}, so that commit is released as ${version}."
+            fi
+            echo "${tag} exists, so its publish run is not started again."
             exit 0
           fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/${tag}"
 
           # A tag pushed with this job's token starts no workflow, but a
           # dispatch does, so start the publishing run on the tag.
