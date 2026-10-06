@@ -3,6 +3,7 @@
 
 """Unit tests for Veridelta dataset utilities and cache management."""
 
+import importlib.metadata
 import io
 import urllib.error
 from email.message import Message
@@ -13,10 +14,31 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
-from veridelta.datasets import _get_cache_dir, load_nyc_taxi  # pyright: ignore[reportPrivateUsage]
+from veridelta.datasets import (  # pyright: ignore[reportPrivateUsage]
+    _get_cache_dir,
+    _git_ref,
+    load_nyc_taxi,
+)
 from veridelta.exceptions import DatasetError, VerideltaError
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
+
+class TestGitRef:
+    """Validate the ref the sample is read from."""
+
+    def test_it_names_the_installed_release_or_main(self, mocker: MockerFixture) -> None:
+        """Ensure an installed package names its release tag, and a bare checkout names `main`."""
+        mocker.patch("veridelta.datasets.importlib.metadata.version", return_value="1.2.3")
+
+        assert _git_ref() == "v1.2.3"
+
+        mocker.patch(
+            "veridelta.datasets.importlib.metadata.version",
+            side_effect=importlib.metadata.PackageNotFoundError("veridelta"),
+        )
+
+        assert _git_ref() == "main"
 
 
 class TestDatasetCacheManagement:
