@@ -55,3 +55,14 @@ The site publishes two plain-text files for language models, as the [llms.txt pr
 - [`llms-full.txt`](https://veridelta.github.io/veridelta/llms-full.txt) holds every page of prose in one file, this one included.
 
 `veridelta schema` prints the JSON Schema of the configuration file. Check a draft against it, then run `veridelta validate`.
+
+## Agent skill
+
+The steps above are also an agent skill, in [`skills/veridelta/SKILL.md`](https://github.com/Veridelta/veridelta/blob/main/skills/veridelta/SKILL.md). An agent that reads skills, such as Claude Code, loads it from a skills folder. This installs it in a project:
+
+```bash
+mkdir -p .claude/skills/veridelta
+curl -fsSL -o .claude/skills/veridelta/SKILL.md https://raw.githubusercontent.com/Veridelta/veridelta/main/skills/veridelta/SKILL.md
+```
+
+To pin the skill to a release, put the release's tag in place of `main`.
