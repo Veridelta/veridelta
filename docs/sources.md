@@ -165,7 +165,9 @@ SQL Server has a boolean type, `BIT`, and these of its types arrive as follows:
 | `DATETIME2` | `Datetime`, with no time zone |
 | `DATETIMEOFFSET` | `Datetime` in UTC |
 
-ConnectorX applies the offset of a `DATETIMEOFFSET` twice, which shifts any value with a nonzero offset. For example, `12:00 +02:00` arrives as `08:00` in UTC instead of `10:00`. To read the instant each value holds, select the column as `SWITCHOFFSET(column, '+00:00')` in a `query`.
+ConnectorX applies the offset of a `DATETIMEOFFSET` twice, which shifts any value with a nonzero offset. A `table` read corrects for it. Veridelta reads the table's columns and no rows first, then selects each `DATETIMEOFFSET` column as `SWITCHOFFSET(column, '+00:00')`. So every value arrives at the instant it holds.
+
+A `query` is sent as written, so its values shift: `12:00 +02:00` arrives as `08:00` in UTC instead of `10:00`. To read the instant each value holds, select the column as `SWITCHOFFSET(column, '+00:00')` in the `query`.
 
 ### Parallel reads
 
@@ -186,6 +188,8 @@ Veridelta reads the column's lowest and highest values, and ConnectorX splits th
 The column must hold integers and no NULL. A NULL falls in no range, so ConnectorX would leave its row out. Veridelta counts the column's NULLs first and fails the read if it finds any. An empty table is read in one piece.
 
 ConnectorX writes the column name into each range's statement without quotes, so the database folds its case as it does for any unquoted name. On Postgres, partition on a column whose name is all lowercase.
+
+On SQL Server, a table with a `DATETIMEOFFSET` column reads through a select that names every column. ConnectorX loses the escape of a `]` in a name when it splits that select. So a split read of such a table fails when a column name holds `]`. Read that table in one piece instead.
 
 Only a `table` read splits. A `query` runs as written, and a `pushdown` table reads no rows. A schema check with `validate --schemas` reads the columns in one statement.
 

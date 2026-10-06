@@ -594,6 +594,36 @@ def compile_postgres_text_select(
     return f"{read} WHERE 1 = 0" if probe else read
 
 
+def compile_mssql_utc_select(table: str, columns: Sequence[str], in_utc: Collection[str]) -> str:
+    """Compile a SQL Server table read that returns some columns at offset zero.
+
+    ConnectorX applies a `DATETIMEOFFSET` offset twice, so only a value at
+    offset zero arrives at the instant it holds. `SWITCHOFFSET` moves a value
+    to offset zero and keeps its instant. Column names come from the server's
+    own result, not from configuration, so they are quoted by doubling any `]`
+    rather than checked against the allowlist. Doubling is the whole escape
+    grammar of a bracketed SQL Server name.
+
+    Args:
+        table (str): One to three dotted identifier segments.
+        columns (Sequence[str]): Every column of the table, in table order.
+        in_utc (Collection[str]): `DATETIMEOFFSET` columns to read at offset zero.
+
+    Returns:
+        str: The table read, with the chosen columns moved to offset zero.
+
+    Raises:
+        ConnectorError: If the table name falls outside the identifier allowlist.
+    """
+    projections: list[str] = []
+    for name in columns:
+        quoted = "[" + name.replace("]", "]]") + "]"
+        projections.append(
+            f"SWITCHOFFSET({quoted}, '+00:00') AS {quoted}" if name in in_utc else quoted
+        )
+    return f"SELECT {', '.join(projections)} FROM {_quoted_database_relation('mssql', table)}"
+
+
 def compile_database_probe(scheme: str, table: str) -> str:
     """Compile a statement that returns a database table's columns and no rows.
 

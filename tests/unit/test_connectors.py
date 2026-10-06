@@ -5,6 +5,7 @@
 
 import logging
 import traceback
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock, call
@@ -414,16 +415,19 @@ def _read_database(
     return_value: object = None,
     side_effect: object = None,
     catalog: pl.DataFrame | None = None,
+    columns: pl.DataFrame | None = None,
     counts: tuple[int, int] = (0, 2),
     bounds: tuple[object, object] = (1, 2),
 ) -> MagicMock:
     """Patch the extra probe and Polars' reader, returning the reader mock.
 
     A Postgres `table` read asks the catalog for its `numeric` columns first.
-    `catalog` answers that query, by default with no `numeric` columns. A
-    partitioned read first counts the column's NULL and other rows, which
-    `counts` answers, then reads its range, which `bounds` answers. Every
-    other statement returns the mock's `return_value`.
+    `catalog` answers that query, by default with no `numeric` columns. A SQL
+    Server `table` read first reads the table's columns and no rows, which
+    `columns` answers when it is given. A partitioned read first counts the
+    column's NULL and other rows, which `counts` answers, then reads its range,
+    which `bounds` answers. Every other statement returns the mock's
+    `return_value`.
     """
     mocker.patch("veridelta.connectors.database.connectorx", object())
     answers = _catalog() if catalog is None else catalog
@@ -431,6 +435,8 @@ def _read_database(
     def _answer(statement: str, uri: str, **partitions: object) -> object:
         if statement.startswith("SELECT attname"):
             return answers
+        if columns is not None and statement.endswith(" WHERE 1 = 0"):
+            return columns
         if statement.startswith("SELECT COUNT(*) - COUNT("):
             return pl.DataFrame({"null_rows": [counts[0]], "valued_rows": [counts[1]]})
         if statement.startswith("SELECT MIN("):
@@ -828,6 +834,99 @@ class TestPostgresDeclaredScale:
             connector.lazyframe()
 
 
+_MSSQL_URI = "mssql://analyst@db.internal:1433/sales"
+
+_MSSQL_COLUMNS = pl.DataFrame(
+    schema={"id": pl.Int64, "placed": pl.Datetime("us", "UTC"), "seen": pl.Datetime("us")}
+)
+"""A SQL Server table's columns and no rows: a `DATETIMEOFFSET`, then a `DATETIME2`."""
+
+
+class TestSqlServerDatetimeOffset:
+    """Validate that a SQL Server table's `DATETIMEOFFSET` columns keep their instants.
+
+    ConnectorX shifts a `DATETIMEOFFSET` value by its offset a second time, so
+    `12:00 +02:00` would arrive as 08:00 in UTC. A value at offset zero is not
+    shifted, so the read moves each such column there first.
+    """
+
+    def test_it_reads_each_datetimeoffset_at_offset_zero(self, mocker: MockerFixture) -> None:
+        """Ensure only the columns read in UTC are switched, and every column keeps its place."""
+        rows = pl.DataFrame(
+            {
+                "id": [1],
+                "placed": [datetime(2026, 1, 1, 10, tzinfo=UTC)],
+                "seen": [datetime(2026, 1, 1, 12)],
+            }
+        )
+        read = _read_database(mocker, return_value=rows, columns=_MSSQL_COLUMNS)
+
+        with DatabaseConnector(DatabaseConfig(uri=_MSSQL_URI, table="dbo.orders")) as connector:
+            connector.connect()
+            frame = connector.lazyframe().collect()
+
+        assert read.call_args_list == [
+            call("SELECT * FROM [dbo].[orders] WHERE 1 = 0", _MSSQL_URI),
+            call(
+                "SELECT [id], SWITCHOFFSET([placed], '+00:00') AS [placed], [seen] "
+                "FROM [dbo].[orders]",
+                _MSSQL_URI,
+            ),
+        ]
+        assert frame.equals(rows)
+
+    def test_it_reads_a_table_without_one_as_written(self, mocker: MockerFixture) -> None:
+        """Ensure a table with no `DATETIMEOFFSET` column is read whole, as on any server."""
+        columns = pl.DataFrame(schema={"id": pl.Int64, "seen": pl.Datetime("us")})
+        read = _read_database(mocker, return_value=pl.DataFrame({"id": [1]}), columns=columns)
+
+        DatabaseConnector(DatabaseConfig(uri=_MSSQL_URI, table="orders")).connect()
+
+        assert read.call_args_list == [
+            call("SELECT * FROM [orders] WHERE 1 = 0", _MSSQL_URI),
+            call("SELECT * FROM [orders]", _MSSQL_URI),
+        ]
+
+    def test_it_probes_in_one_read(self, mocker: MockerFixture) -> None:
+        """Ensure `validate --schemas` reads once, since a switched column keeps its type."""
+        read = _read_database(mocker, return_value=_MSSQL_COLUMNS)
+        config = DatabaseConfig(uri=_MSSQL_URI, table="orders")
+
+        with DatabaseConnector(config, probe=True) as connector:
+            connector.connect()
+            schema = connector.fetch_schema()
+
+        read.assert_called_once_with("SELECT * FROM [orders] WHERE 1 = 0", _MSSQL_URI)
+        assert schema == _MSSQL_COLUMNS.schema
+
+    def test_it_sends_a_query_verbatim(self, mocker: MockerFixture) -> None:
+        """Ensure a query is never probed or rewritten, so it needs its own `SWITCHOFFSET`."""
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}), columns=_MSSQL_COLUMNS)
+        query = "SELECT id, placed FROM dbo.orders"
+
+        DatabaseConnector(DatabaseConfig(uri=_MSSQL_URI, query=query)).connect()
+
+        read.assert_called_once_with(query, _MSSQL_URI)
+
+    def test_it_keeps_the_password_out_of_a_failed_column_read(self, mocker: MockerFixture) -> None:
+        """Ensure a failure before the rows fails as the read does, with the password masked."""
+        encoded = quote(_DATABASE_SECRET, safe="")
+        read = _read_database(mocker, side_effect=RuntimeError(f"login failed: {encoded}"))
+        config = DatabaseConfig(uri=_MSSQL_URI, password=_DATABASE_SECRET, table="orders")
+
+        with pytest.raises(
+            ConnectorError, match=r"^Database read of table 'orders' from 'mssql://analyst"
+        ) as info:
+            DatabaseConnector(config).connect()
+
+        read.assert_called_once_with(
+            "SELECT * FROM [orders] WHERE 1 = 0",
+            f"mssql://analyst:{encoded}@db.internal:1433/sales",
+        )
+        assert encoded not in str(info.value)
+        assert info.value.__cause__ is None
+
+
 _POSTGRES_URI = "postgresql://analyst@db.internal:5432/sales"
 
 
@@ -940,6 +1039,41 @@ class TestPartitionedDatabaseRead:
             ),
         ]
         assert frame.schema == pl.Schema({"order_id": pl.Int64(), "amount": pl.Decimal(10, 2)})
+
+    def test_it_splits_the_sql_server_read_that_keeps_each_instant(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure the select that moves each `DATETIMEOFFSET` to offset zero is what is split."""
+        columns = pl.DataFrame(schema={"order_id": pl.Int64, "placed": pl.Datetime("us", "UTC")})
+        read = _read_database(mocker, return_value=pl.DataFrame(), columns=columns)
+        uri = "mssql://analyst@db.internal/sales"
+
+        DatabaseConnector(self._config(uri=uri, partitions=2)).connect()
+
+        assert read.call_args_list[0] == call("SELECT * FROM [orders] WHERE 1 = 0", uri)
+        assert read.call_args_list[3:] == [
+            call(
+                "SELECT [order_id], SWITCHOFFSET([placed], '+00:00') AS [placed] FROM [orders]",
+                uri,
+                partition_on="order_id",
+                partition_num=2,
+                partition_range=(1, 2),
+            ),
+        ]
+
+    def test_it_refuses_to_split_a_sql_server_read_naming_a_bracket(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a name ConnectorX would mangle while splitting the read fails before any row."""
+        columns = pl.DataFrame(schema={"order_id": pl.Int64, "at] UTC": pl.Datetime("us", "UTC")})
+        read = _read_database(mocker, return_value=pl.DataFrame(), columns=columns)
+
+        with pytest.raises(
+            ConnectorError, match=r"Column 'at\] UTC' of table 'orders' has '\]' in its name"
+        ):
+            DatabaseConnector(self._config(uri="mssql://analyst@db.internal/sales")).connect()
+
+        assert read.call_count == 1
 
     def test_it_probes_a_partitioned_table_in_one_read(self, mocker: MockerFixture) -> None:
         """Ensure `validate --schemas`, which reads no rows, neither counts nor splits."""
