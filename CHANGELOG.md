@@ -1,3 +1,16 @@
+## v0.14.8 (2026-10-06)
+
+The connectors now share one secret scrubber. Three of them each masked credentials in
+driver output their own way, and two carried an identical property that names what a
+side reads. `mask_secrets` and `read_subject` in `veridelta.connectors.base` replace
+them, and every message, log line, and exception keeps its wording. Nothing a user sees
+changed.
+
+### Refactor
+
+- share one secret scrubber and one read subject across the warehouse, database, and
+  DuckDB connectors
+
 ## v0.14.7 (2026-10-06)
 
 Every connector's `fetch_schema` now warns that it goes in 0.15.0. The method has nine
