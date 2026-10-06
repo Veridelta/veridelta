@@ -38,6 +38,12 @@ _DOCS = _ROOT / ".github" / "workflows" / "docs.yml"
 _CI = _ROOT / ".github" / "workflows" / "ci.yml"
 _RERUN = _ROOT / ".github" / "workflows" / "rerun-dropped.yml"
 _LIVE = _ROOT / ".github" / "workflows" / "live.yml"
+_EXAMPLES = [_ROOT / "docs" / "ci.md", *sorted((_ROOT / "docs" / "examples").glob("*.ipynb"))]
+"""The pages whose workflow examples a user copies."""
+_PINNED_ACTION = re.compile(r"uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v(\d+)\.")
+"""An action our workflows pin by commit, with the release comment beside it."""
+_EXAMPLE_ACTION = re.compile(r"uses: ([\w.-]+/[\w.-]+)@v(\d+)\b")
+"""An action an example pins by major version."""
 _COMMIT_PIN = re.compile(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}")
 
 
@@ -198,6 +204,28 @@ _GITLAB_OWN_DEFAULTS = {
     "python-version": "The image already holds a Python, so the template asks for none unless told.",
 }
 """Shared inputs whose GitLab default differs from the Action's, and why."""
+
+
+class TestDocumentedWorkflows:
+    """Keep the workflow examples a user copies on the action majors our own workflows run."""
+
+    def test_the_examples_pin_the_majors_our_workflows_run(self) -> None:
+        """Ensure an example cannot fall behind the actions `ci.yml` pins by commit.
+
+        The release comment beside each commit pin names the version, so the major an
+        example shows is held to it. An action the workflows do not use, such as this
+        repository's own, is not checked.
+        """
+        majors = dict(_PINNED_ACTION.findall(_CI.read_text(encoding="utf-8")))
+        stale = [
+            f"{page.name}: {action}@v{major}, where ci.yml runs v{majors[action]}"
+            for page in _EXAMPLES
+            for action, major in _EXAMPLE_ACTION.findall(page.read_text(encoding="utf-8"))
+            if action in majors and major != majors[action]
+        ]
+
+        assert {"actions/checkout", "astral-sh/setup-uv"} <= majors.keys()
+        assert not stale, "Update these examples:\n" + "\n".join(stale)
 
 
 class TestGitLabTemplate:

@@ -28,7 +28,7 @@ jobs:
   compare:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: Veridelta/veridelta@v0.14.4
         with:
           config: veridelta.yaml
@@ -139,7 +139,7 @@ With `upload-artifact` set to `false`, the reports go to a temporary directory i
 `veridelta validate` catches a configuration that cannot run before the comparison job does, and needs no credentials:
 
 ```yaml
-- uses: astral-sh/setup-uv@v7
+- uses: astral-sh/setup-uv@v10
 - run: uvx veridelta@0.14.4 validate -c veridelta.yaml --allow-missing-env
 ```
 
