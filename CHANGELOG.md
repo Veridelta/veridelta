@@ -1,3 +1,17 @@
+## v0.14.9 (2026-10-06)
+
+The connector base now refuses SQL pushdown by default, with one message, so a reader
+that is compared locally no longer implements `execute_pushdown` only to raise. The Delta
+Lake, Iceberg, database, and DuckDB readers lose those overrides and their three copies of
+the message. A warehouse connector or a pushdown session overrides the default, as before.
+The refusal's wording changed: it now says the source is compared locally and names
+`connect()`, where it said the method was warehouse-only.
+
+### Refactor
+
+- refuse pushdown from the connector base, so no reader implements `execute_pushdown`
+  only to raise
+
 ## v0.14.8 (2026-10-06)
 
 The connectors now share one secret scrubber. Three of them each masked credentials in
