@@ -33,6 +33,9 @@ _SITE_URL = re.compile(
     re.IGNORECASE,
 )
 _LINK_TARGET = re.compile(r"\]\(([^)\s]+)\)")
+_REPOSITORY_URL = re.compile(
+    r"https://github\.com/Veridelta/veridelta/blob/main/([^)\s#\"'`<>]+)(?:#([^)\s\"'`<>]+))?"
+)
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
@@ -144,6 +147,22 @@ def _repository_links(page: Path) -> list[str]:
     return [target for target in _LINK_TARGET.findall(text) if "://" not in target]
 
 
+def _repository_urls() -> list[tuple[str, str, str | None]]:
+    """List every link to a file on the repository's `main` branch as (where, path, anchor)."""
+    pages = [
+        _ROOT / "README.md",
+        _AGENTS,
+        *sorted(_DOCS.rglob("*.md")),
+        *sorted((_ROOT / "product").rglob("*.md")),
+        *sorted((_ROOT / "decisions").glob("*.md")),
+    ]
+    return [
+        (page.relative_to(_ROOT).as_posix(), path, anchor or None)
+        for page in pages
+        for path, anchor in _REPOSITORY_URL.findall(page.read_text(encoding="utf-8"))
+    ]
+
+
 class TestDocumentationLinks:
     """Keep links outside the strict build pointing at real pages and headings."""
 
@@ -205,6 +224,23 @@ class TestDocumentationLinks:
         ]
 
         assert not relative, "Use an absolute URL for these README links:\n" + "\n".join(relative)
+
+    def test_every_repository_url_names_a_file_and_a_heading(self) -> None:
+        """Ensure a link to a file on `main`, such as a use case card, survives a move or a retitle.
+
+        GitHub slugs a heading as Python Markdown does for the headings linked here:
+        lowercase, punctuation dropped, spaces to hyphens.
+        """
+        links = _repository_urls()
+        broken = [
+            f"{where}: {path}#{anchor}" if anchor else f"{where}: {path}"
+            for where, path, anchor in links
+            if not (_ROOT / path).is_file()
+            or (anchor is not None and anchor not in _anchors(_ROOT / path))
+        ]
+
+        assert links, "No link to a file on main was found."
+        assert not broken, "These links name no file or heading on main:\n" + "\n".join(broken)
 
     @pytest.mark.parametrize(
         ("heading", "anchor"),

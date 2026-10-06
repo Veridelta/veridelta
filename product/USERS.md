@@ -31,7 +31,7 @@ The last answer is the product's constraint, read as three rules. A newcomer rea
 
 ## Personas
 
-P-02 is the primary persona, the one with a person behind it. P-01 keeps the id it had in the first revision.
+[P-02](#p-02-the-developer-comparing-two-csv-files) is the primary persona, the one with a person behind it. [P-01](#p-01-the-engineer-verifying-a-migration) keeps the id it had in the first revision.
 
 ### P-01: The engineer verifying a migration
 
@@ -62,7 +62,7 @@ P-02 is the primary persona, the one with a person behind it. P-01 keeps the id 
 ### P-03: The reviewer who reads the report
 
 - **Role and setting.** Someone who did not run the comparison and has to sign off on it: a teammate on the pull request, a lead, or an auditor. They may read with a screen reader or a keyboard alone.
-- **What they compare, and where it lives.** Nothing themselves. They read what P-01 or P-02 produced: the Markdown summary on the pull request, or the HTML report.
+- **What they compare, and where it lives.** Nothing themselves. They read what [P-01](#p-01-the-engineer-verifying-a-migration) or [P-02](#p-02-the-developer-comparing-two-csv-files) produced: the Markdown summary on the pull request, or the HTML report.
 - **The tools they use today.** The pull request's diff, a screenshot pasted into a chat, a spreadsheet someone exported.
 - **What they read from Veridelta.** The verdict in words, PASSED or FAILED, the counts by column, and the rows that differ, up to the limit the runner set.
 - **What they must never be shown.** Credentials, SQL, or a row value the runner did not choose to share.
@@ -99,7 +99,7 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 
 ### UC-01: A first verdict on two files
 
-- **The persona.** P-02, on a laptop, before any CI exists. P-01 too, on exports of two tables.
+- **The persona.** [P-02](#p-02-the-developer-comparing-two-csv-files), on a laptop, before any CI exists. [P-01](#p-01-the-engineer-verifying-a-migration) too, on exports of two tables.
 - **The moment.** Something changed, a script, a query, or a migration, and the before and the after sit in two files. Someone asks what changed, and the next step waits on the answer.
 - **The question, in their words.** "Does the new file match the old one on the keys, and where does it differ?"
 - **The data, and where it lives.** Two files on disk, in any format Veridelta reads: CSV, Parquet, JSON, Arrow, Avro, or Excel. The keys are known.
@@ -108,11 +108,11 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 - **The alternative it beats.** `diff`, which knows nothing about keys or columns; a SQL `EXCEPT` in DuckDB, which needs the same shape on both sides and shows no counts by column; `pandas.DataFrame.compare`, which needs identical labels and holds both files in memory.
 - **Refusal behavior.** A missing or unreadable file, a repeated key, or a cast the column's type cannot take is named before the comparison starts, with exit code 3.
 - **The docs that describe it.** The README's quick start, tutorial 2, and [the command line](../docs/cli.md).
-- **The metric that proves it.** NS-01, the steps to a correct verdict; DR-01, the keys written; DR-02, the mistakes that name their cause.
+- **The metric that proves it.** [NS-01](metrics/NS-01.md), the steps to a correct verdict; [DR-01](metrics/DR-01.md), the keys written; [DR-02](metrics/DR-02.md), the mistakes that name their cause.
 
 ### UC-02: The same verdict on every pull request
 
-- **The persona.** P-02, once the comparison runs in GitHub Actions. P-01 in CI.
+- **The persona.** [P-02](#p-02-the-developer-comparing-two-csv-files), once the comparison runs in GitHub Actions. [P-01](#p-01-the-engineer-verifying-a-migration) in CI.
 - **The moment.** The comparison worked once on a laptop. Now every change to the script or the export should be checked before it merges, without anyone remembering to run it.
 - **The question, in their words.** "Did this pull request change the output, and by how much?"
 - **The data, and where it lives.** The same two files, or a file and its regenerated copy, in the repository or produced by the job.
@@ -121,11 +121,11 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 - **The alternative it beats.** A script in the workflow that runs `diff` and fails on any byte, or reviewers reading the files.
 - **Refusal behavior.** The job fails with exit code 3 and the error in the log when the configuration or a file is wrong, and never reports a match it did not compute.
 - **The docs that describe it.** [CI integrations](../docs/ci.md) and tutorial 5.
-- **The metric that proves it.** GR-02, no wrong verdict open at a release; DR-03, the days to fix one.
+- **The metric that proves it.** [GR-02](metrics/GR-02.md), no wrong verdict open at a release; [DR-03](metrics/DR-03.md), the days to fix one.
 
 ### UC-03: Sign off from the report alone
 
-- **The persona.** P-03.
+- **The persona.** [P-03](#p-03-the-reviewer-who-reads-the-report).
 - **The moment.** A pull request carries the summary comment, or someone sends the HTML report. The reviewer has minutes and did not run anything.
 - **The question, in their words.** "What differs, under which rules, and can I approve this?"
 - **The data, and where it lives.** The report and the summary, never the raw files.
@@ -134,11 +134,11 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 - **The alternative it beats.** Asking the runner to explain, a screenshot, or a spreadsheet of both files.
 - **Refusal behavior.** The report shows nothing it was not given, and says PASSED or FAILED in words, never by color alone.
 - **The docs that describe it.** [Results](../docs/results.md), tutorial 4, and `ACCESSIBILITY.md`.
-- **The metric that proves it.** GR-03, no accessibility violation on the report; GR-02, no wrong verdict open.
+- **The metric that proves it.** [GR-03](metrics/GR-03.md), no accessibility violation on the report; [GR-02](metrics/GR-02.md), no wrong verdict open.
 
 ### UC-04: Let an agent run the comparison
 
-- **The persona.** P-04, for P-02 or P-01.
+- **The persona.** [P-04](#p-04-the-ai-coding-agent-driving-the-command-line), for [P-02](#p-02-the-developer-comparing-two-csv-files) or [P-01](#p-01-the-engineer-verifying-a-migration).
 - **The moment.** A person asks their coding agent to check whether a change altered an output, or to fix a pipeline until the comparison passes.
 - **The question, in their words.** "Run the comparison and tell me the counts, and what to change if it fails."
 - **The data, and where it lives.** Whatever the configuration file names.
@@ -147,11 +147,11 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 - **The alternative it beats.** The agent writing its own comparison in `pandas`, which nobody reviewed.
 - **Refusal behavior.** `validate --json` reports what would stop a run before any row is read, and a failure prints one JSON object with its type and message.
 - **The docs that describe it.** [The AI agents page](../docs/agents.md) and `skills/veridelta/SKILL.md`.
-- **The metric that proves it.** DR-02, mistakes that name their cause, which an agent can act on; NS-01, the steps it runs.
+- **The metric that proves it.** [DR-02](metrics/DR-02.md), mistakes that name their cause, which an agent can act on; [NS-01](metrics/NS-01.md), the steps it runs.
 
 ### UC-05: Compare two tables where they are stored
 
-- **The persona.** P-01.
+- **The persona.** [P-01](#p-01-the-engineer-verifying-a-migration).
 - **The moment.** The tables are too large to export, or the data may not leave the warehouse.
 - **The question, in their words.** "Do these two tables match, without pulling a row out?"
 - **The data, and where it lives.** Two tables in one of Snowflake, Databricks, BigQuery, Postgres, DuckDB, or MotherDuck.
@@ -160,19 +160,19 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 - **The alternative it beats.** A hand-written `EXCEPT` query per table pair, with no rules and no report.
 - **Refusal behavior.** A rule the dialect cannot run is refused before the query, and [the pushdown guide](../docs/pushdown.md) lists the known differences.
 - **The docs that describe it.** [Pushdown](../docs/pushdown.md) and [Sources](../docs/sources.md).
-- **The metric that proves it.** GR-01, backends with the same verdict locally and in pushdown.
+- **The metric that proves it.** [GR-01](metrics/GR-01.md), backends with the same verdict locally and in pushdown.
 
 ## Considered and cut
 
 - **A platform owner whose CI is GitLab.** Nobody has named GitLab: no issue, no discussion, and not the maintainer, who uses GitHub (answer 2). The template in `ci/gitlab/veridelta.yml` stays until the feature map decides its fate, and this entry is its evidence.
-- **Profiling one dataset.** The ask of AP-01. Veridelta compares two datasets, and the README's first sentence draws the line.
+- **Profiling one dataset.** The ask of [AP-01](#ap-01-the-team-wanting-a-data-quality-framework). Veridelta compares two datasets, and the README's first sentence draws the line.
 
 ## Traceability
 
 | Use case | Persona | Feature and docs page | Metric |
 | :--- | :--- | :--- | :--- |
-| UC-01 | P-02, P-01 | `veridelta validate` and `veridelta run` on two files: the README's quick start, [the command line](../docs/cli.md) | NS-01, DR-01, DR-02 |
-| UC-02 | P-02, P-01 | The GitHub Action: [CI integrations](../docs/ci.md) | GR-02, DR-03 |
-| UC-03 | P-03 | The HTML report and the Markdown summary: [Results](../docs/results.md) | GR-03, GR-02 |
-| UC-04 | P-04 | `--json`, the exit codes, and `validate --json`: [the AI agents page](../docs/agents.md) | DR-02, NS-01 |
-| UC-05 | P-01 | Pushdown: [Pushdown](../docs/pushdown.md) | GR-01 |
+| [UC-01](#uc-01-a-first-verdict-on-two-files) | [P-02](#p-02-the-developer-comparing-two-csv-files), [P-01](#p-01-the-engineer-verifying-a-migration) | `veridelta validate` and `veridelta run` on two files: the README's quick start, [the command line](../docs/cli.md) | [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) |
+| [UC-02](#uc-02-the-same-verdict-on-every-pull-request) | [P-02](#p-02-the-developer-comparing-two-csv-files), [P-01](#p-01-the-engineer-verifying-a-migration) | The GitHub Action: [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md), [DR-03](metrics/DR-03.md) |
+| [UC-03](#uc-03-sign-off-from-the-report-alone) | [P-03](#p-03-the-reviewer-who-reads-the-report) | The HTML report and the Markdown summary: [Results](../docs/results.md) | [GR-03](metrics/GR-03.md), [GR-02](metrics/GR-02.md) |
+| [UC-04](#uc-04-let-an-agent-run-the-comparison) | [P-04](#p-04-the-ai-coding-agent-driving-the-command-line) | `--json`, the exit codes, and `validate --json`: [the AI agents page](../docs/agents.md) | [DR-02](metrics/DR-02.md), [NS-01](metrics/NS-01.md) |
+| [UC-05](#uc-05-compare-two-tables-where-they-are-stored) | [P-01](#p-01-the-engineer-verifying-a-migration) | Pushdown: [Pushdown](../docs/pushdown.md) | [GR-01](metrics/GR-01.md) |
