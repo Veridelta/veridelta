@@ -22,7 +22,7 @@ People read four parts of Veridelta:
 
 ## How we checked
 
-On 2026-10-06, [axe-core](https://github.com/dequelabs/axe-core) 4.14 checked every page of the documentation site and a sample HTML report. That is 17 pages, all five tutorials and the 404 page among them. It ran the WCAG 2.2 A and AA rules and its own best practices in Chromium. Each page ran in light and dark mode, at desktop and phone widths, and none had a violation. The home page's diagram could not load during that run, so the check saw its source rather than the drawing.
+On 2026-10-06, [axe-core](https://github.com/dequelabs/axe-core) 4.14 checked every page of the documentation site, the five tutorials and the 404 page among them, and a sample HTML report. It ran the WCAG 2.2 A and AA rules and its own best practices in Chromium. Each page ran in light and dark mode, at desktop and phone widths, and none had a violation. The home page's diagram could not load during that run, so the check saw its source rather than the drawing.
 
 A script also drove the report and the documentation site by keyboard in Chromium:
 

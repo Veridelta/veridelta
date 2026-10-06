@@ -1,18 +1,16 @@
-# Security Policy
+# Security policy
 
-## Supported Versions
+## Supported versions
 
-We provide security updates for the current major version and the immediate prior minor version. 
+A security fix ships in the next release. A report against any release from 0.1.0 on is welcome, and the fix lands in the latest release rather than in a patch to an older one, so upgrade to pick it up.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| >= 0.1.x| :white_check_mark: |
-| < 0.1.0 | :x:                |
+| Version | Reports and fixes |
+| :--- | :--- |
+| 0.1.0 and later | Yes, fixed in the latest release |
+| Before 0.1.0 | No |
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-**Do not open a public GitHub issue for security vulnerabilities.**
+**Do not open a public GitHub issue for a security vulnerability.**
 
-If you discover a potential security vulnerability in Veridelta, please email the core maintainer team directly at **veridelta.labs@gmail.com**. 
-
-We will acknowledge your email within 48 hours and provide a timeline for triage and patch delivery. Once the vulnerability is patched, we will publish a coordinated security advisory and credit you for the discovery.
+If you find one in Veridelta, email the maintainers at **veridelta.labs@gmail.com**. We acknowledge an email within 48 hours and give a timeline for triage and a fix. Once the fix is released, we publish a coordinated security advisory and credit the discovery.
