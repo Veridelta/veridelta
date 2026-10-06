@@ -9,6 +9,7 @@ Holds the file loaders, the `DataIngestor` that prepares each side, and the
 
 import logging
 import re
+import warnings
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -1825,10 +1826,11 @@ def _collect_value_map_proposals(
 class DataIngestor:
     """Load a source and a target and align them for inspection.
 
-    It normalizes headers, drops ignored columns, and applies renames. `DiffEngine`
-    aligns its inputs itself, so `run_from_configs` loads sources without this
-    class. Passing frames from `get_dataframes` to `DiffEngine` aligns them twice,
-    which is harmless except for renames that swap or chain names.
+    Deprecated: it warns on construction and goes in 0.15.0. `DiffEngine` aligns
+    its inputs itself, so `DiffEngine.run_from_configs` loads sources without this
+    class, and nothing else in the package uses it. Passing frames from
+    `get_dataframes` to `DiffEngine` aligns them twice, which is harmless except
+    for renames that swap or chain names.
     """
 
     def __init__(
@@ -1843,6 +1845,13 @@ class DataIngestor:
             target_config (SourceRef): File, lakehouse, or database settings for the
                 target.
         """
+        warnings.warn(
+            "DataIngestor is deprecated and goes in 0.15.0. Use "
+            "DiffEngine.run_from_configs(diff, source, target), which loads and aligns "
+            "both sides itself.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config = diff_config
         self.source_config = source_config
         self.target_config = target_config
