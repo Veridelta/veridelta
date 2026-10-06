@@ -22,6 +22,33 @@ from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
 pytestmark = [pytest.mark.e2e]
 
 
+def _sqlite_comparison(tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    """Write a SQLite table and a CSV file that differ in one value, and a config comparing them.
+
+    Returns:
+        tuple[Path, dict[str, str]]: The configuration file, and the environment
+            whose `LEGACY_DB_URI` names the database.
+    """
+    database = tmp_path / "legacy.db"
+    with contextlib.closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE orders (id INTEGER, status TEXT)")
+        connection.executemany("INSERT INTO orders VALUES (?, ?)", [(1, "open"), (2, "closed")])
+    modern = tmp_path / "modern.csv"
+    pl.DataFrame({"id": [1, 2], "status": ["open", "shipped"]}).write_csv(modern)
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(f"""
+source:
+  type: database
+  uri: ${{LEGACY_DB_URI}}
+  table: orders
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+    return config_file, {**os.environ, "LEGACY_DB_URI": "sqlite://" + quote(str(database))}
+
+
 class TestEndToEndCLIWorkflow:
     """Validate the entire Veridelta pipeline from YAML to artifact generation via subprocess."""
 
@@ -203,34 +230,35 @@ primary_keys: [id]
 
     def test_e2e_database_source_reads_its_uri_from_the_environment(self, tmp_path: Path) -> None:
         """Ensure a database source connects through a URI the environment supplies."""
-        database = tmp_path / "legacy.db"
-        with contextlib.closing(sqlite3.connect(database)) as connection, connection:
-            connection.execute("CREATE TABLE orders (id INTEGER, status TEXT)")
-            connection.executemany("INSERT INTO orders VALUES (?, ?)", [(1, "open"), (2, "closed")])
-        modern = tmp_path / "modern.csv"
-        pl.DataFrame({"id": [1, 2], "status": ["open", "shipped"]}).write_csv(modern)
-
-        config_file = tmp_path / "config.yaml"
-        config_file.write_text(f"""
-source:
-  type: database
-  uri: ${{LEGACY_DB_URI}}
-  table: orders
-target:
-  path: {modern}
-primary_keys: [id]
-""")
+        config_file, env = _sqlite_comparison(tmp_path)
 
         result = subprocess.run(
             ["veridelta", "run", "-c", str(config_file)],
             capture_output=True,
             text=True,
             check=False,
-            env={**os.environ, "LEGACY_DB_URI": "sqlite://" + quote(str(database))},
+            env=env,
         )
 
         assert result.returncode == 1, result.stderr
         assert "Changed:       1" in result.stdout
+        assert "veridelta.connectors" not in result.stderr
+
+    def test_e2e_verbose_logs_each_read_on_stderr(self, tmp_path: Path) -> None:
+        """Ensure `--verbose` prints the read's log line on stderr, and stdout keeps the JSON."""
+        config_file, env = _sqlite_comparison(tmp_path)
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file), "--json", "--verbose"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == 1, result.stderr
+        assert json.loads(result.stdout)["is_match"] is False
+        assert "INFO veridelta.connectors.database: Read 2 rows of table 'orders'" in result.stderr
 
     def test_e2e_duckdb_source_reads_a_file_named_in_the_configuration(
         self, tmp_path: Path

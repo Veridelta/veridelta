@@ -352,16 +352,18 @@ A password written inside a database `uri` prints as `***`, and the rest of the 
 
 ## Logging
 
-Connectors log under `veridelta.connectors.warehouse`, `veridelta.connectors.lakehouse`, `veridelta.connectors.database`, and `veridelta.connectors.duckdb`. Each logger has a `NullHandler` and prints nothing until you configure logging:
+Connectors log under `veridelta.connectors.warehouse`, `veridelta.connectors.lakehouse`, `veridelta.connectors.database`, and `veridelta.connectors.duckdb`. Each logger has a `NullHandler` and prints nothing until you configure logging, or pass `--verbose` on the [command line](cli.md#logging):
 
 ```python
 import logging
 
-logging.basicConfig(level=logging.DEBUG)
-logging.getLogger("veridelta.connectors").setLevel(logging.DEBUG)
+logging.basicConfig(level=logging.INFO)
+logging.getLogger("veridelta.connectors").setLevel(logging.INFO)
 ```
 
 - `INFO` records a session or scan opening and closing. It also records each database read, Postgres pushdown statements included, with its row count and the URI with its password masked. Each DuckDB read, pushdown statements included, is recorded with its row count and `database`.
-- `DEBUG` records each pushdown statement by its kind, with its duration. The kinds are `schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`, and `samples`.
+- `INFO` also records each warehouse pushdown statement by its kind, with its duration. The kinds are `schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`, and `samples`.
+- `WARNING` records a connection, a read, or a statement that fails, before the error reports it. A warehouse session that does not close cleanly is recorded with the error's type only.
+- `DEBUG` adds the driver's traceback for a session that does not close cleanly.
 
-Log lines never contain SQL text, row values, `storage_options`, passwords, or tokens. A warehouse session closes when the run finishes, whether the run succeeded or raised.
+At `INFO` and `WARNING`, log lines never contain SQL text, row values, `storage_options`, passwords, or tokens. The `DEBUG` traceback holds the driver's own text, which can echo connection details. A warehouse session closes when the run finishes, whether the run succeeded or raised.

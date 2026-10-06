@@ -7,13 +7,16 @@ Progress and diagnostics go to stderr, and only the requested result goes to
 stdout. So `veridelta run --json | jq` needs no filtering, and the rules that
 `veridelta crosswalk` prints can be redirected straight into a file. Under
 `--json`, a command that cannot finish prints its error there as one JSON
-object, and exits with `EXIT_ERROR` rather than the code for drift.
+object, and exits with `EXIT_ERROR` rather than the code for drift. With
+`--verbose`, Veridelta's own log records join the progress on stderr.
 """
 
 import argparse
 import json
+import logging
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -39,11 +42,39 @@ EXIT_MISMATCH = 1
 EXIT_ERROR = 3
 """The command could not finish, such as on a configuration error or an unreachable source."""
 
+_LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
+"""How `--verbose` prints a record: its level, the logger that wrote it, and the message."""
+
 
 def _progress(message: str, *, quiet: bool) -> None:
     """Write a progress line to stderr."""
     if not quiet:
         print(message, file=sys.stderr)
+
+
+@contextmanager
+def _verbose_logging(enabled: bool) -> Generator[None, None, None]:
+    """Print Veridelta's own log records to stderr at INFO while a command runs.
+
+    Only the `veridelta` logger gets the handler, so the drivers' loggers stay
+    quiet. The handler is built here, so it writes to the `sys.stderr` of the
+    moment. Removing it afterwards means a second command in the same process
+    prints each record once.
+    """
+    if not enabled:
+        yield
+        return
+    logger = logging.getLogger("veridelta")
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(level)
 
 
 def _row_limit(text: str) -> int:
@@ -379,6 +410,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="veridelta.yaml",
         help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
+    config.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Log connections, reads, and statements to stderr, with timings. "
+        "No line holds a credential or SQL.",
+    )
 
     run_parser = subparsers.add_parser("run", parents=[config], help="Run a Veridelta comparison.")
     run_parser.add_argument(
@@ -518,7 +556,10 @@ def main() -> None:
         "validate": validate,
         "schema": schema,
     }
-    sys.exit(commands[args.command](args))
+    # `schema` reads no configuration and logs nothing, so it has no `--verbose`.
+    with _verbose_logging(getattr(args, "verbose", False)):
+        code = commands[args.command](args)
+    sys.exit(code)
 
 
 if __name__ == "__main__":

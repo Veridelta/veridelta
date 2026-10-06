@@ -340,29 +340,37 @@ class TestSnowflakeExecution:
     def test_it_logs_a_failed_close_instead_of_raising(
         self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Ensure a driver error during close cannot mask a finished comparison."""
+        """Ensure a driver error during close cannot mask a finished comparison.
+
+        The warning names only the error's type, since `--verbose` prints it and
+        a driver's text can echo connection details. The traceback is a debug record.
+        """
         session, _cursor = _patch_snowflake_session(mocker, _arrow_table())
         session.close.side_effect = RuntimeError("socket already gone")
         connector = SnowflakeConnector(_snowflake_config())
         connector.connect()
 
-        with caplog.at_level(logging.WARNING, logger="veridelta.connectors.warehouse"):
+        with caplog.at_level(logging.DEBUG, logger="veridelta.connectors.warehouse"):
             connector.close()
 
-        assert "Snowflake session did not close cleanly" in caplog.text
-        assert "socket already gone" in caplog.text
+        by_level = {record.levelno: record for record in caplog.records}
+        warning, debug = by_level[logging.WARNING], by_level[logging.DEBUG]
+        assert warning.getMessage() == "Snowflake session did not close cleanly: RuntimeError"
+        assert warning.exc_info is None
+        assert debug.exc_info is not None
+        assert "socket already gone" in str(debug.exc_info[1])
         with pytest.raises(ConnectorError, match="not connected"):
             connector.execute_pushdown("SELECT 1")
 
     def test_it_logs_lifecycle_by_query_type_without_sql_or_secrets(
         self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Ensure log lines name the backend and round-trip but never SQL or credentials."""
+        """Ensure INFO lines, which `--verbose` prints, name each round-trip but no SQL or secret."""
         _patch_snowflake_session(mocker, _arrow_table())
         connector = SnowflakeConnector(_snowflake_config())
         statement = "SELECT * FROM t WHERE status = 'O''Brien'"
 
-        with caplog.at_level(logging.DEBUG, logger="veridelta.connectors.warehouse"):
+        with caplog.at_level(logging.INFO, logger="veridelta.connectors.warehouse"):
             connector.connect()
             connector.execute_pushdown(statement, query_type="count")
             connector.fetch_schema()
@@ -567,7 +575,7 @@ class TestDatabricksExecution:
         _patch_databricks_session(mocker, _arrow_table())
         connector = DatabricksConnector(_databricks_config())
 
-        with caplog.at_level(logging.DEBUG, logger="veridelta.connectors.warehouse"):
+        with caplog.at_level(logging.INFO, logger="veridelta.connectors.warehouse"):
             connector.connect()
             connector.execute_pushdown("SELECT `id` FROM `t`", query_type="added")
             connector.close()

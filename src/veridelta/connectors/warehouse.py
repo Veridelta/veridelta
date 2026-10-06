@@ -120,7 +120,7 @@ def _run_arrow_query(
         )
         raise ConnectorError(f"Warehouse statement failed: {exc}") from exc
     else:
-        logger.debug(
+        logger.info(
             "%s %s statement completed in %.3fs",
             backend,
             query_type,
@@ -146,7 +146,7 @@ def _run_bigquery_query(client: Any, statement: str, job_config: Any, *, query_t
             "BigQuery %s statement failed after %.3fs", query_type, time.perf_counter() - started
         )
         raise ConnectorError(f"Warehouse statement failed: {exc}") from exc
-    logger.debug(
+    logger.info(
         "BigQuery %s statement completed in %.3fs", query_type, time.perf_counter() - started
     )
     # A zero-row result still yields one batch, which carries the schema.
@@ -164,8 +164,10 @@ def _close_session(session: Any, backend: str) -> None:
     # exception already propagating.
     try:
         closer()
-    except Exception:
-        logger.warning("%s session did not close cleanly", backend, exc_info=True)
+    except Exception as exc:
+        # The driver's own text can echo connection details, so only its type is a warning.
+        logger.warning("%s session did not close cleanly: %s", backend, type(exc).__name__)
+        logger.debug("%s session close failed", backend, exc_info=True)
     else:
         logger.info("Closed %s session", backend)
 

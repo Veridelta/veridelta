@@ -23,6 +23,7 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | Flag | Description |
 | :--- | :--- |
 | `-c`, `--config PATH` | Configuration file. Default `veridelta.yaml`. |
+| `-v`, `--verbose` | Print each connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 | `--json` | Print the [summary](results.md#summary) as JSON on stdout instead of the text report. |
 | `-q`, `--quiet` | Suppress progress messages on stderr. The report or the JSON still prints. |
 | `--html PATH` | Also write a standalone [HTML report](results.md#html-report), which loads nothing from a CDN. |
@@ -57,6 +58,18 @@ A command that cannot finish explains why on stderr. With `--json`, it also prin
 
 `type` names the error. A `ConfigError` is a problem with the configuration file. A `ConnectorError` or a `DataIntegrityError` comes from a source or its data. Any other type is a bug or an unsupported input: please [report it](https://github.com/Veridelta/veridelta/issues). An error `validate` finds in the file is a finding at exit `1`, in its usual output, not an error object.
 
+## Logging
+
+`-v` or `--verbose` prints Veridelta's own log lines on stderr, for `run`, `validate`, and `crosswalk`. Each line records a connection, a read, or a pushdown statement. Reads and statements carry their timings:
+
+```text
+INFO veridelta.connectors.database: Read 1200 rows of table 'orders' from postgresql://analyst@db.internal/sales in 0.412s
+```
+
+A line names its source by host, account, project, database, or table, and masks a password inside a URI. It never holds SQL text, row values, or a credential. [Logging](sources.md#logging) lists what each level records. The drivers' own loggers stay silent.
+
+When a read or a statement fails, a warning names it and how long it ran, and the error follows. `--verbose` changes nothing else: stdout keeps the report or the JSON, and `--quiet` still drops the progress messages.
+
 ## Checking a configuration
 
 `veridelta validate` reports what would stop a run, without reading any rows:
@@ -70,6 +83,7 @@ veridelta validate -c veridelta.yaml --schemas
 | Flag | Description |
 | :--- | :--- |
 | `-c`, `--config PATH` | Configuration file. Default `veridelta.yaml`. |
+| `-v`, `--verbose` | Print each connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 | `--schemas` | Also connect, read each side's columns, never its rows, and check the rules against them. |
 | `--allow-missing-env` | Read an unset `${NAME}` as the text `NAME`, with a warning, instead of failing. |
 | `--json` | Print the findings as one JSON object on stdout. |
@@ -116,6 +130,7 @@ veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 | Flag | Description |
 | :--- | :--- |
 | `-c`, `--config PATH` | Configuration file. Default `veridelta.yaml`. |
+| `-v`, `--verbose` | Print each connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 | `--min-confidence SHARE` | Share of a source value's rows that must agree on one target value, above 0.5. Default 0.95. |
 | `--min-support N` | Agreeing rows an entry needs. Default 5. |
 | `--sample-fraction SHARE` | Share of source rows to read, chosen by primary key. Default 1.0. |
