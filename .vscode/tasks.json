@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Veridelta: validate this file",
+      "type": "shell",
+      "command": "veridelta",
+      "args": ["validate", "-c", "${file}"],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "veridelta",
+          "source": "veridelta",
+          "severity": "error",
+          "fileLocation": ["autoDetect", "${workspaceFolder}"],
+          "pattern": {
+            "regexp": "^(.+?): (\\d+ errors?, \\d+ warnings?\\.)$",
+            "kind": "file",
+            "file": 1,
+            "message": 2
+          }
+        },
+        {
+          "owner": "veridelta",
+          "source": "veridelta",
+          "severity": "warning",
+          "fileLocation": ["autoDetect", "${workspaceFolder}"],
+          "pattern": {
+            "regexp": "^(.+?): (valid, with \\d+ warnings?\\.)$",
+            "kind": "file",
+            "file": 1,
+            "message": 2
+          }
+        }
+      ]
+    }
+  ]
+}

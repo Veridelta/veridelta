@@ -12,9 +12,8 @@ This page lists work that is not built yet. The current release is v{{ config.ex
 
 ## Editor
 
-Completion and checking of configuration files already work through the published JSON Schema; see [Editor support](configuration.md#editor-support). `veridelta validate` checks a file before a run. The steps that follow come one at a time, tracked in [issue 127](https://github.com/Veridelta/veridelta/issues/127):
+Completion and checking of configuration files already work through the published JSON Schema, and a VS Code task runs `veridelta validate` on the open file; see [Editor support](configuration.md#editor-support). The steps that follow come one at a time, tracked in [issue 127](https://github.com/Veridelta/veridelta/issues/127):
 
-- The schema wired into this repository's VS Code settings, the YAML extension recommended, and a task that runs `veridelta validate` on the open file with a problem matcher. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - A VS Code extension, in its own repository, whose first command runs `veridelta validate --json` on the open file and fills the Problems panel. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - A second command that runs the comparison, opens the HTML report in the editor, and opens the discrepancy files. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files) and [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
 - Registration of `veridelta mcp` with the editor's agent mode, once the server exists. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
