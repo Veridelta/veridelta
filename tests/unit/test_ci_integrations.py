@@ -427,19 +427,24 @@ class TestReleaseWorkflow:
         assert not re.search(r"git (tag|push)\b[^\n]*\s(-f|--force)\b", script)
         assert script.count("exit 1") == 1
 
-    def test_it_starts_a_release_run_only_when_none_is_under_way(self) -> None:
-        """Ensure the tag's release is started once, and again if it was stopped.
+    def test_it_starts_the_publish_run_only_for_a_tag_it_made(self) -> None:
+        """Ensure a tag's publish run is started once, with the tag, and never by a later merge.
 
-        A run waiting for the `pypi` approval counts as under way, so a later
-        merge never asks for a second approval. A run that was rejected or
-        cancelled does not, so the next merge starts the tag's release again.
+        A merge that lands while the run waits for the `pypi` approval ends the
+        job on finding the tag, so the approval is never asked twice. The job
+        consults no listing of runs: one left a waiting run out and started a
+        second one. A run that was rejected or cancelled is started again by
+        hand, on the tag, as `CONTRIBUTING.md` says.
         """
         script = _release_script("tag")
-        listing = f'gh run list --workflow {_RELEASE.name} --branch "$tag"'
+        found = 'if [ -n "$existing" ]; then'
+        dispatch = f'gh workflow run {_RELEASE.name} --ref "$tag"'
 
-        assert listing in script
-        assert 'select(.status != "completed")' in script
-        assert script.index(listing) < script.index(f"gh workflow run {_RELEASE.name}")
+        assert found in script
+        assert re.search(r'exists, so its publish run is not started again\."\n\s*exit 0', script)
+        assert "gh run list" not in script
+        assert "actions/workflows" not in script
+        assert script.index(found) < script.index("git tag -a") < script.index(dispatch)
 
     def test_it_starts_the_publish_run_on_the_new_tag(self) -> None:
         """Ensure the tag is published although a token-pushed tag starts no workflow.

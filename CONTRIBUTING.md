@@ -151,7 +151,7 @@ A release is a pull request that changes the version. Merging it does the rest.
 
 Commitizen picks the version from every line of every commit message since the last tag, not only the titles. A squash merge's body lists the commits it squashed, and a Dependabot body quotes upstream release notes. So a stray `feat` line can propose a minor version where a patch is due. When the dry run proposes the wrong version, pass `--increment PATCH` or `--increment MINOR` to both commands.
 
-A merge that lands while a release waits for approval leaves the tag where it is, so the tagged commit is still the one released, and that merge's run ends without asking for a second approval. If the release's run was rejected or cancelled, the next merge to `main` starts it again; to abandon a version instead, release the next one.
+A merge that lands while a release waits for approval leaves the tag where it is, so the tagged commit is still the one released, and that merge's run ends without asking for a second approval. If the release's run was rejected or cancelled, run the workflow by hand on the tag to start it again; a later merge to `main` does not. To abandon a version instead, release the next one.
 
 If a release stops partway, re-run the failed jobs, or run the workflow by hand on the tag. A rerun uploads only the files PyPI lacks, so it never fails on a version PyPI already has, and it leaves an existing release page as it is. Pushing a version tag by hand still publishes, but the workflow refuses a tag whose name differs from the version in that commit.
 
