@@ -242,7 +242,7 @@ The conversion changes only the timezone label. Comparisons and casts read the u
 
 ## Casts
 
-`cast_to` converts a column to `Int64`, `Float64`, `String`, `Boolean`, `Date`, or `Datetime`. Any other type name is rejected when the file loads.
+`cast_to` converts a column to `Int64`, `Float64`, `String`, `Boolean`, `Date`, or `Datetime`. Any other type name is rejected when the file loads. A cast the column's type cannot take, such as a date or text to `Boolean`, or binary data to a number, stops the run before it reads a row, and `validate --schemas` reports it.
 
 Converting a float to `Int64` truncates toward zero, as Polars does, where SQL would round. Local runs and pushdown both truncate.
 

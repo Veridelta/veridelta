@@ -895,6 +895,25 @@ _CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
 }
 """`cast_to` name to the dtype it resolves to."""
 
+_UNCASTABLE: Final[dict[type[pl.DataType], frozenset[CastTarget]]] = {
+    pl.Binary: frozenset({"Int64", "Float64", "Boolean", "Date", "Datetime"}),
+    pl.String: frozenset({"Boolean"}),
+    pl.Categorical: frozenset({"Float64", "Boolean", "Date", "Datetime"}),
+    pl.Decimal: frozenset({"Date", "Datetime"}),
+    pl.Date: frozenset({"Boolean"}),
+    pl.Datetime: frozenset({"Boolean"}),
+    pl.Time: frozenset({"Boolean", "Date", "Datetime"}),
+    pl.Duration: frozenset({"String", "Boolean", "Date", "Datetime"}),
+    pl.List: frozenset(_CAST_TARGETS),
+}
+"""`cast_to` targets Polars refuses for each column type, whatever its values.
+
+Polars refuses them only once a value reaches the cast, which in a run is
+mid-comparison. Checking the type first turns that into a `ConfigError` before
+any row is read, in a run and in `validate --schemas` alike. A test holds the
+table to what Polars does.
+"""
+
 
 def _fuzzy_measures() -> ModuleType:
     """Return rapidfuzz's distance module, or explain how to install it."""
@@ -2328,7 +2347,14 @@ class DiffEngine:
         if rule["timezone"]:
             expr = self._convert_time_zone(column, expr, dtype, rule["timezone"])
         if rule["cast_to"]:
-            expr = expr.cast(_CAST_TARGETS[rule["cast_to"]])
+            target = rule["cast_to"]
+            if target in _UNCASTABLE.get(type(dtype), frozenset()):
+                raise ConfigError(
+                    f"Column '{column}' sets cast_to='{target}', but holds {dtype}, which "
+                    f"cannot be cast to {target}. Convert it where it is read, such as in "
+                    "a database query."
+                )
+            expr = expr.cast(_CAST_TARGETS[target])
         return expr.alias(column)
 
     def _convert_time_zone(

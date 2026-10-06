@@ -5,10 +5,10 @@
 
 import re
 from collections.abc import Callable, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import get_args
+from typing import Final, get_args
 from unittest.mock import call
 
 import polars as pl
@@ -18,6 +18,8 @@ from pytest_mock import MockerFixture
 
 from veridelta.engine import (
     _ARTIFACT_WRITERS,
+    _CAST_TARGETS,
+    _UNCASTABLE,
     DataIngestor,
     DiffEngine,
     LoaderFactory,
@@ -38,6 +40,7 @@ from veridelta.engine import (
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
+    CastTarget,
     DiffConfig,
     DiffRule,
     SnowflakeConfig,
@@ -509,9 +512,6 @@ class TestSemanticNormalization:
 
     def test_it_maps_every_cast_target_to_a_polars_dtype(self) -> None:
         """Ensure `_CAST_TARGETS` cannot drift from the closed `CastTarget` set."""
-        from veridelta.engine import _CAST_TARGETS
-        from veridelta.models import CastTarget
-
         assert set(get_args(CastTarget)) == set(_CAST_TARGETS)
 
     def test_it_evaluates_numeric_differences_using_relative_tolerance_percentage(self) -> None:
@@ -2600,3 +2600,87 @@ class TestAvroLoader:
         ).summary
 
         assert (summary.changed_count, summary.added_count, summary.removed_count) == (1, 1, 1)
+
+
+_CAST_SAMPLES: Final = [
+    pl.Series([b"\x01"], dtype=pl.Binary),
+    pl.Series(["2026-01-01"], dtype=pl.String),
+    pl.Series(["a"], dtype=pl.Categorical),
+    pl.Series([1], dtype=pl.Int8),
+    pl.Series([1], dtype=pl.UInt32),
+    pl.Series([1.5], dtype=pl.Float64),
+    pl.Series([True], dtype=pl.Boolean),
+    pl.Series([Decimal("1.50")], dtype=pl.Decimal(10, 2)),
+    pl.Series([date(2026, 1, 1)], dtype=pl.Date),
+    pl.Series([datetime(2026, 1, 1)], dtype=pl.Datetime("us")),
+    pl.Series([time(1, 2)], dtype=pl.Time),
+    pl.Series([timedelta(seconds=1)], dtype=pl.Duration("us")),
+    pl.Series([[1]], dtype=pl.List(pl.Int64)),
+]
+"""One value of each column type a cast could start from."""
+
+
+class TestCastRefusal:
+    """Validate that a cast the column's type cannot take stops the run before any row."""
+
+    @pytest.mark.parametrize(
+        ("values", "target"),
+        [
+            pytest.param(pl.Series([b"\x01"], dtype=pl.Binary), "Boolean", id="bit-to-boolean"),
+            pytest.param(pl.Series([b"\x01"], dtype=pl.Binary), "Int64", id="bit-to-number"),
+            pytest.param(pl.Series([date(2026, 1, 1)]), "Boolean", id="date-to-boolean"),
+            pytest.param(pl.Series(["true"]), "Boolean", id="text-to-boolean"),
+        ],
+    )
+    def test_it_names_the_column_instead_of_failing_mid_run(
+        self, values: pl.Series, target: CastTarget
+    ) -> None:
+        """Ensure an impossible cast is a configuration error that names the column.
+
+        A MySQL `BIT` column reads as `Binary`, and `cast_to: Boolean` on it used
+        to fail inside the comparison with Polars' own error, which the CLI
+        reported as a bug in Veridelta.
+        """
+        frame = pl.DataFrame({"id": [1], "bits": values})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["bits"], cast_to=target)]
+        )
+
+        with pytest.raises(
+            ConfigError, match=re.escape(f"Column 'bits' sets cast_to='{target}', but holds")
+        ):
+            DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    def test_validate_finds_it_from_the_stored_columns_alone(self) -> None:
+        """Ensure `validate --schemas` refuses the cast with no rows to read."""
+        columns = pl.LazyFrame(schema={"id": pl.Int64, "bits": pl.Binary})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["bits"], cast_to="Boolean")]
+        )
+
+        with pytest.raises(ConfigError, match="which cannot be cast to Boolean"):
+            DiffEngine.validate_rules(config, columns, columns)
+
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    @pytest.mark.parametrize("sample", _CAST_SAMPLES, ids=lambda sample: str(sample.dtype))
+    @pytest.mark.parametrize("target", get_args(CastTarget))
+    def test_its_refusals_are_the_casts_polars_refuses(
+        self, sample: pl.Series, target: CastTarget
+    ) -> None:
+        """Ensure the table of refused casts follows Polars, so an upgrade cannot drift it.
+
+        Polars skips the cast for an empty or all-null column, so only a value
+        shows a refusal. It words one as "not supported" or "cannot cast". A
+        value it cannot convert is not a refusal: the type can take the cast.
+        """
+        refused = target in _UNCASTABLE.get(type(sample.dtype), frozenset())
+
+        try:
+            sample.cast(_CAST_TARGETS[target])
+            outcome = "cast"
+        except (pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError) as exc:
+            words = str(exc)
+            refusal = "not supported" in words or words.startswith("cannot cast")
+            outcome = "refused" if refusal else f"bad value: {words}"
+
+        assert (outcome == "refused") == refused, outcome
