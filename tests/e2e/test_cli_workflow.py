@@ -299,6 +299,40 @@ primary_keys: [id]
         assert json.loads(result.stdout)["is_match"] is False
         assert "INFO veridelta.connectors.database: Read 2 rows of table 'orders'" in result.stderr
 
+    def test_e2e_verbose_names_each_file_a_local_run_opens(self, tmp_path: Path) -> None:
+        """Ensure `--verbose` logs each file read, and a run without it prints no record.
+
+        Only the connectors logged, so a run over two files printed nothing under
+        `--verbose`, though the changelog promised each read.
+        """
+        legacy, modern = tmp_path / "legacy.csv", tmp_path / "modern.csv"
+        pl.DataFrame({"id": [1], "status": ["open"]}).write_csv(legacy)
+        pl.DataFrame({"id": [1], "status": ["open"]}).write_csv(modern)
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(f"""
+source:
+  path: {legacy}
+target:
+  path: {modern}
+primary_keys: [id]
+""")
+        command = ["veridelta", "run", "-c", str(config_file)]
+
+        verbose = subprocess.run(
+            [*command, "--verbose"], capture_output=True, text=True, check=False
+        )
+        plain = subprocess.run(command, capture_output=True, text=True, check=False)
+
+        assert verbose.returncode == 0, verbose.stderr
+        assert (
+            f"INFO veridelta.engine: Opened the csv file '{legacy}' (2 columns)" in verbose.stderr
+        )
+        assert (
+            f"INFO veridelta.engine: Opened the csv file '{modern}' (2 columns)" in verbose.stderr
+        )
+        assert plain.returncode == 0, plain.stderr
+        assert "INFO" not in plain.stderr
+
     def test_e2e_duckdb_source_reads_a_file_named_in_the_configuration(
         self, tmp_path: Path
     ) -> None:
