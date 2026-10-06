@@ -4,6 +4,7 @@
 """Unit tests for warehouse connector execution over mocked drivers."""
 
 import logging
+import traceback
 from collections.abc import Callable
 from typing import Any
 
@@ -30,6 +31,24 @@ def _snowflake_config() -> SnowflakeConfig:
         schema_name="PUBLIC",
         role="SYSADMIN",
         table="ANALYTICS.PUBLIC.LEGACY_EVENTS",
+    )
+
+
+_CREDENTIAL = "hunter2-do-not-print"
+"""Credential that must never appear in an error message."""
+
+
+def _snowflake_key_pair_config(passphrase: str | None) -> SnowflakeConfig:
+    """Build a Snowflake configuration that signs in with a key file."""
+    return SnowflakeConfig(
+        account="xy12345",
+        user="SVC_VERIDELTA",
+        warehouse="COMPUTE_WH",
+        database="ANALYTICS",
+        schema_name="PUBLIC",
+        table="ANALYTICS.PUBLIC.LEGACY_EVENTS",
+        private_key_path="/keys/rsa_key.p8",
+        private_key_passphrase=passphrase,
     )
 
 
@@ -212,6 +231,65 @@ class TestSnowflakeExecution:
 
         with pytest.raises(ConnectorError, match="Failed to connect to Snowflake"):
             connector.connect()
+
+    @pytest.mark.parametrize(
+        ("passphrase", "unlock"),
+        [(None, {}), ("open-sesame", {"private_key_file_pwd": "open-sesame"})],
+        ids=["unencrypted", "encrypted"],
+    )
+    def test_it_signs_in_with_a_key_pair(
+        self, mocker: MockerFixture, passphrase: str | None, unlock: dict[str, str]
+    ) -> None:
+        """Ensure a key file reaches the driver in place of a password.
+
+        The driver signs in with a key pair whenever it is given a key file, so
+        no `password` argument goes with it.
+        """
+        _patch_snowflake_session(mocker, _arrow_table())
+
+        SnowflakeConnector(_snowflake_key_pair_config(passphrase)).connect()
+
+        from veridelta.connectors.warehouse import snowflake_connector
+
+        snowflake_connector.connect.assert_called_once_with(
+            account="xy12345",
+            user="SVC_VERIDELTA",
+            warehouse="COMPUTE_WH",
+            database="ANALYTICS",
+            schema="PUBLIC",
+            role=None,
+            private_key_file="/keys/rsa_key.p8",
+            **unlock,
+        )
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            pytest.param(
+                lambda: _snowflake_config().model_copy(update={"password": _CREDENTIAL}),
+                id="password",
+            ),
+            pytest.param(lambda: _snowflake_key_pair_config(_CREDENTIAL), id="passphrase"),
+        ],
+    )
+    def test_it_masks_credentials_in_connection_errors(
+        self, mocker: MockerFixture, build: Callable[[], SnowflakeConfig]
+    ) -> None:
+        """Ensure a driver error that repeats a credential never shows it.
+
+        The message keeps the driver's reason with the credential masked. The
+        driver's own exception is not chained, since a traceback prints it whole.
+        """
+        driver = mocker.MagicMock()
+        driver.connect.side_effect = RuntimeError(f"could not sign in with {_CREDENTIAL}")
+        mocker.patch("veridelta.connectors.warehouse.snowflake_connector", driver)
+
+        with pytest.raises(ConnectorError) as exc_info:
+            SnowflakeConnector(build()).connect()
+
+        assert str(exc_info.value) == "Failed to connect to Snowflake: could not sign in with ***"
+        assert _CREDENTIAL not in "".join(traceback.format_exception(exc_info.value))
+        assert exc_info.value.__cause__ is None
 
     def test_it_raises_when_arrow_payload_is_missing(self, mocker: MockerFixture) -> None:
         """Ensure a null Arrow fetch is rejected as a non-tabular result."""

@@ -170,6 +170,25 @@ def _close_session(session: Any, backend: str) -> None:
         logger.info("Closed %s session", backend)
 
 
+def _snowflake_credentials(config: SnowflakeConfig) -> dict[str, str | None]:
+    """Return the driver arguments that sign in: a password, or a key file."""
+    if config.private_key_path is None:
+        return {"password": config.password}
+    # A key file alone switches the driver to key-pair sign-in.
+    credentials: dict[str, str | None] = {"private_key_file": config.private_key_path}
+    if config.private_key_passphrase is not None:
+        credentials["private_key_file_pwd"] = config.private_key_passphrase
+    return credentials
+
+
+def _mask(text: str, *secrets: str | None) -> str:
+    """Replace each set secret in driver output with `***`."""
+    # Longest first, so a secret containing another is masked whole.
+    for secret in sorted(filter(None, secrets), key=len, reverse=True):
+        text = text.replace(secret, "***")
+    return text
+
+
 class SnowflakeConnector(VerideltaConnector):
     """Snowflake SQL warehouse connector backed by the optional Snowflake extra.
 
@@ -205,21 +224,24 @@ class SnowflakeConnector(VerideltaConnector):
         """
         if snowflake_connector is None:
             raise ConnectorError(_SNOWFLAKE_EXTRA)
+        config = self._config
         try:
             self._session = snowflake_connector.connect(
-                account=self._config.account,
-                user=self._config.user,
-                password=self._config.password,
-                warehouse=self._config.warehouse,
-                database=self._config.database,
-                schema=self._config.schema_name,
-                role=self._config.role,
+                account=config.account,
+                user=config.user,
+                warehouse=config.warehouse,
+                database=config.database,
+                schema=config.schema_name,
+                role=config.role,
+                **_snowflake_credentials(config),
             )
         except ConnectorError:
             raise
         except Exception as exc:
-            logger.warning("Snowflake connection to account %s failed", self._config.account)
-            raise ConnectorError(f"Failed to connect to Snowflake: {exc}") from exc
+            logger.warning("Snowflake connection to account %s failed", config.account)
+            # Not chained: a traceback would print the driver's message unmasked.
+            message = _mask(str(exc), config.password, config.private_key_passphrase)
+            raise ConnectorError(f"Failed to connect to Snowflake: {message}") from None
         logger.info(
             "Connected to Snowflake account %s, warehouse %s",
             self._config.account,

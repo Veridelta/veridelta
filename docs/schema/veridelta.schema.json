@@ -757,7 +757,7 @@
     },
     "SnowflakeConfig": {
       "additionalProperties": false,
-      "description": "Immutable connection settings for Snowflake warehouse pushdown.\n\nAttributes:\n    type (Literal[\"snowflake\"]): Source kind, which selects this model.\n    table (str): Fully qualified table or view to compare.\n    account (str): Snowflake account identifier.\n    user (str): Login name used to authenticate the session.\n    warehouse (str): Virtual warehouse that executes pushdown SQL.\n    database (str): Default database for unqualified object names.\n    schema_name (str): Default schema for unqualified object names.\n    password (str | None): Optional password, unset for SSO. Left out when\n        the config is printed, but kept by `model_dump()`, which the\n        connector needs.\n    role (str | None): Optional role assumed after authentication.",
+      "description": "Immutable connection settings for Snowflake warehouse pushdown.\n\nAttributes:\n    type (Literal[\"snowflake\"]): Source kind, which selects this model.\n    table (str): Fully qualified table or view to compare.\n    account (str): Snowflake account identifier.\n    user (str): Login name used to authenticate the session.\n    warehouse (str): Virtual warehouse that executes pushdown SQL.\n    database (str): Default database for unqualified object names.\n    schema_name (str): Default schema for unqualified object names.\n    password (str | None): Optional password or programmatic access\n        token, unset for a key pair or SSO. Left out when the config is\n        printed, but kept by `model_dump()`, which the connector needs.\n    private_key_path (str | None): Optional path to a PEM private key, for\n        key-pair sign-in instead of a password. Left out when printed.\n    private_key_passphrase (str | None): Passphrase of an encrypted\n        `private_key_path`. Left out when printed.\n    role (str | None): Optional role assumed after authentication.",
       "properties": {
         "type": {
           "const": "snowflake",
@@ -815,8 +815,34 @@
             }
           ],
           "default": null,
-          "description": "Optional password; omitted when using SSO.",
+          "description": "Password or programmatic access token; omitted for a key pair or SSO.",
           "title": "Password"
+        },
+        "private_key_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Path to a PEM private key, for key-pair sign-in instead of a password.",
+          "title": "Private Key Path"
+        },
+        "private_key_passphrase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Passphrase of an encrypted private_key_path.",
+          "title": "Private Key Passphrase"
         },
         "role": {
           "anyOf": [

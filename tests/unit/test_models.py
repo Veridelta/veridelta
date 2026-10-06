@@ -68,6 +68,26 @@ def _snowflake_table(table: str) -> SnowflakeConfig:
     )
 
 
+def _snowflake_sign_in(
+    *,
+    password: str | None = None,
+    private_key_path: str | None = None,
+    private_key_passphrase: str | None = None,
+) -> SnowflakeConfig:
+    """Build a Snowflake config that signs in with the given credentials."""
+    return SnowflakeConfig(
+        account="xy12345",
+        user="SVC_VERIDELTA",
+        warehouse="COMPUTE_WH",
+        database="ANALYTICS",
+        schema_name="PUBLIC",
+        table="EVENTS",
+        password=password,
+        private_key_path=private_key_path,
+        private_key_passphrase=private_key_passphrase,
+    )
+
+
 def _databricks_table(table: str) -> DatabricksConfig:
     """Build a Databricks config with a caller-supplied table name."""
     return DatabricksConfig(
@@ -96,6 +116,35 @@ class TestWarehouseTableAllowlist:
             _databricks_table('tgt"')
         with pytest.raises(ValidationError, match="String should match pattern"):
             _databricks_table("main default events")
+
+
+class TestSnowflakeSignIn:
+    """Validate the ways a Snowflake source signs in."""
+
+    @pytest.mark.parametrize("passphrase", [None, _SECRET], ids=["unencrypted", "encrypted"])
+    def test_it_accepts_a_key_pair(self, passphrase: str | None) -> None:
+        """Ensure a service user can sign in with a key file instead of a password.
+
+        Snowflake refuses a password alone for scripted users, so a key pair is
+        how a CI job signs in.
+        """
+        config = _snowflake_sign_in(
+            private_key_path="/keys/rsa_key.p8", private_key_passphrase=passphrase
+        )
+
+        assert config.private_key_path == "/keys/rsa_key.p8"
+        assert config.private_key_passphrase == passphrase
+        assert config.password is None
+
+    def test_it_refuses_a_password_together_with_a_key(self) -> None:
+        """Ensure there is never a question which credential signs in."""
+        with pytest.raises(ValidationError, match="a 'password' or a 'private_key_path', not both"):
+            _snowflake_sign_in(password=_SECRET, private_key_path="/keys/rsa_key.p8")
+
+    def test_it_refuses_a_passphrase_without_a_key(self) -> None:
+        """Ensure a passphrase is never set where nothing would read it."""
+        with pytest.raises(ValidationError, match="decrypts 'private_key_path', which is not set"):
+            _snowflake_sign_in(private_key_passphrase=_SECRET)
 
 
 class TestStrictNumericFields:
@@ -342,6 +391,19 @@ class TestModelStrictness:
                 id="snowflake-password",
             ),
             pytest.param(
+                SnowflakeConfig,
+                {
+                    "table": "T",
+                    "user": "u",
+                    "warehouse": "w",
+                    "database": "d",
+                    "schema_name": "s",
+                    "private_key_path": "/keys/rsa_key.p8",
+                    "private_key_passphrase": _SECRET,
+                },
+                id="snowflake-passphrase",
+            ),
+            pytest.param(
                 DatabricksConfig,
                 {"table": "t", "http_path": "/sql", "access_token": _SECRET},
                 id="databricks-token",
@@ -409,6 +471,22 @@ class TestModelStrictness:
                 _SECRET,
                 "another-secret",
                 id="snowflake-password",
+            ),
+            pytest.param(
+                _snowflake_sign_in(
+                    private_key_path="/keys/rsa_key.p8", private_key_passphrase=_SECRET
+                ),
+                "private_key_passphrase",
+                _SECRET,
+                "another-secret",
+                id="snowflake-passphrase",
+            ),
+            pytest.param(
+                _snowflake_sign_in(private_key_path=_SECRET),
+                "private_key_path",
+                _SECRET,
+                "/keys/another_key.p8",
+                id="snowflake-key-path",
             ),
             pytest.param(
                 DatabricksConfig(

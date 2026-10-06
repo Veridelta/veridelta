@@ -9,7 +9,7 @@ Each connector accepts the fields below and rejects any other key:
 | `type` | Required | Optional |
 | :--- | :--- | :--- |
 | `file` (default) | `path` | `format` (default `csv`), `options` |
-| `snowflake` | `table`, `account`, `user`, `warehouse`, `database`, `schema_name` | `password`, `role` |
+| `snowflake` | `table`, `account`, `user`, `warehouse`, `database`, `schema_name` | `password`, `private_key_path`, `private_key_passphrase`, `role` |
 | `databricks` | `table`, `server_hostname`, `http_path` | `access_token`, `catalog`, `schema_name` |
 | `bigquery` | `table`, `project` | `dataset`, `location`, `credentials_path`, `maximum_bytes_billed` |
 | `delta` | `table_uri` | `version`, `storage_options` |
@@ -211,7 +211,9 @@ source:
   type: snowflake
   table: ANALYTICS.PUBLIC.LEGACY_EVENTS
   account: xy12345
-  user: analyst
+  user: SVC_VERIDELTA
+  private_key_path: ${SNOWFLAKE_KEY_FILE}
+  private_key_passphrase: ${SNOWFLAKE_KEY_PASSPHRASE}
   warehouse: COMPUTE_WH
   database: ANALYTICS
   schema_name: PUBLIC
@@ -220,13 +222,32 @@ target:
   type: snowflake
   table: ANALYTICS.PUBLIC.MODERN_EVENTS
   account: xy12345
-  user: analyst
+  user: SVC_VERIDELTA
+  private_key_path: ${SNOWFLAKE_KEY_FILE}
+  private_key_passphrase: ${SNOWFLAKE_KEY_PASSPHRASE}
   warehouse: COMPUTE_WH
   database: ANALYTICS
   schema_name: PUBLIC
 
 primary_keys: ["event_id"]
 ```
+
+Snowflake requires strong sign-in for scripted users, so a password alone may be refused. A service user signs in with a key pair instead:
+
+- `private_key_path` names the PEM file of the user's private key.
+- `private_key_passphrase` decrypts that file, if it is encrypted.
+- A programmatic access token also works in `password`, but by default it needs a network policy that allows the client's address.
+
+Set either `password` or `private_key_path`, not both. In GitHub Actions, write the key from a secret to a file before the step that runs Veridelta:
+
+```yaml
+- name: Write the Snowflake key
+  run: printf '%s\n' "$SNOWFLAKE_PRIVATE_KEY" > "$RUNNER_TEMP/snowflake_key.p8"
+  env:
+    SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+```
+
+Then give the step that runs Veridelta `SNOWFLAKE_KEY_FILE: ${{ runner.temp }}/snowflake_key.p8` in its `env`.
 
 This pair compares two Databricks tables:
 
@@ -280,11 +301,12 @@ Project ids follow Google's rules: six to thirty lowercase letters, digits, or h
 
 ## Credentials
 
-Do not commit a `password`, an `access_token`, or a `motherduck_token` in YAML, a database `password` included. Write `${NAME}` so the loader reads the value from the environment; see [Environment variables](configuration.md#environment-variables). Or build the connection in Python, as in `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`, and pass it to `DiffEngine.run_from_configs`.
+Do not commit a `password`, a `private_key_passphrase`, an `access_token`, or a `motherduck_token` in YAML, a database `password` included. Write `${NAME}` so the loader reads the value from the environment; see [Environment variables](configuration.md#environment-variables). Or build the connection in Python, as in `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`, and pass it to `DiffEngine.run_from_configs`.
 
 Printing a connection config, or formatting one into a log line, leaves out its credentials:
 
 - `password`, for Snowflake and databases;
+- `private_key_path` and `private_key_passphrase`, for Snowflake;
 - `access_token`, for Databricks;
 - `credentials_path`, for BigQuery;
 - `motherduck_token`, for MotherDuck;
