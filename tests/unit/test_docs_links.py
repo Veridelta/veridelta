@@ -174,6 +174,18 @@ class TestDocumentationLinks:
 
         assert not broken, "These anchors name no heading:\n" + "\n".join(broken)
 
+    def test_the_site_loads_every_stylesheet_and_script_it_lists(self) -> None:
+        """Ensure each `extra_css` and `extra_javascript` file exists, which the build never checks.
+
+        `mkdocs.yml` is read as text: its `!!python/name:` tags need a custom YAML loader.
+        """
+        text = (_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+        blocks = re.findall(r"^extra_(?:css|javascript):\n((?:  - .+\n)+)", text, re.MULTILINE)
+        listed = [line.removeprefix("  - ") for block in blocks for line in block.splitlines()]
+
+        assert listed == ["stylesheets/accessibility.css", "javascripts/accessibility.js"]
+        assert [name for name in listed if not (_DOCS / name).is_file()] == []
+
     def test_notebooks_link_only_by_absolute_url(self) -> None:
         """Ensure no notebook link breaks once mkdocs-jupyter renders the page."""
         relative = [

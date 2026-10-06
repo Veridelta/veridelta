@@ -50,6 +50,12 @@ hooks:
 extra:
   version: 0.13.0
 
+# Accessibility fixes over the Material theme. Each file says what it fixes.
+extra_css:
+  - stylesheets/accessibility.css
+extra_javascript:
+  - javascripts/accessibility.js
+
 # A link to a heading that does not exist fails `mkdocs build --strict`.
 validation:
   links:

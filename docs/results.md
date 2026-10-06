@@ -50,7 +50,7 @@ A run with `pushdown_sample_rows` set also carries `changed_sample`: up to that 
 
 ## HTML report
 
-`write_html` writes the standalone report that `veridelta run --html` writes. It embeds its own styles and script, so it opens offline. `max_rows` caps every table, as `--html-max-rows` does:
+`write_html` writes the standalone report that `veridelta run --html` writes. It embeds its own styles and script, so it opens offline. Every row is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
 
 ```python
 from veridelta.report import write_html, write_markdown

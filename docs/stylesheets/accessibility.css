@@ -1,0 +1,65 @@
+/*
+ * Accessibility fixes over the Material theme and the tutorials' notebook styles.
+ * Each ratio is the contrast against the background the text sits on, before and
+ * after the fix. WCAG 2.2 Level AA asks for 4.5:1 for text.
+ */
+
+/* Links in text get an underline, so color is never the only cue. */
+.md-typeset a {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* Navigation tabs: white at 70% on indigo is 4.28:1, and at 80% it is 5.04:1. */
+.md-tabs__link {
+  opacity: 0.8;
+}
+
+/* Footer: the copyright line at 45% white is 4.48:1, and at 70% it is 9.14:1. */
+.md-copyright {
+  color: var(--md-footer-fg-color--light);
+}
+
+/*
+ * Code, light scheme: comments, prompts, operators, and punctuation are 54% black,
+ * 4.48:1 on #f5f5f5. At 58% black they are 5.19:1. The dark scheme keeps its own.
+ */
+[data-md-color-scheme="default"] {
+  --md-code-hl-comment-color: #00000094;
+  --md-code-hl-generic-color: #00000094;
+  --md-code-hl-operator-color: #00000094;
+  --md-code-hl-punctuation-color: #00000094;
+  --md-code-hl-variable-color: #00000094;
+}
+
+/* Code, dark scheme, on #272a35: numbers were 4.45:1 and are 4.66:1; constants were 4.48:1 and are 4.69:1. */
+@media screen {
+  [data-md-color-scheme="slate"] {
+    --md-code-hl-number-color: #e76f62;
+    --md-code-hl-constant-color: #9787e3;
+  }
+}
+
+/* Links, dark scheme with the indigo palette: 4.13:1 inside code, now 4.70:1. */
+[data-md-color-scheme="slate"][data-md-color-primary="indigo"] {
+  --md-typeset-a-color: #6493ea;
+}
+
+/*
+ * Tutorials. The notebook styles come after this sheet, so these selectors are
+ * more specific than theirs. Light scheme, on #f5f5f5: comments were 4.17:1 and
+ * are 4.70:1, numbers 4.26:1 and 4.71:1, operators 4.40:1 and 4.64:1.
+ */
+.md-content .jupyter-wrapper {
+  --jp-mirror-editor-comment-color: #3c7777;
+  --jp-mirror-editor-number-color: #008000;
+  --jp-mirror-editor-operator-color: #a515ff;
+  --jp-mirror-editor-meta-color: #a515ff;
+}
+
+/* Dark scheme, on #212121: comments were 3.54:1 and are 4.68:1, operators 3.36:1 and 4.64:1. */
+[data-md-color-scheme="slate"] .md-content .jupyter-wrapper {
+  --jp-mirror-editor-comment-color: #4b9696;
+  --jp-mirror-editor-operator-color: #bf58ff;
+  --jp-mirror-editor-meta-color: #bf58ff;
+}

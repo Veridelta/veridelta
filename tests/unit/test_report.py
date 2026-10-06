@@ -3,8 +3,8 @@
 
 """Unit tests for the standalone HTML report generator."""
 
-import json
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import polars as pl
@@ -29,24 +29,53 @@ def _result() -> DiffResult:
     return DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
 
 
-def _embedded_rows(document: str) -> list[list[object]]:
-    """Decode every embedded table the way the page's `JSON.parse` would.
+class _Tables(HTMLParser):
+    """Read each table's body cells as a browser with no JavaScript shows them."""
 
-    Python's `json.loads` accepts `NaN` and `Infinity`, which `JSON.parse`
-    rejects, so this decoder refuses them too.
+    def __init__(self) -> None:
+        super().__init__()
+        self.tables: dict[str, list[list[str]]] = {}
+        self._region = ""
+        self._cell: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Start a table at its region, a row at `tr`, and a cell at `td`."""
+        found = dict(attrs)
+        if tag == "div" and found.get("role") == "region":
+            self._region = found["aria-labelledby"] or ""
+        elif tag == "tbody":
+            self.tables[self._region] = []
+        elif tag == "tr" and self._region in self.tables:
+            self.tables[self._region].append([])
+        elif tag == "td":
+            self._cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        """Close a cell, or leave a table's region."""
+        if tag == "td" and self._cell is not None:
+            self.tables[self._region][-1].append("".join(self._cell))
+            self._cell = None
+        elif tag == "table":
+            self._region = ""
+
+    def handle_data(self, data: str) -> None:
+        """Collect a cell's text, with entities already decoded."""
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _rendered_rows(document: str) -> dict[str, list[list[str]]]:
+    """Read the body rows of each table in a report, keyed by its heading's id.
 
     Args:
         document (str): Rendered HTML report.
 
     Returns:
-        list[list[object]]: The rows of each embedded table, in page order.
+        dict[str, list[list[str]]]: The text of each cell, row by row.
     """
-
-    def refuse(token: str) -> object:
-        raise ValueError(f"JSON.parse rejects the token {token}")
-
-    payloads = re.findall(r'<script type="application/json">(.*?)</script>', document, re.DOTALL)
-    return [json.loads(payload, parse_constant=refuse)["rows"] for payload in payloads]
+    parser = _Tables()
+    parser.feed(document)
+    return parser.tables
 
 
 def _changed_only(changed: pl.DataFrame) -> DiffResult:
@@ -97,23 +126,23 @@ class TestHTMLReport:
         assert "Match rate" in document
         assert "Changed" in document
 
-    def test_it_embeds_the_rows_as_json_for_the_pager(self) -> None:
-        """Ensure table rows travel as data rather than as pre-rendered markup."""
+    def test_it_renders_every_row_in_the_markup(self) -> None:
+        """Ensure the rows show without JavaScript, as a screen reader reads a table."""
         document = render_html(_result())
 
-        payloads = re.findall(
-            r'<script type="application/json">(.*?)</script>', document, re.DOTALL
-        )
+        assert _rendered_rows(document) == {
+            "column-level-drift": [["val", "1"]],
+            "changed-rows": [["2", "B", "CHANGED", "false"]],
+            "added-rows": [["3", "C"]],
+            "removed-rows": [["1", "A"]],
+        }
+        assert "<script type=" not in document
 
-        assert payloads
-        assert all("rows" in json.loads(payload) for payload in payloads)
+    def test_it_writes_floats_and_nested_values_as_text(self) -> None:
+        """Ensure NaN, infinities, and list and struct cells read as their values.
 
-    def test_it_embeds_non_finite_floats_as_text(self) -> None:
-        """Ensure NaN and infinities cannot stop the page from rendering.
-
-        Python's `json` writes bare `NaN` and `Infinity`, which `JSON.parse`
-        rejects. One such cell used to leave its table, and every table after
-        it, empty. Values nested in list and struct columns are covered too.
+        The browser used to draw a struct as `[object Object]`, and a list as its
+        items joined by commas.
         """
         changed = pl.DataFrame(
             {
@@ -124,26 +153,95 @@ class TestHTMLReport:
             }
         )
 
-        (rows,) = _embedded_rows(render_html(_changed_only(changed)))
+        rows = _rendered_rows(render_html(_changed_only(changed)))["changed-rows"]
 
         assert rows == [
-            [1, "nan", [0.5, "nan"], {"a": "inf"}],
-            [2, "inf", [], {"a": 1.0}],
-            [3, "-inf", [1.0], {"a": None}],
+            ["1", "nan", "[0.5, nan]", "{'a': inf}"],
+            ["2", "inf", "[]", "{'a': 1.0}"],
+            ["3", "-inf", "[1.0]", "{'a': None}"],
         ]
 
-    def test_it_embeds_integers_beyond_javascript_precision_as_text(self) -> None:
-        """Ensure a large identifier displays exactly rather than rounded.
-
-        A JavaScript number holds integers exactly only up to 2**53 - 1, so
-        two different keys past that could render as the same value.
-        """
+    def test_it_writes_large_integers_in_full(self) -> None:
+        """Ensure a large identifier shows every digit, never a rounded number."""
         big = 2**53 + 1
         changed = pl.DataFrame({"id": [big, -big, 7]})
 
-        (rows,) = _embedded_rows(render_html(_changed_only(changed)))
+        rows = _rendered_rows(render_html(_changed_only(changed)))["changed-rows"]
 
-        assert rows == [[str(big)], [str(-big)], [7]]
+        assert rows == [[str(big)], [str(-big)], ["7"]]
+
+    def test_it_marks_a_missing_value_and_writes_booleans_in_lowercase(self) -> None:
+        """Ensure a null reads as `null`, styled apart from the text `null`."""
+        changed = pl.DataFrame({"id": [1, 2], "flag": [True, None], "note": ["null", None]})
+
+        document = render_html(_changed_only(changed))
+
+        assert _rendered_rows(document)["changed-rows"] == [
+            ["1", "true", "null"],
+            ["2", "null", "null"],
+        ]
+        assert document.count("<td class='null'>null</td>") == 2
+
+    def test_it_puts_the_page_in_a_main_landmark(self) -> None:
+        """Ensure a screen reader's list of landmarks leads to the report."""
+        document = render_html(_result())
+
+        assert document.count("<main>") == 1
+        assert document.index("<main>") < document.index("<h1>")
+        assert document.index("</table>", document.index("removed-rows")) < document.index(
+            "</main>"
+        )
+
+    def test_it_names_each_table_after_its_heading_and_lets_the_keyboard_scroll_it(
+        self,
+    ) -> None:
+        """Ensure each table sits in a focusable region its heading names.
+
+        A wide table scrolls sideways, and a keyboard reaches the scroll only
+        through a focusable element.
+        """
+        document = render_html(_result())
+
+        regions = re.findall(
+            r"<div class='wrap' role='region' aria-labelledby='([a-z-]+)' tabindex='0'>",
+            document,
+        )
+
+        assert regions == ["column-level-drift", "changed-rows", "added-rows", "removed-rows"]
+        for heading_id in regions:
+            assert re.search(rf"<h2 id=['\"]{heading_id}['\"]>", document), heading_id
+        assert document.count("<div class='wrap'") == len(regions)
+        assert "<th scope='col'>id</th>" in document
+
+    def test_it_pages_a_long_table_with_named_buttons_and_a_live_status(self) -> None:
+        """Ensure each pager says which table it pages, and announces the page it shows.
+
+        The pager starts hidden, so a reader without JavaScript sees every row
+        and no buttons that do nothing.
+        """
+        changed = pl.DataFrame({"id": list(range(30))})
+
+        document = render_html(_changed_only(changed))
+
+        assert len(_rendered_rows(document)["changed-rows"]) == 30
+        assert "<div data-table data-page-size='25'>" in document
+        # The pager's own `display: flex` would otherwise override `hidden`.
+        assert ".pager[hidden] { display: none; }" in document
+        assert (
+            "<div class='pager' hidden>"
+            "<button type='button' aria-label='Previous page of changed rows'>Previous</button>"
+            "<button type='button' aria-label='Next page of changed rows'>Next</button>"
+            "<span class='status' role='status'>Page 1 of 2 &middot; 30 rows</span></div>"
+        ) in document
+
+    def test_it_shows_no_pager_for_a_table_of_one_page(self) -> None:
+        """Ensure a short table carries no buttons that could never move."""
+        changed = pl.DataFrame({"id": list(range(25))})
+
+        document = render_html(_changed_only(changed))
+
+        assert len(_rendered_rows(document)["changed-rows"]) == 25
+        assert "class='pager'" not in document
 
     def test_it_rejects_a_negative_row_cap(self) -> None:
         """Ensure a negative cap fails rather than embedding all but the last rows."""
@@ -162,11 +260,8 @@ class TestHTMLReport:
         result = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
 
         document = render_html(result, max_rows=10)
-        payload = json.loads(
-            re.findall(r'<script type="application/json">(.*?)</script>', document, re.DOTALL)[0]
-        )
 
-        assert len(payload["rows"]) == 10
+        assert len(_rendered_rows(document)["changed-rows"]) == 10
         assert "Showing the first 10 of 50 rows" in document
 
     def test_it_labels_a_pushdown_report_as_keys_only(self) -> None:
@@ -227,8 +322,11 @@ class TestHTMLReport:
 
         assert "values for the first 2 of 3" in document
         assert "primary keys rather than values" not in document
-        assert "<th>val_source</th><th>val_target</th>" in document
-        assert _embedded_rows(document) == [[[2, "b", "B", False], [3, "c", "C", False]]]
+        assert "<th scope='col'>val_source</th><th scope='col'>val_target</th>" in document
+        assert _rendered_rows(document)["changed-rows"] == [
+            ["2", "b", "B", "false"],
+            ["3", "c", "C", "false"],
+        ]
 
     def test_it_handles_a_perfect_match(self) -> None:
         """Ensure empty frames render as an explicit statement, not a broken table."""
@@ -248,9 +346,13 @@ class TestHTMLReport:
             pytest.param(
                 "<script>x</script>", "A", "<script>x</script>_source", "&lt;script&gt;", id="name"
             ),
-            # The rows travel inside a script element, which an unescaped `</script>` ends early.
+            # Values reach the table cells as text, so an unescaped value parses as markup.
             pytest.param(
-                "val", "</script><img onerror=x>", "</script><img", r"\u003c/script>", id="cell"
+                "val",
+                "</script><img onerror=x>",
+                "</script><img",
+                "&lt;/script&gt;&lt;img onerror=x&gt;",
+                id="cell",
             ),
         ],
     )
