@@ -149,7 +149,7 @@ class TestCommandLineInterface:
             ),
         ],
     )
-    def test_it_catches_errors_and_returns_exit_code_one_via_stderr(
+    def test_it_catches_errors_and_returns_exit_code_three_via_stderr(
         self,
         mocker: MockerFixture,
         default_args: argparse.Namespace,
@@ -158,7 +158,7 @@ class TestCommandLineInterface:
         failure: Exception,
         header: str,
     ) -> None:
-        """Ensure a failure halts the run gracefully and explains itself on standard error."""
+        """Ensure a failure exits 3, apart from drift, and explains itself on standard error."""
         mocker.patch(
             "veridelta.cli.load_config", return_value=(MagicMock(), MagicMock(), MagicMock())
         )
@@ -167,9 +167,115 @@ class TestCommandLineInterface:
         exit_code = run(default_args)
         captured = capsys.readouterr()
 
-        assert exit_code == 1
+        assert exit_code == 3
         assert header in captured.err
         assert str(failure) in captured.err
+        assert captured.out == ""
+
+    @pytest.mark.parametrize(
+        ("failing_call", "failure", "header"),
+        [
+            pytest.param(
+                "veridelta.cli.load_config",
+                ConfigError("Invalid schema mode"),
+                "Configuration Error",
+                id="config",
+            ),
+            pytest.param(
+                "veridelta.cli.DiffEngine.run_from_configs",
+                ConnectorError("Cross-dialect warehouse pushdown"),
+                "ConnectorError",
+                id="connector",
+            ),
+            pytest.param(
+                "veridelta.cli.load_config",
+                RuntimeError("Disk full"),
+                "Unexpected System Error",
+                id="unexpected",
+            ),
+        ],
+    )
+    def test_it_prints_a_failure_as_one_json_object_with_json(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        failing_call: str,
+        failure: Exception,
+        header: str,
+    ) -> None:
+        """Ensure `--json` keeps stdout parseable when a run fails, and stderr still explains."""
+        mocker.patch(
+            "veridelta.cli.load_config", return_value=(MagicMock(), MagicMock(), MagicMock())
+        )
+        mocker.patch(failing_call, side_effect=failure)
+        default_args.json = True
+
+        exit_code = run(default_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == 3
+        assert json.loads(captured.out) == {
+            "error": {"type": type(failure).__name__, "message": str(failure)}
+        }
+        assert header in captured.err
+
+    @pytest.mark.parametrize("flag", ["html", "markdown", "otel"])
+    def test_it_prints_only_the_error_when_a_file_fails_after_the_comparison(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        flag: str,
+    ) -> None:
+        """Ensure a file that cannot be written leaves one JSON object on stdout, not two.
+
+        The comparison has finished by then, so `--json` holds its summary back
+        until every file is written.
+        """
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
+        mock_summary = MagicMock(is_match=False, report_summary="Status: FAILED")
+        mock_summary.model_dump_json.return_value = '{"is_match": false}'
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
+        writers = {"html": "write_html", "markdown": "write_markdown", "otel": "write_otlp_metrics"}
+        mocker.patch(f"veridelta.cli.{writers[flag]}", side_effect=OSError("No space left"))
+        setattr(default_args, flag, "out/file")
+        default_args.json = True
+
+        exit_code = run(default_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == 3
+        assert json.loads(captured.out) == {
+            "error": {"type": "OSError", "message": "No space left"}
+        }
+
+    def test_it_prints_the_summary_alone_after_writing_its_files(
+        self,
+        mocker: MockerFixture,
+        default_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure drift with every file written leaves exactly the summary on stdout."""
+        mock_load = mocker.patch("veridelta.cli.load_config")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_load.return_value = (MagicMock(output_path=None), MagicMock(), MagicMock())
+        mock_summary = MagicMock(is_match=False, report_summary="Status: FAILED")
+        mock_summary.model_dump_json.return_value = '{"is_match": false}'
+        mock_engine.run_from_configs.return_value = MagicMock(summary=mock_summary)
+        mocker.patch("veridelta.cli.write_html", return_value=Path("report.html"))
+        mocker.patch("veridelta.cli.write_markdown", return_value=Path("summary.md"))
+        default_args.json = True
+        default_args.html = "report.html"
+        default_args.markdown = "summary.md"
+
+        exit_code = run(default_args)
+        captured = capsys.readouterr()
+
+        assert exit_code == 1
+        assert captured.out == '{"is_match": false}\n'
 
     def test_it_prints_the_summary_as_json_on_stdout(
         self,
@@ -280,7 +386,7 @@ class TestCommandLineInterface:
 
         exit_code = run(default_args)
 
-        assert exit_code == 1
+        assert exit_code == 3
         mock_write.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -590,16 +696,33 @@ class TestCrosswalkCommand:
         failure: Exception,
         header: str,
     ) -> None:
-        """Ensure a failure exits 1 with the same explanation `run` would give."""
+        """Ensure a failure exits 3 with the same explanation `run` would give."""
         propose.side_effect = failure
 
         exit_code = crosswalk(crosswalk_args)
         captured = capsys.readouterr()
 
-        assert exit_code == 1
+        assert exit_code == 3
         assert header in captured.err
         assert str(failure) in captured.err
         assert captured.out == ""
+
+    def test_it_prints_a_failure_as_one_json_object_with_json(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure `--json` keeps stdout parseable when proposing fails."""
+        propose.side_effect = ConnectorError("Warehouse unreachable")
+        crosswalk_args.json = True
+
+        exit_code = crosswalk(crosswalk_args)
+
+        assert exit_code == 3
+        assert json.loads(capsys.readouterr().out) == {
+            "error": {"type": "ConnectorError", "message": "Warehouse unreachable"}
+        }
 
     def test_it_parses_the_documented_defaults(self) -> None:
         """Ensure a bare `crosswalk` uses the engine's thresholds and the default config."""
@@ -843,16 +966,40 @@ class TestValidateCommand:
     def test_it_reports_an_unexpected_failure(
         self, tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Ensure a bug in a check exits 1 with the usual report, not a traceback."""
+        """Ensure a bug in a check exits 3 with the usual report, not a traceback."""
         mocker.patch("veridelta.cli.DiffEngine.check_configs", side_effect=RuntimeError("boom"))
         path = self._write(
             tmp_path, "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
         )
 
         exit_code = validate(self._args(path))
+        captured = capsys.readouterr()
 
-        assert exit_code == 1
-        assert "Unexpected System Error\nRuntimeError: boom" in capsys.readouterr().err
+        assert exit_code == 3
+        assert "Unexpected System Error\nRuntimeError: boom" in captured.err
+        assert captured.out == ""
+
+    def test_it_prints_a_check_that_cannot_finish_as_an_error_object_with_json(
+        self, tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `--json` prints the error object, not a report, when the check cannot finish.
+
+        A finding is part of a finished check, at exit 1, and stays in the report.
+        """
+        mocker.patch(
+            "veridelta.cli.DiffEngine.check_configs",
+            side_effect=ConnectorError("Warehouse unreachable"),
+        )
+        path = self._write(
+            tmp_path, "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
+        )
+
+        exit_code = validate(self._args(path, json=True, schemas=True))
+
+        assert exit_code == 3
+        assert json.loads(capsys.readouterr().out) == {
+            "error": {"type": "ConnectorError", "message": "Warehouse unreachable"}
+        }
 
     def test_main_dispatches_to_validate(self, mocker: MockerFixture) -> None:
         """Ensure the subcommand and its flags reach the handler."""

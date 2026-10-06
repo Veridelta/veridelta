@@ -4,6 +4,7 @@
 """End-to-End integration tests for the Veridelta CLI."""
 
 import contextlib
+import json
 import os
 import sqlite3
 import subprocess
@@ -316,7 +317,7 @@ primary_keys: [id]
             check=False,
         )
 
-        assert result.returncode == 1
+        assert result.returncode == 3
         assert "ConnectorError" in result.stderr
         assert "Delta Lake scan of" in result.stderr
         assert "Unexpected System Error" not in result.stderr
@@ -340,9 +341,39 @@ primary_keys: [id]
             env={key: value for key, value in os.environ.items() if key != "VERIDELTA_E2E_UNSET"},
         )
 
-        assert result.returncode == 1
+        assert result.returncode == 3
         assert "Configuration Error" in result.stderr
         assert "'VERIDELTA_E2E_UNSET' is not set, but source -> path references it" in result.stderr
+
+    def test_e2e_a_failure_under_json_is_one_json_object_on_stdout(self, tmp_path: Path) -> None:
+        """Ensure a script reading `run --json` parses a failure, and tells it from drift.
+
+        The error goes to stdout as one object, the explanation stays on stderr,
+        and the exit code is 3, never drift's 1.
+        """
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("""
+source:
+  path: ${VERIDELTA_E2E_UNSET}/source.csv
+target:
+  path: target.csv
+primary_keys: [id]
+""")
+
+        result = subprocess.run(
+            ["veridelta", "run", "-c", str(config_file), "--json", "--quiet"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={key: value for key, value in os.environ.items() if key != "VERIDELTA_E2E_UNSET"},
+        )
+
+        assert result.returncode == 3
+        payload = json.loads(result.stdout)
+        assert list(payload) == ["error"]
+        assert payload["error"]["type"] == "ConfigError"
+        assert "'VERIDELTA_E2E_UNSET' is not set" in payload["error"]["message"]
+        assert "Configuration Error" in result.stderr
 
     def test_e2e_crosswalk_proposals_make_the_comparison_pass(self, tmp_path: Path) -> None:
         """Ensure the rules `crosswalk` prints, pasted into the config, clear the drift."""

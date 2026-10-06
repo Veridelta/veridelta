@@ -51,7 +51,7 @@ outputs:
     description: "`true` when the comparison matched within its threshold."
     value: ${{ steps.run.outputs.is-match }}
   exit-code:
-    description: Exit code of `veridelta run` (0 match, 1 drift or error).
+    description: Exit code of `veridelta run`, 0 for a match, 1 for drift, and 3 when it could not finish.
     value: ${{ steps.run.outputs.exit-code }}
   summary-json:
     description: Path to the JSON summary. Empty when the comparison did not finish.
@@ -106,6 +106,8 @@ runs:
         uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel "$out/otel-metrics.json" > "$out/summary.json"
         code=$?
 
+        # A pinned older release exits 1 on a failure too, so 1 is drift only
+        # when the summary says so. Any other code is an error.
         if [ "$code" -eq 0 ]; then
           status=match
         elif [ "$code" -eq 1 ] && grep -q '"is_match": false' "$out/summary.json"; then

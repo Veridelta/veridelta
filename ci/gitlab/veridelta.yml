@@ -67,6 +67,8 @@ spec:
       spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
       uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html veridelta-report/report.html --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown veridelta-report/summary.md --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel veridelta-report/otel-metrics.json > veridelta-report/summary.json
       code=$?
+      # A pinned older release exits 1 on a failure too, so 1 is drift only
+      # when the summary says so. Any other code, such as 3, is an error.
       if [ "$code" -eq 0 ]; then
         status=match
       elif [ "$code" -eq 1 ] && grep -q '"is_match": false' veridelta-report/summary.json; then
