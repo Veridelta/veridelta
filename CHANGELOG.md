@@ -1,3 +1,15 @@
+## v0.19.5 (2026-10-07)
+
+`veridelta mcp` describes its tools as they behave. `propose_value_maps` now says that
+`sample_fraction` is a share of source rows chosen by primary key, as `--sample-fraction`
+does, not a share of joined rows. The instructions a host reads say that two tools return
+row values only when the server allows them, and that the server reads files only from the
+folders it was started with.
+
+### Fix
+
+- describe the MCP tools as they behave (#207)
+
 ## v0.19.4 (2026-10-07)
 
 `veridelta mcp` masks every value a configuration takes from an environment variable, four
