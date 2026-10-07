@@ -84,6 +84,16 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
 _T = TypeVar("_T")
 
 
+@pytest.fixture(autouse=True)
+def _in_the_first_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run each test in `tmp_path`, the first root of its server, as `veridelta mcp` runs.
+
+    A configuration's relative data path resolves against the working
+    directory, as on the command line, so a test that runs elsewhere says so.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
 def _write(folder: Path, text: str, name: str = "veridelta.yaml") -> Path:
     """Write a configuration file."""
     path = folder / name
@@ -427,6 +437,27 @@ class TestRunConfiguration:
         assert report["artifacts_written"] is True
         assert any((tmp_path / "out").iterdir())
 
+    def test_it_checks_a_relative_output_path_where_it_is_written(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure `output_path` counts from the working directory, where the rows are written."""
+        _write(
+            tmp_path,
+            f"source:\n  path: '{tmp_path / 'a.csv'}'\ntarget:\n  path: '{tmp_path / 'b.csv'}'\n"
+            "primary_keys: [id]\noutput_path: out\n",
+        )
+        monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
+        compare = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+
+        with pytest.raises(ConfigError, match="output_path 'out' is outside"):
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        compare.assert_not_called()
+
     def test_it_refuses_an_output_path_outside_the_roots(
         self,
         tmp_path: Path,
@@ -605,6 +636,18 @@ class TestCheckDataPaths:
         assert str(refused.value).startswith(f"The target {setting} '{outside}")
         assert "--root" in str(refused.value)
 
+    def test_it_checks_a_relative_path_where_the_reader_opens_it(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a relative path counts from the working directory, where Polars opens it."""
+        monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
+
+        with pytest.raises(ConfigError, match=r"The source path 'a\.csv' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), _snowflake())
+
     def test_it_checks_a_scheme_it_does_not_know_as_a_path(self, tmp_path: Path) -> None:
         """Ensure a made-up scheme cannot carry a path out, since the readers open it here."""
         escape = "xx:" + "/.." * 64 + "/a.csv"
@@ -741,6 +784,29 @@ class TestReadRows:
             read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "added")
 
         compare.assert_not_called()
+
+    def test_it_reads_no_file_beside_another_working_directory(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a program that serves from another folder cannot read the files there.
+
+        The configuration under the root names its files relative to the
+        working directory, so Polars would open the ones beside the program.
+        """
+        elsewhere = tmp_path_factory.mktemp("elsewhere")
+        (elsewhere / "a.csv").write_text(f"id,note\n1,{_SECRET}\n")
+        (elsewhere / "b.csv").write_text("id,note\n")
+        _write(tmp_path, _VALID)
+        monkeypatch.chdir(elsewhere)
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        with pytest.raises(ConfigError, match=r"The source path 'a\.csv' is outside") as caught:
+            read_rows(settings, "veridelta.yaml", "removed")
+
+        assert _SECRET not in str(caught.value)
 
     def test_it_refuses_an_output_path_outside_the_roots(
         self,

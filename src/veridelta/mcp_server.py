@@ -266,10 +266,26 @@ class ProposalReport(TypedDict):
     truncated: bool
 
 
+def _under_roots(settings: Settings, resolved: Path) -> bool:
+    """Whether a resolved path lies under one of the roots."""
+    return any(resolved.is_relative_to(root) for root in settings.roots)
+
+
 def _inside(settings: Settings, path: str) -> Path | None:
-    """Resolve a path against the first root, or return None when it lies outside every root."""
+    """Resolve a tool call's path against the first root, or return None outside every root."""
     resolved = (settings.roots[0] / path).resolve()
-    return resolved if any(resolved.is_relative_to(root) for root in settings.roots) else None
+    return resolved if _under_roots(settings, resolved) else None
+
+
+def _opened_inside(settings: Settings, location: str) -> bool:
+    """Whether a path a configuration names lies under a root, resolved where it is opened.
+
+    A reader or the artifact writer resolves a relative path against the
+    working directory, as the command line does, so the check does too. The
+    command runs the server in its first root, where the two agree, but a
+    program that calls `serve()` from another folder gets the same check.
+    """
+    return _under_roots(settings, Path(location).expanduser().resolve())
 
 
 def _roots(settings: Settings) -> str:
@@ -352,7 +368,7 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     """
     for side, config in (("source", source), ("target", target)):
         for setting, location in _data_locations(config):
-            if _inside(settings, str(Path(location).expanduser())) is None:
+            if not _opened_inside(settings, location):
                 raise ConfigError(
                     f"The {side} {setting} '{location}' is outside the folders this server "
                     f"reads from: {_roots(settings)}. A tool reads data on this machine only "
@@ -410,7 +426,7 @@ def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceR
 def _runnable(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
     """Load a configuration a tool runs, refusing an `output_path` outside the roots too."""
     diff, source, target = _load(settings, path)
-    if diff.output_path is not None and _inside(settings, diff.output_path) is None:
+    if diff.output_path is not None and not _opened_inside(settings, diff.output_path):
         raise ConfigError(
             f"output_path '{diff.output_path}' is outside the folders this server writes to: "
             f"{_roots(settings)}. A run writes the rows that differ there, so point it into "
@@ -741,6 +757,11 @@ def build_server(settings: Settings) -> "MCPServer":
 
 def serve(settings: Settings) -> None:
     """Answer an agent's host over stdio until it disconnects.
+
+    A configuration's relative paths resolve against the working directory,
+    as on the command line, and the tools check them there. `veridelta mcp`
+    runs the server in its first root; a program that calls this from
+    another folder has its relative paths checked against that folder.
 
     Args:
         settings (Settings): The roots every tool is held to.
