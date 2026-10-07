@@ -2,7 +2,7 @@
 type: Decision
 title: The agent rules live in AGENTS.md files beside the code
 description: Why the scoped rules sit in src/AGENTS.md and tests/AGENTS.md, with no CLAUDE.md and no .cursor folder, instead of in one harness's own rules format.
-status: stable
+status: deprecated
 decided: 2026-10-06
 generated: { by: claude-code, at: 2026-10-06T23:40:00Z }
 ---

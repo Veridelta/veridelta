@@ -54,20 +54,6 @@ def _files_under(root: Path) -> Iterator[Path]:
         yield from (Path(folder, name) for name in sorted(names))
 
 
-def _nested_rules_files() -> set[str]:
-    """Return every `AGENTS.md` one folder below the root, as a posix path.
-
-    Not a glob: on a case-insensitive filesystem `Path.glob` also returns
-    `docs/agents.md` for `*/AGENTS.md`, on Windows and, but for Python 3.12,
-    on macOS.
-    """
-    return {
-        f"{folder.name}/AGENTS.md"
-        for folder in _ROOT.iterdir()
-        if folder.is_dir() and any(child.name == "AGENTS.md" for child in folder.iterdir())
-    }
-
-
 def _slug(heading: str) -> str:
     """Return the anchor Python Markdown's `toc` extension gives a heading.
 
@@ -181,6 +167,7 @@ def _repository_urls() -> list[tuple[str, str, str | None]]:
         *sorted(_DOCS.rglob("*.md")),
         *sorted((_ROOT / "product").rglob("*.md")),
         *sorted((_ROOT / "decisions").glob("*.md")),
+        *sorted((_ROOT / "rules").glob("*.md")),
     ]
     return [
         (page.relative_to(_ROOT).as_posix(), path, anchor or None)
@@ -288,18 +275,6 @@ class TestDocumentationLinks:
 
 class TestAgentInstructions:
     """Keep `AGENTS.md` the one instruction file the tools read, with every link resolving."""
-
-    def test_it_links_every_nested_rules_file(self) -> None:
-        """Ensure an `AGENTS.md` beside the code cannot ship without a row in the root one.
-
-        A harness that scopes rules by folder loads the nested file on its own; every
-        other agent reaches it through the root's link.
-        """
-        rules = _nested_rules_files()
-        linked = {target.partition("#")[0] for target in _repository_links(_AGENTS)}
-
-        assert rules, "No nested AGENTS.md found."
-        assert rules <= linked, "Link these from AGENTS.md:\n" + "\n".join(sorted(rules - linked))
 
     def test_it_resolves_every_repository_link(self) -> None:
         """Ensure each file and heading that `AGENTS.md` links to exists."""
