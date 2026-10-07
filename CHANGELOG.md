@@ -1,3 +1,18 @@
+## v0.19.0 (2026-10-07)
+
+`veridelta mcp` gains its last two tools, which return values from the data.
+`read_discrepancies` runs the comparison and returns the rows of one kind, added,
+removed, or changed, with how many there are. `propose_value_maps` returns what
+`veridelta crosswalk --json` prints. Both refuse unless the server is started with
+`--allow-row-values`, and then return at most `--max-rows` rows or value map entries a
+call, 50 by default. They read files on this machine only from under the server's
+`--root` folders, with `~` expanded and links followed, and read data elsewhere, such as
+an object store or a warehouse, as the command line does.
+
+### Feat
+
+- read rows and propose value maps from the MCP server when allowed (#195)
+
 ## v0.18.0 (2026-10-07)
 
 `veridelta mcp` gains a third tool, `describe_schema`, which lists one side's columns and
