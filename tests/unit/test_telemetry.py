@@ -805,6 +805,50 @@ class TestSendOTLPMetrics:
         assert request.headers["x-team"] == "data"
         assert request.headers["content-type"] == "application/json"
 
+    @pytest.mark.parametrize(
+        ("endpoint", "warned"),
+        [
+            pytest.param("http://collector.example.com:4318", True, id="http-remote"),
+            pytest.param("https://collector.example.com:4318", False, id="https-remote"),
+            pytest.param("http://localhost:4318", False, id="localhost"),
+            pytest.param("http://127.0.0.1:4318", False, id="loopback-v4"),
+            pytest.param("http://[::1]:4318", False, id="loopback-v6"),
+        ],
+    )
+    def test_it_warns_before_sending_headers_readable_on_the_network(
+        self,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        endpoint: str,
+        warned: bool,
+    ) -> None:
+        """Ensure headers, often an API key, sent over plain http to another host log a warning."""
+        mocker.patch.object(urllib.request.OpenerDirector, "open")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", f"api-key={quote(_HEADER_SECRET)}")
+
+        with caplog.at_level(logging.WARNING, logger="veridelta.telemetry"):
+            send_otlp_metrics(_drift())
+
+        assert ("over plain http" in caplog.text) is warned
+        assert _HEADER_SECRET not in caplog.text
+
+    def test_it_sends_no_warning_without_headers(
+        self,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Ensure plain http alone is no reason to warn: only a header can carry a secret."""
+        mocker.patch.object(urllib.request.OpenerDirector, "open")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.example.com:4318")
+
+        with caplog.at_level(logging.WARNING, logger="veridelta.telemetry"):
+            send_otlp_metrics(_drift())
+
+        assert "over plain http" not in caplog.text
+
     def test_the_metrics_headers_replace_the_general_ones(
         self, collector: Collector, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -902,7 +946,7 @@ class TestSendOTLPMetrics:
 
         assert "s3cret" not in str(info.value)
 
-    @pytest.mark.parametrize("timeout", ["soon", "0", "-5", "1.5"])
+    @pytest.mark.parametrize("timeout", ["soon", "0", "-5", "1.5", "\u00b2", "\u0663"])
     def test_it_refuses_a_timeout_that_is_not_whole_milliseconds(
         self, monkeypatch: pytest.MonkeyPatch, timeout: str
     ) -> None:
