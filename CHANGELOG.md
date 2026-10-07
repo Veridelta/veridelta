@@ -1,3 +1,15 @@
+## v0.19.9 (2026-10-07)
+
+Errors and logs name a file or table without the query of its URL, which can hold a token
+or the signature of a pre-signed link, and without a login in its user part. Before, only
+telemetry did: a failed read of a pre-signed `s3://` link printed its signature, and a
+database URI kept a `?password=` parameter in every log line. `redacted_location` in
+`veridelta.models` is the one redactor for all of them.
+
+### Fix
+
+- leave the query and login out of every location printed (#215)
+
 ## v0.19.8 (2026-10-07)
 
 A Databricks connection that fails masks the access token in its error as `***`, and no
