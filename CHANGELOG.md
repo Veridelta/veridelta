@@ -1,3 +1,18 @@
+## v0.17.0 (2026-10-07)
+
+`veridelta mcp` gains a second tool, `run_comparison`, which runs the comparison a
+configuration file describes. It returns the summary `veridelta run --json` prints, with
+three more fields: `verdict`, which is `match` or `drift`; `exit_code`, the 0 or 1 that
+`veridelta run` exits with; and `artifacts_written`, which says whether the rows that
+differ were written. A run writes those rows to the configuration's `output_path`, so the
+tool refuses an `output_path` outside the server's `--root` folders before it reads a row.
+A configuration that cannot run fails the call with its error's type and message, as
+`run --json` reports a failure.
+
+### Feat
+
+- run a comparison from the MCP server (#191)
+
 ## v0.16.0 (2026-10-07)
 
 `veridelta mcp` serves Veridelta's checks to an AI agent's host as Model Context
