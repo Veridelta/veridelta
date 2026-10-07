@@ -20,7 +20,6 @@ from veridelta.models import DatabricksConfig, DiffRule, SnowflakeConfig
 pytestmark = [
     pytest.mark.unit,
     pytest.mark.fast,
-    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
 ]
 
 
@@ -185,46 +184,13 @@ class TestSnowflakeExecution:
         assert [call.args[0] for call in cursor.execute.call_args_list] == [count_sql, probe_sql]
         assert count_frame.collect().item() == 4096
 
-    def test_it_fetches_schema_with_a_limit_zero_query(self, mocker: MockerFixture) -> None:
-        """Ensure fetch_schema wraps the last statement in LIMIT 0."""
-        table = _arrow_table()
-        _session, cursor = _patch_snowflake_session(mocker, table)
-        connector = SnowflakeConnector(_snowflake_config())
-        connector.connect()
-        statement = connector.compiler.compile_query(
-            "src_tbl",
-            "tgt_tbl",
-            ["id"],
-            [DiffRule(column_names=["status"])],
-        )
-        connector.execute_pushdown(statement)
-        schema = connector.fetch_schema()
-
-        schema_sql = cursor.execute.call_args_list[1].args[0]
-        assert statement in schema_sql
-        assert "LIMIT 0" in schema_sql
-        assert "_veridelta_schema" in schema_sql
-        assert schema.names() == ["id", "status"]
-        assert cursor.fetch_arrow_all.call_args_list[1].kwargs == {"force_return_table": True}
-
     def test_it_raises_when_not_connected(self, mocker: MockerFixture) -> None:
-        """Ensure pushdown and schema require an open Snowflake session."""
+        """Ensure pushdown requires an open Snowflake session."""
         mocker.patch("veridelta.connectors.warehouse.snowflake_connector", mocker.MagicMock())
         connector = SnowflakeConnector(_snowflake_config())
 
         with pytest.raises(ConnectorError, match="not connected"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="not connected"):
-            connector.fetch_schema()
-
-    def test_it_raises_when_fetching_schema_before_pushdown(self, mocker: MockerFixture) -> None:
-        """Ensure schema introspection requires a prior execute_pushdown call."""
-        _patch_snowflake_session(mocker, _arrow_table())
-        connector = SnowflakeConnector(_snowflake_config())
-        connector.connect()
-
-        with pytest.raises(ConnectorError, match="execute_pushdown"):
-            connector.fetch_schema()
 
     def test_it_wraps_driver_connect_failures(self, mocker: MockerFixture) -> None:
         """Ensure Snowflake driver exceptions become ConnectorError."""
@@ -308,7 +274,7 @@ class TestSnowflakeExecution:
     def test_it_closes_the_session_once_and_requires_a_reconnect(
         self, mocker: MockerFixture
     ) -> None:
-        """Ensure close() releases the driver session and resets pushdown state."""
+        """Ensure close() releases the driver session, refuses work, and allows a reconnect."""
         session, _cursor = _patch_snowflake_session(mocker, _arrow_table())
         connector = SnowflakeConnector(_snowflake_config())
         connector.close()  # before connect: nothing to release
@@ -322,13 +288,9 @@ class TestSnowflakeExecution:
         session.close.assert_called_once()
         with pytest.raises(ConnectorError, match="not connected"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="not connected"):
-            connector.fetch_schema()
 
         connector.connect()
-        # The prior statement was forgotten with the session it ran on.
-        with pytest.raises(ConnectorError, match="execute_pushdown"):
-            connector.fetch_schema()
+        connector.execute_pushdown("SELECT 1")
 
     def test_it_closes_on_context_exit(self, mocker: MockerFixture) -> None:
         """Ensure the connector releases its session when a with-block ends."""
@@ -377,7 +339,7 @@ class TestSnowflakeExecution:
         with caplog.at_level(logging.INFO, logger="veridelta.connectors.warehouse"):
             connector.connect()
             connector.execute_pushdown(statement, query_type="count")
-            connector.fetch_schema()
+            connector.execute_pushdown(statement, query_type="schema")
             connector.close()
 
         messages = [record.getMessage() for record in caplog.records]
@@ -397,43 +359,6 @@ class TestSnowflakeExecution:
         with pytest.raises(ConnectorError, match="tabular Arrow"):
             connector.execute_pushdown("SELECT 1")
         cursor.fetch_arrow_all.assert_called_once()
-
-    @pytest.mark.parametrize(
-        "schema_payload",
-        [
-            pytest.param(None, id="no-arrow"),
-            pytest.param(pl.Series("id", [1]).to_arrow(), id="arrow-array-not-table"),
-        ],
-    )
-    def test_it_falls_back_to_the_cursor_description_for_the_schema(
-        self, mocker: MockerFixture, schema_payload: Any
-    ) -> None:
-        """Ensure fetch_schema still names the columns when the LIMIT 0 fetch yields no table."""
-        _session, cursor = _patch_snowflake_session(mocker, _arrow_table())
-        cursor.fetch_arrow_all.side_effect = [_arrow_table(), schema_payload]
-        cursor.description = [("ID", 0), ("STATUS", 2)]
-        connector = SnowflakeConnector(_snowflake_config())
-        connector.connect()
-        connector.execute_pushdown("SELECT 1")
-
-        schema = connector.fetch_schema()
-
-        assert schema.names() == ["ID", "STATUS"]
-        assert set(schema.dtypes()) == {pl.String()}
-
-    def test_it_raises_when_neither_arrow_nor_description_describes_the_schema(
-        self, mocker: MockerFixture
-    ) -> None:
-        """Ensure a schema fetch with nothing to read fails rather than returning empty."""
-        _session, cursor = _patch_snowflake_session(mocker, _arrow_table())
-        cursor.fetch_arrow_all.side_effect = [_arrow_table(), None]
-        cursor.description = None
-        connector = SnowflakeConnector(_snowflake_config())
-        connector.connect()
-        connector.execute_pushdown("SELECT 1")
-
-        with pytest.raises(ConnectorError, match="did not return a schema"):
-            connector.fetch_schema()
 
     def test_it_passes_connector_errors_from_the_driver_layer_through_unwrapped(
         self, mocker: MockerFixture
@@ -506,15 +431,6 @@ class TestDatabricksExecution:
         assert [call.args[0] for call in cursor.execute.call_args_list] == [count_sql, probe_sql]
         assert count_frame.collect().item() == 4096
 
-    def test_it_raises_when_fetching_schema_before_pushdown(self, mocker: MockerFixture) -> None:
-        """Ensure schema introspection requires a prior execute_pushdown call."""
-        _patch_databricks_session(mocker, _arrow_table())
-        connector = DatabricksConnector(_databricks_config())
-        connector.connect()
-
-        with pytest.raises(ConnectorError, match="execute_pushdown"):
-            connector.fetch_schema()
-
     def test_it_wraps_driver_connect_failures(
         self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -557,7 +473,7 @@ class TestDatabricksExecution:
     def test_it_closes_the_session_once_and_requires_a_reconnect(
         self, mocker: MockerFixture
     ) -> None:
-        """Ensure close() releases the driver session and resets pushdown state."""
+        """Ensure close() releases the driver session and refuses work afterwards."""
         session, _cursor = _patch_databricks_session(mocker, _arrow_table())
         connector = DatabricksConnector(_databricks_config())
 
@@ -569,8 +485,6 @@ class TestDatabricksExecution:
         session.close.assert_called_once()
         with pytest.raises(ConnectorError, match="not connected"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="not connected"):
-            connector.fetch_schema()
 
     def test_it_logs_lifecycle_by_query_type_without_sql_or_secrets(
         self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
@@ -624,26 +538,10 @@ class TestDatabricksExecution:
         assert isinstance(result, pl.LazyFrame)
         assert result.collect().columns == ["id", "status"]
 
-    def test_it_fetches_schema_with_a_limit_zero_query(self, mocker: MockerFixture) -> None:
-        """Ensure fetch_schema wraps the last statement in LIMIT 0."""
-        table = _arrow_table()
-        _session, cursor = _patch_databricks_session(mocker, table)
-        connector = DatabricksConnector(_databricks_config())
-        connector.connect()
-        statement = "SELECT `src`.`id` FROM `src_tbl` AS `src`"
-        connector.execute_pushdown(statement)
-        schema = connector.fetch_schema()
-
-        schema_sql = cursor.execute.call_args_list[1].args[0]
-        assert "LIMIT 0" in schema_sql
-        assert schema.names() == ["id", "status"]
-
     def test_it_raises_when_not_connected(self, mocker: MockerFixture) -> None:
-        """Ensure pushdown and schema require an open Databricks session."""
+        """Ensure pushdown requires an open Databricks session."""
         mocker.patch("veridelta.connectors.warehouse.databricks_sql", mocker.MagicMock())
         connector = DatabricksConnector(_databricks_config())
 
         with pytest.raises(ConnectorError, match="not connected"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="not connected"):
-            connector.fetch_schema()

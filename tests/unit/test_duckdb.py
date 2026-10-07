@@ -12,14 +12,13 @@ import pytest
 from pytest_mock import MockerFixture
 
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
-from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
+from veridelta.connectors.sql import SQLDialect
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
 
 pytestmark = [
     pytest.mark.unit,
     pytest.mark.fast,
-    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
 ]
 
 _SECRET = "md-token-do-not-print"
@@ -76,7 +75,7 @@ class TestDuckDBConnector:
         with DuckDBConnector(_FILE) as connector:
             connector.connect()
             assert connector.lazyframe().collect().equals(frame)
-            assert connector.fetch_schema() == frame.schema
+            assert connector.lazyframe().collect_schema() == frame.schema
 
         driver.connect.assert_called_once_with("warehouse.duckdb", read_only=True)
         driver.connect.return_value.sql.assert_called_once_with('SELECT * FROM "main"."orders"')
@@ -257,7 +256,7 @@ class TestDuckDBSchemaProbe:
 
         with DuckDBConnector(_FILE, probe=True) as connector:
             connector.connect()
-            schema = connector.fetch_schema()
+            schema = connector.lazyframe().collect_schema()
 
         driver.connect.return_value.sql.assert_called_once_with(
             'SELECT * FROM "main"."orders" WHERE 1 = 0'
@@ -289,7 +288,7 @@ class TestDuckDBConnectorLifecycle:
         connector.close()
         connector.close()
         with pytest.raises(ConnectorError, match="not connected"):
-            connector.fetch_schema()
+            connector.lazyframe()
 
     def test_it_has_no_sql_pushdown(self) -> None:
         """Ensure a DuckDB source is never asked to run comparison SQL."""
@@ -325,31 +324,6 @@ class TestDuckDBPushdownSession:
     def test_it_compiles_for_the_duckdb_dialect(self) -> None:
         """Ensure the engine asks this session for DuckDB SQL."""
         assert DuckDBPushdownSession(_PUSHDOWN).compiler.dialect is SQLDialect.DUCKDB
-
-    def test_it_describes_the_last_result_without_its_rows(self, mocker: MockerFixture) -> None:
-        """Ensure the schema of a result comes from the statement, wrapped to return nothing."""
-        frame = pl.DataFrame(schema={"id": pl.Int64, "amount": pl.Decimal(10, 2)})
-        connection = _driver(mocker, frame).connect.return_value
-        session = DuckDBPushdownSession(_PUSHDOWN)
-        session.connect()
-        session.execute_pushdown("SELECT id, amount FROM src")
-
-        schema = session.fetch_schema()
-
-        probe = SQLPushdownCompiler(SQLDialect.DUCKDB).compile_result_schema_query(
-            "SELECT id, amount FROM src"
-        )
-        assert connection.sql.call_args_list[-1] == call(probe)
-        assert schema == frame.schema
-
-    def test_it_needs_a_statement_before_it_can_describe_one(self, mocker: MockerFixture) -> None:
-        """Ensure there is no schema to report before any statement has run."""
-        _driver(mocker)
-        session = DuckDBPushdownSession(_PUSHDOWN)
-        session.connect()
-
-        with pytest.raises(ConnectorError, match="No pushdown statement has run yet"):
-            session.fetch_schema()
 
     def test_it_refuses_work_until_connected_and_after_closing(self, mocker: MockerFixture) -> None:
         """Ensure a statement never runs without an open connection."""

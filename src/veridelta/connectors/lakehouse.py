@@ -14,11 +14,10 @@ logger; log lines carry the table URI and pin, never `storage_options`.
 """
 
 import logging
-import warnings
 
 import polars as pl
 
-from veridelta.connectors.base import FETCH_SCHEMA_DEPRECATED, VerideltaConnector
+from veridelta.connectors.base import VerideltaConnector
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
@@ -79,18 +78,6 @@ class DeltaLakeConnector(VerideltaConnector):
             self._config.table_uri,
             "latest" if self._config.version is None else self._config.version,
         )
-
-    def fetch_schema(self) -> pl.Schema:
-        """Return the Delta table schema without collecting the full dataset.
-
-        Returns:
-            pl.Schema: Column names and dtypes from the lazy scan.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        return self.lazyframe().collect_schema()
 
     def lazyframe(self) -> pl.LazyFrame:
         """Return the unevaluated Delta scan established by `connect()`.
@@ -162,18 +149,6 @@ class IcebergConnector(VerideltaConnector):
             self._config.table_uri,
             "latest" if self._config.snapshot_id is None else self._config.snapshot_id,
         )
-
-    def fetch_schema(self) -> pl.Schema:
-        """Return the Iceberg table schema without collecting the full dataset.
-
-        Returns:
-            pl.Schema: Column names and dtypes from the lazy scan.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        return self.lazyframe().collect_schema()
 
     def lazyframe(self) -> pl.LazyFrame:
         """Return the unevaluated Iceberg scan established by `connect()`.

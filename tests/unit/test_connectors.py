@@ -41,7 +41,6 @@ from veridelta.exceptions import ConfigError, ConnectorError
 pytestmark = [
     pytest.mark.unit,
     pytest.mark.fast,
-    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
 ]
 
 
@@ -152,8 +151,6 @@ class TestConnectorInterface:
             connector.connect()
         with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[snowflake\]'"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[snowflake\]'"):
-            connector.fetch_schema()
 
     def test_it_raises_connector_error_when_databricks_extra_is_missing(
         self, mocker: MockerFixture
@@ -166,36 +163,18 @@ class TestConnectorInterface:
             connector.connect()
         with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[databricks\]'"):
             connector.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[databricks\]'"):
-            connector.fetch_schema()
 
 
 class TestLakehouseConnectors:
     """Validate lazy Delta and Iceberg scan wiring without optional extras."""
 
-    @pytest.mark.filterwarnings("error::DeprecationWarning")
-    def test_fetch_schema_warns_that_it_goes(self, mocker: MockerFixture) -> None:
-        """Ensure each call warns, since the method goes in 0.15.0 and nothing in the package calls it."""
-        mocker.patch("polars.scan_delta", return_value=pl.LazyFrame({"id": [1]}))
-        connector = DeltaLakeConnector(_delta_config())
-        connector.connect()
-
-        with pytest.warns(DeprecationWarning, match="fetch_schema is deprecated"):
-            schema = connector.fetch_schema()
-
-        assert schema == pl.Schema({"id": pl.Int64})
-
-    def test_it_raises_when_fetching_schema_before_connect(self) -> None:
-        """Ensure schema reads require an established lazy-scan handle."""
+    def test_it_raises_when_scanning_before_connect(self) -> None:
+        """Ensure a frame is handed out only after `connect()` opened the scan."""
         delta = DeltaLakeConnector(_delta_config())
         iceberg = IcebergConnector(_iceberg_config())
 
         with pytest.raises(ConnectorError, match="not connected"):
-            delta.fetch_schema()
-        with pytest.raises(ConnectorError, match="not connected"):
             delta.lazyframe()
-        with pytest.raises(ConnectorError, match="not connected"):
-            iceberg.fetch_schema()
         with pytest.raises(ConnectorError, match="not connected"):
             iceberg.lazyframe()
 
@@ -212,7 +191,7 @@ class TestLakehouseConnectors:
     def test_it_connects_delta_via_scan_delta_and_returns_schema(
         self, mocker: MockerFixture
     ) -> None:
-        """Ensure connect() calls pl.scan_delta and fetch_schema is lazy."""
+        """Ensure connect() calls pl.scan_delta and the scan stays lazy."""
         lazy = _sample_lazy_frame()
         scan = mocker.patch("veridelta.connectors.lakehouse.pl.scan_delta", return_value=lazy)
         connector = DeltaLakeConnector(
@@ -224,7 +203,7 @@ class TestLakehouseConnectors:
         )
 
         connector.connect()
-        schema = connector.fetch_schema()
+        schema = connector.lazyframe().collect_schema()
 
         scan.assert_called_once_with(
             "s3://lake/events",
@@ -238,7 +217,7 @@ class TestLakehouseConnectors:
     def test_it_connects_iceberg_via_scan_iceberg_and_returns_schema(
         self, mocker: MockerFixture
     ) -> None:
-        """Ensure connect() calls pl.scan_iceberg and fetch_schema is lazy."""
+        """Ensure connect() calls pl.scan_iceberg and the scan stays lazy."""
         lazy = _sample_lazy_frame()
         scan = mocker.patch("veridelta.connectors.lakehouse.pl.scan_iceberg", return_value=lazy)
         connector = IcebergConnector(
@@ -249,7 +228,7 @@ class TestLakehouseConnectors:
         )
 
         connector.connect()
-        schema = connector.fetch_schema()
+        schema = connector.lazyframe().collect_schema()
 
         scan.assert_called_once_with(
             "s3://lake/iceberg/events",
@@ -378,8 +357,6 @@ class TestLakehouseConnectors:
         connector.close()  # idempotent
         with pytest.raises(ConnectorError, match="not connected"):
             connector.lazyframe()
-        with pytest.raises(ConnectorError, match="not connected"):
-            connector.fetch_schema()
 
         connector.connect()
         assert connector.lazyframe() is lazy
@@ -409,7 +386,7 @@ class TestConnectorLifecycleDefaults:
     """Validate the lifecycle members every connector inherits from the ABC."""
 
     def test_it_provides_a_no_op_close_and_a_self_returning_context(self) -> None:
-        """Ensure a three-method subclass still gets close() and the context protocol."""
+        """Ensure a subclass that only connects and runs SQL gets close() and the context protocol."""
 
         class _Minimal(VerideltaConnector):
             def connect(self) -> None:
@@ -419,9 +396,6 @@ class TestConnectorLifecycleDefaults:
                 self, statement: str, query_type: PushdownQueryType = "mismatch"
             ) -> pl.LazyFrame:
                 return _sample_lazy_frame()
-
-            def fetch_schema(self) -> pl.Schema:
-                return _sample_lazy_frame().collect_schema()
 
         connector = _Minimal()
         connector.close()
@@ -497,7 +471,7 @@ class TestDatabaseConnector:
 
         read.assert_called_with('SELECT * FROM "public"."orders"', uri)
         assert connector.lazyframe().collect().equals(frame)
-        assert connector.fetch_schema() == frame.schema
+        assert connector.lazyframe().collect_schema() == frame.schema
 
     def test_it_sends_a_query_verbatim(self, mocker: MockerFixture) -> None:
         """Ensure a configured statement reaches the driver as written, with no catalog lookup."""
@@ -703,8 +677,6 @@ class TestDatabaseConnector:
 
         with pytest.raises(ConnectorError, match="not connected"):
             connector.lazyframe()
-        with pytest.raises(ConnectorError, match="not connected"):
-            connector.fetch_schema()
 
         connector.connect()
         connector.close()
@@ -746,7 +718,7 @@ class TestDatabaseSchemaProbe:
 
         with DatabaseConnector(DatabaseConfig(uri=uri, table="orders"), probe=True) as connector:
             connector.connect()
-            schema = connector.fetch_schema()
+            schema = connector.lazyframe().collect_schema()
 
         read.assert_called_with('SELECT * FROM "orders" WHERE 1 = 0', uri)
         assert schema == frame.schema
@@ -837,7 +809,7 @@ class TestPostgresDeclaredScale:
 
         with DatabaseConnector(DatabaseConfig(uri=uri, table="orders"), probe=True) as connector:
             connector.connect()
-            schema = connector.fetch_schema()
+            schema = connector.lazyframe().collect_schema()
 
         read.assert_called_with(
             'SELECT CAST("amount" AS TEXT) AS "amount" FROM "orders" WHERE 1 = 0', uri
@@ -927,7 +899,7 @@ class TestSqlServerDatetimeOffset:
 
         with DatabaseConnector(config, probe=True) as connector:
             connector.connect()
-            schema = connector.fetch_schema()
+            schema = connector.lazyframe().collect_schema()
 
         read.assert_called_once_with("SELECT * FROM [orders] WHERE 1 = 0", _MSSQL_URI)
         assert schema == _MSSQL_COLUMNS.schema
@@ -1204,22 +1176,6 @@ class TestPostgresPushdownSession:
         with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[database\]'"):
             _postgres_session().connect()
 
-    def test_it_describes_the_last_result_without_its_rows(self, mocker: MockerFixture) -> None:
-        """Ensure `fetch_schema` reruns the last statement wrapped to return no rows."""
-        empty = pl.DataFrame(schema={"id": pl.Int64})
-        read = _read_database(mocker, return_value=_setting("on"))
-        session = _postgres_session()
-        session.connect()
-        session.execute_pushdown('SELECT "id" FROM "orders"')
-        read.return_value = empty
-
-        schema = session.fetch_schema()
-
-        assert schema == empty.schema
-        assert read.call_args.args[0] == session.compiler.compile_result_schema_query(
-            'SELECT "id" FROM "orders"'
-        )
-
     def test_it_reads_declared_numeric_types_from_the_catalog(self, mocker: MockerFixture) -> None:
         """Ensure the session reports the declared type of each `numeric` Polars holds exactly."""
         catalog = _catalog(("id", -1, False), ("amount", _NUMERIC_10_2, True), ("free", -1, True))
@@ -1232,15 +1188,6 @@ class TestPostgresPushdownSession:
         read.assert_called_with(compile_postgres_columns_query("public.orders"), _POSTGRES_URI)
         assert declared == {"amount": pl.Decimal(10, 2)}
 
-    def test_it_needs_a_statement_before_it_can_describe_one(self, mocker: MockerFixture) -> None:
-        """Ensure `fetch_schema` explains itself when nothing has run yet."""
-        _read_database(mocker, return_value=_setting("on"))
-        session = _postgres_session()
-        session.connect()
-
-        with pytest.raises(ConnectorError, match="No pushdown statement has run"):
-            session.fetch_schema()
-
     def test_it_refuses_work_until_connected_and_after_closing(self, mocker: MockerFixture) -> None:
         """Ensure the lifecycle matches the other connectors, and closing twice is safe."""
         _read_database(mocker, return_value=_setting("on"))
@@ -1248,8 +1195,6 @@ class TestPostgresPushdownSession:
 
         with pytest.raises(ConnectorError, match="not connected"):
             session.execute_pushdown("SELECT 1")
-        with pytest.raises(ConnectorError, match="not connected"):
-            session.fetch_schema()
 
         session.connect()
         session.close()

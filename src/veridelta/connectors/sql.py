@@ -33,9 +33,6 @@ ColumnTypes = Mapping[str, pl.DataType]
 COUNT_ALIAS = "_veridelta_total"
 """Column alias projected by `compile_count_query` so results stay dialect-neutral."""
 
-SCHEMA_ALIAS = "_veridelta_schema"
-"""Derived-table alias used by `compile_result_schema_query` around a prior statement."""
-
 DUPLICATE_ROWS_ALIAS = "_veridelta_rows"
 """Per-key row count that `compile_duplicate_key_query` sums over duplicated keys."""
 
@@ -660,10 +657,9 @@ class SQLPushdownCompiler:
     Every join reads keys through the same stages 1-7 as compared columns,
     driven by `key_rules`, so rows match on the keys the local engine sees.
 
-    `compile_result_schema_query` wraps any of the above so a connector can
-    describe a result without re-running it. Rules reach the compiler already
-    folded over the configuration's `default_*` settings, so every compared
-    column arrives as one fully specified `DiffRule`.
+    Rules reach the compiler already folded over the configuration's
+    `default_*` settings, so every compared column arrives as one fully
+    specified `DiffRule`.
 
     The compiler is also the security boundary for warehouse SQL. Identifiers
     are allowlisted segment by segment and then dialect-quoted, data literals
@@ -1371,22 +1367,6 @@ class SQLPushdownCompiler:
             ConnectorError: If the relation name is empty or not allowlisted.
         """
         return f"SELECT * FROM {self._quote_relation(table)} WHERE 1 = 0"
-
-    def compile_result_schema_query(self, statement: str) -> str:
-        """Wrap a previously compiled statement so only its column metadata returns.
-
-        Connectors use this for `fetch_schema` after `execute_pushdown`. It is
-        the one place a full statement is nested inside another, so it lives
-        here with the rest of the SQL assembly rather than in a connector.
-
-        Args:
-            statement (str): SQL produced by this compiler. Never user text.
-
-        Returns:
-            str: `SELECT * FROM (statement) AS alias LIMIT 0`, with the alias
-            quoted for the active dialect.
-        """
-        return f"SELECT * FROM ({statement}) AS {self._quote_ident(SCHEMA_ALIAS)} LIMIT 0"
 
     def _compile_anti_join(
         self,

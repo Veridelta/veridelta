@@ -15,14 +15,12 @@ and timings, never SQL text or credentials.
 import importlib
 import logging
 import time
-import warnings
 from collections.abc import Mapping
 from typing import Any, Final
 
 import polars as pl
 
 from veridelta.connectors.base import (
-    FETCH_SCHEMA_DEPRECATED,
     PushdownQueryType,
     VerideltaConnector,
     mask_secrets,
@@ -56,7 +54,6 @@ patch this attribute."""
 _BIGQUERY_EXTRA = "BigQuery extra is not installed. Install it with: uv add 'veridelta[bigquery]'"
 _NO_ARROW_BATCHES = "BigQuery returned no Arrow batches, so the result has no columns."
 _UNCONNECTED = "Warehouse connector is not connected. Call connect() first."
-_NO_STATEMENT = "Call execute_pushdown before fetch_schema."
 _NON_TABULAR = "Warehouse cursor did not return a tabular Arrow result."
 
 # Without `force_return_table`, the driver returns None, not an empty table, for zero rows.
@@ -74,18 +71,6 @@ def _lazy_from_arrow(table: Any) -> pl.LazyFrame:
     return frame.lazy()
 
 
-def _schema_from_arrow(table: Any, description: Any) -> pl.Schema:
-    """Build a Polars schema from an Arrow table, falling back to cursor metadata."""
-    if table is not None:
-        frame = pl.from_arrow(table)  # pyright: ignore[reportUnknownMemberType]
-        if isinstance(frame, pl.DataFrame):
-            return frame.schema
-
-    if not description:
-        raise ConnectorError("Warehouse cursor did not return a schema.")
-    return pl.Schema({str(col[0]): pl.String() for col in description})
-
-
 def _run_arrow_query(
     session: Any,
     statement: str,
@@ -94,7 +79,7 @@ def _run_arrow_query(
     backend: str,
     query_type: str,
     fetch_kwargs: Mapping[str, Any] | None = None,
-) -> tuple[Any, Any]:
+) -> Any:
     """Execute SQL on a native session and fetch an Arrow payload."""
     started = time.perf_counter()
     cursor = session.cursor()
@@ -120,7 +105,7 @@ def _run_arrow_query(
             query_type,
             time.perf_counter() - started,
         )
-        return table, getattr(cursor, "description", None)
+        return table
     finally:
         closer = getattr(cursor, "close", None)
         if callable(closer):
@@ -201,7 +186,6 @@ class SnowflakeConnector(VerideltaConnector):
         self._config = config
         self.compiler = SQLPushdownCompiler(SQLDialect.SNOWFLAKE)
         self._session: Any = None
-        self._last_statement: str | None = None
 
     def connect(self) -> None:
         """Open a Snowflake session for subsequent pushdown statements.
@@ -254,7 +238,7 @@ class SnowflakeConnector(VerideltaConnector):
                 the cursor does not return a table.
         """
         self._require_session()
-        table, _description = _run_arrow_query(
+        table = _run_arrow_query(
             self._session,
             statement,
             "fetch_arrow_all",
@@ -262,42 +246,17 @@ class SnowflakeConnector(VerideltaConnector):
             query_type=query_type,
             fetch_kwargs=_SNOWFLAKE_FETCH_KWARGS,
         )
-        self._last_statement = statement
         return _lazy_from_arrow(table)
-
-    def fetch_schema(self) -> pl.Schema:
-        """Describe the last pushdown result via a `LIMIT 0` query.
-
-        Returns:
-            pl.Schema: Column names and dtypes from the empty Arrow result.
-
-        Raises:
-            ConnectorError: If the session is missing or no statement has run.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        self._require_session()
-        if self._last_statement is None:
-            raise ConnectorError(_NO_STATEMENT)
-        schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
-        table, description = _run_arrow_query(
-            self._session,
-            schema_sql,
-            "fetch_arrow_all",
-            backend="Snowflake",
-            query_type="schema",
-            fetch_kwargs=_SNOWFLAKE_FETCH_KWARGS,
-        )
-        return _schema_from_arrow(table, description)
 
     def close(self) -> None:
         """Close the Snowflake session, if one is open.
 
-        Idempotent. Afterwards `execute_pushdown` and `fetch_schema` raise
-        `ConnectorError` until `connect()` is called again.
+        Idempotent. Afterwards `execute_pushdown` raises `ConnectorError` until
+        `connect()` is called again.
         """
         if self._session is None:
             return
-        session, self._session, self._last_statement = self._session, None, None
+        session, self._session = self._session, None
         _close_session(session, "Snowflake")
 
     def _require_session(self) -> None:
@@ -331,7 +290,6 @@ class DatabricksConnector(VerideltaConnector):
         self._config = config
         self.compiler = SQLPushdownCompiler(SQLDialect.DATABRICKS)
         self._session: Any = None
-        self._last_statement: str | None = None
 
     def connect(self) -> None:
         """Open a Databricks SQL session for subsequent pushdown statements.
@@ -379,48 +337,24 @@ class DatabricksConnector(VerideltaConnector):
                 the cursor does not return a table.
         """
         self._require_session()
-        table, _description = _run_arrow_query(
+        table = _run_arrow_query(
             self._session,
             statement,
             "fetchall_arrow",
             backend="Databricks",
             query_type=query_type,
         )
-        self._last_statement = statement
         return _lazy_from_arrow(table)
-
-    def fetch_schema(self) -> pl.Schema:
-        """Describe the last pushdown result via a `LIMIT 0` query.
-
-        Returns:
-            pl.Schema: Column names and dtypes from the empty Arrow result.
-
-        Raises:
-            ConnectorError: If the session is missing or no statement has run.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        self._require_session()
-        if self._last_statement is None:
-            raise ConnectorError(_NO_STATEMENT)
-        schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
-        table, description = _run_arrow_query(
-            self._session,
-            schema_sql,
-            "fetchall_arrow",
-            backend="Databricks",
-            query_type="schema",
-        )
-        return _schema_from_arrow(table, description)
 
     def close(self) -> None:
         """Close the Databricks session, if one is open.
 
-        Idempotent. Afterwards `execute_pushdown` and `fetch_schema` raise
-        `ConnectorError` until `connect()` is called again.
+        Idempotent. Afterwards `execute_pushdown` raises `ConnectorError` until
+        `connect()` is called again.
         """
         if self._session is None:
             return
-        session, self._session, self._last_statement = self._session, None, None
+        session, self._session = self._session, None
         _close_session(session, "Databricks")
 
     def _require_session(self) -> None:
@@ -456,7 +390,6 @@ class BigQueryConnector(VerideltaConnector):
         self.compiler = SQLPushdownCompiler(SQLDialect.BIGQUERY)
         self._client: Any = None
         self._job_config: Any = None
-        self._last_statement: str | None = None
 
     def connect(self) -> None:
         """Create the BigQuery client and the job settings every statement uses.
@@ -514,39 +447,18 @@ class BigQueryConnector(VerideltaConnector):
         batches = _run_bigquery_query(
             self._client, statement, self._job_config, query_type=query_type
         )
-        self._last_statement = statement
         return _lazy_from_arrow(batches)
-
-    def fetch_schema(self) -> pl.Schema:
-        """Describe the last pushdown result via a `LIMIT 0` query.
-
-        Returns:
-            pl.Schema: Column names and dtypes from the empty Arrow result.
-
-        Raises:
-            ConnectorError: If the connector is not connected or no statement
-                has run.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        self._require_client()
-        if self._last_statement is None:
-            raise ConnectorError(_NO_STATEMENT)
-        schema_sql = self.compiler.compile_result_schema_query(self._last_statement)
-        batches = _run_bigquery_query(
-            self._client, schema_sql, self._job_config, query_type="schema"
-        )
-        return _lazy_from_arrow(batches).collect_schema()
 
     def close(self) -> None:
         """Close the BigQuery client, if one is open.
 
-        Idempotent. Afterwards `execute_pushdown` and `fetch_schema` raise
-        `ConnectorError` until `connect()` is called again.
+        Idempotent. Afterwards `execute_pushdown` raises `ConnectorError` until
+        `connect()` is called again.
         """
         if self._client is None:
             return
         client = self._client
-        self._client = self._job_config = self._last_statement = None
+        self._client = self._job_config = None
         _close_session(client, "BigQuery")
 
     def _require_client(self) -> None:
