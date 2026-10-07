@@ -227,7 +227,7 @@ A MotherDuck database needs a token. Set `motherduck_token`, or the `MOTHERDUCK_
 
 The connection opens read-write, because a read-only MotherDuck connection needs a read-scaling token. A `query` therefore runs with all of the token's permissions. Use a read-scaling token for a source, as you would give a database `query` a role that can only read.
 
-Connecting downloads MotherDuck's DuckDB extension, so the machine needs network access to DuckDB's extension repository. The MotherDuck connection is tested with a stand-in for the driver, not against a live account.
+Connecting downloads MotherDuck's DuckDB extension, so the machine needs network access to DuckDB's extension repository. The MotherDuck connection has not yet run against a live account.
 
 ### DuckDB types
 
