@@ -1,23 +1,16 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Abstract connector interface for warehouse and lakehouse backends."""
+"""The connector contracts: the shared lifecycle, the readers, and the pushdown sessions."""
 
 import importlib
 from abc import ABC, abstractmethod
 from types import ModuleType, TracebackType
-from typing import Literal, Protocol, Self, runtime_checkable
+from typing import Literal, Self
 
 import polars as pl
 
 from veridelta.connectors.sql import SQLPushdownCompiler
-from veridelta.exceptions import ConnectorError
-
-PUSHDOWN_UNSUPPORTED = (
-    "This source is compared locally and has no SQL pushdown. Call connect() and read its "
-    "frame instead."
-)
-"""The refusal every reader gives `execute_pushdown`; only a warehouse or pushdown session runs SQL."""
 
 
 def mask_secrets(text: str, *secrets: str | None) -> str:
@@ -78,54 +71,25 @@ probes, value map evidence, a check of the server's settings, or a sample of
 changed rows with their values."""
 
 
-@runtime_checkable
-class PushdownSession(Protocol):
-    """The two members the pushdown summary needs from a connector.
-
-    Narrower than `VerideltaConnector`, which also covers lakehouse scans that
-    have no compiler. Stating the requirement structurally keeps the summary
-    reusable by anything that can compile and execute, including the
-    differential test harness.
-    """
-
-    compiler: SQLPushdownCompiler
-
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Execute compiled SQL and return an unevaluated result graph.
-
-        Args:
-            statement (str): Compiler-produced SQL.
-            query_type (PushdownQueryType): Which round-trip this represents.
-
-        Returns:
-            pl.LazyFrame: Unevaluated result graph.
-        """
-        ...
-
-
 class VerideltaConnector(ABC):
-    """Session and compute contract for remote or table-format data sources.
+    """The lifecycle every connector shares: `connect()`, `close()`, and the context manager.
 
-    Four families implement it, and they divide the work differently:
+    A connector is one of two kinds, and the engine routes each source to one
+    by its configuration:
 
-    - Warehouse connectors (`SnowflakeConnector`, `DatabricksConnector`,
-      `BigQueryConnector`) hold
-      a driver session plus a `compiler`. The engine compiles comparison SQL
-      and calls `execute_pushdown` for each round-trip; results come back as
-      Arrow wrapped in a LazyFrame. They also satisfy `PushdownSession`.
-    - Lakehouse connectors (`DeltaLakeConnector`, `IcebergConnector`) open a
-      Polars `scan_*` handle and expose it through `lazyframe()`. The diff then
-      runs in the local engine; their `execute_pushdown` always raises.
-    - The database and DuckDB connectors (`DatabaseConnector`,
-      `DuckDBConnector`) read one table or query when they connect, through
-      ConnectorX or DuckDB, and expose the rows through `lazyframe()`. The
-      diff runs in the local engine, as for a lakehouse.
-    - The pushdown sessions (`PostgresPushdownSession`,
-      `DuckDBPushdownSession`) run compiled SQL inside Postgres or DuckDB, for
-      two tables that both set `pushdown`. Like a warehouse connector, each
-      satisfies `PushdownSession`.
+    - A `ReaderConnector` reads a source for the local engine. The lakehouse
+      connectors (`DeltaLakeConnector`, `IcebergConnector`) open a Polars
+      `scan_*` handle, and the database and DuckDB connectors
+      (`DatabaseConnector`, `DuckDBConnector`) read one table or query when
+      they connect. Each hands the rows to the engine through `lazyframe()`,
+      and the diff runs in Polars.
+    - A `PushdownSession` runs compiled SQL where the data lives. The
+      warehouse connectors (`SnowflakeConnector`, `DatabricksConnector`,
+      `BigQueryConnector`) hold a driver session, and the pushdown sessions
+      (`PostgresPushdownSession`, `DuckDBPushdownSession`) serve two tables
+      that both set `pushdown`. The engine compiles comparison SQL with the
+      session's `compiler` and calls `execute_pushdown` for each round-trip;
+      results come back as Arrow wrapped in a LazyFrame.
 
     Call `connect()` before anything else and `close()` when finished; the
     connector is also a context manager whose exit calls `close()`. After
@@ -135,41 +99,19 @@ class VerideltaConnector(ABC):
 
     @abstractmethod
     def connect(self) -> None:
-        """Establish a warehouse session or lakehouse lazy-scan handle.
+        """Open the driver session, the scan, or the read that later calls use.
 
         Raises:
-            ConnectorError: If the backend is unimplemented or extras are missing.
+            ConnectorError: If the backend cannot be reached or its extra is missing.
         """
-
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Execute dialect-specific compute and return an unevaluated LazyFrame.
-
-        Args:
-            statement (str): SQL (warehouse) or deferred predicate payload.
-            query_type (PushdownQueryType): Which round-trip the SQL represents
-                (`mismatch`, `added`, `missing`, `count`, `duplicates`,
-                `columns`, `schema`, `value_maps`, `settings`, or `samples`).
-
-        Returns:
-            pl.LazyFrame: Unevaluated result graph. Must not be collected here.
-
-        Raises:
-            ConnectorError: Always, for a reader that is compared locally and leaves
-                this default; a warehouse or pushdown session overrides it.
-        """
-        _ = statement
-        _ = query_type
-        raise ConnectorError(PUSHDOWN_UNSUPPORTED)
 
     def close(self) -> None:  # noqa: B027 - deliberate no-op default, see below
-        """Release the session or scan handle established by `connect()`.
+        """Release what `connect()` opened.
 
         Safe to call before `connect()` and safe to call twice. The default
-        holds no resources; connectors that open a driver session or a scan
-        override it. It is not abstract, so a subclass that holds nothing need not
-        define it.
+        holds no resources; connectors that open a driver session, a scan, or
+        a read override it. It is not abstract, so a subclass that holds
+        nothing need not define it.
         """
 
     def __enter__(self) -> Self:
@@ -194,3 +136,60 @@ class VerideltaConnector(ABC):
             traceback (TracebackType | None): Pending traceback.
         """
         self.close()
+
+
+class ReaderConnector(VerideltaConnector):
+    """A connector the local engine reads through `lazyframe()`.
+
+    `connect()` opens a scan or reads the rows, `lazyframe()` hands them to
+    the engine, and the comparison runs in Polars. A reader has no
+    `execute_pushdown`: nothing is pushed into a source that is compared
+    locally.
+    """
+
+    @abstractmethod
+    def lazyframe(self) -> pl.LazyFrame:
+        """Return what `connect()` opened, as an unevaluated LazyFrame.
+
+        Returns:
+            pl.LazyFrame: A lazy scan, or a lazy wrapper over the rows read.
+
+        Raises:
+            ConnectorError: If `connect()` has not been called.
+        """
+
+
+class PushdownSession(VerideltaConnector):
+    """A connector that runs compiled comparison SQL where the data lives.
+
+    The engine compiles every statement with `compiler` and runs it through
+    `execute_pushdown`, one round-trip per `PushdownQueryType`. Only what a
+    statement returns comes back: counts, keys, and the samples asked for,
+    never the tables themselves.
+
+    Attributes:
+        compiler (SQLPushdownCompiler): The dialect's compiler, which the
+            subclass sets before `connect()`.
+    """
+
+    compiler: SQLPushdownCompiler
+
+    @abstractmethod
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
+        """Execute compiled SQL and return an unevaluated result graph.
+
+        Args:
+            statement (str): Compiler-produced SQL. Never user text.
+            query_type (PushdownQueryType): Which round-trip the SQL represents
+                (`mismatch`, `added`, `missing`, `count`, `duplicates`,
+                `columns`, `schema`, `value_maps`, `settings`, or `samples`).
+
+        Returns:
+            pl.LazyFrame: Unevaluated result graph. Must not be collected here.
+
+        Raises:
+            ConnectorError: If the session is not connected or the statement
+                fails.
+        """

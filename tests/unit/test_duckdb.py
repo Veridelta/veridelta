@@ -290,11 +290,6 @@ class TestDuckDBConnectorLifecycle:
         with pytest.raises(ConnectorError, match="not connected"):
             connector.lazyframe()
 
-    def test_it_has_no_sql_pushdown(self) -> None:
-        """Ensure a DuckDB source is never asked to run comparison SQL."""
-        with pytest.raises(ConnectorError, match="compared locally"):
-            DuckDBConnector(_FILE).execute_pushdown("SELECT 1")
-
 
 _PUSHDOWN = DuckDBConfig(database="warehouse.duckdb", table="src", pushdown=True)
 

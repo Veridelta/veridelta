@@ -32,7 +32,8 @@ import polars as pl
 
 from veridelta.connectors.base import (
     PushdownQueryType,
-    VerideltaConnector,
+    PushdownSession,
+    ReaderConnector,
     mask_secrets,
     optional_module,
     read_subject,
@@ -64,13 +65,13 @@ _NESTED_TYPES: Final = frozenset({"struct", "list", "array", "map"})
 """DuckDB types whose members can hold an unreadable type."""
 
 
-class DuckDBConnector(VerideltaConnector):
+class DuckDBConnector(ReaderConnector):
     """Read one DuckDB or MotherDuck table or query into Polars.
 
     `connect()` reads eagerly and keeps the frame, and `lazyframe()` hands it to
     the local engine as a LazyFrame over those rows. The read is the one place
-    the rows are fetched, so it happens once per `connect()`. `execute_pushdown`
-    always raises: the comparison runs in Polars, never in DuckDB.
+    the rows are fetched, so it happens once per `connect()`. The comparison
+    runs in Polars, never in DuckDB.
     """
 
     def __init__(self, config: DuckDBConfig, *, probe: bool = False) -> None:
@@ -165,7 +166,7 @@ class DuckDBConnector(VerideltaConnector):
         return read_subject(self._config.table)
 
 
-class DuckDBPushdownSession(VerideltaConnector):
+class DuckDBPushdownSession(PushdownSession):
     """Run compiled comparison SQL inside DuckDB or MotherDuck.
 
     Opened for two tables in one database that both set `pushdown`. It holds

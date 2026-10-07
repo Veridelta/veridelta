@@ -22,7 +22,7 @@ import polars as pl
 
 from veridelta.connectors.base import (
     PushdownQueryType,
-    VerideltaConnector,
+    PushdownSession,
     mask_secrets,
     optional_module,
 )
@@ -162,7 +162,7 @@ def _snowflake_credentials(config: SnowflakeConfig) -> dict[str, str | None]:
     return credentials
 
 
-class SnowflakeConnector(VerideltaConnector):
+class SnowflakeConnector(PushdownSession):
     """Snowflake SQL warehouse connector backed by the optional Snowflake extra.
 
     `connect()` opens a `snowflake.connector` session from the frozen
@@ -267,7 +267,7 @@ class SnowflakeConnector(VerideltaConnector):
             raise ConnectorError(_UNCONNECTED)
 
 
-class DatabricksConnector(VerideltaConnector):
+class DatabricksConnector(PushdownSession):
     """Databricks SQL warehouse connector backed by the optional Databricks extra.
 
     `connect()` opens a `databricks.sql` session against the configured SQL
@@ -365,7 +365,7 @@ class DatabricksConnector(VerideltaConnector):
             raise ConnectorError(_UNCONNECTED)
 
 
-class BigQueryConnector(VerideltaConnector):
+class BigQueryConnector(PushdownSession):
     """BigQuery warehouse connector backed by the optional BigQuery extra.
 
     `connect()` builds a `bigquery.Client` for the configured project, from a
