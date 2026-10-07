@@ -1,3 +1,16 @@
+## v0.23.0 (2026-10-07)
+
+`veridelta suggest` now proposes rules for text columns too. A column gets
+`whitespace_mode: both` when its differing values match once both ends are stripped,
+`case_insensitive: true` when they match once lowercased, and both settings only when
+some rows need both. Text that differs in anything else is a change, and no rule explains
+it. A rule that would make a row that matches today differ is never suggested, such as
+case folding ahead of a `value_map` whose keys are capitals.
+
+### Feat
+
+- suggest trimming and case folding for text that differs only in them (#274)
+
 ## v0.22.0 (2026-10-07)
 
 `veridelta suggest` runs the comparison, then suggests rules that would explain the
