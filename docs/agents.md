@@ -109,6 +109,8 @@ A pair compared in place, such as two warehouse tables, brings back counts and p
 
 `veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints, and `validate`, `crosswalk`, and `error` name the others. The docs site serves the same files; see [Printing the schema](cli.md#printing-the-schema). A script or an agent can check what it parses against them.
 
+On a pull request, the comment the [GitHub Action](ci.md#github-actions) keeps ends with the run's summary as JSON, in an HTML comment that readers never see. It holds counts and the column names the comment shows, never a value, and [Markdown summary](results.md#markdown-summary) shows how to parse it.
+
 ## Docs for language models
 
 The site publishes two plain-text files for language models, as the [llms.txt proposal](https://llmstxt.org/) describes:

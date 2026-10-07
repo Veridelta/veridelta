@@ -3,16 +3,20 @@
 
 """Unit tests for the standalone HTML report generator."""
 
+import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
+import jsonschema
 import polars as pl
 import pytest
 
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, DiffResult, DiffSummary
+from veridelta.outputs import output_json_schema
 from veridelta.report import render_html, render_markdown, write_html, write_markdown
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
@@ -413,6 +417,25 @@ def _with_summary(summary: DiffSummary, *, keys_only: bool = False) -> DiffResul
     )
 
 
+_SUMMARY_COMMENT = re.compile(r"\n<!-- veridelta-summary (\S+)\n(.+)\n-->\n\Z")
+"""The comment that ends a Markdown summary: its schema's URL, then the JSON on one line."""
+
+
+def _visible(document: str) -> str:
+    """Return the part of a Markdown summary a reader sees, before its JSON comment."""
+    found = _SUMMARY_COMMENT.search(document)
+    assert found, "The summary does not end with its JSON comment."
+    return document[: found.start()]
+
+
+def _comment_json(document: str) -> Any:
+    """Parse the JSON in the comment that ends a Markdown summary, as an agent would."""
+    found = _SUMMARY_COMMENT.search(document)
+    assert found, "The summary does not end with its JSON comment."
+    assert found.group(1) == "https://veridelta.github.io/veridelta/schema/run.schema.json"
+    return json.loads(found.group(2))
+
+
 class TestMarkdownSummary:
     """Validate the Markdown summary CI posts to job summaries and pull requests."""
 
@@ -433,7 +456,7 @@ class TestMarkdownSummary:
             assert row in document
         assert document.index("| `amount` | 4 |") < document.index("| `status` | 1 |")
         # Markdown setext underlines would turn the plain-text report into headings.
-        assert "===" not in document
+        assert "===" not in _visible(document)
 
     def test_it_marks_a_perfect_match(self) -> None:
         """Ensure a clean run reads as clean, with no drift table."""
@@ -494,6 +517,51 @@ class TestMarkdownSummary:
         document = render_markdown(_with_summary(_summary(column_mismatches={column: 2})))
 
         assert f"| {cell} | 2 |" in document
+
+    def test_it_ends_with_the_summary_as_json_under_its_schema(self) -> None:
+        """Ensure the hidden comment parses back to the run's summary, valid under the run schema.
+
+        GitHub hides an HTML comment from readers, and an agent that reads the
+        pull request comment through the API parses it.
+        """
+        result = _result()
+
+        printed = _comment_json(render_markdown(result))
+
+        assert printed == json.loads(result.summary.model_dump_json())
+        jsonschema.Draft202012Validator(output_json_schema("run")).validate(printed)
+
+    def test_its_json_names_only_the_columns_the_table_lists(self) -> None:
+        """Ensure the comment holds the top columns the table shows, and no others."""
+        mismatches = {f"col_{index}": index for index in range(1, 8)}
+        summary = _summary(column_mismatches=mismatches, report_limit=3)
+
+        printed = _comment_json(render_markdown(_with_summary(summary)))
+
+        assert printed["column_mismatches"] == {"col_7": 7, "col_6": 6, "col_5": 5}
+        assert printed["changed_count"] == 5
+
+    def test_its_json_names_no_column_when_the_limit_is_zero(self) -> None:
+        """Ensure `report_top_columns_limit: 0` keeps column names out of the comment too."""
+        printed = _comment_json(render_markdown(_with_summary(_summary(report_limit=0))))
+
+        assert "column_mismatches" not in printed
+        jsonschema.Draft202012Validator(output_json_schema("run")).validate(printed)
+
+    def test_a_column_name_cannot_close_the_json_comment(self) -> None:
+        """Ensure a name from the data cannot end the comment early or open another.
+
+        `<`, `>`, and `&` become JSON escapes, which a parser reads back as the
+        same name.
+        """
+        column = "--><!-- veridelta:x --> & more"
+        document = render_markdown(_with_summary(_summary(column_mismatches={column: 2})))
+
+        comment = document[document.index("\n<!-- veridelta-summary ") + 1 :]
+        assert comment.count(">") == 1
+        assert comment.count("<") == 1
+        assert comment.endswith("\n-->\n")
+        assert _comment_json(document)["column_mismatches"] == {column: 2}
 
     def test_it_writes_the_file_and_creates_parent_directories(self, tmp_path: Path) -> None:
         """Ensure a nested output path does not require pre-creating the tree."""
@@ -566,7 +634,7 @@ class TestMarkdownValues:
         """Ensure each differing value gets a row, lowest keys first, and nothing else does."""
         document = render_markdown(_with_changes(_CHANGED), max_rows=10)
 
-        assert document.endswith(
+        assert _visible(document).endswith(
             "#### Changed values\n"
             "\n"
             "| `id` | Column | Source | Target |\n"
@@ -582,7 +650,7 @@ class TestMarkdownValues:
 
         assert "| `1` | `amount` | `10.0` | `10.5` |" in document
         assert "| `2` |" not in document
-        assert document.endswith("\n\n_Showing 2 of 3 changed values._\n")
+        assert _visible(document).endswith("\n\n_Showing 2 of 3 changed values._\n")
 
     def test_it_reads_the_rows_a_local_run_produces(self) -> None:
         """Ensure the summary reads a real run's changed rows."""
@@ -634,7 +702,7 @@ class TestMarkdownValues:
         shown = document.count("`'\u00e9")
         assert 0 < shown < rows
         assert len(document.encode()) <= 60_000
-        assert document.endswith(f"\n_Showing {shown:,} of 5,000 changed values._\n")
+        assert _visible(document).endswith(f"\n_Showing {shown:,} of 5,000 changed values._\n")
 
     def test_it_lists_a_pushdown_sample_and_counts_what_it_left_out(self) -> None:
         """Ensure a pushdown run lists its sample, and counts every value the warehouse found."""
@@ -652,13 +720,13 @@ class TestMarkdownValues:
         assert document.index("| `2` | `val` | `'b'` | `'B'` |") < document.index(
             "| `3` | `val` | `'c'` | `'C'` |"
         )
-        assert document.endswith("\n_Showing 2 of 3 changed values._\n")
+        assert _visible(document).endswith("\n_Showing 2 of 3 changed values._\n")
 
     def test_it_asks_for_a_sample_under_pushdown(self) -> None:
         """Ensure a pushdown run without a sample says how to get values."""
         document = render_markdown(_pushdown(None), max_rows=10)
 
-        assert document.endswith(
+        assert _visible(document).endswith(
             "#### Changed values\n\nSet `pushdown_sample_rows` to list values here.\n"
         )
 

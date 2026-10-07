@@ -27,6 +27,7 @@ __all__ = [
     "ValidationReport",
     "error_report",
     "output_json_schema",
+    "output_schema_url",
     "validation_report",
 ]
 
@@ -127,6 +128,18 @@ OUTPUTS: Final = tuple(_OUTPUTS)
 """The outputs with a published schema, by the name `veridelta schema` takes."""
 
 
+def output_schema_url(name: str) -> str:
+    """Return the URL the docs site serves an output's schema at, which is its `$id`.
+
+    Args:
+        name (str): `run`, `validate`, `crosswalk`, or `error`.
+
+    Returns:
+        str: The schema's URL.
+    """
+    return f"{_SCHEMA_FOLDER}/{name}.schema.json"
+
+
 def output_json_schema(name: str) -> dict[str, Any]:
     """Return the JSON Schema of what a command prints with `--json`.
 
@@ -143,7 +156,7 @@ def output_json_schema(name: str) -> dict[str, Any]:
     title, description, build = _OUTPUTS[name]
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": f"{_SCHEMA_FOLDER}/{name}.schema.json",
+        "$id": output_schema_url(name),
         **build(),
         "title": title,
         "description": description,

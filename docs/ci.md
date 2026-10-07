@@ -83,6 +83,8 @@ jobs:
 
 To act on drift in a later step instead of failing, set `fail-on-mismatch: false` and read `status`.
 
+The pull request comment ends with the run's counts as JSON, in an HTML comment that readers never see, so an agent that reads the pull request through the API can parse the result; see [Markdown summary](results.md#markdown-summary).
+
 ### Values in the summary
 
 The summary lists counts and column names, never values, unless `markdown-max-rows` is above `0`. It then lists up to that many [changed values](results.md#markdown-summary), lowest keys first. They appear in the job summary and the pull request comment, where anyone who can read the pull request can read them. Set it only where every such reader may see the data.

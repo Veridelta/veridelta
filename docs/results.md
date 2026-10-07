@@ -65,6 +65,24 @@ write_markdown(result, "reports/summary.md")
 
 `write_markdown` writes the short summary that CI posts to a job summary or a pull request, and `render_markdown` returns it as text. It holds the verdict, a table of counts, and the drifting columns, up to `report_top_columns_limit`. Column names are written as code, so a name from the data cannot break the table or the page it lands on.
 
+The summary ends with the same counts as JSON, inside an HTML comment that GitHub and GitLab hide from readers. Its first line names the [run schema](schema/run.schema.json) the JSON follows:
+
+```text
+<!-- veridelta-summary https://veridelta.github.io/veridelta/schema/run.schema.json
+{"total_rows_source":3,"total_rows_target":3,"added_count":1,"removed_count":1,"changed_count":1,"column_mismatches":{"status":1},"is_match":false,...}
+-->
+```
+
+The JSON is what `veridelta run --json` prints, except that `column_mismatches` holds only the columns the drift table lists, and is left out when `report_top_columns_limit` is `0`. A column name's `<`, `>`, and `&` are written as the JSON escapes `\u003c`, `\u003e`, and `\u0026`, so a name cannot close the comment, and a JSON parser reads them back as the same name. A script, or an agent that reads a pull request comment through the API, parses the line after the marker:
+
+```python
+import json
+import re
+
+found = re.search(r"^<!-- veridelta-summary \S+\n(.+)$", body, re.MULTILINE)
+summary = json.loads(found.group(1))
+```
+
 The summary lists no values unless asked. With `max_rows` above 0, or `--markdown-max-rows` on the command line, a "Changed values" table follows the drift table. It has one row per differing value: the primary keys, the column, and the source and target values, lowest keys first. From Python:
 
 ```python
@@ -73,7 +91,7 @@ from veridelta.report import write_markdown
 write_markdown(result, "summary.md", max_rows=20)
 ```
 
-Each value is written as code. Text is quoted, so a trailing space or an empty string shows, and NULL reads as _null_. A value longer than 60 characters is cut and ends in `...`. The table stops at `max_rows` values, or before the summary reaches 60,000 bytes, which keeps a pull request comment under GitHub's limit. A last line then says how many values it showed. A pushdown run lists the values of its [row sample](pushdown.md#row-samples), so it needs `pushdown_sample_rows` too.
+Each value is written as code. Text is quoted, so a trailing space or an empty string shows, and NULL reads as _null_. A value longer than 60 characters is cut and ends in `...`. The table stops at `max_rows` values, or before the summary, its JSON comment included, reaches 60,000 bytes, which keeps a pull request comment under GitHub's limit. A last line then says how many values it showed. A pushdown run lists the values of its [row sample](pushdown.md#row-samples), so it needs `pushdown_sample_rows` too.
 
 CI posts the summary where more people may read it than may read the data. Ask for values only where every reader of the job summary and the pull request may see them.
 

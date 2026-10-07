@@ -2,7 +2,7 @@
 name: veridelta
 description: Compares two datasets with the Veridelta command line and reports what differs, keeping row values out of the reply. Use when a task compares two tables or files, checks a data migration or pipeline change, or writes or fixes a veridelta.yaml file.
 metadata:
-  version: "1.7.0"
+  version: "1.8.0"
 ---
 
 # Compare two datasets with Veridelta
@@ -48,6 +48,8 @@ Where the `mcp` extra is installed, `veridelta mcp` serves steps 1, 2, and 5 as 
 ## Checking the output
 
 `veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints, and `validate`, `crosswalk`, and `error` name the others. Check what you parse against them.
+
+On a pull request, the comment the GitHub Action keeps ends with the run's summary as JSON, on the line after `<!-- veridelta-summary`, in an HTML comment that readers never see. Parse that line to read the result without running the comparison again.
 
 ## Reference
 

@@ -10,10 +10,12 @@ renders as unstyled text at exactly the moment someone needs to read it.
 
 The Markdown summary is the short form CI posts to a job summary or a pull
 request comment: the verdict, the counts, and the columns that drifted. It
-lists changed values only when asked.
+lists changed values only when asked, and ends with the same counts as JSON in
+an HTML comment, which a reader never sees and a script can parse.
 """
 
 import html
+import json
 import math
 import re
 from collections.abc import Iterator
@@ -24,7 +26,8 @@ from typing import Final
 import polars as pl
 
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffResult
+from veridelta.models import DiffResult, DiffSummary
+from veridelta.outputs import output_schema_url
 
 DEFAULT_MAX_ROWS: Final[int] = 1000
 """Rows embedded per table before truncation.
@@ -324,7 +327,14 @@ _MARKDOWN_BUDGET: Final[int] = 60_000
 """UTF-8 bytes a Markdown summary may reach while it lists changed values.
 
 GitHub refuses a comment over 65,536 characters, and the Action adds a marker line.
+The JSON comment at the end counts toward it.
 """
+
+_SUMMARY_COMMENT: Final[str] = "<!-- veridelta-summary"
+"""Opens the HTML comment that holds the summary as JSON, ahead of its schema's URL."""
+
+_JSON_IN_HTML: Final = str.maketrans({"<": "\\u003c", ">": "\\u003e", "&": "\\u0026"})
+"""JSON escapes for the characters that could close the comment, which a parser reads back."""
 
 _MARKDOWN_VALUE_WIDTH: Final[int] = 60
 """Characters of a key or value the Markdown summary shows before cutting it."""
@@ -384,24 +394,54 @@ def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
         ]
     if summary.report_limit > 0:
         lines += ["", "#### Column-level drift", ""]
-        lines += _drift_lines(summary.column_mismatches, summary.report_limit)
+        lines += _drift_lines(summary)
+    comment = ["", *_summary_comment(summary)]
     if max_rows > 0 and summary.changed_count > 0:
         lines += ["", "#### Changed values", ""]
-        used = len("\n".join(lines).encode()) + 1
+        used = len("\n".join([*lines, *comment]).encode()) + 1
         lines += _value_lines(result, max_rows, _MARKDOWN_BUDGET - used)
-    return "\n".join(lines) + "\n"
+    return "\n".join([*lines, *comment]) + "\n"
 
 
-def _drift_lines(mismatches: dict[str, int], limit: int) -> list[str]:
+def _top_columns(summary: DiffSummary) -> list[tuple[str, int]]:
+    """Rank the drifting columns by mismatches, as `report_summary` does, and keep the top ones."""
+    ranked = sorted(summary.column_mismatches.items(), key=lambda item: -item[1])
+    return ranked[: summary.report_limit]
+
+
+def _drift_lines(summary: DiffSummary) -> list[str]:
     """Render the top drifting columns as a Markdown table."""
+    mismatches = summary.column_mismatches
     if not mismatches:
         return ["No column-level drift."]
-    ranked = sorted(mismatches.items(), key=lambda item: -item[1])
     lines = ["| Column | Mismatches |", "| :--- | ---: |"]
-    lines += [f"| {_markdown_code(column)} | {count:,} |" for column, count in ranked[:limit]]
-    if len(ranked) > limit:
-        lines += ["", f"_Showing the top {limit} of {len(ranked)} columns with drift._"]
+    lines += [
+        f"| {_markdown_code(column)} | {count:,} |" for column, count in _top_columns(summary)
+    ]
+    if len(mismatches) > summary.report_limit:
+        lines += [
+            "",
+            f"_Showing the top {summary.report_limit} of {len(mismatches)} columns with drift._",
+        ]
     return lines
+
+
+def _summary_comment(summary: DiffSummary) -> list[str]:
+    """Hold the summary as JSON in an HTML comment, under the URL of the schema it follows.
+
+    The JSON is what `veridelta run --json` prints, except that
+    `column_mismatches` holds only the columns the drift table lists, and is
+    left out when the table is, so the comment names no column the page hides.
+    `<`, `>`, and `&` are written as JSON escapes, so a column name cannot close
+    the comment or open another.
+    """
+    payload = summary.model_dump(mode="json")
+    if summary.report_limit > 0:
+        payload["column_mismatches"] = dict(_top_columns(summary))
+    else:
+        del payload["column_mismatches"]
+    text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return [f"{_SUMMARY_COMMENT} {output_schema_url('run')}", text.translate(_JSON_IN_HTML), "-->"]
 
 
 def _markdown_row(cells: list[str]) -> str:
