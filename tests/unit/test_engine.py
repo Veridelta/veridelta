@@ -49,6 +49,7 @@ from veridelta.models import (
     DiffRule,
     DuckDBConfig,
     IcebergConfig,
+    SchemaMode,
     SnowflakeConfig,
     SourceConfig,
     SourceRef,
@@ -425,6 +426,78 @@ class TestStructuralAlignment:
 
         with pytest.raises(ConfigError, match="EXACT schema match failed"):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+    @pytest.mark.parametrize(
+        ("mode", "message"),
+        [
+            pytest.param(
+                "exact",
+                "EXACT schema match failed: only the source has 'alpha', 'mid', and 'zeta'; "
+                "only the target has 'extra'.",
+                id="exact",
+            ),
+            pytest.param(
+                "allow_additions",
+                "Target is missing required source columns: 'alpha', 'mid', and 'zeta'.",
+                id="allow-additions",
+            ),
+            pytest.param(
+                "allow_removals",
+                "Target contains unauthorized additional columns: 'extra'.",
+                id="allow-removals",
+            ),
+        ],
+    )
+    def test_it_lists_the_columns_a_schema_mode_refuses_in_a_fixed_order(
+        self, mode: SchemaMode, message: str
+    ) -> None:
+        """Ensure the columns read sorted and quoted, never as a set in hash order."""
+        src = pl.DataFrame({"id": [1], "zeta": [1], "mid": [1], "alpha": [1]})
+        tgt = pl.DataFrame({"id": [1], "extra": [1]})
+        config = DiffConfig(primary_keys=["id"], schema_mode=mode)
+
+        with pytest.raises(ConfigError) as info:
+            DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert str(info.value) == message
+
+    @pytest.mark.parametrize(
+        ("source", "target", "message"),
+        [
+            pytest.param(["id", "legacy"], ["id"], "only the source has 'legacy'", id="source"),
+            pytest.param(["id"], ["id", "extra"], "only the target has 'extra'", id="target"),
+        ],
+    )
+    def test_it_names_only_the_side_that_breaks_an_exact_match(
+        self, source: list[str], target: list[str], message: str
+    ) -> None:
+        """Ensure an exact match broken by one side's columns names that side alone."""
+        src = pl.DataFrame({name: [1] for name in source})
+        tgt = pl.DataFrame({name: [1] for name in target})
+        config = DiffConfig(primary_keys=["id"], schema_mode="exact")
+
+        with pytest.raises(ConfigError) as info:
+            DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert str(info.value) == f"EXACT schema match failed: {message}."
+
+    def test_it_names_what_each_side_read_when_a_schema_mode_refuses(self, tmp_path: Path) -> None:
+        """Ensure a run from configurations says which files the columns came from."""
+        pl.DataFrame({"id": [1], "legacy": [1]}).write_csv(tmp_path / "a.csv")
+        pl.DataFrame({"id": [1]}).write_csv(tmp_path / "b.csv")
+        config = DiffConfig(primary_keys=["id"], schema_mode="allow_additions")
+
+        with pytest.raises(ConfigError) as info:
+            DiffEngine.run_from_configs(
+                config,
+                SourceConfig(path=str(tmp_path / "a.csv")),
+                SourceConfig(path=str(tmp_path / "b.csv")),
+            )
+
+        assert str(info.value).endswith(
+            f"The source is `{tmp_path / 'a.csv'}` read as csv, "
+            f"and the target is `{tmp_path / 'b.csv'}` read as csv."
+        )
 
     def test_it_validates_schemas_from_zero_row_frames_without_comparing(self) -> None:
         """Ensure validate_schemas enforces SchemaMode on metadata-only frames."""
