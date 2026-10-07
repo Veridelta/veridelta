@@ -263,6 +263,8 @@ Only finite values are loosened. `NaN` matches only `NaN`, and an infinity match
 
 A tolerance must be finite. To stop comparing a column, use `ignore`.
 
+`veridelta suggest` proposes a tolerance from the data, with the rows it explains; see [Suggesting rules](cli.md#suggesting-rules).
+
 ## Fuzzy text matching
 
 A similarity limit forgives typos in free text, such as names typed by hand into two systems, without a `regex_replace` for each one. Scores come from [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz), which the `fuzzy` extra installs:

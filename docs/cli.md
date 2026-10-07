@@ -1,12 +1,13 @@
 # Command line
 
-The `veridelta` command runs a comparison, checks a configuration, proposes value maps, prints the JSON Schemas of its files and its output, and serves its checks and comparisons to an AI agent. `run`, `validate`, and `crosswalk` read `veridelta.yaml` unless `-c` names another file.
+The `veridelta` command runs a comparison, checks a configuration, proposes value maps and other rules, prints the JSON Schemas of its files and its output, and serves its checks and comparisons to an AI agent. `run`, `validate`, `crosswalk`, and `suggest` read `veridelta.yaml` unless `-c` names another file.
 
 | Command | Description |
 | :--- | :--- |
 | `veridelta run` | Compare the two datasets and report the result. |
 | `veridelta validate` | Report what would stop a run, without reading any rows. |
 | `veridelta crosswalk` | Propose `value_map` entries from the data. |
+| `veridelta suggest` | Suggest rules that would explain the differences, each with its evidence. |
 | `veridelta schema` | Print the JSON Schema of the configuration file, or of what a command prints with `--json`. |
 | `veridelta mcp` | Serve checks and comparisons to an AI agent as Model Context Protocol tools, over stdio. |
 | `veridelta --version` | Print the installed version. |
@@ -40,12 +41,12 @@ Progress messages always go to stderr, so `veridelta run --json | jq` needs no f
 
 Every command exits `2` for invalid arguments. Every command but `schema`, which only prints, exits `3` when it cannot finish:
 
-| Code | `run` | `validate` | `crosswalk` | `mcp` |
-| :--- | :--- | :--- | :--- | :--- |
-| `0` | A match within `threshold`. | No errors. Warnings are allowed. | Proposals computed, whether or not any were found. | The host disconnected, or Ctrl-C stopped the server. |
-| `1` | Drift. | At least one error. | Not used. | Not used. |
-| `2` | Invalid arguments. | Invalid arguments. | Invalid arguments. | Invalid arguments, such as a `--root` that is not a directory. |
-| `3` | The run could not finish, such as on a configuration error, an unreachable source, a missing extra, or metrics `--otel-send` could not send. | The check could not finish, such as when `--schemas` cannot reach a source. | The proposals could not be computed. | The server could not start, such as without the `mcp` extra. |
+| Code | `run` | `validate` | `crosswalk` | `suggest` | `mcp` |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `0` | A match within `threshold`. | No errors. Warnings are allowed. | Proposals computed, whether or not any were found. | Suggestions computed, whether or not any were found. | The host disconnected, or Ctrl-C stopped the server. |
+| `1` | Drift. | At least one error. | Not used. | Not used. | Not used. |
+| `2` | Invalid arguments. | Invalid arguments. | Invalid arguments. | Invalid arguments. | Invalid arguments, such as a `--root` that is not a directory. |
+| `3` | The run could not finish, such as on a configuration error, an unreachable source, a missing extra, or metrics `--otel-send` could not send. | The check could not finish, such as when `--schemas` cannot reach a source. | The proposals could not be computed. | The suggestions could not be computed, such as for a pair compared where it is stored. | The server could not start, such as without the `mcp` extra. |
 
 A command that cannot finish explains why on stderr. With `--json`, it also prints the error on stdout, as one JSON object in place of its usual output:
 
@@ -197,6 +198,34 @@ rules:
 
 </details>
 
+## Suggesting rules
+
+`veridelta suggest` runs the comparison, then suggests rules that would explain the differences it finds, each with its evidence. It prints the rules as YAML on stdout, ready to paste first in `rules`, and the evidence on stderr. No model is called:
+
+```bash
+veridelta suggest -c veridelta.yaml
+veridelta suggest -c veridelta.yaml --max-share 0.001 --json
+```
+
+| Flag | Description |
+| :--- | :--- |
+| `-c`, `--config PATH` | Configuration file. Default `veridelta.yaml`. |
+| `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |
+| `--max-share SHARE` | Largest gap a tolerance may explain, as a share of the larger of its two values, above 0 and at most 1. Default 0.01. |
+| `--json` | Print the suggestions and their evidence as JSON on stdout instead of YAML. |
+| `-q`, `--quiet` | Suppress progress and evidence on stderr. |
+
+A numeric column gets a tolerance when every gap between its differing values is at most `--max-share` of the larger of the two. A larger gap is a change, not noise, so that column gets no suggestion. The kind of tolerance follows the gaps:
+
+- An absolute tolerance, when the gaps stay about one size whatever the values, as rounding leaves them.
+- A relative tolerance, when the gaps grow with the values, as a rate change leaves them.
+
+The tolerance is the first round value, such as 0.005 or 0.01, above the largest gap. Then the comparison runs again with the rule, and the evidence counts the rows it makes match, of the rows that differ in that column, with the largest gap and up to three example keys. A row with a null on one side differs for another reason, so a tolerance never explains it.
+
+Each printed rule names its column alone. When a rule governs the column today, such as one that matches it by `pattern`, the suggestion keeps that rule's settings, and a note says to put it first in `rules`, where it wins over the other. In Python, `DiffEngine.suggest_rules()` returns the suggestions as `RuleSuggestion` models.
+
+`suggest` reads both sides locally, so it refuses a pair compared where it is stored, such as two warehouse tables. Suggest rules on files exported from them instead. Tolerances come first; trimming, case folding, null sentinels, and date formats are on the [roadmap](roadmap.md).
+
 ## Printing the schema
 
 `veridelta schema` prints the configuration file's JSON Schema, which editors use to complete and check a file; see [Editor support](configuration.md#editor-support):
@@ -216,7 +245,8 @@ veridelta schema run > run.schema.json
 | `run` | The summary `veridelta run --json` prints: the row counts, the verdict, and the drifting columns. |
 | `validate` | The report `veridelta validate --json` prints: whether the file is valid, its errors, and its warnings. |
 | `crosswalk` | The list of value maps `veridelta crosswalk --json` proposes. |
-| `error` | The one object `run`, `validate`, or `crosswalk` prints with `--json` in place of its usual output when it [exits 3](#exit-codes). |
+| `suggest` | The list of rules `veridelta suggest --json` suggests, with their evidence. |
+| `error` | The one object `run`, `validate`, `crosswalk`, or `suggest` prints with `--json` in place of its usual output when it [exits 3](#exit-codes). |
 
 The docs site serves each one too, at the URL its `$id` names, such as [`schema/run.schema.json`](schema/run.schema.json). A schema changes with the release that changes its output, and the changelog says so.
 

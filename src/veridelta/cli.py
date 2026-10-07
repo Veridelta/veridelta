@@ -5,7 +5,7 @@
 
 Progress and diagnostics go to stderr, and only the requested result goes to
 stdout. So `veridelta run --json | jq` needs no filtering, and the rules that
-`veridelta crosswalk` prints can be redirected straight into a file. Under
+`veridelta crosswalk` and `veridelta suggest` print can be redirected straight into a file. Under
 `--json`, a command that cannot finish prints its error there as one JSON
 object, and exits with `EXIT_ERROR` rather than the code for drift. With
 `--verbose`, Veridelta's own log records join the progress on stderr.
@@ -27,7 +27,12 @@ from polars.exceptions import PanicException
 
 from veridelta import __version__
 from veridelta.config import config_json_schema, load_config
-from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
+from veridelta.engine import (
+    DEFAULT_MAX_SHARE,
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_MIN_SUPPORT,
+    DiffEngine,
+)
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve
 from veridelta.outputs import OUTPUTS, error_report, output_json_schema, validation_report
@@ -35,7 +40,7 @@ from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
 if TYPE_CHECKING:
-    from veridelta.models import DiffRule, ValueMapProposal
+    from veridelta.models import DiffRule, RuleSuggestion, ValueMapProposal
 
 EXIT_MATCH = 0
 """Datasets agreed within `threshold`."""
@@ -114,7 +119,7 @@ def _confidence(text: str) -> float:
 
 
 def _share(text: str) -> float:
-    """Parse `--sample-fraction`, a share above zero and at most one."""
+    """Parse a share above zero and at most one, such as `--sample-fraction`."""
     value = _number(text)
     if not 0 < value <= 1:
         raise argparse.ArgumentTypeError(f"must be above 0 and at most 1, got {text!r}")
@@ -328,12 +333,92 @@ def crosswalk(args: argparse.Namespace) -> int:
     return EXIT_MATCH
 
 
+def _key_text(keys: dict[str, object]) -> str:
+    """Name one row by its primary keys, such as `id=3`."""
+    return ", ".join(f"{name}={value!r}" for name, value in keys.items())
+
+
+def _setting_text(value: object) -> str:
+    """Write one suggested setting's value as the YAML rule writes it, such as `0.005`."""
+    if isinstance(value, float):
+        return f"{value:g}"
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _report_suggestions(suggestions: Sequence["RuleSuggestion"], *, quiet: bool) -> None:
+    """Explain on stderr what each suggested rule explains, and where it goes."""
+    if not suggestions:
+        _progress("No rule explains the differences within --max-share.", quiet=quiet)
+    for suggestion in suggestions:
+        settings = ", ".join(
+            f"{name} {_setting_text(value)}" for name, value in suggestion.settings.items()
+        )
+        gap = (
+            ""
+            if suggestion.largest_gap is None
+            else f", the largest gap {suggestion.largest_gap:.6g}"
+        )
+        _progress(
+            f"{suggestion.column}: {settings} explains {suggestion.explained:,} of "
+            f"{suggestion.differing:,} differing rows{gap}",
+            quiet=quiet,
+        )
+        examples = "; ".join(_key_text(keys) for keys in suggestion.examples)
+        _progress(f"  for example {examples}", quiet=quiet)
+        index = suggestion.governing_rule_index
+        if index is not None:
+            # This note ignores `quiet`, as crosswalk's does: a rule pasted after the one
+            # that governs the column changes nothing.
+            print(
+                f"Note: rules[{index}] governs '{suggestion.column}' today. The rule below "
+                "keeps its settings for this column: put it first in rules.",
+                file=sys.stderr,
+            )
+
+
+def suggest(args: argparse.Namespace) -> int:
+    """Suggest rules that would explain the differences between the configured datasets.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments carrying the
+            config path, `max_share`, and the output options.
+
+    Returns:
+        int: `EXIT_MATCH` once suggestions are computed, whether or not any were
+            found, and `EXIT_ERROR` when they cannot be.
+    """
+    quiet = bool(args.quiet)
+    try:
+        _progress(f"Loading configuration from {args.config}...", quiet=quiet)
+        diff_config, source_config, target_config = load_config(args.config)
+
+        _progress("Comparing, and trying each rule...", quiet=quiet)
+        suggestions = DiffEngine.suggest_rules_from_configs(
+            diff_config, source_config, target_config, max_share=args.max_share
+        )
+    except Exception as exc:
+        return _report_failure(exc, as_json=bool(args.json))
+
+    if args.json:
+        print(json.dumps([item.model_dump(mode="json") for item in suggestions], indent=2))
+        return EXIT_MATCH
+
+    _report_suggestions(suggestions, quiet=quiet)
+    if suggestions:
+        rules = [
+            item.rule.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+            for item in suggestions
+        ]
+        print(yaml.safe_dump({"rules": rules}, sort_keys=False), end="")
+    return EXIT_MATCH
+
+
 def schema(args: argparse.Namespace) -> int:
     """Print a JSON Schema on stdout: the configuration file's, or one output's.
 
     Args:
         args (argparse.Namespace): Parsed arguments carrying `output`: `run`,
-            `validate`, `crosswalk`, or `error` for what that command prints
+            `validate`, `crosswalk`, `suggest`, or `error` for what that command prints
             with `--json`, or None for configuration files.
 
     Returns:
@@ -451,7 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    # `run`, `crosswalk`, and `validate` read the configuration file named here.
+    # `run`, `crosswalk`, `suggest`, and `validate` read the configuration file named here.
     config = argparse.ArgumentParser(add_help=False)
     config.add_argument(
         "-c",
@@ -566,6 +651,33 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress progress and evidence on stderr.",
     )
+    suggest_parser = subparsers.add_parser(
+        "suggest",
+        parents=[config, verbose],
+        help="Suggest rules that would explain the differences, each with its evidence.",
+    )
+    suggest_parser.add_argument(
+        "--max-share",
+        type=_share,
+        default=DEFAULT_MAX_SHARE,
+        metavar="SHARE",
+        help=(
+            "Largest gap a tolerance may explain, as a share of the larger of its two values, "
+            f"above 0 and at most 1 (default: {DEFAULT_MAX_SHARE})."
+        ),
+    )
+    suggest_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the suggestions and their evidence as JSON on stdout instead of YAML, or "
+        "the error when they cannot be computed.",
+    )
+    suggest_parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="Suppress progress and evidence on stderr.",
+    )
     validate_parser = subparsers.add_parser(
         "validate",
         parents=[config, verbose],
@@ -659,6 +771,7 @@ def main() -> None:
     commands: dict[str, Callable[[argparse.Namespace], int]] = {
         "run": run,
         "crosswalk": crosswalk,
+        "suggest": suggest,
         "validate": validate,
         "schema": schema,
         "mcp": mcp,

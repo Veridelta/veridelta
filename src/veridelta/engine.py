@@ -8,6 +8,7 @@ the two sides with Polars.
 """
 
 import logging
+import math
 import re
 from abc import ABC, abstractmethod
 from collections import Counter
@@ -80,10 +81,12 @@ from veridelta.models import (
     DiffSummary,
     DuckDBConfig,
     IcebergConfig,
+    RuleSuggestion,
     SentinelValue,
     SnowflakeConfig,
     SourceConfig,
     SourceRef,
+    SuggestedSetting,
     ValueMapEntry,
     ValueMapProposal,
     WhitespaceMode,
@@ -1808,6 +1811,122 @@ def _value_map_proposal(
     )
 
 
+DEFAULT_MAX_SHARE: Final = 0.01
+"""Largest gap a suggested tolerance may explain, as a share of the larger of its
+two values. A gap past it is a change, not noise, so the column gets no suggestion."""
+
+_SUGGESTED_EXAMPLES: Final = 3
+"""Primary keys a suggestion names as examples."""
+
+
+def _check_max_share(max_share: object) -> None:
+    """Reject a share that cannot bound a tolerance."""
+    if not _is_real_number(max_share):
+        raise ConfigError(f"max_share must be a number, got {max_share!r}.")
+    if not 0 < max_share <= 1:
+        raise ConfigError(f"max_share must be above 0 and at most 1, got {max_share}.")
+
+
+def _round_up(value: float) -> float:
+    """Return the smallest of 1, 2, or 5 times a power of ten that is above `value`."""
+    power = 10.0 ** math.floor(math.log10(value))
+    # A step of 10 is the next power, which is always above `value`.
+    step = next(step for step in (1, 2, 5, 10) if step * power > value)
+    # Read back through text, so 5 * 0.001 is 0.005 and not 0.005000000000000001.
+    return float(f"{step * power:.12g}")
+
+
+def _spread(values: pl.Series) -> float:
+    """Return how much the values vary, as their standard deviation over their mean."""
+    mean = cast("float", values.mean())
+    deviation = values.std()
+    return 0.0 if deviation is None or mean == 0 else cast("float", deviation) / mean
+
+
+class _Proposal(NamedTuple):
+    """Settings a column's differing rows call for, before a run confirms them."""
+
+    settings: dict[str, SuggestedSetting]
+    largest_gap: float | None = None
+
+
+def _compares_numbers(changed: pl.DataFrame, column: str) -> bool:
+    """Return whether a column's compared values are numbers on both sides."""
+    schema = changed.schema
+    return all(schema[f"{column}_{side}"].is_numeric() for side in ("source", "target"))
+
+
+def _tolerance_gaps(changed: pl.DataFrame, column: str) -> pl.DataFrame:
+    """Measure the gaps between a numeric column's differing values that a tolerance closes."""
+    names = (f"{column}_source", f"{column}_target")
+    # Integers subtract exactly, as the comparison does: through Float64, two Int64
+    # values above 2**53, such as nanosecond times, can round to one number.
+    exact = pl.Int128 if all(changed.schema[name].is_integer() for name in names) else pl.Float64
+    source, target = (pl.col(name).cast(exact) for name in names)
+    gap = (target - source).abs().cast(pl.Float64)
+    return (
+        # A NULL flag is not a mismatch, as the column counts treat it.
+        changed.filter(pl.col(f"{column}_is_match").eq(False))
+        .select(
+            gap.alias("gap"),
+            (gap / pl.max_horizontal(source.abs(), target.abs()).cast(pl.Float64)).alias("share"),
+            (gap / source.abs().cast(pl.Float64)).alias("relative"),
+        )
+        # A gap of 0 is a type `strict_types` refuses, and a gap to an infinity, NaN,
+        # or NULL is not finite: no tolerance closes either.
+        .filter(pl.col("gap").is_finite() & (pl.col("gap") > 0))
+    )
+
+
+def _tolerance_proposal(changed: pl.DataFrame, column: str, max_share: float) -> _Proposal | None:
+    """Propose a tolerance when every gap in a numeric column is at most `max_share`.
+
+    Rounding leaves gaps of about one size whatever the values, which an absolute
+    tolerance describes. A rate change leaves gaps that grow with the values, which a
+    relative tolerance describes. The kind whose measure varies less wins, and a
+    source value of 0, which no relative tolerance reaches, picks absolute. The value
+    is the round number just above the largest gap.
+    """
+    if not _compares_numbers(changed, column):
+        return None
+    gaps = _tolerance_gaps(changed, column)
+    if gaps.is_empty() or cast("float", gaps["share"].max()) > max_share:
+        return None
+    largest = cast("float", gaps["gap"].max())
+    relative = gaps["relative"]
+    if not relative.is_finite().all() or _spread(gaps["gap"]) <= _spread(relative):
+        return _Proposal({"absolute_tolerance": _round_up(largest)}, largest)
+    return _Proposal({"relative_tolerance": _round_up(cast("float", relative.max()))}, largest)
+
+
+def _suggested_rule(
+    governing: DiffRule | None, column: str, settings: dict[str, SuggestedSetting]
+) -> DiffRule:
+    """Name the column alone, keep the settings that govern it today, and add `settings`."""
+    kept = (
+        {}
+        if governing is None
+        else governing.model_dump(
+            exclude_unset=True, exclude={"column_names", "pattern", "rename_to"}
+        )
+    )
+    return DiffRule.model_validate({**kept, "column_names": [column], **settings})
+
+
+def _explained_keys(
+    before: pl.DataFrame, after: pl.DataFrame, keys: list[str], column: str
+) -> pl.DataFrame:
+    """Return the keys of the rows whose column differs before a rule and matches after it."""
+    differing = pl.col(f"{column}_is_match").eq(False)
+    remaining = after.filter(differing).select(keys)
+    return (
+        before.filter(differing)
+        .select(keys)
+        .join(remaining, on=keys, how="anti", nulls_equal=True)
+        .sort(keys)
+    )
+
+
 _VALUE_MAP_RESULT_COLUMNS: Final[dict[str, pl.DataType]] = {
     # A warehouse may deliver text as Categorical and counts as wide decimals.
     VALUE_MAP_COLUMN_ALIAS: pl.Int64(),
@@ -2337,6 +2456,118 @@ class DiffEngine:
             for column, frame in zip(columns, frames, strict=True)
         )
         return [proposal for proposal in proposals if proposal is not None]
+
+    @classmethod
+    def suggest_rules_from_configs(
+        cls,
+        diff: DiffConfig,
+        source: SourceRef,
+        target: SourceRef,
+        *,
+        max_share: float = DEFAULT_MAX_SHARE,
+    ) -> list[RuleSuggestion]:
+        """Suggest rules for a `SourceRef` pair, read locally.
+
+        Args:
+            diff (DiffConfig): Comparison settings and rules.
+            source (SourceRef): Source configuration.
+            target (SourceRef): Target configuration.
+            max_share (float): Largest gap a tolerance may explain, as a share of
+                the larger of its two values, above 0 and at most 1.
+
+        Returns:
+            list[RuleSuggestion]: One suggestion per column it can explain.
+
+        Raises:
+            ConfigError: If `max_share` is out of range, the pair is compared where
+                it is stored, or the configuration fails as it would in a run.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
+        """
+        _check_max_share(max_share)
+        if _check_backend_pairing(source, target) is not None:
+            raise ConfigError(
+                "veridelta suggest reads both sides locally, and this pair is compared "
+                "where it is stored. Suggest rules on files exported from it, or on a "
+                "database pair that does not set pushdown."
+            )
+        engine = cls._on_sources(diff, source, target)
+        return engine.suggest_rules(max_share=max_share)
+
+    def suggest_rules(self, *, max_share: float = DEFAULT_MAX_SHARE) -> list[RuleSuggestion]:
+        """Suggest rules that would explain the differences in each compared column.
+
+        The comparison runs as `run()` runs it, on a copy, without writing artifacts,
+        so this engine can still run afterward. A numeric column gets a tolerance when
+        every gap between its differing values is at most `max_share` of the larger
+        of the two: an absolute tolerance when the gaps stay about one size, and a
+        relative one when they grow with the values. Each tolerance is the round value
+        just above the largest gap, and the comparison runs again with it to count
+        the rows it explains. No model is called.
+
+        Args:
+            max_share (float): Largest gap a tolerance may explain, as a share of the
+                larger of its two values, above 0 and at most 1.
+
+        Returns:
+            list[RuleSuggestion]: One suggestion per column it can explain, in
+                compared column order.
+
+        Raises:
+            ConfigError: If `max_share` is out of range, or the configuration fails
+                as it would in a run.
+            DataIntegrityError: If either dataset repeats a normalized primary key.
+
+        Examples:
+            >>> import polars as pl
+            >>> from veridelta.models import DiffConfig
+            >>> source = pl.LazyFrame({"id": [1, 2, 3], "fare": [10.0, 20.0, 30.0]})
+            >>> target = pl.LazyFrame({"id": [1, 2, 3], "fare": [10.004, 20.004, 30.003]})
+            >>> engine = DiffEngine(DiffConfig(primary_keys=["id"]), source, target)
+            >>> [(s.column, s.settings) for s in engine.suggest_rules()]
+            [('fare', {'absolute_tolerance': 0.005})]
+        """
+        _check_max_share(max_share)
+        result = self._run_copy(self.config)
+        keys = list(result.primary_keys)
+        suggestions: list[RuleSuggestion] = []
+        for column in result.compared_columns:
+            differing = result.summary.column_mismatches.get(column, 0)
+            if differing == 0:
+                continue
+            proposal = _tolerance_proposal(result.changed, column, max_share)
+            if proposal is None:
+                continue
+            governing = _match_rule(self.config.rules, column)
+            rule = _suggested_rule(governing, column, proposal.settings)
+            tried = self._run_copy(
+                self.config.model_copy(update={"rules": [rule, *self.config.rules]})
+            )
+            explained = _explained_keys(result.changed, tried.changed, keys, column)
+            if explained.is_empty():
+                continue
+            suggestions.append(
+                RuleSuggestion(
+                    column=column,
+                    settings=proposal.settings,
+                    differing=differing,
+                    explained=explained.height,
+                    largest_gap=proposal.largest_gap,
+                    examples=tuple(explained.head(_SUGGESTED_EXAMPLES).to_dicts()),
+                    rule=rule,
+                    governing_rule_index=(
+                        None if governing is None else self.config.rules.index(governing)
+                    ),
+                )
+            )
+        return suggestions
+
+    def _run_copy(self, config: DiffConfig) -> DiffResult:
+        """Run a comparison of this engine's data under `config`, writing no artifacts."""
+        engine = type(self)(
+            config.model_copy(update={"output_path": None}), self.source, self.target
+        )
+        engine._sides = self._sides
+        return engine.run()
 
     def _value_map_columns(self, stored: pl.Schema) -> list[str]:
         """Pick the compared columns a `value_map` proposal can apply to."""

@@ -72,7 +72,7 @@ demo-video: vhs-check
 
 schema:
 	uv run veridelta schema > docs/schema/veridelta.schema.json
-	for output in run validate crosswalk error; do \
+	for output in run validate crosswalk suggest error; do \
 		uv run veridelta schema $$output > docs/schema/$$output.schema.json; \
 	done
 

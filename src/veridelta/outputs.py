@@ -4,7 +4,7 @@
 """The JSON the command line prints with `--json`, and a published schema for each.
 
 `veridelta schema run` prints the JSON Schema of what `veridelta run --json`
-prints, and likewise for `validate`, `crosswalk`, and `error`. `make schema`
+prints, and likewise for `validate`, `crosswalk`, `suggest`, and `error`. `make schema`
 writes each under `docs/schema/`, where the docs site serves it at the URL its
 `$id` names, so an agent or a script can check what it parses.
 """
@@ -18,7 +18,7 @@ from pydantic import TypeAdapter
 from typing_extensions import TypedDict
 
 from veridelta.config import SCHEMA_URL
-from veridelta.models import ConfigFinding, DiffSummary, ValueMapProposal
+from veridelta.models import ConfigFinding, DiffSummary, RuleSuggestion, ValueMapProposal
 
 __all__ = [
     "OUTPUTS",
@@ -117,6 +117,11 @@ _OUTPUTS: Final[dict[str, tuple[str, str, Callable[[], dict[str, Any]]]]] = {
         "The value maps proposed for columns that hold the same values in two encodings.",
         lambda: TypeAdapter(list[ValueMapProposal]).json_schema(mode="serialization"),
     ),
+    "suggest": (
+        "veridelta suggest --json",
+        "The rules suggested to explain the differences, each with the rows it explains.",
+        lambda: TypeAdapter(list[RuleSuggestion]).json_schema(mode="serialization"),
+    ),
     "error": (
         "An error printed with --json",
         "The one object a command prints with `--json` when it cannot finish, at exit code 3.",
@@ -132,7 +137,7 @@ def output_schema_url(name: str) -> str:
     """Return the URL the docs site serves an output's schema at, which is its `$id`.
 
     Args:
-        name (str): `run`, `validate`, `crosswalk`, or `error`.
+        name (str): `run`, `validate`, `crosswalk`, `suggest`, or `error`.
 
     Returns:
         str: The schema's URL.
@@ -144,7 +149,7 @@ def output_json_schema(name: str) -> dict[str, Any]:
     """Return the JSON Schema of what a command prints with `--json`.
 
     Args:
-        name (str): `run`, `validate`, `crosswalk`, or `error`.
+        name (str): `run`, `validate`, `crosswalk`, `suggest`, or `error`.
 
     Returns:
         dict[str, Any]: A Draft 2020-12 JSON Schema, with the `$id` the docs

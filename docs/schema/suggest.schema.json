@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridelta.github.io/veridelta/schema/suggest.schema.json",
+  "$defs": {
+    "DiffRule": {
+      "additionalProperties": false,
+      "description": "Overrides for one or more columns, chosen by exact name or by pattern.\n\nEach setting runs at a fixed stage of the\n[transform order](https://veridelta.github.io/veridelta/rules/#transform-order),\nthe same in a local run and in a warehouse.\n\nAttributes:\n    column_names (list[str]): Exact source column names the rule governs.\n    pattern (str | None): Regular expression that selects columns by name, such\n        as `^AMT_.*`.\n    absolute_tolerance (float | None): Largest absolute difference that still\n        matches, for numeric columns. Must be finite.\n    relative_tolerance (float | None): Largest difference relative to the source\n        value that still matches, such as `0.01` for 1%. Must be finite. Neither\n        tolerance forgives a non-finite value: NaN matches only NaN, and an\n        infinity only itself.\n    max_levenshtein_distance (int | None): Most single-character insertions,\n        deletions, and substitutions that still match, for columns compared as\n        text. Needs the `fuzzy` extra locally.\n    min_jaro_winkler_similarity (float | None): Lowest Jaro-Winkler similarity,\n        above 0 and at most 1, that still matches, for columns compared as text.\n        Needs the `fuzzy` extra, and runs locally only: warehouse pushdown refuses\n        it before any query runs. A rule sets at most one of the two limits.\n    case_insensitive (bool | None): Whether to ignore case in text.\n    whitespace_mode (WhitespaceMode | None): Which ends of text to strip\n        whitespace from.\n    regex_replace (dict[str, str] | None): `{pattern: replacement}` pairs applied\n        to text columns.\n    pad_zeros (int | None): Width to left-pad values to with zeros, such as `5`\n        for `00123`. Other types become text first, so a numeric `123` matches a\n        text `'00123'`.\n    value_map (dict[str, str] | None): Source values to translate to target\n        values before comparison, such as `{'M': 'Male'}`.\n    null_values (list[SentinelValue] | None): Values to read as NULL, such as\n        `['N/A', -999, false]`. Each applies only to columns whose type can hold\n        it: text reaches string, categorical, and enum columns, numbers reach\n        numeric columns, decimals included, and booleans reach boolean columns.\n        An explicit rule whose sentinels fit no column type raises `ConfigError`.\n    treat_null_as_equal (bool | None): Whether two NULLs match.\n    datetime_format (str | None): Format for `strptime`, such as\n        `%Y-%m-%d %H:%M:%S`, that parses text columns into datetimes. A value that does not match\n        becomes NULL. Pushdown translates the directives from a fixed table and\n        raises `ConfigError` for any directive outside it.\n    timezone (str | None): Timezone to convert timestamps to, such as `UTC`. The\n        column must be timezone-aware once parsed: a naive timestamp raises\n        `ConfigError` instead of being assigned a guessed zone.\n    cast_to (CastTarget | None): Polars type to cast the column to, such as\n        `Float64`. A closed set, so a typo fails when the config loads.\n    ignore (bool): Whether to leave the column out of the comparison. Defaults\n        to False.\n    rename_to (str | None): Target column name, when it differs from the source.\n        Valid only when `column_names` holds exactly one name.",
+      "properties": {
+        "column_names": {
+          "description": "Exact names of the columns in the source.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Column Names",
+          "type": "array"
+        },
+        "pattern": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Regex pattern that selects columns by name, such as '^AMT_.*'.",
+          "title": "Pattern"
+        },
+        "absolute_tolerance": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Absolute tolerance for numeric differences.",
+          "title": "Absolute Tolerance"
+        },
+        "relative_tolerance": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Relative tolerance, such as 0.01 for 1%.",
+          "title": "Relative Tolerance"
+        },
+        "max_levenshtein_distance": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Most character edits between two text values that still match.",
+          "title": "Max Levenshtein Distance"
+        },
+        "min_jaro_winkler_similarity": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Lowest Jaro-Winkler similarity between two text values that still matches.",
+          "title": "Min Jaro Winkler Similarity"
+        },
+        "case_insensitive": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Ignore case for string comparisons.",
+          "title": "Case Insensitive"
+        },
+        "whitespace_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "left",
+                "right",
+                "both"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whitespace stripping mode: 'none', 'left', 'right', or 'both'.",
+          "title": "Whitespace Mode"
+        },
+        "regex_replace": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Dictionary of {regex_pattern: replacement_string} to sanitize text.",
+          "title": "Regex Replace"
+        },
+        "pad_zeros": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Left-pad numeric strings to this length, such as 5 for '00123'.",
+          "title": "Pad Zeros"
+        },
+        "value_map": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source values to translate to target values, such as {'M': 'Male'}.",
+          "title": "Value Map"
+        },
+        "null_values": {
+          "anyOf": [
+            {
+              "items": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "boolean"
+                  }
+                ]
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Values to read as NULL, such as ['N/A', -999, false].",
+          "title": "Null Values"
+        },
+        "treat_null_as_equal": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Treat missing values (NULL/None) in both sources as a match.",
+          "title": "Treat Null As Equal"
+        },
+        "datetime_format": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Format for strptime, such as '%Y-%m-%d %H:%M:%S'.",
+          "title": "Datetime Format"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Target timezone to normalize dates to before comparison.",
+          "title": "Timezone"
+        },
+        "cast_to": {
+          "anyOf": [
+            {
+              "enum": [
+                "Int64",
+                "Float64",
+                "String",
+                "Boolean",
+                "Date",
+                "Datetime"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Polars type to cast the column to, such as 'Float64'.",
+          "title": "Cast To"
+        },
+        "ignore": {
+          "default": false,
+          "description": "Whether to leave this column out of the comparison.",
+          "title": "Ignore",
+          "type": "boolean"
+        },
+        "rename_to": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Name in target dataset if different (use only for single columns).",
+          "title": "Rename To"
+        }
+      },
+      "title": "DiffRule",
+      "type": "object"
+    },
+    "RuleSuggestion": {
+      "additionalProperties": false,
+      "description": "A rule `suggest` proposes for one column, with the evidence for it.\n\nAttributes:\n    column (str): Compared column, named as it appears after any `rename_to`.\n    settings (dict[str, SuggestedSetting]): The `DiffRule` settings the rule\n        adds, such as `{\"absolute_tolerance\": 0.005}`.\n    differing (int): Joined rows whose values in the column differ under the\n        declared rules.\n    explained (int): Of those, the rows that match once the rule is added,\n        counted by running the comparison again with it.\n    largest_gap (float | None): For a tolerance, the largest absolute\n        difference among the rows it explains, and None for other settings.\n    examples (tuple[dict[str, Any], ...]): The primary keys of up to three\n        rows the rule explains, lowest first.\n    rule (DiffRule): The rule to add: the settings of the rule that governs\n        the column today, if any, with `settings` added, naming the column\n        alone.\n    governing_rule_index (int | None): Position in `DiffConfig.rules` of the\n        rule that governs the column today, or None when no rule does.",
+      "properties": {
+        "column": {
+          "description": "Compared column, after any rename_to.",
+          "title": "Column",
+          "type": "string"
+        },
+        "settings": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    }
+                  ]
+                },
+                "type": "array"
+              }
+            ]
+          },
+          "description": "The rule settings the suggestion adds.",
+          "minProperties": 1,
+          "title": "Settings",
+          "type": "object"
+        },
+        "differing": {
+          "description": "Rows that differ in the column today.",
+          "minimum": 1,
+          "title": "Differing",
+          "type": "integer"
+        },
+        "explained": {
+          "description": "Of those, rows the rule makes match.",
+          "minimum": 1,
+          "title": "Explained",
+          "type": "integer"
+        },
+        "largest_gap": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a tolerance, the largest gap it explains.",
+          "title": "Largest Gap"
+        },
+        "examples": {
+          "description": "Primary keys of up to three explained rows, lowest first.",
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Examples",
+          "type": "array"
+        },
+        "rule": {
+          "$ref": "#/$defs/DiffRule",
+          "description": "The rule to add, first in rules."
+        },
+        "governing_rule_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Index of the rule that governs the column today.",
+          "title": "Governing Rule Index"
+        }
+      },
+      "required": [
+        "column",
+        "settings",
+        "differing",
+        "explained",
+        "examples",
+        "rule"
+      ],
+      "title": "RuleSuggestion",
+      "type": "object"
+    }
+  },
+  "items": {
+    "$ref": "#/$defs/RuleSuggestion"
+  },
+  "type": "array",
+  "title": "veridelta suggest --json",
+  "description": "The rules suggested to explain the differences, each with the rows it explains."
+}
