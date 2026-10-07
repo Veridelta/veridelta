@@ -22,10 +22,6 @@ These steps build on [Editor support](configuration.md#editor-support), one at a
 
 These items build on [AI agents](agents.md), in this order, tracked in [issue 128](https://github.com/Veridelta/veridelta/issues/128). A model never decides a verdict: it drives the command line, explains a run, or proposes a rule with its evidence, and only a rule the user declares changes what matches.
 
-### Next
-
-- Saving a baseline from a run: `run --save-baseline accepted.json` writes the drift a run finds as the file [`run --baseline`](cli.md#accepting-drift) reads, so an intended change is accepted in one step. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
-
 ### Ambitious
 
 These items may not come soon, and some may never ship. They are listed so the direction is written down. Each is opt-in, and none changes a verdict except through a rule the user declares.

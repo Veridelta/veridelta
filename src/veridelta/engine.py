@@ -1181,17 +1181,38 @@ _ACCEPTED_COLUMNS: Final = "__veridelta_accepted_columns"
 """A working column for the columns a baseline accepts on each changed row."""
 
 
+def _listed(
+    frame: pl.DataFrame, keys: Sequence[Mapping[str, Any]], names: list[str]
+) -> pl.DataFrame:
+    """Keep the rows of a frame whose key a baseline lists."""
+    if not keys or frame.is_empty():
+        return frame.clear()
+    return frame.join(
+        _baseline_keys(keys, names, frame.schema), on=names, how="semi", nulls_equal=True
+    )
+
+
+class _Acceptance(NamedTuple):
+    """The drift a baseline left in a run, and what it accepted."""
+
+    added: pl.DataFrame
+    removed: pl.DataFrame
+    changed: pl.DataFrame
+    rows: int
+    accepted: Baseline
+
+
 def _accept_baseline(
     baseline: Baseline,
     names: list[str],
     frames: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
     compared_columns: list[str],
-) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, int]:
+) -> _Acceptance:
     """Leave the drift a baseline lists out of the added, removed, and changed rows.
 
     Returns:
-        tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, int]: The rows left, and
-            how many rows the baseline accepted.
+        _Acceptance: The rows left, how many rows the baseline accepted, and what
+            it accepted, as the rows it matched, so a saved baseline keeps it.
 
     Raises:
         ConfigError: If the baseline names other primary keys than the run.
@@ -1208,8 +1229,25 @@ def _accept_baseline(
         _unaccepted_rows(removed, baseline.removed, names),
         _unaccepted_changes(changed, baseline.changed, names, compared_columns),
     )
-    accepted = sum(before.height - after.height for before, after in zip(frames, kept, strict=True))
-    return (*kept, accepted)
+    rows = sum(before.height - after.height for before, after in zip(frames, kept, strict=True))
+    listed = [
+        [*baseline.added],
+        [*baseline.removed],
+        [entry.key for entry in baseline.changed],
+    ]
+    before, after = (
+        Baseline.of_rows(
+            names,
+            (
+                _listed(side[0], listed[0], names),
+                _listed(side[1], listed[1], names),
+                _listed(side[2], listed[2], names),
+            ),
+            compared_columns,
+        )
+        for side in (frames, kept)
+    )
+    return _Acceptance(*kept, rows, before.without(after))
 
 
 def _pushdown_scalar(
@@ -3178,12 +3216,14 @@ class DiffEngine:
         added_df = self.target.join(self.source, on=keys, how="anti").collect()
         removed_df = self.source.join(self.target, on=keys, how="anti").collect()
         changed_df = self._collect_changed_rows(compared_columns, match_expressions)
-        accepted = 0
-        if baseline is not None:
-            added_df, removed_df, changed_df, accepted = _accept_baseline(
-                baseline, list(keys), (added_df, removed_df, changed_df), compared_columns
-            )
-        return self._build_result(added_df, removed_df, changed_df, compared_columns, accepted)
+        if baseline is None:
+            return self._build_result(added_df, removed_df, changed_df, compared_columns)
+        kept = _accept_baseline(
+            baseline, list(keys), (added_df, removed_df, changed_df), compared_columns
+        )
+        return self._build_result(
+            kept.added, kept.removed, kept.changed, compared_columns, kept.rows, kept.accepted
+        )
 
     def _plan(self) -> tuple[list[str], list[pl.Expr]]:
         """Align, validate, and normalize both frames, then build the comparisons."""
@@ -3235,6 +3275,7 @@ class DiffEngine:
         changed_df: pl.DataFrame,
         compared_columns: list[str],
         accepted_count: int = 0,
+        accepted: Baseline | None = None,
     ) -> DiffResult:
         """Count totals, apply the threshold, export artifacts, and assemble the result."""
         column_mismatches = _local_column_mismatches(changed_df, compared_columns)
@@ -3267,4 +3308,5 @@ class DiffEngine:
             changed=changed_df,
             primary_keys=tuple(self.config.primary_keys),
             compared_columns=tuple(compared_columns),
+            accepted=accepted,
         )

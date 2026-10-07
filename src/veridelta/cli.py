@@ -218,6 +218,10 @@ def run(args: argparse.Namespace) -> int:
             summary_file = write_markdown(result, args.markdown, max_rows=args.markdown_max_rows)
             _progress(f"Markdown summary saved to: {summary_file.absolute()}", quiet=quiet)
 
+        if args.save_baseline:
+            saved = Baseline.of(result).write(args.save_baseline)
+            _progress(f"Baseline saved to: {saved.absolute()}", quiet=quiet)
+
         # One timestamp, so the file and the export sent are the same bytes.
         observed = time.time_ns()
         if args.otel:
@@ -577,6 +581,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--baseline",
         metavar="PATH",
         help="Accept the drift the JSON file PATH lists, and fail only on drift it does not.",
+    )
+    run_parser.add_argument(
+        "--save-baseline",
+        metavar="PATH",
+        help="Also write the drift this run finds to PATH, as the file --baseline reads.",
     )
     run_parser.add_argument(
         "--html",

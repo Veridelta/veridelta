@@ -2,7 +2,7 @@
 name: veridelta
 description: Compares two datasets with the Veridelta command line and reports what differs, keeping row values out of the reply. Use when a task compares two tables or files, checks a data migration or pipeline change, or writes or fixes a veridelta.yaml file.
 metadata:
-  version: "1.14.0"
+  version: "1.15.0"
 ---
 
 # Compare two datasets with Veridelta
@@ -61,7 +61,7 @@ On a pull request, the comment the GitHub Action keeps ends with the run's summa
 
 ## Fixing drift in a loop
 
-After changing a pipeline, run the comparison again, on the pull request or with `veridelta run --json`, and read `added_count`, `removed_count`, `changed_count`, and `column_mismatches`. Find the cause in the change, not in the data, fix it, and run again. Stop when the run matches, or when the drift left is what the user asked for, and report the counts and the columns. Never add a rule or raise `threshold` to make a run pass unless the user agrees.
+After changing a pipeline, run the comparison again, on the pull request or with `veridelta run --json`, and read `added_count`, `removed_count`, `changed_count`, and `column_mismatches`. Find the cause in the change, not in the data, fix it, and run again. Stop when the run matches, or when the drift left is what the user asked for, and report the counts and the columns. Never add a rule or raise `threshold` to make a run pass unless the user agrees. When the user accepts the drift left, record it with `veridelta run --save-baseline accepted.json`, and pass `--baseline accepted.json` to later runs, which then fail only on new drift.
 
 ## Reference
 

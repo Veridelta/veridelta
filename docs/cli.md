@@ -29,6 +29,7 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | `--json` | Print the [summary](results.md#summary) as JSON on stdout instead of the text report. |
 | `-q`, `--quiet` | Suppress progress messages on stderr. The report or the JSON still prints. |
 | `--baseline PATH` | Accept the drift the JSON file lists, and fail only on drift it does not list. See [Accepting drift](#accepting-drift). |
+| `--save-baseline PATH` | Also write the drift this run finds as the file `--baseline` reads. |
 | `--html PATH` | Also write a standalone [HTML report](results.md#html-report), which loads nothing from a CDN. |
 | `--html-max-rows N` | Rows per table in the HTML report, zero or more. Default 1000, so a large diff cannot produce a file too large to open. |
 | `--markdown PATH` | Also write the [Markdown summary](results.md#markdown-summary) that the [CI integrations](ci.md) post. |
@@ -251,6 +252,8 @@ Each printed rule names its column alone. When a rule governs the column today, 
 `added` and `removed` list rows by their primary key. `changed` lists a row with the columns whose drift is accepted on it: drift in any other column of that row still counts. The keys are the run's `primary_keys`, as the run compares them, after any rule normalizes them. JSON has no type for a date, so a date key is written as text, such as `"2026-10-07"`, and read back as the key column's type.
 
 Accepted drift is left out of the counts, the verdict, the artifacts, and the reports, and the summary's `accepted_count` says how many rows the file accepted. A run compared where its data is stored refuses `--baseline`, since its rows stay where they are. `veridelta schema baseline` prints the file's JSON Schema.
+
+`veridelta run --save-baseline accepted.json` writes the file from a run, so a change made on purpose is accepted in one step: every row of drift the run finds, in key order, with each changed row's differing columns. Read the file before you commit it, since it accepts all of that drift. With `--baseline` too, the new file keeps what the old one accepted, and leaves out entries for rows that no longer drift. The run's verdict and exit code are the same as without the flag.
 
 ## Printing the schema
 

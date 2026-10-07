@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from veridelta.cli import main
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
-from veridelta.models import Baseline, DiffConfig, DuckDBConfig
+from veridelta.models import AcceptedChange, Baseline, DiffConfig, DiffResult, DuckDBConfig
 from veridelta.report import render_html, render_markdown
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
@@ -71,6 +71,16 @@ class TestAcceptedDrift:
         assert summary.changed_count == 2
         assert summary.column_mismatches == {"fare": 1, "zone": 1}
         assert summary.accepted_count == 0
+
+    def test_an_entry_for_a_column_that_matches_accepts_nothing(self) -> None:
+        """Ensure a changed row's entry accepts only the columns it names that differ."""
+        baseline = _baseline(changed=[{"key": {"id": 3}, "columns": ["zone"]}])
+
+        result = _engine().run(baseline=baseline)
+
+        assert (result.summary.changed_count, result.summary.accepted_count) == (2, 0)
+        assert result.accepted is not None
+        assert result.accepted.changed == []
 
     def test_a_row_listed_twice_counts_once(self) -> None:
         """Ensure two entries for one row join their columns, and add no row."""
@@ -208,3 +218,91 @@ class TestBaselineFile:
         assert error["type"] == "ConfigError"
         assert message in error["message"]
         assert "accepted.json" in error["message"]
+
+
+class TestSavedBaseline:
+    """Validate the baseline a run saves: the drift it found, ready to accept."""
+
+    def test_it_lists_the_drift_with_each_changed_rows_columns(self) -> None:
+        """Ensure added and removed rows go by key, and changed rows with their columns."""
+        saved = Baseline.of(_engine().run())
+
+        assert saved.added == [{"id": 5}]
+        assert saved.removed == [{"id": 1}]
+        assert saved.changed == [
+            AcceptedChange(key={"id": 3}, columns=["fare"]),
+            AcceptedChange(key={"id": 4}, columns=["fare", "zone"]),
+        ]
+
+    def test_read_back_it_makes_the_same_run_match(self, tmp_path: Path) -> None:
+        """Ensure a saved and read baseline accepts every row of the run it came from."""
+        written = Baseline.of(_engine().run()).write(str(tmp_path / "accepted.json"))
+
+        summary = _engine().run(baseline=Baseline.read(str(written))).summary
+
+        assert summary.is_match
+        assert summary.accepted_count == 4
+
+    def test_it_keeps_what_the_old_baseline_accepted(self) -> None:
+        """Ensure saving under a baseline keeps its entries that still match, and adds the rest."""
+        old = _baseline(
+            removed=[{"id": 1}, {"id": 9}],
+            changed=[{"key": {"id": 4}, "columns": ["zone"]}],
+        )
+
+        saved = Baseline.of(_engine().run(baseline=old))
+
+        assert saved == Baseline.of(_engine().run())
+
+    def test_a_date_key_round_trips(self, tmp_path: Path) -> None:
+        """Ensure a date key saved as text accepts its row when read back."""
+        days = [date(2026, 10, 6), date(2026, 10, 7)]
+
+        def engine() -> DiffEngine:
+            return DiffEngine(
+                DiffConfig(primary_keys=["day"]),
+                pl.LazyFrame({"day": days[:1], "n": [1]}),
+                pl.LazyFrame({"day": days, "n": [1, 2]}),
+            )
+
+        path = Baseline.of(engine().run()).write(str(tmp_path / "accepted.json"))
+
+        assert json.loads(path.read_text())["added"] == [{"day": "2026-10-07"}]
+        assert engine().run(baseline=Baseline.read(str(path))).summary.is_match
+
+    def test_a_pushdown_result_cannot_be_saved(self) -> None:
+        """Ensure a result of keys alone, from pushdown, gives no baseline."""
+        summary = _engine().run().summary
+        result = DiffResult(
+            summary=summary,
+            added=pl.DataFrame(),
+            removed=pl.DataFrame(),
+            changed=pl.DataFrame(),
+            keys_only=True,
+        )
+
+        with pytest.raises(ConfigError, match="compared where it is stored"):
+            Baseline.of(result)
+
+    def test_a_file_it_cannot_write_is_an_error(self, tmp_path: Path) -> None:
+        """Ensure a baseline written into a folder that does not exist names the file."""
+        with pytest.raises(ConfigError, match="Cannot write the baseline"):
+            _baseline().write(str(tmp_path / "missing" / "accepted.json"))
+
+    def test_the_command_saves_and_then_accepts_the_drift(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `--save-baseline` keeps the verdict, and `--baseline` then accepts it all."""
+        TestBaselineFile._files(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "run", "--save-baseline", "accepted.json"])
+
+        with pytest.raises(SystemExit) as saved:
+            main()
+
+        assert saved.value.code == 1
+        assert "Baseline saved to:" in capsys.readouterr().err
+        monkeypatch.setattr("sys.argv", ["veridelta", "run", "--baseline", "accepted.json"])
+        with pytest.raises(SystemExit) as accepted:
+            main()
+        assert accepted.value.code == 0

@@ -9,7 +9,7 @@ Python, and the results a comparison returns.
 
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, cast
@@ -850,6 +850,9 @@ class DiffResult:
             `{column}_is_match` for every compared column, as a local run's
             `changed` carries them. None when no sample was asked for, nothing
             changed, or the run was local, where `changed` holds every row.
+        accepted (Baseline | None): What a baseline accepted in this run: the
+            rows it matched, and on each changed row the columns it accepted.
+            None when the run had no baseline.
     """
 
     summary: DiffSummary
@@ -860,6 +863,7 @@ class DiffResult:
     compared_columns: tuple[str, ...] = ()
     keys_only: bool = False
     changed_sample: pl.DataFrame | None = None
+    accepted: "Baseline | None" = None
 
     def get_mismatches(self, column: str) -> pl.DataFrame:
         """Isolate the rows where one column disagreed.
@@ -1109,6 +1113,154 @@ class Baseline(BaseModel):
         return self
 
     @classmethod
+    def of_rows(
+        cls,
+        primary_keys: Sequence[str],
+        frames: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
+        compared_columns: Sequence[str],
+    ) -> "Baseline":
+        """Accept the drift in a local run's frames, in key order.
+
+        Args:
+            primary_keys (Sequence[str]): The run's key columns.
+            frames (tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]): The added,
+                removed, and changed rows, as `DiffResult` holds them.
+            compared_columns (Sequence[str]): The columns the run compared.
+
+        Returns:
+            Baseline: Added and removed rows by key, and changed rows with the
+                columns that differ on each.
+        """
+        names = list(primary_keys)
+        added, removed, changed = frames
+        entries: list[AcceptedChange] = []
+        if not changed.is_empty():
+            differing = pl.concat_list(
+                pl.when(pl.col(f"{column}_is_match").not_()).then(pl.lit(column))
+                for column in compared_columns
+            ).list.drop_nulls()
+            rows = changed.sort(names).select(*names, differing.alias(_DIFFERING))
+            # A changed row differs in at least one column, so no entry is empty.
+            entries = [
+                AcceptedChange(key={name: row[name] for name in names}, columns=row[_DIFFERING])
+                for row in rows.iter_rows(named=True)
+            ]
+        return cls(
+            primary_keys=names,
+            added=added.select(names).sort(names).to_dicts(),
+            removed=removed.select(names).sort(names).to_dicts(),
+            changed=entries,
+        )
+
+    @classmethod
+    def of(cls, result: "DiffResult") -> "Baseline":
+        """Accept every row of drift a run found, with what its baseline accepted.
+
+        Saved and read back with `run --baseline`, it makes the same run match.
+        An entry of the run's own baseline that matched nothing, such as a row
+        fixed since, is left out.
+
+        Args:
+            result (DiffResult): A local run's result.
+
+        Returns:
+            Baseline: The run's drift, by kind and key.
+
+        Raises:
+            ConfigError: If the run compared its data where it is stored, which
+                returns no differing columns to accept.
+        """
+        if result.keys_only:
+            raise ConfigError(
+                "A baseline is saved from a run that compares both sides locally, and this "
+                "pair was compared where it is stored. Save one from files exported from it."
+            )
+        found = cls.of_rows(
+            result.primary_keys,
+            (result.added, result.removed, result.changed),
+            result.compared_columns,
+        )
+        return found if result.accepted is None else found.merged(result.accepted)
+
+    def _key(self, key: dict[str, Any]) -> tuple[Any, ...]:
+        """Turn an entry's key into a tuple in key order, to compare and sort entries."""
+        return tuple(key[name] for name in self.primary_keys)
+
+    def _order(self, key: dict[str, Any]) -> tuple[tuple[bool, Any], ...]:
+        """Sort keys in key order, with NULL last, as Polars sorts them."""
+        return tuple((value is None, "" if value is None else value) for value in self._key(key))
+
+    def without(self, other: "Baseline") -> "Baseline":
+        """Return the entries here that `other` does not hold.
+
+        Args:
+            other (Baseline): Entries to take away, by key, and by column on a
+                changed row.
+
+        Returns:
+            Baseline: What is left.
+        """
+        theirs = {self._key(entry.key): set(entry.columns) for entry in other.changed}
+        changed: list[AcceptedChange] = []
+        for entry in self.changed:
+            left = [c for c in entry.columns if c not in theirs.get(self._key(entry.key), set())]
+            if left:
+                changed.append(AcceptedChange(key=entry.key, columns=left))
+        return Baseline(
+            primary_keys=self.primary_keys,
+            added=_keys_without(self.added, other.added, self._key),
+            removed=_keys_without(self.removed, other.removed, self._key),
+            changed=changed,
+        )
+
+    def merged(self, other: "Baseline") -> "Baseline":
+        """Return the entries of both, with each changed row's columns joined, in key order.
+
+        Args:
+            other (Baseline): Entries to add.
+
+        Returns:
+            Baseline: Both, without repeats.
+        """
+        columns: dict[tuple[Any, ...], tuple[dict[str, Any], list[str]]] = {}
+        for entry in [*self.changed, *other.changed]:
+            _, held = columns.setdefault(self._key(entry.key), (entry.key, []))
+            held.extend(column for column in entry.columns if column not in held)
+        return Baseline(
+            primary_keys=self.primary_keys,
+            added=sorted(
+                [*self.added, *_keys_without(other.added, self.added, self._key)], key=self._order
+            ),
+            removed=sorted(
+                [*self.removed, *_keys_without(other.removed, self.removed, self._key)],
+                key=self._order,
+            ),
+            changed=[
+                AcceptedChange(key=key, columns=held)
+                for key, held in sorted(columns.values(), key=lambda pair: self._order(pair[0]))
+            ],
+        )
+
+    def write(self, path: str) -> Path:
+        """Write the baseline as JSON, for `run --baseline` to read.
+
+        Args:
+            path (str): The file, such as `accepted.json`.
+
+        Returns:
+            Path: The file written.
+
+        Raises:
+            ConfigError: If the file cannot be written.
+        """
+        target = Path(path)
+        try:
+            target.write_text(self.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            raise ConfigError(f"Cannot write the baseline {path}: {exc.strerror}.") from exc
+        return target
+
+    @classmethod
     def read(cls, path: str) -> "Baseline":
         """Read a baseline from a JSON file.
 
@@ -1129,6 +1281,20 @@ class Baseline(BaseModel):
             return cls.model_validate_json(text)
         except ValueError as exc:
             raise ConfigError(f"The baseline {path} is not valid: {exc}") from exc
+
+
+_DIFFERING: Final = "__veridelta_differing_columns"
+"""A working column for the columns that differ on each changed row."""
+
+
+def _keys_without(
+    keys: list[dict[str, Any]],
+    other: list[dict[str, Any]],
+    key: Callable[[dict[str, Any]], tuple[Any, ...]],
+) -> list[dict[str, Any]]:
+    """Return the keys that `other` does not hold."""
+    held = {key(entry) for entry in other}
+    return [entry for entry in keys if key(entry) not in held]
 
 
 FindingSeverity = Literal["error", "warning"]
