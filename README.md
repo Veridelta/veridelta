@@ -28,7 +28,40 @@ uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta
 
 ## Quick start
 
-In Python, `DiffEngine` compares two `LazyFrame`s:
+The smallest configuration names the two files and the keys that pair their rows. The suffix of each path says what format it is:
+
+```yaml
+# veridelta.yaml
+primary_keys: [id]
+source:
+  path: legacy.csv
+target:
+  path: modern.csv
+```
+
+The recording above runs this file on two three-row files. `validate` checks the file without reading any rows, and `run` compares the two files. It exits 0 when they match, 1 when rows differ, and 3 when the run could not finish:
+
+```bash
+veridelta validate -c veridelta.yaml
+veridelta run -c veridelta.yaml
+```
+
+Rules say what counts as a match, column by column. This file forgives one percent on a total and compares phone numbers on their digits alone:
+
+```yaml
+primary_keys: ["transaction_id"]
+source:
+  path: "legacy.parquet"
+target:
+  path: "modern.parquet"
+rules:
+  - column_names: ["grand_total"]
+    relative_tolerance: 0.01
+  - column_names: ["contact_number"]
+    regex_replace: {"[^0-9]": ""}
+```
+
+In Python, `DiffEngine` compares two `LazyFrame`s with the same models:
 
 ```python
 import polars as pl
@@ -45,29 +78,6 @@ result = DiffEngine(
 
 if not result.summary.is_match:
     raise SystemExit(f"{result.summary.changed_count} rows differ")
-```
-
-The same comparison as a YAML file, for the CLI and CI:
-
-```yaml
-# veridelta.yaml
-primary_keys: ["transaction_id"]
-source:
-  path: "legacy.parquet"
-target:
-  path: "modern.parquet"
-rules:
-  - column_names: ["grand_total"]
-    relative_tolerance: 0.01
-  - column_names: ["contact_number"]
-    regex_replace: {"[^0-9]": ""}
-```
-
-`validate` checks the file without reading any rows, and `run` compares the datasets:
-
-```bash
-veridelta validate -c veridelta.yaml
-veridelta run -c veridelta.yaml
 ```
 
 ## Documentation
