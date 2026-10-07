@@ -18,6 +18,7 @@ It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelt
 - **Many sources.** CSV, Parquet, JSON, Arrow, Avro, and Excel files, Delta Lake and Iceberg tables, DuckDB files and MotherDuck databases, and Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases. Files and tables are scanned lazily where Polars can.
 - **Built for CI.** Exit codes, a JSON summary, a standalone HTML report, a Markdown summary for pull requests, OpenTelemetry metrics, and files of the rows that differ. A GitHub Action and a GitLab CI template post the summary on each pull request.
 - **Checks before a run.** `veridelta validate` reports what would stop a run without reading any rows, and a JSON Schema gives editors completion for configuration files.
+- **For AI agents.** An agent runs the same checks and comparisons through the command line, or through `veridelta mcp`, a Model Context Protocol server that reads files only from the folders you name. [AI agents](https://veridelta.github.io/veridelta/agents/) gives the steps.
 
 ## Install
 
@@ -83,7 +84,7 @@ if not result.summary.is_match:
 ## Documentation
 
 - [Tutorials](https://veridelta.github.io/veridelta/examples/01_core_concepts/): five notebooks, from a first comparison in Python to a CI pipeline.
-- [User guide](https://veridelta.github.io/veridelta/configuration/): configuration, sources, rules, pushdown, results, and the command line.
+- [User guide](https://veridelta.github.io/veridelta/configuration/): configuration, sources, rules, pushdown, results, the command line, and AI agents.
 - [CI integrations](https://veridelta.github.io/veridelta/ci/): the GitHub Action and the GitLab CI template.
 - [API reference](https://veridelta.github.io/veridelta/api/): the public Python interface.
 - [Roadmap](https://veridelta.github.io/veridelta/roadmap/): work that is not built yet.

@@ -1,6 +1,6 @@
 # Command line
 
-The `veridelta` command runs a comparison, checks a configuration, proposes value maps, prints the configuration schema, and serves its checks to an AI agent. `run`, `validate`, and `crosswalk` read `veridelta.yaml` unless `-c` names another file.
+The `veridelta` command runs a comparison, checks a configuration, proposes value maps, prints the configuration schema, and serves its checks and comparisons to an AI agent. `run`, `validate`, and `crosswalk` read `veridelta.yaml` unless `-c` names another file.
 
 | Command | Description |
 | :--- | :--- |
@@ -8,7 +8,7 @@ The `veridelta` command runs a comparison, checks a configuration, proposes valu
 | `veridelta validate` | Report what would stop a run, without reading any rows. |
 | `veridelta crosswalk` | Propose `value_map` entries from the data. |
 | `veridelta schema` | Print the configuration file's JSON Schema. |
-| `veridelta mcp` | Serve the checks to an AI agent as Model Context Protocol tools, over stdio. |
+| `veridelta mcp` | Serve checks and comparisons to an AI agent as Model Context Protocol tools, over stdio. |
 | `veridelta --version` | Print the installed version. |
 
 ## Running a comparison
@@ -149,7 +149,7 @@ veridelta schema > veridelta.schema.json
 
 ## Serving tools to an agent
 
-`veridelta mcp` serves Veridelta's checks to an AI agent as [Model Context Protocol](https://modelcontextprotocol.io/) tools. The agent's host, such as Claude Code or Cursor, starts the command and speaks to it over stdin and stdout. It needs the `mcp` extra, and [AI agents](agents.md#mcp-server) shows how to register it with a host and lists its tools. This serves the configuration files in the current directory:
+`veridelta mcp` serves Veridelta's checks and comparisons to an AI agent as [Model Context Protocol](https://modelcontextprotocol.io/) tools. The agent's host, such as Claude Code or Cursor, starts the command and speaks to it over stdin and stdout. It needs the `mcp` extra, and [AI agents](agents.md#mcp-server) shows how to register it with a host and lists its tools. This serves the configuration files in the current directory:
 
 ```bash
 veridelta mcp --root .

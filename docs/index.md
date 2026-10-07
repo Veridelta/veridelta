@@ -53,6 +53,7 @@ The user guide is the reference:
 - [Results](results.md): the summary, reports, metrics, and files a run produces.
 - [Command line](cli.md): commands, flags, and exit codes.
 - [CI integrations](ci.md): the GitHub Action and the GitLab CI template.
+- [AI agents](agents.md): running Veridelta from an agent, through the command line or the MCP server.
 
 ## How it works
 

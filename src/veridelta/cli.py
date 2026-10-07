@@ -604,7 +604,7 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_parser = subparsers.add_parser(
         "mcp",
         parents=[verbose],
-        help="Serve checks to an AI agent as Model Context Protocol tools, over stdio.",
+        help="Serve checks and comparisons to an AI agent as Model Context Protocol tools, over stdio.",
     )
     mcp_parser.add_argument(
         "--root",
