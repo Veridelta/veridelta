@@ -1,3 +1,16 @@
+## v0.19.6 (2026-10-07)
+
+A run whose differing rows hold a binary column, such as a MySQL `BIT` column, writes its
+discrepancy files in every format. `csv`, `json`, and `ndjson` hold the bytes as
+hexadecimal text, while `parquet` and `arrow` keep them. Before, Polars refused the column
+in CSV and panicked on it in JSON, and the run stopped with exit code 1. A column that
+nests binary values in a list or a struct fails with a `ConfigError` that names the
+formats which hold it.
+
+### Fix
+
+- write a binary column to every artifact format (#209)
+
 ## v0.19.5 (2026-10-07)
 
 `veridelta mcp` describes its tools as they behave. `propose_value_maps` now says that
