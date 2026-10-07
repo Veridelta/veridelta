@@ -4,7 +4,7 @@
 # are the same version:
 #
 #   include:
-#     - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.19.18/ci/gitlab/veridelta.yml
+#     - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.19.19/ci/gitlab/veridelta.yml
 #       inputs:
 #         config: veridelta.yaml
 #
@@ -20,7 +20,7 @@ spec:
       default: "."
     version:
       description: Veridelta version to install from PyPI.
-      default: "0.19.18" # veridelta-version: bumped with each release
+      default: "0.19.19" # veridelta-version: bumped with each release
     extras:
       description: Comma-separated optional extras, such as "snowflake" or "database,fuzzy".
       default: ""
