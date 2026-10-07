@@ -1,6 +1,6 @@
 # Agent instructions
 
-This file holds the rules for coding agents that change this repository. Claude Code and Cursor read it directly, as does any tool that reads `AGENTS.md`. It sums up [CONTRIBUTING.md](CONTRIBUTING.md), which people follow, and links the rules that apply under `src/` and `tests/`.
+This file holds the rules for coding agents that change this repository. Claude Code and Cursor read it directly, as does any tool that reads `AGENTS.md`. It sums up [CONTRIBUTING.md](CONTRIBUTING.md), which people follow, and names the rule to read before changing a file under each path.
 
 ## Commands
 
@@ -31,18 +31,22 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 - Keep a public API as it is unless the task asks for a breaking change.
 - Never edit a generated file by hand. Run its generator, such as `make schema` for the configuration schema.
 - A `# type: ignore`, `# noqa`, or `# pyright: ignore` carries its reason on the same line.
+- Assemble warehouse SQL only in `connectors/sql.py`, from allowlisted identifiers, dialect quoting, and strict types, and never concatenate a configuration string into a statement. [The security rules](rules/security.md) hold the whole control.
 - Follow the [writing rules](CONTRIBUTING.md#writing-documentation) in docs, docstrings, CLI help, commit messages, and pull requests. `tests/unit/test_docs_style.py` checks some of them.
 - Meet the [accessibility expectations](ACCESSIBILITY.md#contributor-expectations) in a change to the HTML report or the docs site.
 - Add no `CLAUDE.md`, `.claude/CLAUDE.md`, or `CLAUDE.local.md`, even uncommitted: Claude Code reads this file only while none is here or above it, so the suite fails on any of them here. Personal notes go in your own instructions, outside the project.
 
-## Detailed rules
+## Rules by path
 
-Two more files hold the rules for the code they sit beside. An agent that loads a folder's `AGENTS.md` sees them without a link; every other agent reads them from here:
+`rules/` holds the detailed rules as concepts of the knowledge bundle, one file per subject, each with the paths it governs in its frontmatter; [rules/index.md](rules/index.md) lists them. Read the rule in a row before you write or change a file under its paths:
 
-| Rules | Applies to |
+| Rule | Applies to |
 | :--- | :--- |
-| [Rules under `src/`](src/AGENTS.md) | `src/veridelta/`: the engine, the models, the loaders, and above all the SQL in `connectors/sql.py` |
-| [Rules under `tests/`](tests/AGENTS.md) | `tests/` |
+| [Engine](rules/engine.md): data manipulation, models and configuration, loaders | `src/veridelta/` |
+| [Security](rules/security.md): warehouse SQL assembly, the execution boundary | `src/veridelta/connectors/`, `src/veridelta/models.py`, `src/veridelta/engine.py` |
+| [Testing](rules/testing.md): layout, fixtures, markers, the parity suite | `tests/` |
+
+`tests/unit/test_rules.py` fails on a rule missing from this table or from the index, a path that does not exist, a row that names other paths than the rule's frontmatter, or an `AGENTS.md` anywhere below the root.
 
 ## Skills
 
@@ -53,7 +57,7 @@ Two more files hold the rules for the code they sit beside. An agent that loads 
 `product/` holds what the project knows about its users and its goals, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle: one concept per Markdown file. `product/USERS.md` holds the personas and use cases, `product/KEY_METRICS.md` and `product/metrics/` the north star with its drivers and guardrails, `product/FEATURES.md` the map from each feature and roadmap item to the use case it serves, and `product/log.md` what changed and why. Each directory has an `index.md` that lists its concepts.
 
 - A change serves a use case, named in its pull request as `UC-nn`, or says it is maintenance. A roadmap item names its use case, or says that none asks for it yet.
-- A concept opens with frontmatter: `type`, `title`, a one-line `description`, `status`, and `generated`. A decision record under `decisions/` carries `generated` too.
+- A concept opens with frontmatter: `type`, `title`, a one-line `description`, `status`, and `generated`. A decision record under `decisions/` and a rule under `rules/` carry `generated` too.
 - `generated` names who wrote the text and when: `{ by: claude-code, at: 2026-10-06T09:45:00Z }`, or `human:<id>` for a person. Never a model.
 - Ids tie the documents together: a persona is `P-01`, a use case `UC-01`, a metric `NS-01`, `DR-01`, or `GR-01`. A heading or a metric's file name defines an id once. Name an id only once it is defined, and outside a heading name it as a link to its card.
 - Write the documents with the `define-personas` and `define-key-metrics` skills in `.claude/skills/`, add a line to `product/log.md` under today's date, and follow the writing rules.

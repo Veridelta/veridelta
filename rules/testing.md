@@ -1,8 +1,15 @@
-# Rules under `tests/`
+---
+type: Rule
+title: Testing rules
+description: How the suite is laid out, where fixtures and markers go, how the parity suite is run, and the coverage gate, under tests/.
+status: stable
+generated: { by: claude-code, at: 2026-10-07T01:07:07Z }
+applies_to: [tests/]
+---
+
+# Testing rules
 
 These rules apply to every change under `tests/`, on top of the root [AGENTS.md](../AGENTS.md).
-
-## Layout
 
 - Framework: `pytest` via `uv run pytest` or `make test`.
 - Organization:
