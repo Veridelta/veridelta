@@ -263,7 +263,7 @@ Only finite values are loosened. `NaN` matches only `NaN`, and an infinity match
 
 A tolerance must be finite. To stop comparing a column, use `ignore`.
 
-`veridelta suggest` proposes a tolerance from the data, with the rows it explains; see [Suggesting rules](cli.md#suggesting-rules).
+`veridelta suggest` proposes a tolerance, trimming, or case folding from the data, with the rows each explains; see [Suggesting rules](cli.md#suggesting-rules).
 
 ## Fuzzy text matching
 
