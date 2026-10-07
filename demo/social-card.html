@@ -3,6 +3,7 @@
   The link preview, 1280 by 640. `make screenshots` renders it into
   docs/assets/social-card.png, after writing the report screenshot it shows.
   The sentence is pyproject.toml's description, which a test holds it to.
+  The colors are the logo's: navy #0D2F5A, orange #DE5807, and blue #2054B2.
 -->
 <html lang="en">
 <head>
@@ -11,38 +12,55 @@
 <style>
   html, body { margin: 0; width: 1280px; height: 640px; overflow: hidden; }
   body {
+    position: relative;
     display: grid;
     grid-template-columns: 560px 1fr;
-    background: #1a237e;
-    color: #ffffff;
+    background: linear-gradient(120deg, #ffffff 0%, #f1f4f7 100%);
+    color: #0d2f5a;
     font-family: Inter, "Helvetica Neue", Arial, sans-serif;
   }
-  .words { padding: 72px 0 0 72px; }
-  h1 { margin: 0 0 32px; font-size: 76px; font-weight: 800; letter-spacing: -2px; }
-  p { margin: 0 0 40px; font-size: 32px; line-height: 1.35; font-weight: 500; color: #e8eaf6; }
+  .words { padding: 64px 0 0 72px; }
+  h1 { display: flex; align-items: center; gap: 18px; margin: 0 0 36px; }
+  h1 .symbol { height: 120px; }
+  h1 .wordmark { height: 62px; }
+  p { margin: 0 0 40px; font-size: 32px; line-height: 1.35; font-weight: 500; }
   code {
     display: inline-block;
     padding: 10px 18px;
     border-radius: 8px;
-    background: #0d1452;
+    background: #0d2f5a;
     font: 600 24px "DejaVu Sans Mono", Menlo, monospace;
-    color: #c5cae9;
+    color: #ffffff;
   }
   .report {
     margin: 72px 0 0 40px;
     width: 1000px;
+    border: 1px solid #d6dde5;
     border-radius: 14px 0 0 0;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 24px 64px rgba(13, 47, 90, 0.18);
     background: url("../docs/assets/report-light.png") top left / 1000px auto no-repeat #ffffff;
+  }
+  /* The symbol's two halves, orange into blue, along the bottom edge. */
+  .band {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 10px;
+    background: linear-gradient(90deg, #de5807 0%, #de5807 45%, #2054b2 55%, #2054b2 100%);
   }
 </style>
 </head>
 <body>
   <div class="words">
-    <h1>Veridelta</h1>
+    <h1>
+      <img class="symbol" src="../docs/assets/veridelta-symbol.png" alt="">
+      <img class="wordmark" src="../docs/assets/veridelta-wordmark.png" alt="Veridelta">
+    </h1>
     <p>Compare two datasets on their primary keys under rules you declare, on a laptop, in CI, or inside a warehouse.</p>
     <code>pip install veridelta</code>
   </div>
   <div class="report" role="img" aria-label="The top of a Veridelta HTML report"></div>
+  <div class="band"></div>
 </body>
 </html>
