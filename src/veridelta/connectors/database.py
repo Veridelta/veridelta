@@ -30,6 +30,7 @@ from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 import polars as pl
 
 from veridelta.connectors.base import (
+    PROBE_NEEDS_A_TABLE,
     PushdownQueryType,
     PushdownSession,
     ReaderConnector,
@@ -49,7 +50,7 @@ from veridelta.connectors.sql import (
     compile_postgres_text_select,
 )
 from veridelta.exceptions import ConfigError, ConnectorError
-from veridelta.models import DatabaseConfig
+from veridelta.models import POSTGRES_SCHEMES, DatabaseConfig
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -63,9 +64,6 @@ _UNCONNECTED = "Database connector is not connected. Call connect() first."
 _SQLITE_PREFIX = "sqlite://"
 _POSTGRES_UNCONNECTED = "Postgres pushdown session is not connected. Call connect() first."
 _LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value"
-
-_POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})
-"""URI schemes whose `table` reads keep each `numeric` column's declared scale."""
 
 _MSSQL_SCHEME: Final = "mssql"
 """URI scheme whose `table` reads move each `DATETIMEOFFSET` column to offset zero."""
@@ -119,7 +117,8 @@ class DatabaseConnector(ReaderConnector):
         started = time.perf_counter()
         declared: dict[str, pl.Decimal] = {}
         try:
-            if scheme in _POSTGRES_SCHEMES and self._config.table is not None:
+            # A Postgres `table` read keeps each `numeric` column's declared scale.
+            if scheme in POSTGRES_SCHEMES and self._config.table is not None:
                 statement, declared = self._declared_statement(self._config.table, statement, uri)
             elif scheme == _MSSQL_SCHEME and self._config.table is not None and not self._probe:
                 statement = self._utc_statement(self._config.table, statement, uri)
@@ -175,9 +174,7 @@ class DatabaseConnector(ReaderConnector):
         if self._probe:
             # Wrapping a statement is not portable: Oracle refuses `AS` on a
             # derived table, and SQL Server refuses `ORDER BY` inside one.
-            raise ConfigError(
-                "A schema probe reads a 'table'; a 'query' would have to run in full."
-            )
+            raise ConfigError(PROBE_NEEDS_A_TABLE)
         # DatabaseConfig requires exactly one of `table` and `query`.
         return cast("str", self._config.query)
 

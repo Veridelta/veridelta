@@ -61,13 +61,24 @@ SAMPLE_KEY_PREFIX = "_veridelta_key_"
 """Positional alias prefix for each primary key in a changed-row sample."""
 
 SAMPLE_SOURCE_PREFIX = "_veridelta_source_"
-"""Positional alias prefix for each compared column's source value in a sample."""
+"""Positional alias prefix for each compared column's source value, in a changed-row
+sample and in the value map query."""
 
 SAMPLE_TARGET_PREFIX = "_veridelta_target_"
-"""Positional alias prefix for each compared column's target value in a sample."""
+"""Positional alias prefix for each compared column's target value, in a changed-row
+sample and in the value map query."""
 
 SAMPLE_MATCH_PREFIX = "_veridelta_match_"
 """Positional alias prefix for each compared column's match flag in a sample."""
+
+_SOURCE_CTE = "_src_normalized"
+"""The CTE holding the source's normalized columns."""
+
+_TARGET_CTE = "_tgt_normalized"
+"""The CTE holding the target's normalized columns."""
+
+_JOINED_CTE = "_veridelta_joined"
+"""The value map query's CTE, pairing each candidate's values on the keys."""
 
 
 class SampleQuery(NamedTuple):
@@ -420,6 +431,17 @@ _DATABASE_IDENTIFIER_QUOTES: Final[dict[str, tuple[str, str]]] = {
 """Opening and closing identifier quote for each database URI scheme a `table` may name."""
 
 
+def _allowlisted(name: str) -> str:
+    """Return one identifier segment the allowlist admits, the gate every name passes to SQL.
+
+    Raises:
+        ConnectorError: If the segment is not a plain unquoted identifier.
+    """
+    if SQL_IDENTIFIER_SEGMENT.fullmatch(name) is None:
+        raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
+    return name
+
+
 def _relation_segments(name: str) -> list[str]:
     """Split a possibly dotted relation name into allowlisted segments."""
     trimmed = name.strip()
@@ -429,8 +451,7 @@ def _relation_segments(name: str) -> list[str]:
     if len(parts) > 3:
         raise ConnectorError("Table name must have at most three dotted segments.")
     for part in parts:
-        if SQL_IDENTIFIER_SEGMENT.fullmatch(part) is None:
-            raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
+        _allowlisted(part)
     return parts
 
 
@@ -512,9 +533,7 @@ def compile_database_partition_range(scheme: str, table: str, column: str) -> st
 def _partition_operands(scheme: str, table: str, column: str) -> tuple[str, str]:
     """Quote a table for its database, and allowlist a partition column left unquoted."""
     relation = _quoted_database_relation(scheme, table)
-    if SQL_IDENTIFIER_SEGMENT.fullmatch(column) is None:
-        raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
-    return relation, column
+    return relation, _allowlisted(column)
 
 
 def compile_duckdb_select(table: str, *, probe: bool = False) -> str:
@@ -1240,8 +1259,8 @@ class SQLPushdownCompiler:
     ) -> str:
         """Build the CTE pairing each candidate's normalized values on the keys."""
         projections = ", ".join(
-            f"{self._qualify(source_alias, column)} AS {self._quote_ident(f'_veridelta_source_{label}')}, "
-            f"{self._qualify(target_alias, column)} AS {self._quote_ident(f'_veridelta_target_{label}')}"
+            f"{self._qualify(source_alias, column)} AS {self._quote_ident(f'{SAMPLE_SOURCE_PREFIX}{label}')}, "
+            f"{self._qualify(target_alias, column)} AS {self._quote_ident(f'{SAMPLE_TARGET_PREFIX}{label}')}"
             for label, column in enumerate(columns)
         )
         join = self._normalized_join(
@@ -1252,7 +1271,7 @@ class SQLPushdownCompiler:
             keys = [self._qualify(source_alias, key) for key in primary_keys]
             cutoff = self._integer(round(sample_fraction * SAMPLE_BUCKETS))
             sample = f" WHERE {self._sample_bucket(keys)} < {cutoff}"
-        return f"{self._quote_ident('_veridelta_joined')} AS (SELECT {projections} {join}{sample})"
+        return f"{self._quote_ident(_JOINED_CTE)} AS (SELECT {projections} {join}{sample})"
 
     def _sample_bucket(self, keys: list[str]) -> str:
         """Hash qualified keys into one of `SAMPLE_BUCKETS` buckets."""
@@ -1276,8 +1295,8 @@ class SQLPushdownCompiler:
 
     def _value_map_branch(self, label: int, rule: DiffRule) -> str:
         """Select one candidate's pairs, labeled, without NULL or already mapped sources."""
-        source = self._quote_ident(f"_veridelta_source_{label}")
-        target = self._quote_ident(f"_veridelta_target_{label}")
+        source = self._quote_ident(f"{SAMPLE_SOURCE_PREFIX}{label}")
+        target = self._quote_ident(f"{SAMPLE_TARGET_PREFIX}{label}")
         conditions = [f"{source} IS NOT NULL"]
         if rule.value_map:
             outputs = ", ".join(
@@ -1288,7 +1307,7 @@ class SQLPushdownCompiler:
             f"SELECT {self._integer(label)} AS {self._quote_ident(VALUE_MAP_COLUMN_ALIAS)}, "
             f"{source} AS {self._quote_ident(VALUE_MAP_SOURCE_ALIAS)}, "
             f"{target} AS {self._quote_ident(VALUE_MAP_TARGET_ALIAS)} "
-            f"FROM {self._quote_ident('_veridelta_joined')} WHERE {' AND '.join(conditions)}"
+            f"FROM {self._quote_ident(_JOINED_CTE)} WHERE {' AND '.join(conditions)}"
         )
 
     def _value_map_tally(self, branches: str, min_support: int) -> str:
@@ -1446,8 +1465,8 @@ class SQLPushdownCompiler:
             for pk in primary_keys
         )
         return (
-            f"FROM {self._quote_ident('_src_normalized')} AS {self._quote_ident(source_alias)} "
-            f"{join_kind} JOIN {self._quote_ident('_tgt_normalized')} "
+            f"FROM {self._quote_ident(_SOURCE_CTE)} AS {self._quote_ident(source_alias)} "
+            f"{join_kind} JOIN {self._quote_ident(_TARGET_CTE)} "
             f"AS {self._quote_ident(target_alias)} ON {on_clause}"
         )
 
@@ -1564,8 +1583,8 @@ class SQLPushdownCompiler:
             target_table, target_alias, columns, types=target_types, is_source=False
         )
         return (
-            f"WITH {self._quote_ident('_src_normalized')} AS ({src_select}), "
-            f"{self._quote_ident('_tgt_normalized')} AS ({tgt_select})"
+            f"WITH {self._quote_ident(_SOURCE_CTE)} AS ({src_select}), "
+            f"{self._quote_ident(_TARGET_CTE)} AS ({tgt_select})"
         )
 
     def _normalized_select(
@@ -1593,11 +1612,9 @@ class SQLPushdownCompiler:
 
     def _quote_ident(self, name: str) -> str:
         """Quote a single SQL identifier for the active dialect."""
-        if SQL_IDENTIFIER_SEGMENT.fullmatch(name) is None:
-            raise ConnectorError("SQL identifier is not a valid unquoted identifier.")
         # The allowlist admits no quote character, so the name needs no escaping.
         quote = _IDENTIFIER_QUOTES[self.dialect]
-        return f"{quote}{name}{quote}"
+        return f"{quote}{_allowlisted(name)}{quote}"
 
     def _quote_relation(self, name: str) -> str:
         """Quote a possibly dotted table, schema, or catalog path."""
