@@ -1,3 +1,14 @@
+## v0.19.8 (2026-10-07)
+
+A Databricks connection that fails masks the access token in its error as `***`, and no
+longer chains the driver's exception, whose traceback printed the message again. Snowflake
+already did both. BigQuery's connection error is no longer chained either, so the three
+warehouses report a failed connection alike.
+
+### Fix
+
+- keep the Databricks token out of a connection error (#213)
+
 ## v0.19.7 (2026-10-07)
 
 A failure Polars reports as a panic now exits 3, as any other error does, and `--json`
