@@ -16,11 +16,11 @@ Completion and checking of configuration files already work through the publishe
 
 - A VS Code extension, in its own repository, whose first command runs `veridelta validate --json` on the open file and fills the Problems panel. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - A second command that runs the comparison, opens the HTML report in the editor, and opens the discrepancy files. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files) and [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
-- Registration of `veridelta mcp` with the editor's agent mode, once the server exists. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
+- Registration of `veridelta mcp` with the editor's agent mode. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
 
 ## AI workflows
 
-An AI agent can drive Veridelta through the [command line](cli.md) today. `run`, `validate`, and `crosswalk` print JSON with `--json`, and every command returns an [exit code](cli.md#exit-codes). A model never decides a verdict on its own: `run` stays deterministic, offline, and free, because a model that forgives drift cannot show why. A model sits on top, driving the command line, explaining a run, or proposing a rule with its evidence. Inside a rule the user declares, with a threshold and its evidence, a provider may compute a similarity, as fuzzy text matching does today without one. The items below come in this order, tracked in [issue 128](https://github.com/Veridelta/veridelta/issues/128).
+An AI agent can drive Veridelta through the [command line](cli.md) today. `run`, `validate`, and `crosswalk` print JSON with `--json`, and every command returns an [exit code](cli.md#exit-codes). `veridelta mcp` serves the first step, `validate_config`, as a [Model Context Protocol](https://modelcontextprotocol.io/) tool; see [AI agents](agents.md#mcp-server). A model never decides a verdict on its own: `run` stays deterministic, offline, and free, because a model that forgives drift cannot show why. A model sits on top, driving the command line, explaining a run, or proposing a rule with its evidence. Inside a rule the user declares, with a threshold and its evidence, a provider may compute a similarity, as fuzzy text matching does today without one. The items below come in this order, tracked in [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 
 ### Next
 
@@ -31,8 +31,8 @@ An AI agent can drive Veridelta through the [command line](cli.md) today. `run`,
 
 ### Later
 
-- `veridelta mcp`: a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server, in a `veridelta[mcp]` extra. Its tools validate a configuration, run a comparison, read discrepancy rows up to a limit, propose value maps, and describe the schema. The user's agent brings the model and the key, so Veridelta carries no provider code. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
-- Guardrails for that server. It reads configuration files only from allowed folders and never returns credentials. Row values stay off unless enabled, and then come up to a cap. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
+- More tools for `veridelta mcp`: run a comparison, describe a side's columns, read discrepancy rows up to a limit, and propose value maps. The user's agent brings the model and the key, so Veridelta carries no provider code. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
+- A guard on row values for that server: they stay off unless the person who starts it enables them, and then come up to a cap. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
 - `veridelta suggest`: a command that proposes rules from the pairs that differ. A rule can be a tolerance, trimming, case folding, a null sentinel, or a date format. Each proposal shows its evidence, as a crosswalk does. No model is called. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - Accepted drift: `run --baseline accepted.json` fails only on drift that the baseline does not list. An agent that changes a pipeline on purpose can show that nothing else moved. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
 

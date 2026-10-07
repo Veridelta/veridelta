@@ -17,9 +17,10 @@ import yaml
 from pytest_mock import MockerFixture
 
 from tests.otlp_collector import running_collector
-from veridelta.cli import build_parser, crosswalk, main, run, validate
+from veridelta.cli import build_parser, crosswalk, main, mcp, run, validate
 from veridelta.config import config_json_schema
-from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError
+from veridelta.mcp_server import Settings
 from veridelta.models import DiffConfig, DiffRule, ValueMapEntry, ValueMapProposal
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
@@ -810,6 +811,117 @@ class TestSchemaCommand:
         mock_exit.assert_called_once_with(0)
 
 
+class TestMCPCommand:
+    """Validate `veridelta mcp`, which serves the checks to an agent over stdio."""
+
+    def test_it_takes_each_root_resolved(self, tmp_path: Path) -> None:
+        """Ensure `--root` repeats, resolves, and is absent when not given."""
+        (tmp_path / "data").mkdir()
+
+        args = build_parser().parse_args(
+            ["mcp", "--root", str(tmp_path / "data" / ".."), "--root", str(tmp_path / "data")]
+        )
+
+        assert args.root == [tmp_path.resolve(), (tmp_path / "data").resolve()]
+        assert build_parser().parse_args(["mcp"]).root is None
+
+    def test_it_refuses_a_root_that_is_not_a_directory(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a missing folder or a file is an argument error, before anything starts."""
+        (tmp_path / "file.txt").write_text("not a folder")
+
+        for root in (tmp_path / "missing", tmp_path / "file.txt"):
+            with pytest.raises(SystemExit) as stopped:
+                build_parser().parse_args(["mcp", "--root", str(root)])
+            assert stopped.value.code == 2
+            assert f"not a directory: {str(root)!r}" in capsys.readouterr().err
+
+    def test_it_serves_from_the_first_root(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure the server gets every root and runs in the first, with stdout left alone."""
+        first, second = tmp_path / "first", tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        monkeypatch.chdir(second)
+        serve = mocker.patch("veridelta.cli.serve")
+
+        exit_code = mcp(argparse.Namespace(root=[first, second]))
+
+        assert exit_code == 0
+        serve.assert_called_once_with(Settings((first, second)))
+        assert Path.cwd() == first.resolve()
+        assert capsys.readouterr().out == ""
+
+    def test_it_serves_the_current_directory_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a server started with no `--root` reads only where it was started."""
+        monkeypatch.chdir(tmp_path)
+        serve = mocker.patch("veridelta.cli.serve")
+
+        assert mcp(argparse.Namespace(root=None)) == 0
+        serve.assert_called_once_with(Settings((tmp_path,)))
+
+    def test_it_explains_a_server_that_cannot_start(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure a missing extra exits 3 with the install hint on stderr and nothing on stdout."""
+        monkeypatch.chdir(tmp_path)
+        mocker.patch(
+            "veridelta.cli.serve",
+            side_effect=VerideltaError(
+                "MCP extra is not installed. Install it with: uv add 'veridelta[mcp]'"
+            ),
+        )
+
+        exit_code = mcp(argparse.Namespace(root=None))
+        captured = capsys.readouterr()
+
+        assert exit_code == 3
+        assert "uv add 'veridelta[mcp]'" in captured.err
+        assert captured.out == ""
+
+    def test_it_stops_quietly_on_ctrl_c(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure Ctrl-C, how a person stops a server started by hand, exits 0 with no trace."""
+        monkeypatch.chdir(tmp_path)
+        mocker.patch("veridelta.cli.serve", side_effect=KeyboardInterrupt)
+
+        exit_code = mcp(argparse.Namespace(root=None))
+
+        assert exit_code == 0
+        assert capsys.readouterr() == ("", "")
+
+    def test_main_dispatches_to_mcp(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure `veridelta mcp` reaches the server and exits 0 when the host disconnects."""
+        monkeypatch.chdir(tmp_path)
+        serve = mocker.patch("veridelta.cli.serve")
+        mock_exit = mocker.patch("veridelta.cli.sys.exit")
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "mcp", "--root", str(tmp_path)])
+
+        main()
+
+        serve.assert_called_once_with(Settings((tmp_path,)))
+        mock_exit.assert_called_once_with(0)
+
+
 _SNOWFLAKE_SIDE = (
     "  type: snowflake\n  account: xy12345\n  user: analyst\n  warehouse: COMPUTE_WH\n"
     "  database: ANALYTICS\n  schema_name: PUBLIC\n"
@@ -1084,7 +1196,7 @@ class TestVerboseLogging:
             main()
         return stopped.value.code
 
-    @pytest.mark.parametrize("command", ["run", "validate", "crosswalk"])
+    @pytest.mark.parametrize("command", ["run", "validate", "crosswalk", "mcp"])
     @pytest.mark.parametrize("flag", ["-v", "--verbose"])
     def test_it_takes_the_flag_on_each_command_that_reads_a_configuration(
         self, command: str, flag: str

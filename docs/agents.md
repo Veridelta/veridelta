@@ -39,6 +39,48 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
     Show the proposals and their evidence to the user before adding them to the configuration.
 
+## MCP server
+
+`veridelta mcp` serves the first step above as a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tool, so an agent's host can call it without a shell. It needs the `mcp` extra:
+
+```bash
+uv add 'veridelta[mcp]'
+```
+
+Register the server with the host from the folder that holds the configuration files. In Claude Code, this command does it:
+
+```bash
+claude mcp add veridelta -- uv run veridelta mcp --root .
+```
+
+A host that reads its servers from a file takes the same command as an entry. Claude Code reads `.mcp.json` at the project's root, and Cursor reads `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "veridelta": {
+      "command": "uv",
+      "args": ["run", "veridelta", "mcp", "--root", "."]
+    }
+  }
+}
+```
+
+Where Veridelta is installed without uv, the command is `veridelta mcp` itself. The server has one tool:
+
+| Tool | Returns | Reads |
+| :--- | :--- | :--- |
+| `validate_config` | What `veridelta validate --json` prints: `config`, `valid`, `errors`, and `warnings`. Its `schemas` and `allow_missing_env` arguments work as the command's flags do. | No rows. With `schemas`, each side's columns. |
+
+The person who starts the server decides what it may read, and no tool call can change that:
+
+- Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.
+- A tool returns findings, never the configuration or a value from it. A password inside an error is masked, as on the command line.
+- With `schemas`, a check reads each side's columns wherever the configuration says they are, as `veridelta validate --schemas` does.
+- A host may start the server with only some of the user's environment variables. A `${NAME}` that the configuration references must reach the server, through the host's `env` setting for it if need be, or the check reports it unset. `allow_missing_env` checks a file without them.
+
+A call that fails returns its error's type and message, as `run --json` prints them, such as `ConfigError` for a path outside the roots. [Serving tools to an agent](cli.md#serving-tools-to-an-agent) lists the command's flags.
+
 ## Where row values appear
 
 The summary holds counts and column names only. These outputs hold values from the data:

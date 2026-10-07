@@ -2,7 +2,7 @@
 name: veridelta
 description: Compares two datasets with the Veridelta command line and reports what differs, keeping row values out of the reply. Use when a task compares two tables or files, checks a data migration or pipeline change, or writes or fixes a veridelta.yaml file.
 metadata:
-  version: "1.1.0"
+  version: "1.2.0"
 ---
 
 # Compare two datasets with Veridelta
@@ -36,6 +36,10 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
     ```
 
     Show the proposals and their evidence to the user before adding them to the configuration.
+
+## As MCP tools
+
+Where the `mcp` extra is installed, `veridelta mcp` serves step 1 as a Model Context Protocol tool, `validate_config`, which returns the same object as `veridelta validate --json`. The guide for AI agents shows how to register it with a host.
 
 ## Writing a configuration
 

@@ -23,7 +23,7 @@ It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelt
 
 ```bash
 uv add veridelta                # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, duckdb, excel, fuzzy, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, duckdb, excel, fuzzy, mcp, all
 ```
 
 ## Quick start

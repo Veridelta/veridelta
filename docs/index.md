@@ -10,7 +10,7 @@ Files, lakehouse tables, databases, and DuckDB files are read and compared on [P
 
 ```bash
 uv add veridelta                # or: pip install veridelta
-uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, duckdb, excel, fuzzy, all
+uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, duckdb, excel, fuzzy, mcp, all
 ```
 
 ## Quick start
