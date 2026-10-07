@@ -19,6 +19,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -804,6 +805,30 @@ class TestWorkflowPins:
         assert all(update["schedule"]["interval"] == "weekly" for update in updates.values())
         # The floors in pyproject.toml are a promise to users; only the lockfile moves.
         assert updates["uv"]["versioning-strategy"] == "lockfile-only"
+
+    def test_the_dev_container_stays_on_the_oldest_supported_python(self) -> None:
+        """Ensure the Dev Container runs the oldest Python the package supports.
+
+        Dependabot reads the tag `1-3.11-bookworm` as version 1.3.11, so it
+        offers `3.14-bookworm` as a major update. Ignoring every update type
+        for the image keeps its tag, while its digest still moves.
+        """
+        config: dict[str, Any] = yaml.safe_load(_DEPENDABOT.read_text(encoding="utf-8"))
+        docker = next(u for u in config["updates"] if u["package-ecosystem"] == "docker")
+        ignored = {rule["dependency-name"]: set(rule["update-types"]) for rule in docker["ignore"]}
+        with (_ROOT / "pyproject.toml").open("rb") as file:
+            floor = tomllib.load(file)["project"]["requires-python"].removeprefix(">=")
+        dockerfile = (_ROOT / ".devcontainer" / "Dockerfile").read_text(encoding="utf-8")
+        image = f"mcr.microsoft.com/devcontainers/python:1-{floor}-bookworm"
+
+        assert f"FROM {image}@sha256:" in dockerfile
+        assert ignored == {
+            "devcontainers/python": {
+                "version-update:semver-major",
+                "version-update:semver-minor",
+                "version-update:semver-patch",
+            }
+        }
 
 
 class TestGitHooks:
