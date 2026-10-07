@@ -1,3 +1,14 @@
+## v0.19.13 (2026-10-07)
+
+`OTEL_EXPORTER_OTLP_TIMEOUT` must be ASCII digits, so a value such as `²` names the
+variable rather than crashing the send. A send with `OTEL_EXPORTER_OTLP_HEADERS` set warns
+when it goes over plain `http://` to another machine, naming the endpoint and never the
+headers, since they often carry an API key.
+
+### Fix
+
+- refuse a non-ASCII OTLP timeout, and warn on headers over http (#223)
+
 ## v0.19.12 (2026-10-07)
 
 `load_nyc_taxi` caches a download only when it is under 1 MiB and its SHA-256 matches the
