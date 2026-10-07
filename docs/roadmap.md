@@ -20,7 +20,7 @@ Completion and checking of configuration files already work through the publishe
 
 ## AI workflows
 
-An AI agent can drive Veridelta through the [command line](cli.md) today. `run`, `validate`, and `crosswalk` print JSON with `--json`, and every command returns an [exit code](cli.md#exit-codes). `veridelta mcp` serves the first two steps, `validate_config` and `run_comparison`, and `describe_schema`, which lists a side's columns, as [Model Context Protocol](https://modelcontextprotocol.io/) tools; see [AI agents](agents.md#mcp-server). A model never decides a verdict on its own: `run` stays deterministic, offline, and free, because a model that forgives drift cannot show why. A model sits on top, driving the command line, explaining a run, or proposing a rule with its evidence. Inside a rule the user declares, with a threshold and its evidence, a provider may compute a similarity, as fuzzy text matching does today without one. The items below come in this order, tracked in [issue 128](https://github.com/Veridelta/veridelta/issues/128).
+An AI agent can drive Veridelta through the [command line](cli.md) today. `run`, `validate`, and `crosswalk` print JSON with `--json`, and every command returns an [exit code](cli.md#exit-codes). `veridelta mcp` serves the same work as [Model Context Protocol](https://modelcontextprotocol.io/) tools, from checking a file to proposing value maps, and returns row values only when the person who starts it allows them; see [AI agents](agents.md#mcp-server). A model never decides a verdict on its own: `run` stays deterministic, offline, and free, because a model that forgives drift cannot show why. A model sits on top, driving the command line, explaining a run, or proposing a rule with its evidence. Inside a rule the user declares, with a threshold and its evidence, a provider may compute a similarity, as fuzzy text matching does today without one. The items below come in this order, tracked in [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 
 ### Next
 
@@ -31,8 +31,6 @@ An AI agent can drive Veridelta through the [command line](cli.md) today. `run`,
 
 ### Later
 
-- More tools for `veridelta mcp`: read discrepancy rows up to a limit, and propose value maps. The user's agent brings the model and the key, so Veridelta carries no provider code. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
-- A guard on row values for that server: they stay off unless the person who starts it enables them, and then come up to a cap. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
 - `veridelta suggest`: a command that proposes rules from the pairs that differ. A rule can be a tolerance, trimming, case folding, a null sentinel, or a date format. Each proposal shows its evidence, as a crosswalk does. No model is called. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - Accepted drift: `run --baseline accepted.json` fails only on drift that the baseline does not list. An agent that changes a pipeline on purpose can show that nothing else moved. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
 
@@ -41,4 +39,4 @@ An AI agent can drive Veridelta through the [command line](cli.md) today. `run`,
 These items may not come soon, and some may never ship. They are listed so the direction is written down. Each is opt-in, and none changes a verdict except through a rule the user declares.
 
 - A rule that compares text by meaning, through embeddings from a provider the user chooses. Paraphrased text and model outputs match when their meaning matches. No use case yet: nobody has asked for matching by meaning, and the item stays as direction until someone does.
-- A summary of a run written by a language model, with the user's own key or a local model. It sends totals only, unless the user allows row values, and is tested from recorded exchanges. The MCP server above lets an agent explain a run, so this item may stay unbuilt. No use case yet: the reviewer reads the report, and nobody has asked for prose.
+- A summary of a run written by a language model, with the user's own key or a local model. It sends totals only, unless the user allows row values, and is tested from recorded exchanges. The MCP server lets an agent explain a run, so this item may stay unbuilt. No use case yet: the reviewer reads the report, and nobody has asked for prose.

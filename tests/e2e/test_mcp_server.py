@@ -49,13 +49,13 @@ def test_the_console_script_serves_its_tools(
     # The SDK gives the child a short allow-list of variables, not this
     # environment, so the one the test runs in is passed on whole.
     server = StdioServerParameters(
-        command="veridelta", args=["mcp", "--root", str(root)], env=dict(os.environ)
+        command="veridelta",
+        args=["mcp", "--root", str(root), "--allow-row-values", "--max-rows", "2"],
+        env=dict(os.environ),
     )
     log = tmp_path / "server-stderr.log"
 
-    async def session() -> tuple[
-        list[str], CallToolResult, CallToolResult, CallToolResult, CallToolResult, CallToolResult
-    ]:
+    async def session() -> tuple[list[str], list[CallToolResult]]:
         with log.open("w", encoding="utf-8") as errlog:
             async with Client(stdio_client(server, errlog=errlog)) as client:
                 tools = [tool.name for tool in (await client.list_tools()).tools]
@@ -66,11 +66,20 @@ def test_the_console_script_serves_its_tools(
                 described = await client.call_tool(
                     "describe_schema", {"path": "drift.yaml", "side": "target"}
                 )
-        return tools, valid, broken, refused, drift, described
+                changed = await client.call_tool(
+                    "read_discrepancies", {"path": "drift.yaml", "kind": "changed"}
+                )
+        return tools, [valid, broken, refused, drift, described, changed]
 
-    tools, valid, broken, refused, drift, described = anyio.run(session)
+    tools, (valid, broken, refused, drift, described, changed) = anyio.run(session)
 
-    assert tools == ["validate_config", "run_comparison", "describe_schema"]
+    assert tools == [
+        "validate_config",
+        "run_comparison",
+        "describe_schema",
+        "read_discrepancies",
+        "propose_value_maps",
+    ]
     assert valid.structured_content == {
         "config": str((root / "veridelta.yaml").resolve()),
         "valid": True,
@@ -87,4 +96,7 @@ def test_the_console_script_serves_its_tools(
     assert drift.structured_content["exit_code"] == 1
     assert described.structured_content is not None
     assert list(described.structured_content["columns"]) == ["id", "status", "amount"]
+    assert changed.structured_content is not None
+    assert changed.structured_content["total"] == 1
+    assert [row["id"] for row in changed.structured_content["rows"]] == [2]
     assert "Traceback" not in log.read_text(encoding="utf-8")
