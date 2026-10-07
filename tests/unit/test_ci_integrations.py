@@ -14,8 +14,11 @@ time limits and a read-only token, and only jobs GitHub never started are re-run
 The live warehouse workflow starts only by hand and waits for a maintainer.
 """
 
+import os
 import re
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +91,105 @@ def _cli_arguments(script: str, send: str = "") -> list[str]:
     filled = re.sub(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?", "placeholder", filled)
     filled = re.sub(r"\$\[\[\s*inputs\.[A-Za-z0-9_-]+\s*\]\]", "placeholder", filled)
     return shlex.split(filled)[1:]
+
+
+def _run_step(tmp_path: Path, **inputs: str) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run the action's script as GitHub runs a bash step, with `uv` and `uvx` stubbed.
+
+    Args:
+        tmp_path (Path): A folder for the stubs, the outputs, and the summary.
+        inputs (str): Variables to set, over defaults that pass every check.
+
+    Returns:
+        tuple[subprocess.CompletedProcess[str], list[str]]: The finished script, and the
+            lines it wrote to `GITHUB_OUTPUT`. A file named `called` in `tmp_path` says a
+            stub ran.
+    """
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    for tool in ("uv", "uvx"):
+        stub = stubs / tool
+        stub.write_text(f"#!/bin/sh\ntouch '{tmp_path / 'called'}'\n", encoding="utf-8")
+        stub.chmod(0o755)
+    output = tmp_path / "output"
+    env = {
+        "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_JOB": "compare",
+        "GITHUB_OUTPUT": str(output),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+        "VERIDELTA_ACTION_PATH": str(_ROOT),
+        "VERIDELTA_ARTIFACT_NAME": "",
+        "VERIDELTA_CONFIG": "veridelta.yaml",
+        "VERIDELTA_EXTRAS": "",
+        "VERIDELTA_HTML_MAX_ROWS": "1000",
+        "VERIDELTA_MARKDOWN_MAX_ROWS": "0",
+        "VERIDELTA_OTEL_SEND": "false",
+        "VERIDELTA_OUT": str(tmp_path / "out"),
+        "VERIDELTA_VERSION": "",
+        **inputs,
+    }
+    finished = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", _run_script()],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return finished, output.read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The CI job for the action runs its script on Windows; here bash may be absent.",
+)
+class TestGitHubActionInputs:
+    """Run the action's script with inputs a caller should never pass, as a workflow might."""
+
+    def test_it_runs_veridelta_when_every_input_fits(self, tmp_path: Path) -> None:
+        """Ensure inputs that fit their patterns reach the run, under the default artifact name."""
+        finished, outputs = _run_step(tmp_path, VERIDELTA_EXTRAS="snowflake, fuzzy")
+
+        assert finished.returncode == 0, finished.stderr
+        assert (tmp_path / "called").exists()
+        assert "artifact-name=veridelta-compare-veridelta.yaml" in outputs
+
+    @pytest.mark.parametrize(
+        ("variable", "value", "message"),
+        [
+            pytest.param(
+                "VERIDELTA_EXTRAS", "snowflake;touch x", "extras must be extra names", id="extras"
+            ),
+            pytest.param(
+                "VERIDELTA_VERSION",
+                "0.19.0 @ https://example.com/veridelta.whl",
+                "version must be a release number",
+                id="version",
+            ),
+            pytest.param(
+                "VERIDELTA_ARTIFACT_NAME",
+                "report\nstatus=match",
+                "artifact-name may hold only",
+                id="artifact-name",
+            ),
+        ],
+    )
+    def test_it_refuses_an_input_outside_its_pattern(
+        self, tmp_path: Path, variable: str, value: str, message: str
+    ) -> None:
+        """Ensure a bad input installs nothing, writes no line of its own, and ends in an error.
+
+        The step itself finishes, so the summary, the comment, and the verdict
+        steps report the error as they do any other.
+        """
+        finished, outputs = _run_step(tmp_path, **{variable: value})
+
+        assert finished.returncode == 0, finished.stderr
+        assert f"::error::{message}" in finished.stdout
+        assert not (tmp_path / "called").exists()
+        assert "status=error" in outputs
+        assert "exit-code=2" in outputs
+        assert "status=match" not in outputs
 
 
 class TestGitHubAction:
