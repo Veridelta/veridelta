@@ -8,6 +8,7 @@ import re
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 from typing import Final, get_args
 from unittest.mock import call
@@ -878,6 +879,56 @@ class TestDataIntegrityAndSetDifferences:
         assert not (tmp_path / "removed_rows.parquet").exists()
         assert not (tmp_path / "changed_rows.parquet").exists()
         assert summary.artifacts_written is False
+
+    @pytest.mark.parametrize("output_format", ["csv", "json", "ndjson", "parquet", "arrow"])
+    def test_it_writes_a_binary_column_in_every_format(
+        self, tmp_path: Path, output_format: ArtifactFormat
+    ) -> None:
+        """Ensure bytes, such as a MySQL `BIT` column, reach every format.
+
+        CSV and JSON have no type for bytes, so they hold hexadecimal text;
+        Polars refuses bytes in CSV and panics on them in JSON. Parquet and
+        Arrow keep the bytes.
+        """
+        src = pl.DataFrame({"id": [1, 2], "flags": [b"\x00\xff", b"\x01"]})
+        tgt = pl.DataFrame({"id": [1, 3], "flags": [b"\x00\xfe", b"\x02"]})
+        config = DiffConfig(
+            primary_keys=["id"], output_path=str(tmp_path), output_format=output_format
+        )
+
+        DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        readers: dict[str, Callable[[Path], pl.DataFrame]] = {
+            "csv": partial(pl.read_csv, infer_schema=False),
+            "json": pl.read_json,
+            "ndjson": pl.read_ndjson,
+            "parquet": pl.read_parquet,
+            "arrow": pl.read_ipc,
+        }
+        written = readers[output_format](tmp_path / f"removed_rows.{output_format}")
+        expected = "01" if output_format in {"csv", "json", "ndjson"} else b"\x01"
+        assert written["flags"].to_list() == [expected]
+
+    @pytest.mark.parametrize("output_format", ["csv", "json", "ndjson"])
+    @pytest.mark.parametrize(
+        "parts",
+        [
+            pytest.param([b"\x01"], id="list"),
+            pytest.param({"bits": b"\x01"}, id="struct"),
+        ],
+    )
+    def test_it_refuses_nested_bytes_in_a_text_format(
+        self, tmp_path: Path, output_format: ArtifactFormat, parts: object
+    ) -> None:
+        """Ensure bytes in a list or a struct fail with the setting to change, not a panic."""
+        src = pl.DataFrame({"id": [1], "parts": [parts]})
+        tgt = pl.DataFrame({"id": [2], "parts": [parts]})
+        config = DiffConfig(
+            primary_keys=["id"], output_path=str(tmp_path), output_format=output_format
+        )
+
+        with pytest.raises(ConfigError, match="Column 'parts' nests binary values"):
+            DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
     def test_it_rejects_an_unwritable_export_format_at_load_time(self, tmp_path: Path) -> None:
         """Ensure an unwritable artifact format fails before any comparison runs.
