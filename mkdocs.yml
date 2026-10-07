@@ -7,6 +7,8 @@ repo_name: Veridelta/veridelta
 
 theme:
   name: material
+  # The link preview tags, in overrides/main.html.
+  custom_dir: overrides
   features:
     - navigation.tabs
     - navigation.sections

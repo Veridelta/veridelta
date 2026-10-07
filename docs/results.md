@@ -52,6 +52,9 @@ A run with `pushdown_sample_rows` set also carries `changed_sample`: up to that 
 
 ## HTML report
 
+![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-light.png#only-light)
+![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-dark.png#only-dark)
+
 `write_html` writes the standalone report that `veridelta run --html` writes. It embeds its own styles and script, so it opens offline. Every row is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
 
 ```python

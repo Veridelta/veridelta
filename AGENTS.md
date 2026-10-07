@@ -17,6 +17,7 @@ The project uses [uv](https://docs.astral.sh/uv/) and a Makefile:
 | `make databases` | Reads real MySQL and SQL Server tables, after a change to the database connector. |
 | `make accessibility` | Checks the docs site and the HTML report with axe-core and a keyboard, in Chromium, after a change to either. |
 | `make demo` | Renders every recording from its tape in `demo/` with vhs v0.12.1, after a change to a command a tape types or to what it prints. |
+| `make screenshots` | Captures the HTML report and renders the link preview card under `docs/assets/`, after a change to the report or to the summary sentence. |
 
 Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip`, `poetry`, or `conda`.
 
