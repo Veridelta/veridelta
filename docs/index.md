@@ -13,6 +13,27 @@ uv add veridelta                # or: pip install veridelta
 uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta, iceberg, database, duckdb, excel, fuzzy, all
 ```
 
+## Quick start
+
+The smallest configuration names the two files and the keys that pair their rows. The suffix of each path says what format it is, and the recording above runs this file on two three-row files:
+
+```yaml
+primary_keys: [id]
+source:
+  path: legacy.csv
+target:
+  path: modern.csv
+```
+
+`validate` checks the file without reading any rows, and `run` compares the two files. It exits 0 when they match, 1 when rows differ, and 3 when the run could not finish. [Command line](cli.md) lists every code and flag:
+
+```bash
+veridelta validate -c veridelta.yaml
+veridelta run -c veridelta.yaml
+```
+
+[Configuration](configuration.md) lists every setting, and [Rules](rules.md) say what counts as a match, column by column.
+
 ## Where to start
 
 The tutorials build a comparison step by step:
