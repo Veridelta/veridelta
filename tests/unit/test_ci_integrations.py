@@ -736,6 +736,33 @@ class TestWorkflowPins:
                 kept = step.get("with", {}).get("persist-credentials", True)
                 assert kept is ((workflow.name, name) in pushers), f"{workflow.name}: {name}"
 
+    @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
+    def test_it_installs_only_what_the_lockfile_pins(self, workflow: Path) -> None:
+        """Ensure a lockfile that no longer matches `pyproject.toml` fails the job.
+
+        Without `--locked`, `uv sync` resolves again and installs the newest
+        versions it finds, which no one reviewed.
+        """
+        for step in _workflow_steps(workflow):
+            for command in re.findall(r"\buv sync\b[^\n]*", step.get("run", "")):
+                assert "--locked" in command, (workflow.name, command)
+
+    def test_ci_runs_one_pinned_uv(self) -> None:
+        """Ensure CI runs one uv release, which changes only when a person changes it.
+
+        Without a `version`, `setup-uv` installs the newest uv on every run.
+        The release workflow is left as it is until its own change.
+        """
+        versions = {
+            str(step["with"].get("version"))
+            for workflow in (_CI, _DOCS, _LIVE)
+            for step in _workflow_steps(workflow)
+            if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
+        }
+
+        assert len(versions) == 1
+        assert re.fullmatch(r"\d+\.\d+\.\d+", versions.pop())
+
     @pytest.mark.parametrize("path", [*_WORKFLOWS, _ACTION], ids=lambda path: path.name)
     def test_it_names_the_release_behind_every_pin(self, path: Path) -> None:
         """Ensure each commit pin says which release it is, as Dependabot keeps it."""
