@@ -46,7 +46,12 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 | [Security](rules/security.md): warehouse SQL assembly, the execution boundary | `src/veridelta/connectors/`, `src/veridelta/models.py`, `src/veridelta/engine.py` |
 | [Testing](rules/testing.md): layout, fixtures, markers, the parity suite | `tests/` |
 
-`tests/unit/test_rules.py` fails on a rule missing from this table or from the index, a path that does not exist, a row that names other paths than the rule's frontmatter, or an `AGENTS.md` anywhere below the root.
+`tests/unit/test_rules.py` fails on any of these:
+
+- a rule missing from this table or from the index;
+- a path that does not exist;
+- a row that names other paths than the rule's frontmatter;
+- an `AGENTS.md` anywhere below the root.
 
 ## Skills
 
@@ -54,7 +59,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 
 ## Product documents
 
-`product/` holds what the project knows about its users and its goals, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle: one concept per Markdown file. `product/USERS.md` holds the personas and use cases, `product/KEY_METRICS.md` and `product/metrics/` the north star with its drivers and guardrails, `product/FEATURES.md` the map from each feature and roadmap item to the use case it serves, and `product/log.md` what changed and why. Each directory has an `index.md` that lists its concepts.
+`product/` holds what the project knows about its users and its goals, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle: one concept per Markdown file. Each directory has an `index.md` that lists its concepts. `product/USERS.md` holds the personas and use cases. `product/KEY_METRICS.md` and `product/metrics/` hold the north star with its drivers and guardrails. `product/FEATURES.md` maps each feature and roadmap item to the use case it serves, and `product/log.md` says what changed and why.
 
 - A change serves a use case, named in its pull request as `UC-nn`, or says it is maintenance. A roadmap item names its use case, or says that none asks for it yet.
 - A concept opens with frontmatter: `type`, `title`, a one-line `description`, `status`, and `generated`. A decision record under `decisions/` and a rule under `rules/` carry `generated` too.
@@ -62,7 +67,14 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 - Ids tie the documents together: a persona is `P-01`, a use case `UC-01`, a metric `NS-01`, `DR-01`, or `GR-01`. A heading or a metric's file name defines an id once. Name an id only once it is defined, and outside a heading name it as a link to its card.
 - Write the documents with the `define-personas` and `define-key-metrics` skills in `.claude/skills/`, add a line to `product/log.md` under today's date, and follow the writing rules.
 
-`tests/unit/test_product_bundle.py` fails on a missing field, a producer that names a model, an id defined nowhere or twice, a second north star, a driver or guardrail that does not support it, a concept missing from its index, a link that leads nowhere or to no heading, an id named without a link, a use case that no feature serves, or a roadmap item that names no use case.
+`tests/unit/test_product_bundle.py` fails on any of these:
+
+- a missing field, or a producer that names a model;
+- an id defined nowhere or twice, or named without a link;
+- a second north star, or a driver or guardrail that does not support it;
+- a concept missing from its index;
+- a link that leads nowhere or to no heading;
+- a use case that no feature serves, or a roadmap item that names no use case.
 
 ## Settled
 

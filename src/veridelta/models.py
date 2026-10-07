@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 from veridelta.exceptions import ConfigError
 
 if TYPE_CHECKING:
-    import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
+    import pandas as pd  # pyright: ignore[reportMissingTypeStubs] - no pandas-stubs
 
 _CONTAINER_SCHEMES: Final[frozenset[str]] = frozenset({"abfs", "abfss", "wasb", "wasbs"})
 """Azure schemes whose `container@account` user part names a container, not a login."""
