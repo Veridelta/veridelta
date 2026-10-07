@@ -42,6 +42,15 @@ def test_the_card_says_what_pypi_says() -> None:
     assert f"<p>{summary}</p>" in card
 
 
+@pytest.mark.parametrize("name", ["veridelta-symbol.png", "veridelta-wordmark.png"])
+def test_the_card_shows_the_logo(name: str) -> None:
+    """Ensure the card shows the logo from the files the docs keep, so every copy is the same."""
+    card = (_ROOT / "demo" / "social-card.html").read_text(encoding="utf-8")
+
+    assert f'src="../docs/assets/{name}"' in card
+    assert min(_size(_ASSETS / name)) > 0
+
+
 def test_the_card_has_the_size_link_previews_take() -> None:
     """Ensure the card is 1280 by 640, the 2:1 image GitHub and social sites show whole."""
     assert _size(_ASSETS / "social-card.png") == (1280, 640)
