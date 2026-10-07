@@ -1,3 +1,13 @@
+## v0.19.12 (2026-10-07)
+
+`load_nyc_taxi` caches a download only when it is under 1 MiB and its SHA-256 matches the
+published sample's. A cached copy that no longer matches, a corrupt one included, is
+downloaded again with a warning.
+
+### Fix
+
+- check the sample dataset's SHA-256 and size before caching it (#221)
+
 ## v0.19.11 (2026-10-07)
 
 The GitHub Action checks its `extras`, `version`, and `artifact-name` inputs before it
