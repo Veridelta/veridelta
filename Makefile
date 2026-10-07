@@ -1,4 +1,4 @@
-.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check
+.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check screenshots
 
 # The modules held to full branch coverage. CI's core-module gate names the same
 # list, which tests/unit/test_ci_integrations.py checks.
@@ -56,6 +56,10 @@ demo: vhs-check
 	cd demo && for tape in *.tape; do \
 		[ "$$tape" = settings.tape ] || uv run vhs "$$tape" || exit 1; \
 	done
+
+# The HTML report in light and dark, and the link preview card, under docs/assets/.
+screenshots:
+	uv run --group accessibility python demo/screenshots.py
 
 # MP4 copies of the recordings for promotional videos, in demo/video/, which git ignores.
 # Each renders from a copy of its tape whose only output is the MP4, so no GIF changes.

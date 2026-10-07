@@ -101,6 +101,8 @@ sudo apt-get install ttyd ffmpeg   # or: brew install ttyd ffmpeg
 
 `make demo-video` writes an MP4 of each recording to `demo/video/`, which git ignores, for promotional videos.
 
+`make screenshots` captures the HTML report in light and dark, from a comparison `demo/screenshots.py` runs itself, and renders the link preview card from `demo/social-card.html`, all under `docs/assets/`. It needs the `accessibility` group's Playwright and its Chromium, as `make accessibility` does. The docs site names the card in its link preview tags, from `overrides/main.html`, and the same card is the repository's social preview.
+
 ## Commit messages
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/), and the `commit-msg` hook rejects any other form:
