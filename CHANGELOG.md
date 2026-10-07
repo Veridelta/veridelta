@@ -1,3 +1,21 @@
+## v0.16.0 (2026-10-07)
+
+`veridelta mcp` serves Veridelta's checks to an AI agent's host as Model Context
+Protocol tools, over stdio. It needs the new `mcp` extra, which installs the official
+MCP Python SDK and is part of `all`. Its first tool, `validate_config`, returns the
+object `veridelta validate --json` prints. The person who starts the server names the
+folders a tool may read with `--root`, the current directory by default, and a path
+outside them fails the call. A tool returns findings, never a value from the
+configuration file. The AI agents page shows how to register the server with Claude
+Code or Cursor.
+
+In Python, `DiffEngine.check_config_file(path)` loads a configuration file and returns
+the findings `veridelta validate` reports, with a file that does not load as one error.
+
+### Feat
+
+- add `veridelta mcp`, a Model Context Protocol server with the tool `validate_config`
+
 ## v0.15.0 (2026-10-07)
 
 A file source reads its `format` from the path's suffix when the key is absent: `.csv`;
