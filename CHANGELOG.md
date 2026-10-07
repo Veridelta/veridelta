@@ -1,3 +1,15 @@
+## v0.19.17 (2026-10-07)
+
+The engine writes each check once: the `timezone` guard, the null equality of stage 9, the
+probe for each optional extra, and the names of the two sides. Results are unchanged. One
+message changed: a `timezone` rule on a naive timestamp now gives the same advice on a
+local run and in pushdown, to store the column with a zone or parse it with an offset such
+as `%z`.
+
+### Refactor
+
+- write each engine check once (#242)
+
 ## v0.19.16 (2026-10-07)
 
 No behavior changed. `validate --json` and the MCP server's `validate_config` build their
