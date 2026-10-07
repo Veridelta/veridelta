@@ -1,3 +1,16 @@
+## v0.21.1 (2026-10-07)
+
+While a run compares, `veridelta run` says "Comparing..." on stderr, where it said
+"Executing semantic diff...".
+
+The AI agents page and the agent skill give an agent the loop that fixes drift its own
+pipeline change causes. Tutorial 6 compares two model evaluation runs. The command line
+page shows recordings of `validate` and `crosswalk`, each beside the text it prints.
+
+### Fix
+
+- say "Comparing..." while a run compares (#263)
+
 ## v0.21.0 (2026-10-07)
 
 The Markdown summary that CI posts to a pull request ends with an HTML comment, which
