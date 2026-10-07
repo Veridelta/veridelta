@@ -1,0 +1,1 @@
+Compare the two order exports in this folder with the veridelta tools. Check the configuration first, then run the comparison, then read the rows that differ. Tell me what changed, column by column, and whether any change looks like rounding rather than a real difference. Do not change any file.

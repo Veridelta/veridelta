@@ -1,0 +1,5 @@
+primary_keys: [order_id]
+source:
+  path: orders_before.csv
+target:
+  path: orders_after.csv

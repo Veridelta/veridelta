@@ -1,0 +1,13 @@
+order_id,status,amount
+1001,shipped,22.25
+1002,delivered,29.50
+1003,open,36.75
+1004,shipped,44.00
+1005,delivered,51.25
+1006,open,58.50
+1007,shipped,65.75
+1008,delivered,73.00
+1009,open,80.25
+1010,shipped,87.50
+1011,delivered,94.75
+1012,open,102.00

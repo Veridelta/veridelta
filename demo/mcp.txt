@@ -1,0 +1,35 @@
+> # A client calls the MCP server's tools, as an agent's host does.
+> python mcp_client.py
+-> validate_config {"path": "veridelta.yaml"}
+<- {
+  "valid": true,
+  "errors": [],
+  "warnings": []
+}
+-> run_comparison {"path": "veridelta.yaml"}
+<- {
+  "verdict": "drift",
+  "exit_code": 1,
+  "added_count": 1,
+  "removed_count": 1,
+  "changed_count": 1,
+  "column_mismatches": {
+    "status": 1
+  }
+}
+-> read_discrepancies {"path": "veridelta.yaml", "kind": "changed"}
+<- {
+  "total": 1,
+  "truncated": false,
+  "rows": [
+    {
+      "id": 2,
+      "status_source": "closed",
+      "amount_source": 20.5,
+      "status_target": "shipped",
+      "amount_target": 20.5,
+      "status_is_match": false,
+      "amount_is_match": true
+    }
+  ]
+}
