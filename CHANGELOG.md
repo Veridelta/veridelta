@@ -1,3 +1,14 @@
+## v0.19.7 (2026-10-07)
+
+A failure Polars reports as a panic now exits 3, as any other error does, and `--json`
+prints it as one error object. Before, Python exited 1 with a traceback: the code
+`veridelta run` gives for drift, so CI read a crash as drift. The MCP server fails the one
+call with the panic's type and message, where it would have stopped.
+
+### Fix
+
+- report a Polars panic as an error, exit 3, not as drift (#211)
+
 ## v0.19.6 (2026-10-07)
 
 A run whose differing rows hold a binary column, such as a MySQL `BIT` column, writes its
