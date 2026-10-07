@@ -707,6 +707,22 @@ class TestWorkflowPins:
                 continue
             assert _COMMIT_PIN.fullmatch(uses), f"{workflow.name}: {uses}"
 
+    @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
+    def test_only_a_job_that_pushes_keeps_its_token_in_the_checkout(self, workflow: Path) -> None:
+        """Ensure a checkout leaves no token in `.git/config` for the steps after it.
+
+        The packages a job installs run with that token otherwise. Only the
+        release `tag` job and the docs deploy push, so only they keep it.
+        """
+        pushers = {("release.yml", "tag"), ("docs.yml", "deploy-docs")}
+        jobs: dict[str, Any] = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
+        for name, job in jobs.items():
+            for step in job.get("steps", []):
+                if not str(step.get("uses", "")).startswith("actions/checkout@"):
+                    continue
+                kept = step.get("with", {}).get("persist-credentials", True)
+                assert kept is ((workflow.name, name) in pushers), f"{workflow.name}: {name}"
+
     @pytest.mark.parametrize("path", [*_WORKFLOWS, _ACTION], ids=lambda path: path.name)
     def test_it_names_the_release_behind_every_pin(self, path: Path) -> None:
         """Ensure each commit pin says which release it is, as Dependabot keeps it."""
