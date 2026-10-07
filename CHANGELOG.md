@@ -1,3 +1,55 @@
+## v0.15.0 (2026-10-07)
+
+A file source reads its `format` from the path's suffix when the key is absent: `.csv`;
+`.parquet` or `.pq`; `.json`; `.ndjson` or `.jsonl`; `.arrow`, `.ipc`, or `.feather`;
+`.avro`; and `.xlsx` or `.xls`, in any case and before a `?` query or `#` fragment. A
+`format` you write always wins, and a suffix Veridelta does not know keeps the `csv`
+default. The smallest configuration is now the two paths and the keys that pair their
+rows, and the README, the docs home, and tutorial 2 lead with it, which is the file the
+README's recording runs.
+
+Two names deprecated in 0.14 are gone. `veridelta.DataIngestor`, which loaded and aligned
+two sources for a `DiffEngine` that aligns them again, goes: call
+`DiffEngine.run_from_configs(diff, source, target)`. `VerideltaConnector.fetch_schema()`,
+which nothing in the package called, goes with the code that served only it: read a
+reader's schema with `lazyframe().collect_schema()`, and probe a warehouse table with
+`compile_schema_probe_query(table)` through `execute_pushdown(sql, query_type="schema")`.
+
+The connector base is split in two. `VerideltaConnector` declares the lifecycle,
+`connect()` and `close()`, and nothing else. `ReaderConnector` adds `lazyframe()`, which
+the Delta Lake, Iceberg, database, and DuckDB connectors implement. `PushdownSession` adds
+`compiler` and `execute_pushdown()`, which the Snowflake, Databricks, and BigQuery
+connectors and the Postgres and DuckDB pushdown sessions implement. A reader no longer has
+an `execute_pushdown` method. A subclass written against the old base now subclasses the
+kind it is.
+
+This release ships before the live warehouse suite's first run against Snowflake,
+Databricks, BigQuery, and MotherDuck, by the maintainer's decision. That run comes when the
+maintainer has the time, and a difference it finds ships as a 0.15 patch.
+
+### Feat
+
+- infer a file's format from its extension
+
+### Refactor
+
+- remove `DataIngestor`, deprecated in 0.14.6
+- remove `fetch_schema`, deprecated in 0.14.7
+- split the connector base into readers and pushdown sessions
+
+### BREAKING CHANGE
+
+- `veridelta.DataIngestor` no longer exists. Call
+  `DiffEngine.run_from_configs(diff, source, target)`, which loads, aligns, and compares
+  both sides.
+- `VerideltaConnector.fetch_schema()` no longer exists. Read a reader's schema with
+  `lazyframe().collect_schema()`, and probe a warehouse table with
+  `compile_schema_probe_query(table)` through `execute_pushdown(sql, query_type="schema")`.
+- `VerideltaConnector` declares `connect()` and `close()` only. A connector the local
+  engine reads subclasses `ReaderConnector` and defines `lazyframe()`; a connector that
+  runs compiled SQL subclasses `PushdownSession` and defines `compiler` and
+  `execute_pushdown()`. A reader no longer has an `execute_pushdown` method.
+
 ## v0.14.10 (2026-10-06)
 
 `veridelta.datasets` computes its Git ref in one private function, where two public names
