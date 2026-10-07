@@ -2591,22 +2591,28 @@ class DiffEngine:
             if message is not None:
                 raise ConfigError(message)
 
-        if self.config.schema_mode == "exact" and source_cols != target_cols:
-            raise ConfigError(
-                f"EXACT schema match failed.\nSource: {source_cols}\nTarget: {target_cols}"
+        # Sorted, since a set prints in an order that changes from run to run.
+        only_source = sorted(source_cols - target_cols)
+        only_target = sorted(target_cols - source_cols)
+        mode = self.config.schema_mode
+        if mode == "exact" and (only_source or only_target):
+            parts: list[str] = []
+            if only_source:
+                parts.append(f"only the source has {_quoted_list(only_source)}")
+            if only_target:
+                parts.append(f"only the target has {_quoted_list(only_target)}")
+            message = f"EXACT schema match failed: {'; '.join(parts)}."
+        elif mode == "allow_additions" and only_source:
+            message = f"Target is missing required source columns: {_quoted_list(only_source)}."
+        elif mode == "allow_removals" and only_target:
+            message = (
+                f"Target contains unauthorized additional columns: {_quoted_list(only_target)}."
             )
-
-        elif self.config.schema_mode == "allow_additions":
-            missing_in_target = source_cols - target_cols
-            if missing_in_target:
-                raise ConfigError(f"Target is missing required source columns: {missing_in_target}")
-
-        elif self.config.schema_mode == "allow_removals":
-            extra_in_target = target_cols - source_cols
-            if extra_in_target:
-                raise ConfigError(
-                    f"Target contains unauthorized additional columns: {extra_in_target}"
-                )
+        else:
+            return
+        if self._sides is not None:
+            message += f" The source is {self._sides['source']}, and the target is {self._sides['target']}."
+        raise ConfigError(message)
 
     def run(self) -> DiffResult:
         """Compare the two datasets and return the result.
