@@ -4,7 +4,7 @@ Contributions are welcome. Every change passes the same typing, formatting, and 
 
 Everyone who takes part in the project follows the [Code of Conduct](CODE_OF_CONDUCT.md). A change to the HTML report or the documentation site meets the [accessibility expectations](ACCESSIBILITY.md#contributor-expectations).
 
-Coding agents read [AGENTS.md](AGENTS.md), which sums up this guide, and the `AGENTS.md` beside the code they change. Update them when a rule changes.
+Coding agents read [AGENTS.md](AGENTS.md), which sums up this guide, and the `AGENTS.md` beside the code they change. Update them when a rule changes. Claude Code reads `AGENTS.md` from 2.1.277, and from 2.1.282 on Bedrock, Vertex, Foundry, a gateway, or with telemetry off. It does so only while no `CLAUDE.md` or `CLAUDE.local.md` exists in the working directory or above it, so `tests/unit/test_docs_links.py` refuses either file anywhere in the repository. Personal notes go in `~/.claude/CLAUDE.md`, which does not count.
 
 ## Development environment
 
