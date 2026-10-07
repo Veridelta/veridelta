@@ -1,3 +1,15 @@
+## v0.25.0 (2026-10-07)
+
+`veridelta suggest` now proposes `datetime_format` for a column with text on one side and
+dates or timestamps on the other, when the text reads as those dates under one format.
+The common formats are tried, with or without a time, and the one that matches the most
+differing rows wins, so the dates themselves settle whether the day or the month comes
+first. A timestamp with a zone is left out.
+
+### Feat
+
+- suggest a date format for text that reads as the dates beside it (#278)
+
 ## v0.24.0 (2026-10-07)
 
 `veridelta suggest` now proposes `null_values` for a column of any type when a common
