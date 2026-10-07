@@ -1,3 +1,15 @@
+## v0.19.11 (2026-10-07)
+
+The GitHub Action checks its `extras`, `version`, and `artifact-name` inputs before it
+installs anything. A value outside the pattern each input takes fails the step with exit
+code 2, the command line's code for invalid arguments. Before, a workflow that passed text
+from a pull request into an input could add a requirement, or a second line to the step's
+outputs.
+
+### Fix
+
+- check the Action's extras, version, and artifact name before use (#219)
+
 ## v0.19.10 (2026-10-07)
 
 The `snowflake` extra needs `snowflake-connector-python` 4.7.3 or later, past six
