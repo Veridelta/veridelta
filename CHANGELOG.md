@@ -1,3 +1,15 @@
+## v0.19.19 (2026-10-07)
+
+No behavior changed, and every SQL statement is byte for byte the same: the unit and
+integration suites compile 2,316 statements, and each is the same before and after. The
+allowlist check every configured name passes before SQL is one function, the value map
+query names its aliases once, and `veridelta.models.POSTGRES_SCHEMES` names the Postgres
+URI schemes once.
+
+### Refactor
+
+- name each SQL alias, the allowlist gate, and the Postgres schemes once (#246)
+
 ## v0.19.18 (2026-10-07)
 
 No behavior changed. The verdict and the reported `mismatch_ratio` divide by the source
