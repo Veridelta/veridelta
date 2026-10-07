@@ -29,7 +29,7 @@ from veridelta import __version__
 from veridelta.config import config_json_schema, load_config
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
-from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve
+from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve, validation_report
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
@@ -80,12 +80,17 @@ def _verbose_logging(enabled: bool) -> Generator[None, None, None]:
         logger.setLevel(level)
 
 
-def _row_limit(text: str) -> int:
-    """Parse a row cap, such as `--html-max-rows`, which must be a whole number of zero or more."""
+def _whole_number(text: str) -> int:
+    """Parse a whole number."""
     try:
-        value = int(text)
+        return int(text)
     except ValueError:
         raise argparse.ArgumentTypeError(f"expected a whole number, got {text!r}") from None
+
+
+def _row_limit(text: str) -> int:
+    """Parse a row cap, such as `--html-max-rows`, which must be a whole number of zero or more."""
+    value = _whole_number(text)
     if value < 0:
         raise argparse.ArgumentTypeError(f"must be zero or more, got {value}")
     return value
@@ -117,10 +122,7 @@ def _share(text: str) -> float:
 
 def _at_least_one(text: str) -> int:
     """Parse a whole number of at least one, such as `--min-support` or `--max-rows`."""
-    try:
-        value = int(text)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"expected a whole number, got {text!r}") from None
+    value = _whole_number(text)
     if value < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
     return value
@@ -408,15 +410,9 @@ def validate(args: argparse.Namespace) -> int:
     except Exception as exc:
         return _report_failure(exc, as_json=bool(args.json))
 
-    errors = [finding.message for finding in findings if finding.severity == "error"]
-    warnings = [finding.message for finding in findings if finding.severity == "warning"]
+    report = validation_report(args.config, findings)
+    errors, warnings = report["errors"], report["warnings"]
     if args.json:
-        report = {
-            "config": args.config,
-            "valid": not errors,
-            "errors": errors,
-            "warnings": warnings,
-        }
         print(json.dumps(report, indent=2))
     else:
         for finding in findings:
