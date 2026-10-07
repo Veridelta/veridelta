@@ -25,7 +25,6 @@ These items build on [AI agents](agents.md), in this order, tracked in [issue 12
 ### Next
 
 - A tutorial that compares two model evaluation runs, keyed by example ID, with tolerances and fuzzy text matching. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
-- A recipe for an agent's fix loop: edit the pipeline, let CI run Veridelta, read the result, and fix what it reports. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
 
 ### Later
 

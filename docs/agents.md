@@ -111,6 +111,18 @@ A pair compared in place, such as two warehouse tables, brings back counts and p
 
 On a pull request, the comment the [GitHub Action](ci.md#github-actions) keeps ends with the run's summary as JSON, in an HTML comment that readers never see. It holds counts and the column names the comment shows, never a value, and [Markdown summary](results.md#markdown-summary) shows how to parse it.
 
+## Fixing drift in a loop
+
+An agent that changes a pipeline can check its own work against the data the pipeline produced before, and keep fixing until the two match:
+
+1. Change the pipeline. Push the change to the pull request, or run the pipeline locally.
+2. Let the comparison run: the [GitHub Action](ci.md#github-actions) on the pull request, or `veridelta run --json` locally.
+3. Read the result and its exit code. On the pull request, parse the JSON at the end of the Action's comment, as [Markdown summary](results.md#markdown-summary) shows. Locally, read what `run --json` prints. Both hold `added_count`, `removed_count`, and `changed_count`. `column_mismatches` holds every drifting column in `run --json`, and in the comment the ones its table lists.
+4. Find the cause in the change, not in the data. The columns that drift, and how many rows each one changes, point to the code that writes them. With the MCP server started with `--allow-row-values`, `read_discrepancies` returns the rows that differ.
+5. Fix the change, and go back to step 1.
+
+Stop when the run matches, and report the counts. Stop too when the drift that remains is what the user asked for, such as a new rounding, and say which columns it is in. Never add a rule, or raise `threshold`, to make a run pass unless the user agrees: a rule changes what counts as a match, for every later run too.
+
 ## Docs for language models
 
 The site publishes two plain-text files for language models, as the [llms.txt proposal](https://llmstxt.org/) describes:
