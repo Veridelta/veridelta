@@ -724,9 +724,10 @@ class TestWorkflowPins:
         """Ensure a checkout leaves no token in `.git/config` for the steps after it.
 
         The packages a job installs run with that token otherwise. Only the
-        release `tag` job and the docs deploy push, so only they keep it.
+        release `tag` job pushes from its checkout, so only it keeps the token.
+        The docs deploy checks nothing out and pushes through `gh`.
         """
-        pushers = {("release.yml", "tag"), ("docs.yml", "deploy-docs")}
+        pushers = {("release.yml", "tag")}
         jobs: dict[str, Any] = yaml.safe_load(workflow.read_text(encoding="utf-8"))["jobs"]
         for name, job in jobs.items():
             for step in job.get("steps", []):
@@ -756,7 +757,7 @@ class TestWorkflowPins:
 
 
 class TestDocsWorkflow:
-    """Pin how the documentation site deploys."""
+    """Pin how the documentation site builds and deploys."""
 
     def test_it_deploys_one_commit_at_a_time(self) -> None:
         """Ensure merges that land together cannot race to push `gh-pages`.
@@ -767,6 +768,36 @@ class TestDocsWorkflow:
         workflow: dict[str, Any] = yaml.safe_load(_DOCS.read_text(encoding="utf-8"))
 
         assert workflow["concurrency"] == {"group": "docs-deploy", "cancel-in-progress": False}
+
+    def test_the_build_gets_a_read_only_token(self) -> None:
+        """Ensure the packages the build installs and runs cannot push.
+
+        The build runs every package the docs need, plugins included, so it
+        keeps the workflow's read-only token and pushes nothing.
+        """
+        workflow = _workflow(_DOCS)
+        build = workflow["jobs"]["build"]
+
+        assert workflow["permissions"] == {"contents": "read"}
+        assert "permissions" not in build
+        assert "push" not in "\n".join(step.get("run", "") for step in build["steps"])
+
+    def test_only_a_job_that_installs_nothing_can_push(self) -> None:
+        """Ensure the write token reaches one shell step, after the build passes.
+
+        It downloads the built site with the runner's own `gh` and commits it
+        on top of `gh-pages` with `git`, never with a force push.
+        """
+        deploy = _workflow(_DOCS)["jobs"]["deploy"]
+        [step] = deploy["steps"]
+
+        assert deploy["needs"] == "build"
+        assert deploy["permissions"] == {"actions": "read", "contents": "write"}
+        assert "uses" not in step
+        assert not re.search(r"\b(uv|pip|npm)\b", step["run"])
+        assert 'gh run download "$GITHUB_RUN_ID" --name site --dir pages' in step["run"]
+        assert step["run"].rstrip().endswith("git -C pages push --quiet origin gh-pages")
+        assert "--force" not in step["run"]
 
 
 class TestCIWorkflow:

@@ -5,8 +5,11 @@ on:
     branches: ["main"]
   workflow_dispatch:
 
+# The build installs every package the docs need and runs it, so it gets a
+# read-only token. Only the deploy job, which runs no action and installs
+# nothing, may push.
 permissions:
-  contents: write
+  contents: read
 
 # One deploy at a time: merges that land together queue instead of racing to
 # push gh-pages, and the newest commit on main deploys last.
@@ -18,15 +21,15 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  deploy-docs:
-    name: Build & Deploy MkDocs
+  build:
+    name: Build the Site
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Install uv and Set up Python
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
@@ -37,5 +40,44 @@ jobs:
       - name: Install Dependencies
         run: uv sync --all-extras
 
-      - name: Deploy MkDocs to GitHub Pages
-        run: uv run mkdocs gh-deploy --force --strict
+      - name: Build MkDocs
+        run: uv run mkdocs build --strict
+
+      - name: Upload the Site
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: site
+          path: site/
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy:
+    name: Push the Site to gh-pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      actions: read # download the site the build uploaded
+      contents: write # push gh-pages
+
+    steps:
+      - name: Commit the Site on Top of gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git clone --quiet --depth 1 --branch gh-pages "https://github.com/${GH_REPO}.git" pages
+          # The new commit holds this build and nothing else.
+          git -C pages rm --quiet -r .
+          gh run download "$GITHUB_RUN_ID" --name site --dir pages
+          # GitHub Pages serves the files as they are, without Jekyll.
+          touch pages/.nojekyll
+          git -C pages add --all
+          # A build identical to the last one still records which commit it came from.
+          git -C pages -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet --allow-empty --message "Deployed ${GITHUB_SHA::7}"
+          git -C pages push --quiet origin gh-pages
