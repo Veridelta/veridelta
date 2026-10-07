@@ -37,7 +37,7 @@ Total Issues:  3
 
 Top Column-Level Drifts:
 ---------------------------
-- status: 1 mismatches
+- status: 1 mismatch
 
 > echo "exit code for CI: $? (0 match, 1 drift, 3 error)"
 exit code for CI: 1 (0 match, 1 drift, 3 error)

@@ -1,3 +1,12 @@
+## v0.21.2 (2026-10-07)
+
+The run report counts one in the singular: a column with one mismatch reads "1 mismatch",
+and a target with one more row reads "+1 row", where both took the plural.
+
+### Fix
+
+- count one mismatch and one row in the singular (#265)
+
 ## v0.21.1 (2026-10-07)
 
 While a run compares, `veridelta run` says "Comparing..." on stderr, where it said
