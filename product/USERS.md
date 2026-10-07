@@ -12,7 +12,7 @@ This document is the first of the product bundle, and the rest point back at it:
 
 ## The setting
 
-Veridelta compares two datasets on their primary keys and reports every row that differs once the declared rules apply. It runs on a laptop, in CI, or inside a warehouse, where only counts and keys come back. At 0.14.0 it has one known user: its maintainer, who compares CSV files on a laptop, in notebooks, and in GitHub Actions, and who has never used a warehouse. Nobody else is known to have run it. So one persona has a person behind it, and the others are drawn from what the product can do. Each card says which.
+Veridelta compares two datasets on their primary keys and reports every row that differs once the declared rules apply. It runs on a laptop, in CI, or inside a warehouse, where only counts and keys come back. As of 2026-10-07 it has one known user: its maintainer, who compares CSV files on a laptop, in notebooks, and in GitHub Actions, and who has never used a warehouse. Nobody else is known to have run it. So one persona has a person behind it, and the others are drawn from what the product can do. Each card says which.
 
 ### What the maintainer said
 
