@@ -26,13 +26,11 @@ reported with the token replaced and without the driver's exception attached.
 import logging
 import os
 import time
-import warnings
 from typing import Any, Final, cast
 
 import polars as pl
 
 from veridelta.connectors.base import (
-    FETCH_SCHEMA_DEPRECATED,
     PushdownQueryType,
     VerideltaConnector,
     mask_secrets,
@@ -53,7 +51,6 @@ duckdb: Any = optional_module("duckdb")
 _DUCKDB_EXTRA = "DuckDB extra is not installed. Install it with: uv add 'veridelta[duckdb]'"
 _UNCONNECTED = "DuckDB connector is not connected. Call connect() first."
 _SESSION_UNCONNECTED = "DuckDB pushdown session is not connected. Call connect() first."
-_NO_STATEMENT = "No pushdown statement has run yet, so there is no result to describe."
 _TOKEN_VARIABLES: Final = ("MOTHERDUCK_TOKEN", "motherduck_token")
 """Environment variables a MotherDuck token is read from, in order.
 
@@ -134,18 +131,6 @@ class DuckDBConnector(VerideltaConnector):
         )
         self._frame = frame.lazy()
 
-    def fetch_schema(self) -> pl.Schema:
-        """Return the schema of the rows `connect()` read.
-
-        Returns:
-            pl.Schema: Column names and dtypes.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        return self.lazyframe().collect_schema()
-
     def lazyframe(self) -> pl.LazyFrame:
         """Return the rows `connect()` read, as a LazyFrame for the local engine.
 
@@ -199,7 +184,6 @@ class DuckDBPushdownSession(VerideltaConnector):
         self.compiler = SQLPushdownCompiler(SQLDialect.DUCKDB)
         self._connection: Any = None
         self._token: str | None = None
-        self._last_statement: str | None = None
 
     def connect(self) -> None:
         """Open the database for the statements to come.
@@ -241,23 +225,7 @@ class DuckDBPushdownSession(VerideltaConnector):
                 has no Polars type, or the statement fails.
         """
         frame = self._run(statement, query_type)
-        self._last_statement = statement
         return frame.lazy()
-
-    def fetch_schema(self) -> pl.Schema:
-        """Describe the last statement's result by running it wrapped to return no rows.
-
-        Returns:
-            pl.Schema: Column names and dtypes.
-
-        Raises:
-            ConnectorError: If the session is not connected or nothing has run yet.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        if self._last_statement is None:
-            raise ConnectorError(_NO_STATEMENT)
-        probe = self.compiler.compile_result_schema_query(self._last_statement)
-        return self._run(probe, "schema").schema
 
     def close(self) -> None:
         """Close the connection. Idempotent; `connect()` opens it again."""
@@ -265,7 +233,6 @@ class DuckDBPushdownSession(VerideltaConnector):
             self._connection.close()
             logger.info("Closed DuckDB database %s", self._config.database)
         self._connection = None
-        self._last_statement = None
 
     def _run(self, statement: str, query_type: str) -> pl.DataFrame:
         """Run a statement on the open connection, logging and reporting without secrets."""

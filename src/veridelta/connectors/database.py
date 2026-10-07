@@ -22,7 +22,6 @@ error as the cause.
 
 import logging
 import time
-import warnings
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final, cast
@@ -31,7 +30,6 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 import polars as pl
 
 from veridelta.connectors.base import (
-    FETCH_SCHEMA_DEPRECATED,
     PushdownQueryType,
     VerideltaConnector,
     mask_secrets,
@@ -63,7 +61,6 @@ _DATABASE_EXTRA = "Database extra is not installed. Install it with: uv add 'ver
 _UNCONNECTED = "Database connector is not connected. Call connect() first."
 _SQLITE_PREFIX = "sqlite://"
 _POSTGRES_UNCONNECTED = "Postgres pushdown session is not connected. Call connect() first."
-_NO_STATEMENT = "No pushdown statement has run yet, so there is no result to describe."
 _LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value"
 
 _POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})
@@ -151,18 +148,6 @@ class DatabaseConnector(VerideltaConnector):
             time.perf_counter() - started,
         )
         self._frame = _with_declared_scale(frame, declared, self._subject).lazy()
-
-    def fetch_schema(self) -> pl.Schema:
-        """Return the schema of the rows `connect()` read.
-
-        Returns:
-            pl.Schema: Column names and dtypes.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        return self.lazyframe().collect_schema()
 
     def lazyframe(self) -> pl.LazyFrame:
         """Return the rows `connect()` read, as a LazyFrame for the local engine.
@@ -299,7 +284,6 @@ class PostgresPushdownSession(VerideltaConnector):
         self._config = config
         self.compiler = SQLPushdownCompiler(SQLDialect.POSTGRES)
         self._uri: str | None = None
-        self._last_statement: str | None = None
 
     def connect(self) -> None:
         """Check the server and keep the connection URI for the statements to come.
@@ -338,24 +322,7 @@ class PostgresPushdownSession(VerideltaConnector):
             ConnectorError: If the session is not connected or the statement fails.
         """
         frame = self._read(statement, self._connected_uri(), query_type=query_type)
-        self._last_statement = statement
         return frame.lazy()
-
-    def fetch_schema(self) -> pl.Schema:
-        """Describe the last statement's result by running it wrapped to return no rows.
-
-        Returns:
-            pl.Schema: Column names and dtypes.
-
-        Raises:
-            ConnectorError: If the session is not connected or nothing has run yet.
-        """
-        warnings.warn(FETCH_SCHEMA_DEPRECATED, DeprecationWarning, stacklevel=2)
-        uri = self._connected_uri()
-        if self._last_statement is None:
-            raise ConnectorError(_NO_STATEMENT)
-        probe = self.compiler.compile_result_schema_query(self._last_statement)
-        return self._read(probe, uri, query_type="schema").schema
 
     def declared_types(self, table: str) -> dict[str, pl.Decimal]:
         """Return the declared precision and scale of a table's `numeric` columns.
@@ -380,7 +347,6 @@ class PostgresPushdownSession(VerideltaConnector):
     def close(self) -> None:
         """Forget the connection. Idempotent; `connect()` checks the server again."""
         self._uri = None
-        self._last_statement = None
 
     def _connected_uri(self) -> str:
         """Return the URI `connect()` kept."""

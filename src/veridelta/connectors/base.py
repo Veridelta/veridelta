@@ -19,12 +19,6 @@ PUSHDOWN_UNSUPPORTED = (
 )
 """The refusal every reader gives `execute_pushdown`; only a warehouse or pushdown session runs SQL."""
 
-FETCH_SCHEMA_DEPRECATED = (
-    "fetch_schema is deprecated and goes in 0.15.0 with the code that serves only it. "
-    "The engine reads a side's columns from the frame it loads."
-)
-"""The warning every `fetch_schema` emits; the method goes in 0.15.0."""
-
 
 def mask_secrets(text: str, *secrets: str | None) -> str:
     """Replace each set secret in driver output with `***`, longest first.
@@ -137,14 +131,6 @@ class VerideltaConnector(ABC):
     connector is also a context manager whose exit calls `close()`. After
     `close()` the connector is back in its unconnected state, so any further
     call raises `ConnectorError` until `connect()` runs again.
-
-    `fetch_schema()` reads column metadata without collecting rows, but what
-    it describes depends on the family: the scanned table for lakehouse
-    connectors, the rows read for the database and DuckDB connectors, and the
-    result of the most recent `execute_pushdown` statement for warehouse
-    connectors and pushdown sessions. The engine itself probes warehouse
-    columns through `SQLPushdownCompiler.compile_schema_probe_query` rather
-    than this method.
     """
 
     @abstractmethod
@@ -177,29 +163,13 @@ class VerideltaConnector(ABC):
         _ = query_type
         raise ConnectorError(PUSHDOWN_UNSUPPORTED)
 
-    @abstractmethod
-    def fetch_schema(self) -> pl.Schema:
-        """Return column metadata without fully materializing the dataset.
-
-        Deprecated: every implementation warns, and the method goes in 0.15.0.
-        Nothing in the package calls it; the engine reads a side's columns from
-        the frame it loads.
-
-        Returns:
-            pl.Schema: Deterministic column names and dtypes.
-
-        Raises:
-            ConnectorError: If called before `connect()` or if the backend is
-                unimplemented.
-        """
-
     def close(self) -> None:  # noqa: B027 - deliberate no-op default, see below
         """Release the session or scan handle established by `connect()`.
 
         Safe to call before `connect()` and safe to call twice. The default
         holds no resources; connectors that open a driver session or a scan
-        override it. It is not abstract so that subclasses written against the
-        three-method contract keep working.
+        override it. It is not abstract, so a subclass that holds nothing need not
+        define it.
         """
 
     def __enter__(self) -> Self:

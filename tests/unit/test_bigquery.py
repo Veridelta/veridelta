@@ -24,7 +24,6 @@ from veridelta.models import BigQueryConfig, DiffConfig, DiffRule, SnowflakeConf
 pytestmark = [
     pytest.mark.unit,
     pytest.mark.fast,
-    pytest.mark.filterwarnings("ignore:fetch_schema is deprecated:DeprecationWarning"),
 ]
 
 _BASE: dict[str, Any] = {"project": "analytics-prod", "table": "sales.orders"}
@@ -382,24 +381,6 @@ class TestBigQueryConnector:
 
         with pytest.raises(ConnectorError, match="Not found: Table orders"):
             connector.execute_pushdown("SELECT 1")
-
-    def test_it_describes_the_last_result_without_reading_it(self, mocker: MockerFixture) -> None:
-        """Ensure the schema comes from a zero-row wrapper around the last statement."""
-        driver = _driver(mocker)
-        connector = BigQueryConnector(BigQueryConfig(**_BASE))
-        connector.connect()
-
-        with pytest.raises(ConnectorError, match="execute_pushdown before fetch_schema"):
-            connector.fetch_schema()
-        connector.execute_pushdown("SELECT n FROM t")
-        client = driver.Client.return_value
-        client.query.return_value.result.return_value.to_arrow_iterable.return_value = iter(
-            [pa.record_batch({"n": pa.array([], pa.int64())})]
-        )
-        schema = connector.fetch_schema()
-
-        assert schema == pl.Schema({"n": pl.Int64})
-        assert client.query.call_args.args[0].endswith("LIMIT 0")
 
     def test_it_closes_once_and_then_refuses_work(self, mocker: MockerFixture) -> None:
         """Ensure close is idempotent and a closed connector says so."""
