@@ -54,6 +54,7 @@ from veridelta.connectors.sql import (
     VALUE_MAP_ROWS_ALIAS,
     VALUE_MAP_SOURCE_ALIAS,
     VALUE_MAP_TARGET_ALIAS,
+    SampleQuery,
     SQLDialect,
     SQLPushdownCompiler,
     compile_database_select,
@@ -142,9 +143,7 @@ def _duplicate_keys_error(keys: list[str], side: str, count: int) -> DataIntegri
 
 
 def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None:
-    """Raise unless a warehouse column meets the local engine's `timezone` preconditions."""
-    # Stage 6b emits no SQL: a zone label cannot change a verdict. Its precondition
-    # still holds, so pushdown never compares columns a local run refuses.
+    """Raise unless a column can take a `timezone` rule: a timestamp that carries its zone."""
     if not isinstance(dtype, pl.Datetime):
         raise ConfigError(
             f"Column '{column}' sets timezone='{zone}' but holds {dtype}, not a "
@@ -155,7 +154,8 @@ def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None
             f"Column '{column}' sets timezone='{zone}' but its timestamps are "
             "timezone-naive. Veridelta will not assume an origin zone, because "
             "guessing wrong shifts every value silently. Store the column with a "
-            "timezone, or compare it without a timezone rule."
+            "timezone, or parse it with a datetime_format carrying an offset such as "
+            "'%z', or compare it without a timezone rule."
         )
 
 
@@ -355,6 +355,11 @@ def _describe_source(config: SourceRef) -> str:
     if config.table is not None:
         return f"the `{config.type}` table `{config.table}`"
     return f"the `{config.type}` query"
+
+
+def _describe_sides(source: SourceRef, target: SourceRef) -> dict[str, str]:
+    """Name both sides as `_describe_source` does, for an error about their columns."""
+    return {"source": _describe_source(source), "target": _describe_source(target)}
 
 
 def _quoted_list(names: Sequence[str]) -> str:
@@ -661,6 +666,8 @@ def _enforce_pushdown_preconditions(
         for name, schema in sides:
             # The zone rule reads the column after padding and parsing, as locally.
             dtype = _parsed_dtype(effective, schema.get(name))
+            # Stage 6b emits no SQL: a zone label cannot change a verdict. Its precondition
+            # still holds, so pushdown never compares columns a local run refuses.
             if dtype is not None:
                 _reject_unzoned_timezone(name, dtype, effective["timezone"])
 
@@ -967,6 +974,13 @@ def _similarity_test(rule: EffectiveRule) -> Callable[[str, str], bool] | None:
         # Below `score_cutoff` rapidfuzz reports a similarity of 0.
         return lambda left, right: bool(similarity(left, right, score_cutoff=floor) >= floor)
     return None
+
+
+def _null_equality(match: pl.Expr, src: pl.Expr, tgt: pl.Expr, rule: EffectiveRule) -> pl.Expr:
+    """Apply stage 9: two nulls match under `treat_null`, and any other null does not."""
+    if rule["treat_null"]:
+        return (match | (src.is_null() & tgt.is_null())).fill_null(False)
+    return match.fill_null(False)
 
 
 def _score_differing_pairs(pairs: pl.Series, *, test: Callable[[str, str], bool]) -> pl.Series:
@@ -1394,20 +1408,22 @@ def _collect_changed_sample(
     """Fetch up to `pushdown_sample_rows` changed rows with both sides' values."""
     if diff.pushdown_sample_rows == 0 or changed.is_empty():
         return None
-    sample = connector.compiler.compile_changed_sample_query(
-        source_table,
-        target_table,
-        diff.primary_keys,
-        plan.rules,
-        limit=diff.pushdown_sample_rows,
-        source_types=plan.source_schema,
-        target_types=plan.target_schema,
-        key_rules=plan.key_rules,
-        wide_integers=wide_integers,
-        type_drift=type_drift,
+    # A changed row means a column was compared, so the compiler returns a query.
+    sample = cast(
+        "SampleQuery",
+        connector.compiler.compile_changed_sample_query(
+            source_table,
+            target_table,
+            diff.primary_keys,
+            plan.rules,
+            limit=diff.pushdown_sample_rows,
+            source_types=plan.source_schema,
+            target_types=plan.target_schema,
+            key_rules=plan.key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        ),
     )
-    if sample is None:  # pragma: no cover - a changed row means a column was compared
-        return None
     frame = connector.execute_pushdown(sample.statement, query_type="samples").collect()
     missing = [alias for alias in sample.renames if alias not in frame.columns]
     if missing:
@@ -1485,8 +1501,8 @@ def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePa
 _EXTRA_PROBES: Final[dict[type[object], tuple[str, Callable[[], bool]]]] = {
     # Each probe reads its module attribute when called, so tests can patch it,
     # and a lakehouse reader is looked up by name rather than imported.
-    DeltaLakeConfig: ("delta", lambda: find_spec("deltalake") is not None),
-    IcebergConfig: ("iceberg", lambda: find_spec("pyiceberg") is not None),
+    DeltaLakeConfig: ("delta", lambda: _findable("deltalake")),
+    IcebergConfig: ("iceberg", lambda: _findable("pyiceberg")),
     DatabaseConfig: ("database", lambda: database_connectors.connectorx is not None),
     DuckDBConfig: ("duckdb", lambda: duckdb_connectors.duckdb is not None),
     SnowflakeConfig: ("snowflake", lambda: warehouse_connectors.snowflake_connector is not None),
@@ -1939,7 +1955,7 @@ class DiffEngine:
     def _on_sources(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> "DiffEngine":
         """Load both sides and build an engine whose errors name them."""
         engine = cls(diff, LoaderFactory.load(source), LoaderFactory.load(target))
-        engine._sides = {"source": _describe_source(source), "target": _describe_source(target)}
+        engine._sides = _describe_sides(source, target)
         return engine
 
     @classmethod
@@ -2174,7 +2190,7 @@ class DiffEngine:
         except (VerideltaError, OSError, pl.exceptions.PolarsError) as exc:
             return [_error(f"Could not read the schemas: {exc}")]
         engine = cls(diff, source_frame, target_frame)
-        engine._sides = {"source": _describe_source(source), "target": _describe_source(target)}
+        engine._sides = _describe_sides(source, target)
         try:
             engine._plan()
         except ConfigError as exc:
@@ -2480,19 +2496,8 @@ class DiffEngine:
         self, column: str, expr: pl.Expr, dtype: pl.DataType, zone: str
     ) -> pl.Expr:
         """Convert a timezone-aware column to `zone`, refusing to guess for naive data."""
-        if not isinstance(dtype, pl.Datetime):
-            raise ConfigError(
-                f"Column '{column}' sets timezone='{zone}' but holds {dtype}, not a "
-                "timestamp. Parse it with datetime_format first."
-            )
         # `convert_time_zone` treats a naive timestamp as UTC instead of refusing it.
-        if dtype.time_zone is None:
-            raise ConfigError(
-                f"Column '{column}' sets timezone='{zone}' but its timestamps are "
-                "timezone-naive. Veridelta will not assume an origin zone, because "
-                "guessing wrong shifts every value silently. Supply timezone-aware "
-                "data, or use a datetime_format carrying an offset such as '%z'."
-            )
+        _reject_unzoned_timezone(column, dtype, zone)
         try:
             return expr.dt.convert_time_zone(zone)
         except pl.exceptions.ComputeError as exc:
@@ -2509,11 +2514,7 @@ class DiffEngine:
 
         if dtype != tgt_dtype:
             if self.config.strict_types:
-                val_match = pl.lit(False)
-                if rule["treat_null"]:
-                    null_match = src.is_null() & tgt.is_null()
-                    return (val_match | null_match).fill_null(False)
-                return val_match
+                return _null_equality(pl.lit(False), src, tgt, rule)
             # Numbers skip the cast, which would truncate a Float64 `10.7` to an Int64 `10`.
             elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
@@ -2527,12 +2528,7 @@ class DiffEngine:
             val_match = (src == tgt) | _similarity_expr(src, tgt, similar)
         else:
             val_match = src == tgt
-
-        if rule["treat_null"]:
-            null_match = src.is_null() & tgt.is_null()
-            return (val_match | null_match).fill_null(False)
-
-        return val_match.fill_null(False)
+        return _null_equality(val_match, src, tgt, rule)
 
     def _align_structure(self) -> None:
         """Perform structural normalization to reconcile asymmetrical schemas."""
