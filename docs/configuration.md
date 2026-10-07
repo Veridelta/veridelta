@@ -192,7 +192,7 @@ To apply the schema to every configuration in a workspace without a modeline, ma
 }
 ```
 
-The site's copy of the schema follows the main branch. To pin it to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.21.2/docs/schema/veridelta.schema.json`. Or print the installed version's schema to a file and point at that:
+The site's copy of the schema follows the main branch. To pin it to the release you run, use the copy in that release's tag, such as `https://raw.githubusercontent.com/Veridelta/veridelta/v0.22.0/docs/schema/veridelta.schema.json`. Or print the installed version's schema to a file and point at that:
 
 ```bash
 veridelta schema > veridelta.schema.json

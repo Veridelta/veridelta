@@ -1,3 +1,25 @@
+## v0.22.0 (2026-10-07)
+
+`veridelta suggest` runs the comparison, then suggests rules that would explain the
+differences it finds, each with its evidence. Its first kind of rule is a numeric
+tolerance. A column gets one when every gap between its differing values is at most
+`--max-share`, 1% by default, of the larger of the two: absolute when the gaps stay about
+one size, as rounding leaves them, and relative when they grow with the values. The
+tolerance is the first round value above the largest gap, and the comparison runs again
+with it to count the rows it explains. The rules print as YAML on stdout, ready to paste
+first in `rules`, and the evidence on stderr, or both as JSON under `--json`, with a
+published schema. No model is called. In Python, `DiffEngine.suggest_rules()` returns
+`RuleSuggestion` models.
+
+The results page shows the HTML report in light and dark, and a link to the docs shows a
+preview card. The AI agents page shows a client calling the MCP tools, and `demo/agent/`
+holds a kit for recording an agent's session. The sdist leaves out the recordings and
+screenshots, which made up about 40% of its size.
+
+### Feat
+
+- suggest a numeric tolerance from the pairs that differ (#272)
+
 ## v0.21.2 (2026-10-07)
 
 The run report counts one in the singular: a column with one mismatch reads "1 mismatch",
