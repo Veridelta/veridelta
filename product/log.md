@@ -4,6 +4,7 @@ What changed in the product bundle and why, newest first. A commit's diff shows 
 
 ## 2026-10-07
 
+- **Update**: [the feature map](FEATURES.md) adds `read_discrepancies` and `propose_value_maps` to the tools `veridelta mcp` ships, with the guard on row values: off unless the server starts with `--allow-row-values`, then capped by `--max-rows` and read only from data under the server's folders. The roadmap's two `veridelta mcp` items go, and track F1 is complete. Slice F1d of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds `describe_schema` to the tools `veridelta mcp` ships. It lists one side's columns and types, and reads no rows. The roadmap keeps two tools and the guard on row values. Slice F1c of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds `run_comparison` to the tools `veridelta mcp` ships. A run refuses an `output_path` outside the server's folders, since it writes the rows that differ there. Slice F1b of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds `veridelta mcp` to the shipped features, with its first tool, `validate_config`, and the folders it is held to. The roadmap keeps the other four tools and the guard on row values. Slice F1a of [issue 128](https://github.com/Veridelta/veridelta/issues/128).

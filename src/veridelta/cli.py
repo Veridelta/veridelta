@@ -28,7 +28,7 @@ from veridelta import __version__
 from veridelta.config import config_json_schema, load_config
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
-from veridelta.mcp_server import Settings, serve
+from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
@@ -114,8 +114,8 @@ def _share(text: str) -> float:
     return value
 
 
-def _support(text: str) -> int:
-    """Parse `--min-support`, a whole number of at least one."""
+def _at_least_one(text: str) -> int:
+    """Parse a whole number of at least one, such as `--min-support` or `--max-rows`."""
     try:
         value = int(text)
     except ValueError:
@@ -346,10 +346,13 @@ def mcp(args: argparse.Namespace) -> int:
     the current directory when none is given. The server runs in the first,
     so a relative path in a tool call or in a configuration file resolves
     there, as it would for a person running the command line in it. Stdout
-    carries the protocol, so this command prints nothing else there.
+    carries the protocol, so this command prints nothing else there. Values
+    from the data stay out of every result unless `--allow-row-values` is
+    given, and then a call returns at most `--max-rows` of them.
 
     Args:
-        args (argparse.Namespace): Parsed arguments carrying the roots.
+        args (argparse.Namespace): Parsed arguments carrying the roots and the
+            row-value settings.
 
     Returns:
         int: `EXIT_MATCH` once the host disconnects or Ctrl-C stops the server,
@@ -357,7 +360,11 @@ def mcp(args: argparse.Namespace) -> int:
             extra.
     """
     try:
-        settings = Settings(tuple(args.root or [Path.cwd()]))
+        settings = Settings(
+            tuple(args.root or [Path.cwd()]),
+            allow_row_values=args.allow_row_values,
+            max_rows=args.max_rows,
+        )
         os.chdir(settings.roots[0])
         serve(settings)
     except KeyboardInterrupt:
@@ -532,7 +539,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     crosswalk_parser.add_argument(
         "--min-support",
-        type=_support,
+        type=_at_least_one,
         default=DEFAULT_MIN_SUPPORT,
         metavar="N",
         help=f"Agreeing rows an entry needs (default: {DEFAULT_MIN_SUPPORT}).",
@@ -607,6 +614,21 @@ def build_parser() -> argparse.ArgumentParser:
             "A folder the tools may read configuration files from. Repeat it for more "
             "folders. The server runs in the first (default: the current directory)."
         ),
+    )
+    mcp_parser.add_argument(
+        "--allow-row-values",
+        action="store_true",
+        help=(
+            "Let read_discrepancies and propose_value_maps return values from the data, "
+            "read only from files under the roots. Off by default."
+        ),
+    )
+    mcp_parser.add_argument(
+        "--max-rows",
+        type=_at_least_one,
+        default=DEFAULT_ROW_CAP,
+        metavar="N",
+        help=f"The most rows, or value map entries, one call returns (default: {DEFAULT_ROW_CAP}).",
     )
     return parser
 

@@ -12,11 +12,14 @@ import json
 import logging
 import shutil
 from collections.abc import Awaitable, Callable
+from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
 
 import anyio
+import polars as pl
 import pytest
 from mcp import Client
 from mcp.types import CallToolResult, Tool
@@ -27,17 +30,31 @@ from veridelta.config import load_config
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.mcp_server import (
+    DEFAULT_ROW_CAP,
     INSTRUCTIONS,
     RunReport,
     Settings,
     build_server,
     check_configuration,
+    check_data_paths,
     describe_side,
+    propose_maps,
+    read_rows,
     resolve_path,
     run_configuration,
     serve,
 )
-from veridelta.models import DiffSummary
+from veridelta.models import (
+    DatabaseConfig,
+    DeltaLakeConfig,
+    DiffResult,
+    DiffSummary,
+    DuckDBConfig,
+    IcebergConfig,
+    SnowflakeConfig,
+    SourceConfig,
+    SourceRef,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -80,6 +97,20 @@ def _project(root: Path, target: str, extra: str = "") -> Path:
         root,
         f"source:\n  path: legacy.csv\ntarget:\n  path: {target}\nprimary_keys: [id]\n{extra}",
     )
+
+
+def _coded(root: Path) -> Path:
+    """Write two files whose `gender` column holds the same values in two encodings.
+
+    Each value holds five rows, the default support a proposal needs.
+    """
+    (root / "a.csv").write_text(
+        "id,gender\n" + "".join(f"{i},{'M' if i % 2 == 0 else 'F'}\n" for i in range(10))
+    )
+    (root / "b.csv").write_text(
+        "id,gender\n" + "".join(f"{i},{'Male' if i % 2 == 0 else 'Female'}\n" for i in range(10))
+    )
+    return _write(root, _VALID)
 
 
 def _with_client(settings: Settings, work: Callable[[Client], Awaitable[_T]]) -> _T:
@@ -136,6 +167,18 @@ class TestSettings:
         """Ensure a server with no folder fails when built, not on its first call."""
         with pytest.raises(ConfigError, match="at least one folder"):
             Settings(())
+
+    def test_it_keeps_row_values_off_by_default(self, tmp_path: Path) -> None:
+        """Ensure a server returns no row values unless the person who starts it allows them."""
+        settings = Settings((tmp_path,))
+
+        assert settings.allow_row_values is False
+        assert settings.max_rows == DEFAULT_ROW_CAP == 50
+
+    def test_it_needs_a_row_cap_of_at_least_one(self, tmp_path: Path) -> None:
+        """Ensure a cap that would let no row through is refused when the server is built."""
+        with pytest.raises(ConfigError, match="at least 1, got 0"):
+            Settings((tmp_path,), max_rows=0)
 
 
 class TestResolvePath:
@@ -419,6 +462,398 @@ class TestDescribeSide:
             describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
 
 
+def _snowflake() -> SnowflakeConfig:
+    """Build a warehouse side, which reads no file on this machine."""
+    return SnowflakeConfig(
+        account="xy12345",
+        user="analyst",
+        warehouse="COMPUTE_WH",
+        database="ANALYTICS",
+        schema_name="PUBLIC",
+        table="ORDERS",
+    )
+
+
+class TestCheckDataPaths:
+    """Validate the folder rule on the data a tool returns rows from."""
+
+    def test_it_accepts_data_under_a_root(self, tmp_path: Path) -> None:
+        """Ensure a relative file, a file in full, and a DuckDB file under a root pass."""
+        settings = Settings((tmp_path,))
+
+        check_data_paths(
+            settings,
+            SourceConfig(path="a.csv"),
+            DuckDBConfig(database=str(tmp_path / "x.duckdb"), table="t"),
+        )
+
+    @pytest.mark.parametrize(
+        ("build", "setting"),
+        [
+            pytest.param(
+                lambda folder: SourceConfig(path=str(folder / "a.csv")), "path", id="file"
+            ),
+            pytest.param(
+                lambda folder: SourceConfig(path=(folder / "a.csv").as_uri()),
+                "path",
+                id="file-uri",
+            ),
+            pytest.param(
+                lambda folder: DeltaLakeConfig(table_uri=str(folder / "events")),
+                "table_uri",
+                id="delta",
+            ),
+            pytest.param(
+                lambda folder: IcebergConfig(table_uri=str(folder / "events")),
+                "table_uri",
+                id="iceberg",
+            ),
+            pytest.param(
+                lambda folder: DuckDBConfig(database=str(folder / "x.duckdb"), table="t"),
+                "database",
+                id="duckdb",
+            ),
+            pytest.param(
+                lambda folder: DatabaseConfig(uri=f"sqlite://{folder / 'x.db'}", table="t"),
+                "SQLite file",
+                id="sqlite",
+            ),
+        ],
+    )
+    def test_it_refuses_local_data_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        build: Callable[[Path], SourceRef],
+        setting: str,
+    ) -> None:
+        """Ensure each setting that names a file on this machine is held to the roots."""
+        outside = tmp_path_factory.mktemp("outside")
+
+        with pytest.raises(
+            ConfigError, match="outside the folders this server reads from"
+        ) as refused:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), build(outside))
+
+        assert str(refused.value).startswith(f"The target {setting} '{outside}")
+        assert "--root" in str(refused.value)
+
+    def test_it_checks_a_scheme_it_does_not_know_as_a_path(self, tmp_path: Path) -> None:
+        """Ensure a made-up scheme cannot carry a path out, since the readers open it here."""
+        escape = "xx:" + "/.." * 64 + "/a.csv"
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=escape), _snowflake())
+
+    def test_it_reads_a_home_path_as_the_readers_do(self, tmp_path: Path) -> None:
+        """Ensure `~` is expanded first, since Polars expands it, so it cannot lead out."""
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="~/a.csv"), _snowflake())
+
+    @pytest.mark.parametrize(
+        "side",
+        [
+            pytest.param(SourceConfig(path="s3://bucket/a.parquet"), id="object-store"),
+            pytest.param(SourceConfig(path="https://example.com/a.csv"), id="https"),
+            pytest.param(DeltaLakeConfig(table_uri="s3://lake/events"), id="delta-remote"),
+            pytest.param(DuckDBConfig(database="md:sales", table="t"), id="motherduck"),
+            pytest.param(
+                DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="orders"),
+                id="database-server",
+            ),
+            pytest.param(_snowflake(), id="warehouse"),
+        ],
+    )
+    def test_it_leaves_remote_data_alone(self, tmp_path: Path, side: SourceRef) -> None:
+        """Ensure data on another machine is read as the command line reads it."""
+        check_data_paths(Settings((tmp_path,)), side, side)
+
+
+class TestReadRows:
+    """Validate the rows `read_discrepancies` returns, without the SDK in the way.
+
+    Each test runs in its root, as the server does, so the relative paths in
+    the configuration resolve there.
+    """
+
+    def test_it_returns_nothing_without_the_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a server started without --allow-row-values refuses before it reads a row."""
+        monkeypatch.chdir(tmp_path)
+        _project(tmp_path, "modern_drift.csv")
+        compare = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+
+        with pytest.raises(ConfigError, match="started without --allow-row-values"):
+            read_rows(Settings((tmp_path,)), "veridelta.yaml", "changed")
+
+        compare.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("kind", "rows"),
+        [
+            ("added", [{"id": 4, "status": "open", "amount": 7.25}]),
+            ("removed", [{"id": 3, "status": "open", "amount": 7.25}]),
+            (
+                "changed",
+                [
+                    {
+                        "id": 2,
+                        "status_source": "closed",
+                        "amount_source": 20.5,
+                        "status_target": "shipped",
+                        "amount_target": 20.5,
+                        "status_is_match": False,
+                        "amount_is_match": True,
+                    }
+                ],
+            ),
+        ],
+    )
+    def test_it_returns_the_rows_of_each_kind(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        kind: Literal["added", "removed", "changed"],
+        rows: list[dict[str, Any]],
+    ) -> None:
+        """Ensure each kind returns the rows a run holds for it, with the count."""
+        monkeypatch.chdir(tmp_path)
+        _project(tmp_path, "modern_drift.csv")
+
+        report = read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", kind)
+
+        assert report == {
+            "kind": kind,
+            "total": 1,
+            "rows": rows,
+            "truncated": False,
+            "keys_only": False,
+        }
+
+    @pytest.mark.parametrize(("limit", "max_rows"), [(1, 50), (20, 1)])
+    def test_it_stops_at_the_limit_or_the_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: int, max_rows: int
+    ) -> None:
+        """Ensure a call gets the fewer of the rows it asks for and the server's cap."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.csv").write_text("id\n9\n")
+        (tmp_path / "b.csv").write_text("id\n1\n2\n3\n")
+        _write(tmp_path, _VALID)
+        settings = Settings((tmp_path,), allow_row_values=True, max_rows=max_rows)
+
+        report = read_rows(settings, "veridelta.yaml", "added", limit=limit)
+
+        assert report["rows"] == [{"id": 1}]
+        assert report["total"] == 3
+        assert report["truncated"] is True
+
+    def test_it_refuses_a_limit_below_one(self, tmp_path: Path) -> None:
+        """Ensure a limit that would let no row through, or count from the end, is refused."""
+        _write(tmp_path, _VALID)
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        with pytest.raises(ConfigError, match="limit must be at least 1, got 0"):
+            read_rows(settings, "veridelta.yaml", "added", limit=0)
+
+    def test_it_refuses_data_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure no row is read from a file outside the roots."""
+        outside = tmp_path_factory.mktemp("outside")
+        _write(
+            tmp_path,
+            f"source:\n  path: '{outside / 'a.csv'}'\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
+        )
+        compare = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+
+        with pytest.raises(ConfigError, match="The source path"):
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "added")
+
+        compare.assert_not_called()
+
+    def test_it_refuses_an_output_path_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure the run this tool makes is held to the roots, as `run_comparison` is."""
+        monkeypatch.chdir(tmp_path)
+        outside = tmp_path_factory.mktemp("outside")
+        _project(tmp_path, "modern_drift.csv", f"output_path: '{outside}'\n")
+
+        with pytest.raises(ConfigError, match="is outside the folders this server writes to"):
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "added")
+
+    def test_it_says_when_a_pair_returns_keys_only(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a pair compared in place, which brings back keys alone, says so."""
+        _write(tmp_path, _VALID)
+        keys = pl.DataFrame({"id": [7]})
+        summary = DiffSummary(
+            total_rows_source=1,
+            total_rows_target=1,
+            added_count=0,
+            removed_count=0,
+            changed_count=1,
+            is_match=False,
+        )
+        mocker.patch(
+            "veridelta.mcp_server.DiffEngine.run_from_configs",
+            return_value=DiffResult(
+                summary=summary,
+                added=keys.clear(),
+                removed=keys.clear(),
+                changed=keys,
+                keys_only=True,
+            ),
+        )
+
+        report = read_rows(
+            Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed"
+        )
+
+        assert report["rows"] == [{"id": 7}]
+        assert report["keys_only"] is True
+
+    def test_it_writes_every_value_as_json_can_hold_it(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a date, a time, a decimal, bytes, and a NaN come back as text JSON can carry.
+
+        Polars cannot write a binary column as JSON, and its failure is a panic
+        that no `except Exception` catches, so the rows go through Python values.
+        """
+        _write(tmp_path, _VALID)
+        frame = pl.DataFrame(
+            {
+                "id": [1],
+                "day": [date(2024, 1, 2)],
+                "at": [datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC)],
+                "clock": [time(1, 2, 3)],
+                "span": [timedelta(seconds=3)],
+                "amount": [Decimal("10.50")],
+                "blob": [b"\x00\x01"],
+                "ratio": [float("nan")],
+                "sizes": [[1, 2]],
+            },
+            schema_overrides={"amount": pl.Decimal(10, 2)},
+        )
+        summary = DiffSummary(
+            total_rows_source=0,
+            total_rows_target=1,
+            added_count=1,
+            removed_count=0,
+            changed_count=0,
+            is_match=False,
+        )
+        mocker.patch(
+            "veridelta.mcp_server.DiffEngine.run_from_configs",
+            return_value=DiffResult(
+                summary=summary, added=frame, removed=frame.clear(), changed=frame.clear()
+            ),
+        )
+
+        report = read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "added")
+
+        assert report["rows"] == [
+            {
+                "id": 1,
+                "day": "2024-01-02",
+                "at": "2024-01-02T03:04:05+00:00",
+                "clock": "01:02:03",
+                "span": "0:00:03",
+                "amount": "10.50",
+                "blob": "0001",
+                "ratio": "NaN",
+                "sizes": [1, 2],
+            }
+        ]
+        json.dumps(report, allow_nan=False)
+
+
+class TestProposeMaps:
+    """Validate the proposals `propose_value_maps` returns, without the SDK in the way."""
+
+    def test_it_returns_nothing_without_the_flag(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a server started without --allow-row-values refuses before it reads a row."""
+        _coded(tmp_path)
+        propose = mocker.patch("veridelta.mcp_server.DiffEngine.propose_value_maps_from_configs")
+
+        with pytest.raises(ConfigError, match="started without --allow-row-values"):
+            propose_maps(Settings((tmp_path,)), "veridelta.yaml")
+
+        propose.assert_not_called()
+
+    def test_it_returns_what_crosswalk_prints(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure each proposal is the object `crosswalk --json` prints for it."""
+        monkeypatch.chdir(tmp_path)
+        path = _coded(tmp_path)
+
+        report = propose_maps(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml")
+
+        printed = [
+            proposal.model_dump(mode="json")
+            for proposal in DiffEngine.propose_value_maps_from_configs(*load_config(path))
+        ]
+        assert report == {"proposals": printed, "total": 1, "truncated": False}
+        assert report["proposals"][0]["value_map"] == {"M": "Male", "F": "Female"}
+
+    def test_it_passes_the_thresholds_through(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a support no value reaches leaves nothing to propose."""
+        monkeypatch.chdir(tmp_path)
+        _coded(tmp_path)
+
+        report = propose_maps(
+            Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", min_support=6
+        )
+
+        assert report == {"proposals": [], "total": 0, "truncated": False}
+
+    def test_it_leaves_out_a_proposal_past_the_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a proposal comes back whole or not at all, within the server's cap."""
+        monkeypatch.chdir(tmp_path)
+        _coded(tmp_path)
+
+        report = propose_maps(
+            Settings((tmp_path,), allow_row_values=True, max_rows=1), "veridelta.yaml"
+        )
+
+        assert report == {"proposals": [], "total": 1, "truncated": True}
+
+    def test_it_refuses_data_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure no value is read from a file outside the roots."""
+        outside = tmp_path_factory.mktemp("outside")
+        _write(
+            tmp_path,
+            f"source:\n  path: a.csv\ntarget:\n  path: '{outside / 'b.csv'}'\nprimary_keys: [id]\n",
+        )
+        propose = mocker.patch("veridelta.mcp_server.DiffEngine.propose_value_maps_from_configs")
+
+        with pytest.raises(ConfigError, match="The target path"):
+            propose_maps(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml")
+
+        propose.assert_not_called()
+
+
 class TestServer:
     """Validate the server as a host sees it, through the SDK's client."""
 
@@ -431,7 +866,13 @@ class TestServer:
         """
         tools = {tool.name: tool for tool in _tools(Settings((tmp_path,)))}
 
-        assert list(tools) == ["validate_config", "run_comparison", "describe_schema"]
+        assert list(tools) == [
+            "validate_config",
+            "run_comparison",
+            "describe_schema",
+            "read_discrepancies",
+            "propose_value_maps",
+        ]
         assert [name for name, tool in tools.items() if tool.output_schema is None] == []
         validate, run = tools["validate_config"], tools["run_comparison"]
         describe = tools["describe_schema"]
@@ -452,6 +893,30 @@ class TestServer:
         assert describe.input_schema["properties"]["side"]["enum"] == ["source", "target"]
         assert describe.output_schema is not None
         assert set(describe.output_schema["properties"]) == {"side", "columns"}
+        read, propose = tools["read_discrepancies"], tools["propose_value_maps"]
+        assert read.input_schema["required"] == ["path", "kind"]
+        assert read.input_schema["properties"]["limit"]["minimum"] == 1
+        assert read.output_schema is not None
+        assert set(read.output_schema["properties"]) == {
+            "kind",
+            "total",
+            "rows",
+            "truncated",
+            "keys_only",
+        }
+        assert propose.input_schema["required"] == ["path"]
+        assert set(propose.input_schema["properties"]) == {
+            "path",
+            "min_confidence",
+            "min_support",
+            "sample_fraction",
+        }
+        assert propose.output_schema is not None
+        assert set(propose.output_schema["properties"]) == {
+            "proposals",
+            "total",
+            "truncated",
+        }
 
     def test_it_keeps_every_description_within_its_budget(self, tmp_path: Path) -> None:
         """Ensure each description fits the budget and reads the same on every Python.
@@ -562,6 +1027,38 @@ class TestServer:
 
         assert result.is_error is True
         assert "ConfigError: A schema probe reads a 'table'" in _text(result)
+
+    def test_it_refuses_row_values_unless_allowed(self, tmp_path: Path) -> None:
+        """Ensure each row tool fails the call on a default server, naming the flag."""
+        _coded(tmp_path)
+        settings = Settings((tmp_path,))
+
+        for tool, arguments in (
+            ("read_discrepancies", {"path": "veridelta.yaml", "kind": "added"}),
+            ("propose_value_maps", {"path": "veridelta.yaml"}),
+        ):
+            result = _call(settings, arguments, tool=tool)
+
+            assert result.is_error is True, tool
+            assert f"ConfigError: {tool} returns values from the data" in _text(result)
+
+    def test_it_returns_rows_when_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure an allowed server returns the rows and the proposals as structured results."""
+        monkeypatch.chdir(tmp_path)
+        _coded(tmp_path)
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        rows = _call(
+            settings, {"path": "veridelta.yaml", "kind": "changed"}, tool="read_discrepancies"
+        )
+        maps = _call(settings, {"path": "veridelta.yaml"}, tool="propose_value_maps")
+
+        assert rows.is_error is False
+        assert rows.structured_content == read_rows(settings, "veridelta.yaml", "changed")
+        assert maps.is_error is False
+        assert maps.structured_content == propose_maps(settings, "veridelta.yaml")
 
     def test_it_reports_a_broken_file_as_a_finding(self, tmp_path: Path) -> None:
         """Ensure a file that does not load is a result the agent can act on, not a failed call."""

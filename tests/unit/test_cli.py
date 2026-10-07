@@ -811,6 +811,13 @@ class TestSchemaCommand:
         mock_exit.assert_called_once_with(0)
 
 
+def _serve_args(
+    roots: list[Path] | None, *, allow_row_values: bool = False, max_rows: int = 50
+) -> argparse.Namespace:
+    """Build the arguments `veridelta mcp` parses, with row values off by default."""
+    return argparse.Namespace(root=roots, allow_row_values=allow_row_values, max_rows=max_rows)
+
+
 class TestMCPCommand:
     """Validate `veridelta mcp`, which serves the checks to an agent over stdio."""
 
@@ -837,6 +844,38 @@ class TestMCPCommand:
             assert stopped.value.code == 2
             assert f"not a directory: {str(root)!r}" in capsys.readouterr().err
 
+    def test_it_takes_the_row_value_flags(self) -> None:
+        """Ensure row values are off and capped at 50 unless the flags say otherwise."""
+        default = build_parser().parse_args(["mcp"])
+        allowed = build_parser().parse_args(["mcp", "--allow-row-values", "--max-rows", "5"])
+
+        assert (default.allow_row_values, default.max_rows) == (False, 50)
+        assert (allowed.allow_row_values, allowed.max_rows) == (True, 5)
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [("0", "must be at least 1, got 0"), ("many", "expected a whole number, got 'many'")],
+    )
+    def test_it_refuses_a_row_cap_below_one(
+        self, value: str, message: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a cap that lets no row through is an argument error, before anything starts."""
+        with pytest.raises(SystemExit) as stopped:
+            build_parser().parse_args(["mcp", "--max-rows", value])
+
+        assert stopped.value.code == 2
+        assert message in capsys.readouterr().err
+
+    def test_it_passes_the_row_value_flags_to_the_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the server is built with the flags, which no tool call can change."""
+        monkeypatch.chdir(tmp_path)
+        serve = mocker.patch("veridelta.cli.serve")
+
+        assert mcp(_serve_args(None, allow_row_values=True, max_rows=5)) == 0
+        serve.assert_called_once_with(Settings((tmp_path,), allow_row_values=True, max_rows=5))
+
     def test_it_serves_from_the_first_root(
         self,
         tmp_path: Path,
@@ -851,7 +890,7 @@ class TestMCPCommand:
         monkeypatch.chdir(second)
         serve = mocker.patch("veridelta.cli.serve")
 
-        exit_code = mcp(argparse.Namespace(root=[first, second]))
+        exit_code = mcp(_serve_args([first, second]))
 
         assert exit_code == 0
         serve.assert_called_once_with(Settings((first, second)))
@@ -865,7 +904,7 @@ class TestMCPCommand:
         monkeypatch.chdir(tmp_path)
         serve = mocker.patch("veridelta.cli.serve")
 
-        assert mcp(argparse.Namespace(root=None)) == 0
+        assert mcp(_serve_args(None)) == 0
         serve.assert_called_once_with(Settings((tmp_path,)))
 
     def test_it_explains_a_server_that_cannot_start(
@@ -884,7 +923,7 @@ class TestMCPCommand:
             ),
         )
 
-        exit_code = mcp(argparse.Namespace(root=None))
+        exit_code = mcp(_serve_args(None))
         captured = capsys.readouterr()
 
         assert exit_code == 3
@@ -902,7 +941,7 @@ class TestMCPCommand:
         monkeypatch.chdir(tmp_path)
         mocker.patch("veridelta.cli.serve", side_effect=KeyboardInterrupt)
 
-        exit_code = mcp(argparse.Namespace(root=None))
+        exit_code = mcp(_serve_args(None))
 
         assert exit_code == 0
         assert capsys.readouterr() == ("", "")

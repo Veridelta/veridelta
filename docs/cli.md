@@ -158,6 +158,8 @@ veridelta mcp --root .
 | Flag | Description |
 | :--- | :--- |
 | `--root DIR` | A folder the tools may read configuration files from. Repeat it for more folders. Default: the current directory. |
+| `--allow-row-values` | Let `read_discrepancies` and `propose_value_maps` return values from the data, read only from files under the roots. Off by default. |
+| `--max-rows N` | The most rows, or value map entries, one call returns, at least 1. Default: 50. |
 | `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 
-A tool refuses a path outside every root, and `run_comparison` refuses a configuration whose `output_path` lies outside them. The server runs in the first root, so a relative path in a tool call, or in a configuration file, resolves there. Stdout carries the protocol and nothing else, and log lines go to stderr, which the host keeps. The server stops when the host disconnects, or on Ctrl-C.
+A tool refuses a path outside every root, and a tool that runs the comparison refuses a configuration whose `output_path` lies outside them. Without `--allow-row-values`, no tool returns a value from the data. The server runs in the first root, so a relative path in a tool call, or in a configuration file, resolves there. Stdout carries the protocol and nothing else, and log lines go to stderr, which the host keeps. The server stops when the host disconnects, or on Ctrl-C.
