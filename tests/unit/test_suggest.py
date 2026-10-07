@@ -144,9 +144,68 @@ class TestSuggestRules:
 
         assert engine.suggest_rules() == []
 
-    def test_it_suggests_nothing_for_text(self) -> None:
-        """Ensure a text column, which a tolerance never loosens, gets no tolerance."""
+    def test_it_suggests_nothing_for_a_flag(self) -> None:
+        """Ensure a boolean column, which no tolerance or text setting loosens, gets no rule."""
+        engine = _engine({"id": [1], "paid": [True]}, {"id": [1], "paid": [False]})
+
+        assert engine.suggest_rules() == []
+
+    def test_it_suggests_nothing_for_text_that_changed(self) -> None:
+        """Ensure text that differs in more than whitespace and case gets no rule."""
         engine = _engine({"id": [1], "status": ["open"]}, {"id": [1], "status": ["shut"]})
+
+        assert engine.suggest_rules() == []
+
+
+class TestTextSuggestions:
+    """Validate trimming and case folding, suggested for text that differs only in them."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "settings"),
+        [
+            pytest.param(
+                ["open", "shut"], ["open ", " shut"], {"whitespace_mode": "both"}, id="trim"
+            ),
+            pytest.param(["Open", "SHUT"], ["open", "shut"], {"case_insensitive": True}, id="fold"),
+            pytest.param(
+                [" Open", "shut"],
+                ["open", "SHUT"],
+                {"whitespace_mode": "both", "case_insensitive": True},
+                id="both",
+            ),
+        ],
+    )
+    def test_it_suggests_only_the_settings_the_rows_need(
+        self, source: list[str], target: list[str], settings: dict[str, object]
+    ) -> None:
+        """Ensure trimming or case folding alone when it is enough, and both when not."""
+        engine = _engine({"id": [1, 2], "status": source}, {"id": [1, 2], "status": target})
+
+        (suggestion,) = engine.suggest_rules()
+
+        assert suggestion.settings == settings
+        assert suggestion.rule == DiffRule.model_validate({"column_names": ["status"], **settings})
+        assert (suggestion.explained, suggestion.largest_gap) == (2, None)
+
+    def test_it_counts_a_change_and_a_null_as_unexplained(self) -> None:
+        """Ensure a real change, or a null on one side, differs still and is left out."""
+        engine = _engine(
+            {"id": [1, 2, 3], "status": ["open ", "open", "open"]},
+            {"id": [1, 2, 3], "status": ["open", "shut", None]},
+        )
+
+        (suggestion,) = engine.suggest_rules()
+
+        assert (suggestion.explained, suggestion.differing) == (1, 3)
+        assert suggestion.examples == ({"id": 1},)
+
+    def test_it_never_suggests_a_rule_that_makes_a_match_differ(self) -> None:
+        """Ensure case folding, which would hide a value map's capital keys, is not suggested."""
+        engine = _engine(
+            {"id": [1, 2], "gender": ["M", "f"]},
+            {"id": [1, 2], "gender": ["Male", "F"]},
+            rules=[{"column_names": ["gender"], "value_map": {"M": "Male", "F": "Female"}}],
+        )
 
         assert engine.suggest_rules() == []
 
@@ -239,6 +298,27 @@ class TestSuggestCommand:
         }
         assert "fare: absolute_tolerance 0.005 explains 3 of 3 differing rows" in captured.err
         assert "for example id=1; id=2; id=3" in captured.err
+
+    def test_it_prints_a_text_rule_without_a_gap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a trimming rule prints as YAML, and its evidence names no gap."""
+        (tmp_path / "a.csv").write_text("id,city\n1,Oslo\n2,Lima\n")
+        (tmp_path / "b.csv").write_text("id,city\n1,Oslo \n2,Lima\n")
+        (tmp_path / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: a.csv\ntarget:\n  path: b.csv\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "suggest"])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        captured = capsys.readouterr()
+        assert yaml.safe_load(captured.out) == {
+            "rules": [{"column_names": ["city"], "whitespace_mode": "both"}]
+        }
+        assert "city: whitespace_mode both explains 1 of 1 differing rows\n" in captured.err
 
     def test_it_says_when_no_rule_explains_the_differences(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

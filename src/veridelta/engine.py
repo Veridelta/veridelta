@@ -1887,8 +1887,6 @@ def _tolerance_proposal(changed: pl.DataFrame, column: str, max_share: float) ->
     source value of 0, which no relative tolerance reaches, picks absolute. The value
     is the round number just above the largest gap.
     """
-    if not _compares_numbers(changed, column):
-        return None
     gaps = _tolerance_gaps(changed, column)
     if gaps.is_empty() or cast("float", gaps["share"].max()) > max_share:
         return None
@@ -1897,6 +1895,53 @@ def _tolerance_proposal(changed: pl.DataFrame, column: str, max_share: float) ->
     if not relative.is_finite().all() or _spread(gaps["gap"]) <= _spread(relative):
         return _Proposal({"absolute_tolerance": _round_up(largest)}, largest)
     return _Proposal({"relative_tolerance": _round_up(cast("float", relative.max()))}, largest)
+
+
+def _compares_text(changed: pl.DataFrame, column: str) -> bool:
+    """Return whether a column's compared values are text on both sides."""
+    schema = changed.schema
+    return all(schema[f"{column}_{side}"] == pl.String for side in ("source", "target"))
+
+
+def _text_proposal(changed: pl.DataFrame, column: str) -> _Proposal | None:
+    """Propose trimming, case folding, or both, when differing text matches without them.
+
+    A setting is proposed only when the rows need it: trimming alone when it matches
+    every row that trimming and case folding together match, then case folding alone,
+    and both otherwise. Trimming strips both ends, before case folding, as the
+    comparison does.
+    """
+    source = pl.col(f"{column}_source")
+    target = pl.col(f"{column}_target")
+    # A pair with a NULL compares to NULL, which `sum` skips: no setting matches it.
+    counts = (
+        changed.filter(pl.col(f"{column}_is_match").eq(False))
+        .select(
+            trimmed=(source.str.strip_chars() == target.str.strip_chars()).sum(),
+            folded=(source.str.to_lowercase() == target.str.to_lowercase()).sum(),
+            both=(
+                source.str.strip_chars().str.to_lowercase()
+                == target.str.strip_chars().str.to_lowercase()
+            ).sum(),
+        )
+        .row(0, named=True)
+    )
+    if counts["both"] == 0:
+        return None
+    if counts["trimmed"] == counts["both"]:
+        return _Proposal({"whitespace_mode": "both"})
+    if counts["folded"] == counts["both"]:
+        return _Proposal({"case_insensitive": True})
+    return _Proposal({"whitespace_mode": "both", "case_insensitive": True})
+
+
+def _proposal(changed: pl.DataFrame, column: str, max_share: float) -> _Proposal | None:
+    """Propose what a column's differing rows call for: a tolerance, or trimming and case."""
+    if _compares_numbers(changed, column):
+        return _tolerance_proposal(changed, column, max_share)
+    if _compares_text(changed, column):
+        return _text_proposal(changed, column)
+    return None
 
 
 def _suggested_rule(
@@ -1913,16 +1958,15 @@ def _suggested_rule(
     return DiffRule.model_validate({**kept, "column_names": [column], **settings})
 
 
-def _explained_keys(
-    before: pl.DataFrame, after: pl.DataFrame, keys: list[str], column: str
+def _differing_only_in(
+    first: pl.DataFrame, second: pl.DataFrame, keys: list[str], column: str
 ) -> pl.DataFrame:
-    """Return the keys of the rows whose column differs before a rule and matches after it."""
+    """Return the keys of the rows whose column differs in `first` and not in `second`."""
     differing = pl.col(f"{column}_is_match").eq(False)
-    remaining = after.filter(differing).select(keys)
     return (
-        before.filter(differing)
+        first.filter(differing)
         .select(keys)
-        .join(remaining, on=keys, how="anti", nulls_equal=True)
+        .join(second.filter(differing).select(keys), on=keys, how="anti", nulls_equal=True)
         .sort(keys)
     )
 
@@ -2534,7 +2578,7 @@ class DiffEngine:
             differing = result.summary.column_mismatches.get(column, 0)
             if differing == 0:
                 continue
-            proposal = _tolerance_proposal(result.changed, column, max_share)
+            proposal = _proposal(result.changed, column, max_share)
             if proposal is None:
                 continue
             governing = _match_rule(self.config.rules, column)
@@ -2542,8 +2586,11 @@ class DiffEngine:
             tried = self._run_copy(
                 self.config.model_copy(update={"rules": [rule, *self.config.rules]})
             )
-            explained = _explained_keys(result.changed, tried.changed, keys, column)
-            if explained.is_empty():
+            explained = _differing_only_in(result.changed, tried.changed, keys, column)
+            # A rule that makes a matching row differ, such as case folding ahead of a
+            # `value_map` written in capitals, is no explanation.
+            broken = _differing_only_in(tried.changed, result.changed, keys, column)
+            if explained.is_empty() or not broken.is_empty():
                 continue
             suggestions.append(
                 RuleSuggestion(

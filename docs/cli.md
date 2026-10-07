@@ -220,11 +220,15 @@ A numeric column gets a tolerance when every gap between its differing values is
 - An absolute tolerance, when the gaps stay about one size whatever the values, as rounding leaves them.
 - A relative tolerance, when the gaps grow with the values, as a rate change leaves them.
 
-The tolerance is the first round value, such as 0.005 or 0.01, above the largest gap. Then the comparison runs again with the rule, and the evidence counts the rows it makes match, of the rows that differ in that column, with the largest gap and up to three example keys. A row with a null on one side differs for another reason, so a tolerance never explains it.
+The tolerance is the first round value, such as 0.005 or 0.01, above the largest gap.
+
+A text column gets trimming, `whitespace_mode: both`, when its differing values match once both ends are stripped, and case folding, `case_insensitive: true`, when they match once lowercased. It gets both only when some rows need both. Text that differs in anything else is a change, so no rule explains it.
+
+Then the comparison runs again with the rule, and the evidence counts the rows it makes match, of the rows that differ in that column, with up to three example keys, and for a tolerance, the largest gap. A row with a null on one side differs for another reason, so no rule here explains it. A rule that would make a row that matches today differ is not suggested, such as case folding ahead of a `value_map` whose keys are capitals.
 
 Each printed rule names its column alone. When a rule governs the column today, such as one that matches it by `pattern`, the suggestion keeps that rule's settings, and a note says to put it first in `rules`, where it wins over the other. In Python, `DiffEngine.suggest_rules()` returns the suggestions as `RuleSuggestion` models.
 
-`suggest` reads both sides locally, so it refuses a pair compared where it is stored, such as two warehouse tables. Suggest rules on files exported from them instead. Tolerances come first; trimming, case folding, null sentinels, and date formats are on the [roadmap](roadmap.md).
+`suggest` reads both sides locally, so it refuses a pair compared where it is stored, such as two warehouse tables. Suggest rules on files exported from them instead. Null sentinels and date formats are on the [roadmap](roadmap.md).
 
 ## Printing the schema
 

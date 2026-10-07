@@ -39,13 +39,13 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
     Show the proposals and their evidence to the user before adding them to the configuration.
 
-6. When a numeric column differs by small amounts, such as rounding, suggest a tolerance from the data:
+6. When a column differs by small amounts, such as rounding, padding, or case, suggest a rule from the data:
 
     ```bash
     veridelta suggest -c veridelta.yaml --json
     ```
 
-    Each suggestion names the rows it explains, and its example keys come from the data. Show the suggestions to the user before adding a rule: a tolerance forgives every gap below it, in later runs too.
+    Each suggestion names the rows it explains, and its example keys come from the data. Show the suggestions to the user before adding a rule: a rule forgives what it explains in later runs too, such as every gap below a tolerance.
 
 ## MCP server
 
