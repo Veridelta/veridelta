@@ -227,16 +227,16 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
     if result.keys_only and result.changed_sample is not None:
         changed = result.changed_sample
         keys_note = (
-            "<p class='note'>This comparison ran as warehouse pushdown, which "
-            f"evaluates in place. Changed rows show values for the first {changed.height:,} "
+            "<p class='note'>This comparison ran as pushdown, inside the database that "
+            f"stores both tables. Changed rows show values for the first {changed.height:,} "
             f"of {summary.changed_count:,}, in key order, fetched because "
             "<code>pushdown_sample_rows</code> is set. Added and removed rows list "
             "primary keys.</p>"
         )
     elif result.keys_only:
         keys_note = (
-            "<p class='note'>This comparison ran as warehouse pushdown, which "
-            "evaluates in place and never extracts rows. The tables below list "
+            "<p class='note'>This comparison ran as pushdown, inside the database that "
+            "stores both tables, and never extracts rows. The tables below list "
             "primary keys rather than values.</p>"
         )
 
@@ -379,8 +379,8 @@ def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
     if result.keys_only:
         lines += [
             "",
-            "> Warehouse pushdown compared these tables in place, so its artifacts list "
-            "primary keys only.",
+            "> Pushdown compared these tables inside the database that stores them, so its "
+            "artifacts list primary keys only.",
         ]
     if summary.report_limit > 0:
         lines += ["", "#### Column-level drift", ""]
