@@ -24,11 +24,11 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 
 ## North star
 
-[NS-01](metrics/NS-01.md) counts the steps between a fresh machine and a correct verdict on the quick start: the keys a newcomer writes plus the shell lines they type. It is 7 today, and 5 is the target. The maintainer chose it over parity across backends on 2026-10-06, because the one known user is a newcomer with two CSV files, and the promise to them is a verdict with nothing to learn first.
+[NS-01](metrics/NS-01.md) counts the steps between a fresh machine and a correct verdict on the quick start: the keys a newcomer writes plus the shell lines they type. It is 5 today, the target, since the format follows the file's suffix. The maintainer chose it over parity across backends on 2026-10-06, because the one known user is a newcomer with two CSV files, and the promise to them is a verdict with nothing to learn first.
 
 ## Drivers
 
-- [DR-01](metrics/DR-01.md) counts the keys in the smallest configuration that compares two Parquet files: 5 today, and 3 once the format follows the file's suffix.
+- [DR-01](metrics/DR-01.md) counts the keys in the smallest configuration that compares two Parquet files: 3, since the format follows the file's suffix.
 - [DR-02](metrics/DR-02.md) counts the quick-start mistakes whose error names the cause and not a symptom: 3 of 4 today.
 - [DR-03](metrics/DR-03.md) measures how long a reported wrong verdict stays unfixed on PyPI. No such report exists yet.
 

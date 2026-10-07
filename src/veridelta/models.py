@@ -11,7 +11,8 @@ import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import polars as pl
@@ -54,6 +55,33 @@ SourceType = Literal[
 Exactly the set `LoaderFactory` implements. Delta Lake is not here: it is a
 table format, read through the `delta` source type rather than as a file.
 """
+
+_SUFFIX_FORMATS: dict[str, SourceType] = {
+    ".csv": "csv",
+    ".parquet": "parquet",
+    ".pq": "parquet",
+    ".json": "json",
+    ".ndjson": "ndjson",
+    ".jsonl": "ndjson",
+    ".arrow": "arrow",
+    ".ipc": "arrow",
+    ".feather": "arrow",
+    ".avro": "avro",
+    ".xlsx": "excel",
+    ".xls": "excel",
+}
+"""The format each file suffix names, in lowercase. A suffix not here keeps the default."""
+
+
+def _infer_format(path: str) -> SourceType | None:
+    """Return the format a path's suffix names, or None when the suffix says nothing.
+
+    The suffix is the file name's, after any `?` query or `#` fragment is
+    dropped, and its case does not matter: `data.PARQUET?version=3` names `parquet`.
+    """
+    name = path.split("?", 1)[0].split("#", 1)[0].replace("\\", "/").rsplit("/", 1)[-1]
+    return _SUFFIX_FORMATS.get(PurePosixPath(name).suffix.lower())
+
 
 SchemaMode = Literal[
     "exact",
@@ -128,7 +156,9 @@ class SourceConfig(BaseModel):
     Attributes:
         type (Literal["file"]): Source kind. A YAML file source may omit it.
         path (str): Local path or URI of the file.
-        format (SourceType): File format, such as `parquet`. Defaults to `csv`.
+        format (SourceType): File format, such as `parquet`. When absent, the path's
+            suffix decides it, and `csv` is the default for a suffix Veridelta does
+            not know.
         options (dict[str, Any]): Keyword arguments for the Polars reader, such as
             `{'separator': ';'}`. A nested `storage_options` map is left out when the
             config is printed, but kept by `model_dump()`, which the reader needs.
@@ -140,11 +170,34 @@ class SourceConfig(BaseModel):
 
     type: Literal["file"] = Field("file", description="Discriminator for file-backed sources.")
     path: str = Field(..., description="File system path or URI to the data.")
-    format: SourceType = Field("csv", description="The format of the file.")
+    format: SourceType = Field(
+        "csv",
+        description=(
+            "The format of the file. When absent, the path's suffix decides it, and csv "
+            "is the default for a suffix Veridelta does not know."
+        ),
+    )
     options: dict[str, Any] = Field(
         default_factory=dict,
         description="Options for the Polars reader, such as {'separator': ';'}.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _format_from_suffix(cls, data: Any) -> Any:
+        """Fill an absent `format` from the path's suffix.
+
+        A `format` the user wrote always wins. A suffix Veridelta does not know
+        leaves the key absent, so the default applies and the error for a
+        missing primary key can say that `format` is not set.
+        """
+        if not isinstance(data, dict):
+            return data
+        values = cast("dict[str, Any]", data)
+        if "format" in values:
+            return values
+        inferred = _infer_format(str(values.get("path", "")))
+        return values if inferred is None else {**values, "format": inferred}
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
         """Leave object-store credentials out of the printed reader options.

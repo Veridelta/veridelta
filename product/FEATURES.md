@@ -17,7 +17,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
 | CSV, Parquet, JSON, NDJSON, Arrow, Avro, and Excel files, read lazily where Polars can | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Sources](../docs/sources.md) | [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md) |
-| `format` and reader `options` on a file source | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Sources](../docs/sources.md) | [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) |
+| `format`, read from the path's suffix unless written, and reader `options` on a file source | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Sources](../docs/sources.md) | [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) |
 | Delta Lake and Iceberg tables, at a version or a snapshot | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), for a table read like a file | [Sources](../docs/sources.md) | [GR-02](metrics/GR-02.md) |
 | Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases through ConnectorX, as a table or a query, in partitions | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), for a table read like a file | [Sources](../docs/sources.md) | [GR-02](metrics/GR-02.md) |
 | DuckDB files and MotherDuck databases | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Sources](../docs/sources.md) | [GR-02](metrics/GR-02.md) |

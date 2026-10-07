@@ -4,6 +4,7 @@ What changed in the product bundle and why, newest first. A commit's diff shows 
 
 ## 2026-10-06
 
+- **Update**: [DR-01](metrics/DR-01.md) moves from 5 to 3 and [NS-01](metrics/NS-01.md) from 7 to 5, its target: a file's suffix now decides its `format`, so the smallest configuration is the two paths and the keys. [DR-02](metrics/DR-02.md)'s second mistake becomes a Parquet file under a suffix that names no format, since a `.parquet` path no longer needs one. Slice D0 of [issue 126](https://github.com/Veridelta/veridelta/issues/126).
 - **Update**: [the feature map](FEATURES.md) moves the schema's VS Code wiring from the roadmap to the shipped features. The repository's settings map `veridelta*.yaml` to the schema, the YAML extension is recommended, and a task runs `veridelta validate` on the open file with its verdict in the Problems panel. The shipped heading no longer names 0.14.0, since the map records what landed after it. Slice E0 of [issue 127](https://github.com/Veridelta/veridelta/issues/127).
 - **Update**: [the feature map](FEATURES.md) records that `DataIngestor` is deprecated: it warns on construction and goes in 0.15.0, since no use case and no code in the package calls it.
 - **Update**: every persona, use case, and metric id named outside a heading, in the bundle and on the roadmap, now links to its card, and the bundle test holds each page to that. The roadmap also names the issue that tracks each of its sections, so a reader reaches the card, the issue, or the metric from the item in one click.

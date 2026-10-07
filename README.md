@@ -54,10 +54,8 @@ The same comparison as a YAML file, for the CLI and CI:
 primary_keys: ["transaction_id"]
 source:
   path: "legacy.parquet"
-  format: "parquet"
 target:
   path: "modern.parquet"
-  format: "parquet"
 rules:
   - column_names: ["grand_total"]
     relative_tolerance: 0.01
