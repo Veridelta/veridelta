@@ -49,17 +49,18 @@ Issues = "https://github.com/Veridelta/veridelta/issues"
 
 [project.optional-dependencies]
 snowflake = [
-    # 3.7.0 added fetch_arrow_all(force_return_table=True). Before it, a result
-    # with no rows arrives as None, and every pushdown run starts with one.
-    # 3.8.0 reads a key passphrase given as text; 3.7 fails on anything but bytes.
-    "snowflake-connector-python>=3.8.0",
-    "pyarrow>=10.0.1; python_version < '3.14'",
+    # 4.7.3 is the first release with no known advisory: earlier ones log
+    # credentials (CVE-2024-49750) or skip the TLS hostname check
+    # (CVE-2026-15925), among others.
+    "snowflake-connector-python>=4.7.3",
+    # 14.0.1 fixes CVE-2023-47248, code execution through a crafted IPC file.
+    "pyarrow>=14.0.1; python_version < '3.14'",
     # The driver warns on any pyarrow outside this range once running on 3.14.
     "pyarrow>=14.0.1,<24; python_version >= '3.14'",
 ]
 databricks = [
     "databricks-sql-connector>=3.0.0",
-    "pyarrow>=10.0.1",
+    "pyarrow>=14.0.1",
 ]
 delta = ["deltalake>=0.15.0"]
 iceberg = ["pyiceberg>=0.6.0"]
@@ -112,7 +113,7 @@ dev = [
     "mkdocs>=1.6.1",
     "mkdocs-jupyter>=0.26.3",
     "mkdocs-macros-plugin>=1.5.0",
-    "mkdocs-material>=9.7.6",
+    "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.3",
     "mypy>=1.20.0",
     "nbclient>=0.10.4",
