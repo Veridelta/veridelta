@@ -100,18 +100,44 @@ runs:
         out="$VERIDELTA_OUT"
         mkdir -p "$out"
         extras="${VERIDELTA_EXTRAS// /}"
-        if [ -n "$VERIDELTA_VERSION" ]; then
-          spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
-        else
-          source_url=$(uv run --no-project --quiet python -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$VERIDELTA_ACTION_PATH")
-          spec="veridelta${extras:+[$extras]} @ $source_url"
+        artifact="$VERIDELTA_ARTIFACT_NAME"
+        if [ -z "$artifact" ]; then
+          artifact="veridelta-$GITHUB_JOB-$(printf '%s' "$VERIDELTA_CONFIG" | tr -c 'A-Za-z0-9._-' '-')"
         fi
 
-        # Left unquoted in the command, so an empty value adds no argument.
-        send=""
-        if [ "$VERIDELTA_OTEL_SEND" = "true" ]; then send="--otel-send"; fi
-        uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel "$out/otel-metrics.json" $send > "$out/summary.json"
-        code=$?
+        # A caller may pass text from a pull request into an input, so each one must
+        # fit its pattern before it reaches a requirement or GITHUB_OUTPUT.
+        extras_pattern='^[a-z0-9_,-]*$'
+        version_pattern='^([0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?)?$'
+        artifact_pattern='^[A-Za-z0-9._ -]+$'
+        invalid=""
+        if [[ ! "$extras" =~ $extras_pattern ]]; then
+          invalid="extras must be extra names separated by commas, such as snowflake,fuzzy."
+        elif [[ ! "$VERIDELTA_VERSION" =~ $version_pattern ]]; then
+          invalid="version must be a release number from PyPI, or empty."
+        elif [[ ! "$artifact" =~ $artifact_pattern ]]; then
+          invalid="artifact-name may hold only letters, digits, spaces, dots, underscores, and hyphens."
+          artifact=""
+        fi
+
+        if [ -n "$invalid" ]; then
+          echo "::error::$invalid"
+          # The command line's code for invalid arguments.
+          code=2
+        else
+          if [ -n "$VERIDELTA_VERSION" ]; then
+            spec="veridelta${extras:+[$extras]}==$VERIDELTA_VERSION"
+          else
+            source_url=$(uv run --no-project --quiet python -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve().as_uri())' "$VERIDELTA_ACTION_PATH")
+            spec="veridelta${extras:+[$extras]} @ $source_url"
+          fi
+
+          # Left unquoted in the command, so an empty value adds no argument.
+          send=""
+          if [ "$VERIDELTA_OTEL_SEND" = "true" ]; then send="--otel-send"; fi
+          uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel "$out/otel-metrics.json" $send > "$out/summary.json"
+          code=$?
+        fi
 
         # A pinned older release exits 1 on a failure too, so 1 is drift only
         # when the summary says so. Any other code is an error.
@@ -127,11 +153,6 @@ runs:
           cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
         else
           printf '### Veridelta: ERROR\n\n`veridelta run` exited with code %s before writing a summary. The step log has the error.\n' "$code" >> "$GITHUB_STEP_SUMMARY"
-        fi
-
-        artifact="$VERIDELTA_ARTIFACT_NAME"
-        if [ -z "$artifact" ]; then
-          artifact="veridelta-$GITHUB_JOB-$(printf '%s' "$VERIDELTA_CONFIG" | tr -c 'A-Za-z0-9._-' '-')"
         fi
 
         {

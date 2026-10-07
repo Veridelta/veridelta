@@ -67,6 +67,8 @@ jobs:
 | `upload-artifact` | `true` | Upload the reports as an artifact. |
 | `artifact-name` | derived | Artifact name. Set it when a matrix runs one configuration more than once, since artifact names must be unique within a run. |
 
+`extras` takes lowercase extra names, `version` a release number, and `artifact-name` letters, digits, spaces, dots, underscores, and hyphens. The action refuses any other value before it installs anything: `exit-code` is `2`, the command line's code for invalid arguments, and `status` is `error`.
+
 ### Outputs
 
 | Output | Meaning |
