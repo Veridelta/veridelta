@@ -31,7 +31,8 @@ import polars as pl
 
 from veridelta.connectors.base import (
     PushdownQueryType,
-    VerideltaConnector,
+    PushdownSession,
+    ReaderConnector,
     mask_secrets,
     optional_module,
     read_subject,
@@ -73,7 +74,7 @@ _MAX_DECIMAL_PRECISION: Final = 38
 """Widest decimal Polars holds. A wider `numeric` keeps ConnectorX's default read."""
 
 
-class DatabaseConnector(VerideltaConnector):
+class DatabaseConnector(ReaderConnector):
     """Read one database table or query into Polars through ConnectorX.
 
     `connect()` reads eagerly and keeps the frame, and `lazyframe()` hands it to
@@ -81,9 +82,8 @@ class DatabaseConnector(VerideltaConnector):
     the rows are fetched, so it happens once per `connect()`. With
     `partition_on` set, ConnectorX splits that read into ranges over parallel
     connections, after Veridelta confirms the column holds no NULL and reads
-    its lowest and highest values.
-    `execute_pushdown` always raises: the comparison runs in Polars, never in
-    the database.
+    its lowest and highest values. The comparison runs in Polars, never in the
+    database.
     """
 
     def __init__(self, config: DatabaseConfig, *, probe: bool = False) -> None:
@@ -261,7 +261,7 @@ class DatabaseConnector(VerideltaConnector):
         return read_subject(self._config.table)
 
 
-class PostgresPushdownSession(VerideltaConnector):
+class PostgresPushdownSession(PushdownSession):
     """Run compiled comparison SQL inside Postgres, through ConnectorX.
 
     Opened for two database sources on one Postgres connection that both set

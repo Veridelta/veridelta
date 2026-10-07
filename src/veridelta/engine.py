@@ -22,7 +22,6 @@ from typing import (
     ClassVar,
     Final,
     NamedTuple,
-    Protocol,
     TypeAlias,
     TypedDict,
     TypeGuard,
@@ -36,7 +35,12 @@ import polars as pl
 from veridelta.connectors import database as database_connectors
 from veridelta.connectors import duckdb as duckdb_connectors
 from veridelta.connectors import warehouse as warehouse_connectors
-from veridelta.connectors.base import PushdownQueryType, PushdownSession, optional_module
+from veridelta.connectors.base import (
+    PushdownQueryType,
+    PushdownSession,
+    ReaderConnector,
+    optional_module,
+)
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
@@ -358,6 +362,17 @@ def _quoted_list(names: Sequence[str]) -> str:
     return f"{', '.join(quoted[:-1])}, and {quoted[-1]}"
 
 
+_READERS: Final[dict[type[object], Callable[[Any], ReaderConnector]]] = {
+    # The lambdas look the connector class up when a source is read, as the
+    # warehouse table below does, so a test that patches one still intercepts it.
+    DeltaLakeConfig: lambda config: DeltaLakeConnector(config),
+    IcebergConfig: lambda config: IcebergConnector(config),
+    DatabaseConfig: lambda config: DatabaseConnector(config),
+    DuckDBConfig: lambda config: DuckDBConnector(config),
+}
+"""Every source the local engine reads through a connector, keyed by config type."""
+
+
 class LoaderFactory:
     """Resolve a file, lakehouse, database, or DuckDB `SourceRef` to a LazyFrame.
 
@@ -424,22 +439,11 @@ class LoaderFactory:
             ConfigError: If the file format has no loader, or a database
                 `table` names a scheme Veridelta cannot quote for.
         """
-        if isinstance(config, DeltaLakeConfig):
-            delta_connector = DeltaLakeConnector(config)
-            delta_connector.connect()
-            return delta_connector.lazyframe()
-        if isinstance(config, IcebergConfig):
-            iceberg_connector = IcebergConnector(config)
-            iceberg_connector.connect()
-            return iceberg_connector.lazyframe()
-        if isinstance(config, DatabaseConfig):
-            with DatabaseConnector(config) as database:
-                database.connect()
-                return database.lazyframe()
-        if isinstance(config, DuckDBConfig):
-            with DuckDBConnector(config) as duck:
-                duck.connect()
-                return duck.lazyframe()
+        reader = _READERS.get(type(config))
+        if reader is not None:
+            with reader(config) as connector:
+                connector.connect()
+                return connector.lazyframe()
         if isinstance(config, SourceConfig):
             loader = cls.get_loader(config.format)
             try:
@@ -471,23 +475,13 @@ _WarehouseConfig: TypeAlias = (
 """Connection configs whose comparisons compile to SQL and run in place."""
 
 
-class _WarehouseSession(PushdownSession, Protocol):
-    """A pushdown session the engine opens and closes around its work."""
-
-    def connect(self) -> None:
-        """Open the driver session."""
-
-    def close(self) -> None:
-        """Release the driver session."""
-
-
 @dataclass(frozen=True)
 class _Warehouse:
     """How the engine identifies and opens one warehouse backend."""
 
     name: str
     dialect: SQLDialect
-    session: Callable[[Any], _WarehouseSession]
+    session: Callable[[Any], PushdownSession]
 
 
 _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {

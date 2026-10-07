@@ -17,7 +17,7 @@ import logging
 
 import polars as pl
 
-from veridelta.connectors.base import VerideltaConnector
+from veridelta.connectors.base import ReaderConnector
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
@@ -29,14 +29,13 @@ _DELTA_EXTRA = "Delta Lake extra is not installed. Install it with: uv add 'veri
 _ICEBERG_EXTRA = "Iceberg extra is not installed. Install it with: uv add 'veridelta[iceberg]'"
 
 
-class DeltaLakeConnector(VerideltaConnector):
+class DeltaLakeConnector(ReaderConnector):
     """Delta Lake scanner backed by `pl.scan_delta`.
 
     `connect()` opens a lazy scan of `DeltaLakeConfig.table_uri`, pinned to
     `version` when one is set, and `lazyframe()` hands that scan to the local
-    engine. No SQL is involved: `execute_pushdown` always raises because a
-    Delta table has no compute to push work into. Requires the `delta` extra
-    (`uv add 'veridelta[delta]'`).
+    engine. No SQL is involved: the comparison runs in Polars. Requires the
+    `delta` extra (`uv add 'veridelta[delta]'`).
     """
 
     def __init__(self, config: DeltaLakeConfig) -> None:
@@ -97,14 +96,13 @@ class DeltaLakeConnector(VerideltaConnector):
         self._frame = None
 
 
-class IcebergConnector(VerideltaConnector):
+class IcebergConnector(ReaderConnector):
     """Apache Iceberg scanner backed by `pl.scan_iceberg`.
 
     `connect()` opens a lazy scan of `IcebergConfig.table_uri`, pinned to
     `snapshot_id` when one is set, and `lazyframe()` hands that scan to the
-    local engine. As with Delta Lake, `execute_pushdown` always raises; the
-    comparison runs in Polars. Requires the `iceberg` extra
-    (`uv add 'veridelta[iceberg]'`).
+    local engine. As with Delta Lake, the comparison runs in Polars. Requires
+    the `iceberg` extra (`uv add 'veridelta[iceberg]'`).
     """
 
     def __init__(self, config: IcebergConfig) -> None:

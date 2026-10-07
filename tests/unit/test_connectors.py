@@ -24,12 +24,16 @@ from veridelta.config import (
     SnowflakeConfig,
 )
 from veridelta.connectors import (
+    BigQueryConnector,
     DatabaseConnector,
     DatabricksConnector,
     DeltaLakeConnector,
+    DuckDBConnector,
+    DuckDBPushdownSession,
     IcebergConnector,
     PostgresPushdownSession,
-    PushdownQueryType,
+    PushdownSession,
+    ReaderConnector,
     SnowflakeConnector,
     SQLDialect,
     VerideltaConnector,
@@ -140,6 +144,51 @@ class TestConnectorInterface:
         with pytest.raises(TypeError, match="abstract"):
             VerideltaConnector()  # type: ignore[abstract]
 
+    def test_a_reader_must_hand_out_a_frame(self) -> None:
+        """Ensure a reader that defines no `lazyframe` cannot be built."""
+
+        class _Reader(ReaderConnector):
+            def connect(self) -> None:
+                return None
+
+        with pytest.raises(TypeError, match="lazyframe"):
+            _Reader()  # type: ignore[abstract]
+
+    def test_a_session_must_run_sql(self) -> None:
+        """Ensure a session that defines no `execute_pushdown` cannot be built."""
+
+        class _Session(PushdownSession):
+            def connect(self) -> None:
+                return None
+
+        with pytest.raises(TypeError, match="execute_pushdown"):
+            _Session()  # type: ignore[abstract]
+
+    @pytest.mark.parametrize(
+        "reader", [DeltaLakeConnector, IcebergConnector, DatabaseConnector, DuckDBConnector]
+    )
+    def test_a_reader_scans_and_never_runs_sql(self, reader: type[VerideltaConnector]) -> None:
+        """Ensure each reader is a `ReaderConnector` with no `execute_pushdown` to call."""
+        assert issubclass(reader, ReaderConnector)
+        assert not issubclass(reader, PushdownSession)
+        assert not hasattr(reader, "execute_pushdown")
+
+    @pytest.mark.parametrize(
+        "session",
+        [
+            SnowflakeConnector,
+            DatabricksConnector,
+            BigQueryConnector,
+            PostgresPushdownSession,
+            DuckDBPushdownSession,
+        ],
+    )
+    def test_a_session_runs_sql_and_never_scans(self, session: type[VerideltaConnector]) -> None:
+        """Ensure each pushdown class is a `PushdownSession` with no `lazyframe` to call."""
+        assert issubclass(session, PushdownSession)
+        assert not issubclass(session, ReaderConnector)
+        assert not hasattr(session, "lazyframe")
+
     def test_it_raises_connector_error_when_snowflake_extra_is_missing(
         self, mocker: MockerFixture
     ) -> None:
@@ -177,16 +226,6 @@ class TestLakehouseConnectors:
             delta.lazyframe()
         with pytest.raises(ConnectorError, match="not connected"):
             iceberg.lazyframe()
-
-    def test_it_rejects_sql_pushdown_on_lakehouse_connectors(self) -> None:
-        """Ensure lakehouse backends do not accept warehouse SQL."""
-        delta = DeltaLakeConnector(_delta_config())
-        iceberg = IcebergConnector(_iceberg_config())
-
-        with pytest.raises(ConnectorError, match="compared locally"):
-            delta.execute_pushdown("SELECT * FROM events")
-        with pytest.raises(ConnectorError, match="compared locally"):
-            iceberg.execute_pushdown("SELECT * FROM events")
 
     def test_it_connects_delta_via_scan_delta_and_returns_schema(
         self, mocker: MockerFixture
@@ -386,22 +425,20 @@ class TestConnectorLifecycleDefaults:
     """Validate the lifecycle members every connector inherits from the ABC."""
 
     def test_it_provides_a_no_op_close_and_a_self_returning_context(self) -> None:
-        """Ensure a subclass that only connects and runs SQL gets close() and the context protocol."""
+        """Ensure a reader that only connects and reads gets close() and the context protocol."""
 
-        class _Minimal(VerideltaConnector):
+        class _Minimal(ReaderConnector):
             def connect(self) -> None:
                 return None
 
-            def execute_pushdown(
-                self, statement: str, query_type: PushdownQueryType = "mismatch"
-            ) -> pl.LazyFrame:
+            def lazyframe(self) -> pl.LazyFrame:
                 return _sample_lazy_frame()
 
         connector = _Minimal()
         connector.close()
         with connector as managed:
             assert managed is connector
-        assert connector.execute_pushdown("SELECT 1").collect().height == 2
+        assert connector.lazyframe().collect().height == 2
 
 
 _DATABASE_SECRET = "p@ss:w/rd %+&?#"
@@ -657,13 +694,6 @@ class TestDatabaseConnector:
         DatabaseConnector(DatabaseConfig(uri=f"sqlite://{database}", table="orders")).connect()
 
         read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
-
-    def test_it_refuses_pushdown(self) -> None:
-        """Ensure a database source can never be driven as a warehouse."""
-        connector = DatabaseConnector(DatabaseConfig(uri="sqlite:///srv/x.db", table="t"))
-
-        with pytest.raises(ConnectorError, match="compared locally"):
-            connector.execute_pushdown("SELECT 1")
 
     def test_it_drops_the_frame_on_close_and_rereads_on_connect(
         self, mocker: MockerFixture

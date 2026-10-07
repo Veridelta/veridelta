@@ -3,7 +3,12 @@
 
 """Warehouse pushdown, lakehouse-native, database, and DuckDB connector abstractions."""
 
-from veridelta.connectors.base import PushdownQueryType, VerideltaConnector
+from veridelta.connectors.base import (
+    PushdownQueryType,
+    PushdownSession,
+    ReaderConnector,
+    VerideltaConnector,
+)
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
@@ -24,6 +29,8 @@ __all__ = [
     "IcebergConnector",
     "PostgresPushdownSession",
     "PushdownQueryType",
+    "PushdownSession",
+    "ReaderConnector",
     "SQLDialect",
     "SQLPushdownCompiler",
     "SnowflakeConnector",

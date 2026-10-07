@@ -44,7 +44,7 @@ The errors Veridelta raises. Each derives from `VerideltaError`, so one `except`
 
 ## Connectors
 
-Warehouse sessions, lakehouse scanners, and the database and DuckDB readers. `VerideltaConnector` is the session interface, and `SQLPushdownCompiler` writes each dialect's comparison SQL.
+Warehouse sessions, lakehouse scanners, and the database and DuckDB readers. `VerideltaConnector` is the lifecycle they share, `ReaderConnector` and `PushdownSession` are the two kinds the engine drives, and `SQLPushdownCompiler` writes each dialect's comparison SQL.
 
 ::: veridelta.connectors
     options:
