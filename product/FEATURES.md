@@ -32,6 +32,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Regular expression replacement, whitespace stripping, and case folding | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
 | Value maps, and `crosswalk` to propose them from the data with their evidence | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md), [Command line](../docs/cli.md) | [GR-02](metrics/GR-02.md) |
 | `veridelta suggest`, which suggests a numeric tolerance, trimming, case folding, a date format, or null sentinels from the pairs that differ, with the rows each explains, and calls no model | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Command line](../docs/cli.md), [Rules](../docs/rules.md) | [NS-01](metrics/NS-01.md) |
+| Accepted drift with `run --baseline`, which fails only on drift the file does not list | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Command line](../docs/cli.md) | [GR-02](metrics/GR-02.md) |
 | Zero padding, date parsing with `datetime_format` and `timezone`, and `cast_to` | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
 | Absolute and relative tolerances, with defaults | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md) | [GR-02](metrics/GR-02.md) |
 | Fuzzy text matching by edit distance or Jaro-Winkler similarity, with the `fuzzy` extra | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Rules](../docs/rules.md), [tutorial 6](../docs/examples/06_model_evaluation_runs.ipynb) | [GR-02](metrics/GR-02.md) |
@@ -75,7 +76,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | :--- | :--- | :--- |
 | Pushdown for more SQL dialects, such as Redshift and Synapse | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [GR-01](metrics/GR-01.md) |
 | The VS Code extension, its run command, and its MCP registration | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
-| Accepted drift with `run --baseline` | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [GR-02](metrics/GR-02.md) |
+| Saving a baseline with `run --save-baseline` | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [GR-02](metrics/GR-02.md) |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
 
 ## Served by no use case, and why they stay

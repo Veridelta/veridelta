@@ -24,7 +24,7 @@ These items build on [AI agents](agents.md), in this order, tracked in [issue 12
 
 ### Next
 
-- Accepted drift: `run --baseline accepted.json` fails only on drift that the baseline does not list. An agent that changes a pipeline on purpose can show that nothing else moved. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
+- Saving a baseline from a run: `run --save-baseline accepted.json` writes the drift a run finds as the file [`run --baseline`](cli.md#accepting-drift) reads, so an intended change is accepted in one step. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
 
 ### Ambitious
 

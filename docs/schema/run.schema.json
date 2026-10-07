@@ -35,6 +35,12 @@
       "title": "Is Match",
       "type": "boolean"
     },
+    "accepted_count": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Accepted Count",
+      "type": "integer"
+    },
     "total_mismatches": {
       "description": "Count added, removed, and changed rows together.\n\nReturns:\n    int: The total.",
       "readOnly": true,

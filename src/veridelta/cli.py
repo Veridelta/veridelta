@@ -35,6 +35,7 @@ from veridelta.engine import (
 )
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve
+from veridelta.models import Baseline
 from veridelta.outputs import OUTPUTS, error_report, output_json_schema, validation_report
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
@@ -194,8 +195,11 @@ def run(args: argparse.Namespace) -> int:
         _progress(f"Loading configuration from {args.config}...", quiet=quiet)
         diff_config, source_config, target_config = load_config(args.config)
 
+        baseline = None if args.baseline is None else Baseline.read(args.baseline)
         _progress("Comparing...", quiet=quiet)
-        result = DiffEngine.run_from_configs(diff_config, source_config, target_config)
+        result = DiffEngine.run_from_configs(
+            diff_config, source_config, target_config, baseline=baseline
+        )
         summary = result.summary
 
         if not args.json:
@@ -418,7 +422,7 @@ def schema(args: argparse.Namespace) -> int:
 
     Args:
         args (argparse.Namespace): Parsed arguments carrying `output`: `run`,
-            `validate`, `crosswalk`, `suggest`, or `error` for what that command prints
+            `validate`, `crosswalk`, `suggest`, `baseline`, or `error` for what that file holds
             with `--json`, or None for configuration files.
 
     Returns:
@@ -568,6 +572,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--quiet",
         action="store_true",
         help="Suppress progress messages on stderr.",
+    )
+    run_parser.add_argument(
+        "--baseline",
+        metavar="PATH",
+        help="Accept the drift the JSON file PATH lists, and fail only on drift it does not.",
     )
     run_parser.add_argument(
         "--html",

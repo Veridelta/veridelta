@@ -4,6 +4,7 @@ What changed in the product bundle and why, newest first. A commit's diff shows 
 
 ## 2026-10-07
 
+- **Update**: [the feature map](FEATURES.md) adds accepted drift: `run --baseline` reads a file of the rows and changed columns a run accepts, and fails only on drift the file does not list. The roadmap keeps saving that file from a run. Part of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds a date format to what `veridelta suggest` proposes, for text on one side that reads as the dates on the other. Every kind of rule the roadmap named for `suggest` has shipped, so its item leaves the roadmap. Part of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds null sentinels to what `veridelta suggest` proposes, for a common spelling of NULL, such as `N/A` or -999, where the other side is NULL. The roadmap keeps a date format. Part of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds trimming and case folding to what `veridelta suggest` proposes, for text that differs only in whitespace at its ends or in case. The roadmap keeps a null sentinel and a date format. Part of [issue 128](https://github.com/Veridelta/veridelta/issues/128).

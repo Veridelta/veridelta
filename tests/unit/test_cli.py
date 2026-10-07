@@ -37,6 +37,7 @@ class TestCommandLineInterface:
             config="dummy.yaml",
             json=False,
             quiet=False,
+            baseline=None,
             html=None,
             html_max_rows=1000,
             markdown=None,
@@ -65,7 +66,7 @@ class TestCommandLineInterface:
         assert exit_code == 0
         mock_load.assert_called_once_with("dummy.yaml")
         mock_engine.run_from_configs.assert_called_once_with(
-            mock_diff_config, mock_source, mock_target
+            mock_diff_config, mock_source, mock_target, baseline=None
         )
 
     def test_it_returns_exit_code_one_when_datasets_do_not_match(
