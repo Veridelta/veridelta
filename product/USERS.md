@@ -43,7 +43,7 @@ The last answer is the product's constraint, read as three rules. A newcomer rea
 - **Tolerances.** A tolerance is theirs to declare, column by column. A match that forgives something no rule names is never acceptable.
 - **Trust posture.** They believe a verdict they can audit: the rules are in a file under version control, the counts come back, and a local run and a pushdown run agree.
 - **Success, in one sentence.** The migrated table is signed off from one CI run, with a report to hand over, and no row leaves the warehouse.
-- **Evidence.** The product, not a person: the README's "same verdict in the warehouse" feature, [the pushdown guide](../docs/pushdown.md), tutorial 5, `action.yml`, and the `snowflake`, `databricks`, and `bigquery` extras. The maintainer has never used a warehouse (answer 3), and chose to verify these backends against the live services before 0.15.0 anyway.
+- **Evidence.** The product, not a person: the README's "comparison inside the warehouse" feature, [the pushdown guide](../docs/pushdown.md), tutorial 5, `action.yml`, and the `snowflake`, `databricks`, and `bigquery` extras. The maintainer has never used a warehouse (answer 3), and chose to verify these backends against the live services anyway. That run is [issue 111](https://github.com/Veridelta/veridelta/issues/111), and releases ship before it by the maintainer's decision of 2026-10-06.
 - **Unknown.** Whether this person exists, their team, how many tables they move, and which CI they run. To learn it: the bug report and feature request forms, which ask for the environment, and Discussions.
 
 ### P-02: The developer comparing two CSV files

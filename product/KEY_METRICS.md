@@ -34,7 +34,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 
 ## Guardrails
 
-- [GR-01](metrics/GR-01.md) counts the pushdown backends on which the parity suite reached the same verdict as a local run: 2 of 6 today, and 6 of 6 before a release. A faster verdict that differs by backend is worth nothing.
+- [GR-01](metrics/GR-01.md) counts the pushdown backends on which the parity suite reached the same verdict as a local run: 2 of 6 today, against a target of 6 of 6 before a release that waits for the first live run. A faster verdict that differs by backend is worth nothing.
 - [GR-02](metrics/GR-02.md) counts the wrong verdicts reported and still open at a release: 0 today, and 0 at every release.
 - [GR-03](metrics/GR-03.md) counts the accessibility violations on the docs site and the HTML report: 0 today, and 0 at every release.
 
