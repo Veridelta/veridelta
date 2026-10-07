@@ -1,16 +1,29 @@
+# ruff, mypy, and commitizen run from the project's environment, so each hook
+# runs the version uv.lock pins, as `make lint` does. `--frozen` keeps a hook
+# from rewriting uv.lock in the middle of a commit.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.11
+  - repo: local
     hooks:
-      - id: ruff
-      - id: ruff-format
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen ruff check --force-exclude
+        language: unsupported
+        types_or: [python, pyi, jupyter]
+        require_serial: true
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.1
-    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen ruff format --force-exclude
+        language: unsupported
+        types_or: [python, pyi, jupyter]
+        require_serial: true
+
       - id: mypy
-        additional_dependencies: [polars, pydantic, pyyaml]
-        args: [--strict]
+        name: mypy
+        entry: uv run --frozen mypy --strict
+        language: unsupported
+        types_or: [python, pyi]
+        require_serial: true
 
   - repo: https://github.com/Lucas-C/pre-commit-hooks
     rev: v1.5.6
@@ -23,8 +36,10 @@ repos:
           - .github/LICENSE_HEADER.txt
           - --use-current-year
 
-  - repo: https://github.com/commitizen-tools/commitizen
-    rev: v4.13.9
+  - repo: local
     hooks:
       - id: commitizen
+        name: commitizen check
+        entry: uv run --frozen cz check --allow-abort --commit-msg-file
+        language: unsupported
         stages: [commit-msg]
