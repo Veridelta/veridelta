@@ -23,7 +23,7 @@ import inspect
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -52,6 +52,7 @@ from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.models import (
+    ConfigFinding,
     DatabaseConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -200,6 +201,22 @@ class ValidationReport(TypedDict):
     valid: bool
     errors: list[str]
     warnings: list[str]
+
+
+def validation_report(config: str, findings: Iterable[ConfigFinding]) -> ValidationReport:
+    """Sort a check's findings into what `validate --json` prints and `validate_config` returns.
+
+    Args:
+        config (str): The configuration file, as the report names it.
+        findings (Iterable[ConfigFinding]): What the check found, in order.
+
+    Returns:
+        ValidationReport: The errors and the warnings, each in the order found.
+    """
+    found = list(findings)
+    errors = [finding.message for finding in found if finding.severity == "error"]
+    warnings = [finding.message for finding in found if finding.severity == "warning"]
+    return ValidationReport(config=config, valid=not errors, errors=errors, warnings=warnings)
 
 
 class RunReport(TypedDict):
@@ -426,11 +443,7 @@ def check_configuration(
         findings = DiffEngine.check_config_file(
             resolved, schemas=schemas, allow_missing_env=allow_missing_env
         )
-    errors = [finding.message for finding in findings if finding.severity == "error"]
-    warnings = [finding.message for finding in findings if finding.severity == "warning"]
-    return ValidationReport(
-        config=str(resolved), valid=not errors, errors=errors, warnings=warnings
-    )
+    return validation_report(str(resolved), findings)
 
 
 def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
