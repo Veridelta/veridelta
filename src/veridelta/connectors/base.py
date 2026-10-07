@@ -6,7 +6,7 @@
 import importlib
 from abc import ABC, abstractmethod
 from types import ModuleType, TracebackType
-from typing import Literal, Self
+from typing import Final, Literal, Self
 
 import polars as pl
 
@@ -56,6 +56,10 @@ def without_location(text: str, location: str) -> str:
         str: The message, with the location's secrets left out.
     """
     return text.replace(location, shown_location(location))
+
+
+PROBE_NEEDS_A_TABLE: Final = "A schema probe reads a 'table'; a 'query' would have to run in full."
+"""Why a database or DuckDB schema probe refuses a side that sets `query`."""
 
 
 def read_subject(table: str | None) -> str:

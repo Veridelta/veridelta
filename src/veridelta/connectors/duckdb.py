@@ -36,6 +36,7 @@ from typing import Any, Final, cast
 import polars as pl
 
 from veridelta.connectors.base import (
+    PROBE_NEEDS_A_TABLE,
     PushdownQueryType,
     PushdownSession,
     ReaderConnector,
@@ -192,9 +193,7 @@ class DuckDBConnector(ReaderConnector):
         if self._config.table is not None:
             return compile_duckdb_select(self._config.table, probe=self._probe)
         if self._probe:
-            raise ConfigError(
-                "A schema probe reads a 'table'; a 'query' would have to run in full."
-            )
+            raise ConfigError(PROBE_NEEDS_A_TABLE)
         # DuckDBConfig requires exactly one of `table` and `query`.
         return cast("str", self._config.query)
 

@@ -1243,7 +1243,10 @@ class IcebergConfig(BaseModel):
     )
 
 
-DATABASE_PUSHDOWN_SCHEMES: Final = frozenset({"postgres", "postgresql"})
+POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})
+"""The URI schemes that name a Postgres database."""
+
+DATABASE_PUSHDOWN_SCHEMES: Final = POSTGRES_SCHEMES
 """URI schemes whose tables a database source can compare inside the database."""
 
 
