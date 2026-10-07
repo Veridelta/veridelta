@@ -1,7 +1,7 @@
 site_name: Veridelta
-site_description: Compare two datasets under declared rules, locally or inside the warehouse.
+site_description: Compare two datasets on their primary keys under rules you declare, on a laptop, in CI, or inside a warehouse.
 site_author: Veridelta Maintainers
-site_url: https://Veridelta.github.io/veridelta/
+site_url: https://veridelta.github.io/veridelta/
 repo_url: https://github.com/Veridelta/veridelta
 repo_name: Veridelta/veridelta
 

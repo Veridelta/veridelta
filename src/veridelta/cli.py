@@ -438,7 +438,10 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="veridelta",
-        description="Compare two datasets under declared rules, locally or inside the warehouse.",
+        description=(
+            "Compare two datasets on their primary keys under rules you declare, "
+            "on a laptop, in CI, or inside a warehouse."
+        ),
     )
     parser.add_argument(
         "-V",

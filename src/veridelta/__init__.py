@@ -1,7 +1,7 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare two datasets under declared rules, locally or inside the warehouse."""
+"""Compare two datasets on their primary keys under rules you declare, on a laptop, in CI, or inside a warehouse."""
 
 from veridelta import datasets
 from veridelta.config import load_config
