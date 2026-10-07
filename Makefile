@@ -40,8 +40,20 @@ databases:
 accessibility:
 	VERIDELTA_ACCESSIBILITY=1 uv run --group accessibility pytest tests/accessibility --no-cov
 
+# The vhs release the recordings are made with. Another release can draw the same tape
+# differently, so `make demo` refuses it.
+VHS_VERSION := v0.12.1
+
 demo:
-	cd demo && vhs veridelta.tape
+	@vhs --version 2>/dev/null | grep -qx "vhs version $(VHS_VERSION)" || { \
+		echo "make demo needs vhs $(VHS_VERSION), with ttyd and ffmpeg on PATH:"; \
+		echo "  go install github.com/charmbracelet/vhs@$(VHS_VERSION)"; \
+		echo "See Recording the demos in CONTRIBUTING.md."; \
+		exit 1; \
+	}
+	cd demo && for tape in *.tape; do \
+		[ "$$tape" = settings.tape ] || uv run vhs "$$tape" || exit 1; \
+	done
 
 schema:
 	uv run veridelta schema > docs/schema/veridelta.schema.json

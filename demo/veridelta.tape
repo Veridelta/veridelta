@@ -1,11 +1,8 @@
 # The quick start, as the README shows it. `make demo` renders this tape with vhs.
 Output ../docs/assets/demo.gif
-
-Set Shell "bash"
-Set FontSize 16
-Set Width 900
+Require veridelta
+Source settings.tape
 Set Height 1000
-Set TypingSpeed 50ms
 
 Type "cat veridelta.yaml"
 Enter
