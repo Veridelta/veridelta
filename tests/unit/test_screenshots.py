@@ -80,6 +80,22 @@ def test_the_card_and_the_docs_site_take_the_logos_colors(path: str) -> None:
     assert [color for color in _COLORS if color not in text] == []
 
 
+def test_the_readme_shows_the_logo_from_the_site() -> None:
+    """Ensure the README, which PyPI shows too, loads the logo from the docs site, in both themes."""
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    site = "https://veridelta.github.io/veridelta/assets"
+
+    assert f'<img src="{site}/veridelta-symbol.png" alt=""' in readme
+    assert f'<img src="{site}/veridelta-wordmark.png" alt="Veridelta"' in readme
+    assert (
+        f'media="(prefers-color-scheme: dark)" srcset="{site}/veridelta-wordmark-dark.png"'
+        in readme
+    )
+    assert _size(_ASSETS / "veridelta-wordmark-dark.png") == _size(
+        _ASSETS / "veridelta-wordmark.png"
+    )
+
+
 def test_the_card_has_the_size_link_previews_take() -> None:
     """Ensure the card is 1280 by 640, the 2:1 image GitHub and social sites show whole."""
     assert _size(_ASSETS / "social-card.png") == (1280, 640)
