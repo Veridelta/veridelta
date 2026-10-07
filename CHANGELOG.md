@@ -1,3 +1,13 @@
+## v0.19.18 (2026-10-07)
+
+No behavior changed. The verdict and the reported `mismatch_ratio` divide by the source
+rows through one function, `mismatch_ratio_of`, and five places that normalized a column
+name share `normalize_column_name`. Both are in `veridelta.models`.
+
+### Refactor
+
+- compute the mismatch ratio and normalize a column name in one place each (#244)
+
 ## v0.19.17 (2026-10-07)
 
 The engine writes each check once: the `timezone` guard, the null equality of stage 9, the
