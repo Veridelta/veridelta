@@ -110,6 +110,31 @@ _SUFFIX_FORMATS: dict[str, SourceType] = {
 """The format each file suffix names, in lowercase. A suffix not here keeps the default."""
 
 
+def normalize_column_name(name: str) -> str:
+    """Strip and lowercase a column name, as `normalize_column_names` asks.
+
+    Args:
+        name (str): A header, or a name a configuration gives.
+
+    Returns:
+        str: The name the engine compares by.
+    """
+    return name.strip().lower()
+
+
+def mismatch_ratio_of(mismatches: int, source_rows: int) -> float:
+    """Divide the mismatches by the source row count, which the threshold applies to.
+
+    Args:
+        mismatches (int): Added, removed, and changed rows together.
+        source_rows (int): The rows the source holds. An empty source counts as one.
+
+    Returns:
+        float: The ratio, which can exceed 1.
+    """
+    return float(mismatches) / float(max(source_rows, 1))
+
+
 def _infer_format(path: str) -> SourceType | None:
     """Return the format a path's suffix names, or None when the suffix says nothing.
 
@@ -645,12 +670,12 @@ class DiffConfig(BaseModel):
             DiffConfig: The configuration with normalized names.
         """
         if self.normalize_column_names:
-            self.primary_keys = [pk.strip().lower() for pk in self.primary_keys]
+            self.primary_keys = [normalize_column_name(pk) for pk in self.primary_keys]
             self.rules = [
                 rule.model_copy(
                     update={
-                        "column_names": [col.strip().lower() for col in rule.column_names],
-                        "rename_to": rule.rename_to and rule.rename_to.strip().lower(),
+                        "column_names": [normalize_column_name(col) for col in rule.column_names],
+                        "rename_to": rule.rename_to and normalize_column_name(rule.rename_to),
                     }
                 )
                 for rule in self.rules
@@ -714,7 +739,7 @@ class DiffSummary(BaseModel):
         Returns:
             float: The ratio, which can exceed 1.
         """
-        return float(self.total_mismatches) / float(max(self.total_rows_source, 1))
+        return mismatch_ratio_of(self.total_mismatches, self.total_rows_source)
 
     @computed_field
     @property
