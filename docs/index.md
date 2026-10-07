@@ -1,6 +1,6 @@
 # Veridelta
 
-Veridelta compares two datasets on their primary keys and reports every row that differs under the rules you declare. Nothing is forgiven unless a rule says so, and the exit code tells CI whether the datasets match. Use it to verify a migration or a pipeline change, on a laptop, in CI, or inside a warehouse.
+Veridelta compares two datasets on their primary keys and reports every row that differs under the rules you declare. Nothing is forgiven unless a rule says so, and the exit code tells CI whether the datasets match. Use it to verify a migration, a pipeline change, or a model's new evaluation run, on a laptop, in CI, or inside a warehouse.
 
 ![A terminal prints a five-line veridelta.yaml and two three-row CSV files, validates the configuration, runs the comparison, shows one added, one removed, and one changed row, and prints the exit code for CI, 1, beside what 0, 1, and 3 mean.](assets/demo.gif)
 
@@ -44,6 +44,7 @@ The tutorials build a comparison step by step:
 3. [Advanced rules](examples/03_advanced_rules.ipynb): resolving drift in real data.
 4. [HTML reports](examples/04_html_reports.ipynb): a report to hand to reviewers.
 5. [Validate and CI](examples/05_validate_and_ci.ipynb): a database source, `veridelta validate`, and the GitHub Action.
+6. [Model evaluation runs](examples/06_model_evaluation_runs.ipynb): two runs of a model's evaluation, compared on the example ID, with a tolerance on scores and fuzzy matching on answers.
 
 The user guide is the reference:
 
