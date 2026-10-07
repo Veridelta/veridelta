@@ -48,7 +48,7 @@ hooks:
   - hooks/llms_txt.py
 
 extra:
-  version: 0.19.2
+  version: 0.19.3
 
 # Accessibility fixes over the Material theme. Each file says what it fixes.
 extra_css:

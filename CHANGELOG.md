@@ -1,3 +1,17 @@
+## v0.19.3 (2026-10-07)
+
+`veridelta mcp` runs a side's `query` only when it is started with the new
+`--allow-queries`, since a query runs as written, with the configuration's credentials.
+Before, a DuckDB query such as `SELECT * FROM read_text(...)` could read a file outside
+the roots, and a MotherDuck query ran read-write with the server's token. Every DuckDB file
+the server opens is now held to the roots: extensions stop loading on their own, files open
+only under the roots, and the configuration locks before the first read. A MotherDuck
+connection is not held to the roots. A DuckDB connection whose setup fails is now closed.
+
+### Fix
+
+- gate MCP queries behind --allow-queries and hold DuckDB to the roots (#203)
+
 ## v0.19.2 (2026-10-07)
 
 The MCP server checks a configuration's relative data path, and its `output_path`, where
