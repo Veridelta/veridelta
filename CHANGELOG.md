@@ -1,3 +1,19 @@
+## v0.20.0 (2026-10-07)
+
+`veridelta schema` takes an optional name, `run`, `validate`, `crosswalk`, or `error`, and
+prints the JSON Schema of what that command prints with `--json`, or of the error object
+any command prints at exit code 3. With no name, it prints the configuration schema, as
+before. Each schema is published under `docs/schema/` at the URL its `$id` names, and a
+test validates real output from each command against it. `typing-extensions` is now a
+declared dependency; Pydantic already required it.
+
+The README and the docs home name the MCP server, and the user guide, the product
+documents, and the contributor guide now say what the code does.
+
+### Feat
+
+- publish a JSON Schema for what each command prints with --json (#254)
+
 ## v0.19.20 (2026-10-07)
 
 No behavior changed. The engine opens and closes a warehouse session in one place, and the
