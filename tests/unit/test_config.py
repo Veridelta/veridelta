@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from veridelta.config import load_config
+from veridelta.config import load_config, referenced_variables
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
     DatabaseConfig,
@@ -528,3 +528,20 @@ class TestUnsetEnvironmentTolerance:
                 "source:\n  path: ${1}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
                 unset_env=[],
             )
+
+
+class TestReferencedVariables:
+    """Validate the names a configuration's text takes from the environment."""
+
+    def test_it_names_each_variable_once_in_order(self) -> None:
+        """Ensure defaults and repeats count once, and an escape names nothing."""
+        text = (
+            "source:\n  password: ${PASSWORD}\n  role: ${ROLE:-ANALYST}\n"
+            "target:\n  password: ${PASSWORD}\n  note: $${NOT_A_VARIABLE}\n"
+        )
+
+        assert referenced_variables(text) == ["PASSWORD", "ROLE"]
+
+    def test_it_names_none_in_a_malformed_reference(self) -> None:
+        """Ensure `${1}`, a regex capture outside the blocks, is no variable."""
+        assert referenced_variables("rules:\n  - regex_replace: {'(a)': '${1}'}\n") == []

@@ -39,6 +39,7 @@ from veridelta.mcp_server import (
     check_configuration,
     check_data_paths,
     describe_side,
+    environment_values,
     propose_maps,
     read_rows,
     resolve_path,
@@ -730,6 +731,35 @@ class TestCheckDataPaths:
         check_data_paths(Settings((tmp_path,)), side, side)
 
 
+class TestEnvironmentValues:
+    """Validate the values a tool masks: those its configuration took from the environment."""
+
+    def test_it_returns_each_referenced_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a set variable counts, and an unset or short one does not."""
+        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
+        monkeypatch.setenv("VD_MCP_SHORT", "abc")
+        monkeypatch.delenv("VD_MCP_UNSET", raising=False)
+        _write(
+            tmp_path,
+            "source:\n  path: ${VD_MCP_SECRET}.csv\n  format: ${VD_MCP_SHORT}\n"
+            "target:\n  path: ${VD_MCP_UNSET:-b.csv}\nprimary_keys: [id]\n",
+        )
+
+        assert environment_values(Settings((tmp_path,)), "veridelta.yaml") == (_SECRET,)
+
+    def test_it_returns_none_for_a_file_it_cannot_read(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a missing file, or one outside the roots, gives nothing to mask."""
+        outside = _write(tmp_path_factory.mktemp("outside"), _VALID)
+        settings = Settings((tmp_path,))
+
+        assert environment_values(settings, "missing.yaml") == ()
+        assert environment_values(settings, str(outside)) == ()
+
+
 class TestReadRows:
     """Validate the rows `read_discrepancies` returns, without the SDK in the way.
 
@@ -1340,6 +1370,37 @@ class TestServer:
         assert result.structured_content["valid"] is False
         assert "***" in shown
         assert _SECRET not in shown
+
+    def test_it_masks_each_value_the_configuration_took_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a value from `${NAME}` comes back as `***`, in an error or in a result.
+
+        A path built from a variable names it in the read's error, and a
+        column named after one names it in the schema.
+        """
+        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
+        (tmp_path / "a.csv").write_text("id,x\n1,2\n")
+        _write(
+            tmp_path,
+            "source:\n  path: ${VD_MCP_SECRET}.csv\ntarget:\n  path: a.csv\n"
+            "  options:\n    new_columns: [id, '${VD_MCP_SECRET}']\nprimary_keys: [id]\n",
+        )
+        settings = Settings((tmp_path,))
+
+        failed = _call(settings, {"path": "veridelta.yaml"}, tool="run_comparison")
+        described = _call(
+            settings, {"path": "veridelta.yaml", "side": "target"}, tool="describe_schema"
+        )
+
+        assert failed.is_error is True
+        assert "***.csv" in _text(failed)
+        assert described.structured_content == {
+            "side": "target",
+            "columns": {"id": "Int64", "***": "Int64"},
+        }
+        for result in (failed, described):
+            assert _SECRET not in json.dumps(result.structured_content) + _text(result)
 
     def test_it_leaves_the_root_logger_as_it_found_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

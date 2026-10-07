@@ -22,6 +22,7 @@ import importlib
 import inspect
 import json
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, time
@@ -44,7 +45,8 @@ import polars as pl
 from pydantic import Field
 
 from veridelta import __version__
-from veridelta.config import load_config
+from veridelta.config import load_config, referenced_variables
+from veridelta.connectors.base import mask_secrets
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
@@ -103,6 +105,12 @@ this machine, so one the readers would open here is never let through
 unchecked."""
 
 _MCP_EXTRA = "MCP extra is not installed. Install it with: uv add 'veridelta[mcp]'"
+
+_SHORTEST_MASKED: Final = 4
+"""The fewest characters an environment value needs to be masked in a tool's answer.
+
+A shorter value, such as a flag or a small number, would mask ordinary text
+throughout the answer, and holds no secret worth the loss."""
 
 _R = TypeVar("_R")
 
@@ -656,16 +664,53 @@ def _failure(exc: Exception) -> str:
     return f"{type(exc).__name__}: {str(exc).strip()}"
 
 
-def _answer(tool_error: Any, work: Callable[[], _R]) -> _R:
-    """Run a tool's work, and fail the call with the failure's type and message.
+def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
+    """Return the value of each environment variable a configuration file references.
 
-    The SDK passes only a `ToolError`'s message on to the agent, so every
-    failure becomes one, named as `run --json` names it.
+    A tool masks each in its answer, since a path, a name, or an error built
+    from the configuration carries the values it took. A file outside the
+    roots, or one that cannot be read, gives none, and so does a variable
+    that is unset or shorter than four characters.
+
+    Args:
+        settings (Settings): The roots the server was started with.
+        path (str): The configuration file from the tool call.
+
+    Returns:
+        tuple[str, ...]: The values to mask.
     """
     try:
-        return work()
+        text = resolve_path(settings, path).read_text(encoding="utf-8")
+    except (ConfigError, OSError, UnicodeDecodeError):
+        return ()
+    values = (os.environ.get(name, "") for name in referenced_variables(text))
+    return tuple(value for value in values if len(value) >= _SHORTEST_MASKED)
+
+
+def _masked(value: Any, secrets: tuple[str, ...]) -> Any:
+    """Mask each secret in every string of an answer, the keys of a mapping included."""
+    if isinstance(value, str):
+        return mask_secrets(value, *secrets)
+    if isinstance(value, dict):
+        mapping = cast("dict[str, Any]", value)
+        return {_masked(key, secrets): _masked(item, secrets) for key, item in mapping.items()}
+    if isinstance(value, list):
+        return [_masked(item, secrets) for item in cast("list[object]", value)]
+    return value
+
+
+def _answer(tool_error: Any, work: Callable[[], _R], secrets: tuple[str, ...] = ()) -> _R:
+    """Run a tool's work, masking `secrets` in its answer, or fail the call.
+
+    The SDK passes only a `ToolError`'s message on to the agent, so every
+    failure becomes one, named as `run --json` names it, with the secrets
+    masked there too.
+    """
+    try:
+        result = work()
     except Exception as exc:
-        raise tool_error(_failure(exc)) from exc
+        raise tool_error(mask_secrets(_failure(exc), *secrets)) from exc
+    return cast("_R", _masked(result, secrets))
 
 
 def build_server(settings: Settings) -> "MCPServer":
@@ -711,6 +756,7 @@ def build_server(settings: Settings) -> "MCPServer":
             lambda: check_configuration(
                 settings, path, schemas=schemas, allow_missing_env=allow_missing_env
             ),
+            environment_values(settings, path),
         )
 
     def run_comparison(
@@ -720,7 +766,11 @@ def build_server(settings: Settings) -> "MCPServer":
 
         Returns what `veridelta run --json` prints, with the verdict and the exit code a run gives.
         """
-        return _answer(loaded.tool_error, lambda: run_configuration(settings, path))
+        return _answer(
+            loaded.tool_error,
+            lambda: run_configuration(settings, path),
+            environment_values(settings, path),
+        )
 
     def describe_schema(
         path: Annotated[str, Field(description="The configuration file.")],
@@ -730,7 +780,11 @@ def build_server(settings: Settings) -> "MCPServer":
 
         Reads no rows. Names are as stored, before normalize_column_names or a rename_to.
         """
-        return _answer(loaded.tool_error, lambda: describe_side(settings, path, side))
+        return _answer(
+            loaded.tool_error,
+            lambda: describe_side(settings, path, side),
+            environment_values(settings, path),
+        )
 
     def read_discrepancies(
         path: Annotated[str, Field(description="The configuration file.")],
@@ -751,7 +805,11 @@ def build_server(settings: Settings) -> "MCPServer":
 
         Runs the comparison. Needs a server started with --allow-row-values.
         """
-        return _answer(loaded.tool_error, lambda: read_rows(settings, path, kind, limit))
+        return _answer(
+            loaded.tool_error,
+            lambda: read_rows(settings, path, kind, limit),
+            environment_values(settings, path),
+        )
 
     def propose_value_maps(
         path: Annotated[str, Field(description="The configuration file.")],
@@ -780,6 +838,7 @@ def build_server(settings: Settings) -> "MCPServer":
                 min_support=min_support,
                 sample_fraction=sample_fraction,
             ),
+            environment_values(settings, path),
         )
 
     for tool in (
