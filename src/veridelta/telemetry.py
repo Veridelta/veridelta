@@ -49,7 +49,6 @@ from veridelta.models import (
 )
 
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
 
 SERVICE_NAME: Final[str] = "veridelta"
 """`service.name` resource attribute and instrumentation scope name."""

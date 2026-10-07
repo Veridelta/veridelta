@@ -22,7 +22,6 @@ from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
 
 _UNCONNECTED = "Lakehouse connector is not connected. Call connect() first."
 _DELTA_EXTRA = "Delta Lake extra is not installed. Install it with: uv add 'veridelta[delta]'"
