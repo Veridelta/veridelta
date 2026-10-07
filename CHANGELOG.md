@@ -1,3 +1,18 @@
+## v0.21.0 (2026-10-07)
+
+The Markdown summary that CI posts to a pull request ends with an HTML comment, which
+GitHub and GitLab hide from readers. It names the published run schema and holds the
+run's summary as JSON on one line, so an agent that reads the comment through the API can
+parse the result without running the comparison again. The JSON is what
+`veridelta run --json` prints, except that `column_mismatches` lists only the columns the
+drift table shows, and is left out when `report_top_columns_limit` is 0. `<`, `>`, and `&`
+are written as JSON escapes, so a column name cannot close the comment. The 60,000 byte
+budget for changed values counts the comment.
+
+### Feat
+
+- end the Markdown summary with its counts as JSON for agents (#256)
+
 ## v0.20.0 (2026-10-07)
 
 `veridelta schema` takes an optional name, `run`, `validate`, `crosswalk`, or `error`, and
