@@ -45,6 +45,8 @@ _SKIPPED = frozenset({".git", ".venv", "site", "node_modules", ".cache", "__pyca
 """Folders no tool reads instructions from, left out of the walk."""
 _SHADOWING = frozenset({"claude.md", "claude.local.md"})
 """The names, lowercased, of the files that stop Claude Code from reading `AGENTS.md`."""
+_TOOL_FILE = re.compile(r"claude.*\.md|\.cursorignore|\.mcp\.json", re.IGNORECASE)
+"""A file that one agent tool reads and the other supported tool does not."""
 
 
 def _files_under(root: Path) -> Iterator[Path]:
@@ -305,4 +307,26 @@ class TestAgentInstructions:
         assert not found, (
             "Claude Code reads AGENTS.md only while no CLAUDE.md, .claude/CLAUDE.md, or"
             " CLAUDE.local.md is in the working directory or above it. Delete:\n" + "\n".join(found)
+        )
+
+    def test_a_tool_file_exists_only_where_its_tool_needs_it(self) -> None:
+        """Ensure a file one agent tool reads cannot appear without a record that says why.
+
+        The two supported tools, Claude Code and Cursor, both read `AGENTS.md`, the
+        rules, the bundle, and `.claude/skills/`. The record
+        `decisions/a-tool-file-only-where-the-tool-needs-it.md` names what stays for
+        one tool and what would let each go.
+        """
+        claude = {child.name for child in (_ROOT / ".claude").iterdir()}
+        stray = [
+            path.relative_to(_ROOT).as_posix()
+            for path in _files_under(_ROOT)
+            if _TOOL_FILE.fullmatch(path.name) or ".cursor" in path.relative_to(_ROOT).parts
+        ]
+
+        assert "skills" in claude
+        assert claude <= {"skills", "settings.local.json"}, f".claude/ holds {sorted(claude)}."
+        assert not stray, (
+            "A tool's own file lives here only with a record in decisions/ that says why:\n"
+            + "\n".join(stray)
         )
