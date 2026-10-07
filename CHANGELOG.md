@@ -1,3 +1,19 @@
+## v0.18.0 (2026-10-07)
+
+`veridelta mcp` gains a third tool, `describe_schema`, which lists one side's columns and
+their types and reads no rows. It returns the side and a map from each column's name, as
+stored, to its type as Polars names it, such as `Int64`. A side read through a `query` is
+refused, since only running the query would name its columns.
+
+In Python, `DiffEngine.read_schema(config)` returns one side's `pl.Schema` without
+returning a row. A file is read by its loader, a database or DuckDB `table` by a probe
+that returns no rows, and a warehouse table, or a table with `pushdown`, by the probe a
+pushdown run starts with, in a session of its own.
+
+### Feat
+
+- describe a side's schema from the MCP server (#193)
+
 ## v0.17.0 (2026-10-07)
 
 `veridelta mcp` gains a second tool, `run_comparison`, which runs the comparison a
