@@ -68,8 +68,8 @@ INSTRUCTIONS: Final = (
     "Check a file with validate_config, and fix each error it reports, before you run it "
     "with run_comparison. Use describe_schema to list a side's columns when a rule must name "
     "one. Report counts and column names, and leave row values out of a reply unless the user "
-    "asks for them. This server reads configuration files only from the folders it was "
-    "started with."
+    "asks for them. Two tools return row values, only when the server allows them. This "
+    "server reads files only from the folders it was started with."
 )
 """What the server tells an agent's host about itself when the host connects."""
 
@@ -622,7 +622,8 @@ def propose_maps(
         min_confidence (float): Share of a source value's rows that must agree
             on one target value.
         min_support (int): Agreeing rows an entry needs.
-        sample_fraction (float): Share of joined rows to read.
+        sample_fraction (float): Share of source rows to read, chosen by
+            primary key.
 
     Returns:
         ProposalReport: The proposals, how many there are, and whether some
@@ -821,7 +822,8 @@ def build_server(settings: Settings) -> "MCPServer":
             int, Field(ge=1, description="Agreeing rows an entry needs.")
         ] = DEFAULT_MIN_SUPPORT,
         sample_fraction: Annotated[
-            float, Field(gt=0, le=1, description="Share of joined rows to read.")
+            float,
+            Field(gt=0, le=1, description="Share of source rows to read, chosen by primary key."),
         ] = 1.0,
     ) -> ProposalReport:
         """Propose value_map entries for columns that hold the same values in two encodings.

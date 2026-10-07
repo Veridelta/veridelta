@@ -1170,6 +1170,18 @@ class TestServer:
             INSTRUCTIONS,
         )
 
+    def test_it_tells_the_host_what_each_tool_does(self, tmp_path: Path) -> None:
+        """Ensure the instructions name the row-value gate, and sampling reads as the CLI says.
+
+        `sample_fraction` samples source rows by a hash of their keys before the
+        join, as `--sample-fraction` does, not rows of the join.
+        """
+        tools = {tool.name: tool for tool in _tools(Settings((tmp_path,)))}
+        sample = tools["propose_value_maps"].input_schema["properties"]["sample_fraction"]
+
+        assert "Two tools return row values, only when the server allows them." in INSTRUCTIONS
+        assert sample["description"] == "Share of source rows to read, chosen by primary key."
+
     def test_it_returns_what_validate_prints(self, tmp_path: Path) -> None:
         """Ensure the structured result is the object `validate --json` prints."""
         _write(tmp_path, _VALID)
