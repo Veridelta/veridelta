@@ -35,6 +35,8 @@ _QUICK_START = _DEMO / "veridelta.tape"
 _GIF_URL = "https://veridelta.github.io/veridelta/assets/demo.gif"
 _PROMPT = "> "
 """The prompt vhs shows before each command."""
+_IN_SDIST = not (_ROOT / ".git").exists()
+"""Whether the tests run from an unpacked sdist, which leaves out the images."""
 
 _TYPED = re.compile(r"^Type ([\"'])(.+)\1$", re.MULTILINE)
 _OUTPUT = re.compile(r"^Output (.+)$", re.MULTILINE)
@@ -154,6 +156,8 @@ class TestEveryTape:
         """Ensure the tape writes a GIF under `docs/assets/` that its docs page embeds."""
         gif = _gif(tape)
         page = _ROOT / _EMBEDDED_IN[tape.stem]
+        if _IN_SDIST and not gif.exists():
+            pytest.skip("The sdist leaves out the GIFs; the repository holds them.")
 
         assert gif.parent == _ROOT / "docs" / "assets"
         assert gif.read_bytes()[:6] in (b"GIF89a", b"GIF87a")
