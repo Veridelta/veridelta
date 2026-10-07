@@ -60,7 +60,7 @@ Two more files hold the rules for the code they sit beside. An agent that loads 
 Each of these choices has a record in `decisions/`, with what it was chosen over and how to reverse it. Do not reopen one without the maintainer:
 
 - [The accessibility check runs axe-core from Python, with a pinned download](decisions/accessibility-check-in-python.md)
-- [AGENTS.md holds the rules for coding agents](decisions/agents-md-is-canonical.md)
+- [The agent rules live in AGENTS.md files beside the code](decisions/rules-live-beside-the-code.md), which replaces [AGENTS.md holds the rules for coding agents](decisions/agents-md-is-canonical.md)
 - [The MySQL and SQL Server test drivers sit in their own dependency group](decisions/database-drivers-in-their-own-group.md)
 - [The GitLab CI template is frozen](decisions/gitlab-template-is-frozen.md)
 - [llms.txt comes from a hook in the repository](decisions/llms-txt-from-a-hook.md)

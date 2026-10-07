@@ -2,7 +2,7 @@
 type: Decision
 title: AGENTS.md holds the rules for coding agents
 description: Why contributors' coding agents read one rules file at the repository root, which CLAUDE.md imports.
-status: stable
+status: deprecated
 decided: 2026-10-06
 generated: { by: claude-code, at: 2026-10-05T22:53:01-05:00 }
 ---
