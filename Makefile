@@ -1,5 +1,9 @@
 .PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean demo
 
+# The modules held to full branch coverage. CI's core-module gate names the same
+# list, which tests/unit/test_ci_integrations.py checks.
+CORE_MODULES := src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py
+
 install:
 	uv sync --all-extras
 	uv run pre-commit install
@@ -16,7 +20,7 @@ lint:
 
 test:
 	uv run pytest tests/
-	uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py' --fail-under=100
+	uv run coverage report --include='$(CORE_MODULES)' --fail-under=100
 
 notebooks:
 	uv run pytest tests/notebooks --no-cov

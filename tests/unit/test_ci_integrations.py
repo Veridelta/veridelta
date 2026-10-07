@@ -891,6 +891,24 @@ class TestCIWorkflow:
         assert "pkgutil.walk_packages(veridelta.__path__" in script
         assert '"$WHEEL_ENV/bin/veridelta" run -c veridelta.yaml' in script
 
+    def test_it_gates_the_coverage_of_the_modules_make_test_gates(self) -> None:
+        """Ensure CI and `make test` hold the same modules to full branch coverage.
+
+        Every listed file must exist: `--include` matches nothing for a module
+        that was renamed or split, and the gate would pass without it.
+        """
+        makefile = (_ROOT / "Makefile").read_text(encoding="utf-8")
+        [modules] = re.findall(r"^CORE_MODULES := (\S+)$", makefile, re.MULTILINE)
+        [gate] = [
+            step
+            for step in _workflow(_CI)["jobs"]["test-core"]["steps"]
+            if step["name"] == "Gate core-module branch coverage"
+        ]
+
+        assert "--include='$(CORE_MODULES)' --fail-under=100" in makefile
+        assert gate["run"] == f"uv run coverage report --include='{modules}' --fail-under=100"
+        assert [path for path in modules.split(",") if not (_ROOT / path).is_file()] == []
+
     def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
         """Ensure the CLI runs as a real command on each OS the core suite runs on."""
         jobs = _workflow(_CI)["jobs"]
