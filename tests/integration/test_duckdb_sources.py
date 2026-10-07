@@ -17,6 +17,7 @@ import polars as pl
 import pytest
 
 from veridelta.connectors import DuckDBConnector, DuckDBPushdownSession
+from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DiffConfig, DiffRule, DuckDBConfig, SourceConfig
@@ -411,6 +412,36 @@ class TestDuckDBPushdown:
             assert zone.collect().item() == "UTC"
         finally:
             session.close()
+
+    def test_it_reads_only_files_under_its_folders_when_sandboxed(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a query reads a file under the folders, and none beside them, even by prefix."""
+        root = tmp_path / "root"
+        root.mkdir()
+        database = _duckdb(root / "warehouse.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        (root / "a.csv").write_text("id\n1\n")
+        beside = tmp_path / "root-beside"
+        beside.mkdir()
+        (beside / "secret.txt").write_text("hunter2-do-not-print\n")
+
+        def read(query: str) -> pl.DataFrame:
+            connector = DuckDBConnector(DuckDBConfig(database=database, query=query))
+            connector.connect()
+            return connector.lazyframe().collect()
+
+        with sandboxed([root]):
+            inside = read(f"SELECT * FROM read_csv('{root / 'a.csv'}')")
+            table = read("SELECT * FROM t")
+            with pytest.raises(ConnectorError, match="Permission Error") as refused:
+                read(f"SELECT content FROM read_text('{beside / 'secret.txt'}')")
+            with pytest.raises(ConnectorError, match="lock"):
+                read("SET enable_external_access = true")
+
+        assert inside["id"].to_list() == [1]
+        assert table["id"].to_list() == [1]
+        assert "hunter2" not in str(refused.value)
+        assert read(f"SELECT content FROM read_text('{beside / 'secret.txt'}')").height == 1
 
     def test_it_compares_a_view_that_casts_what_polars_cannot_read(self, tmp_path: Path) -> None:
         """Ensure an INTERVAL column fails the probe by name, and a casting view compares."""

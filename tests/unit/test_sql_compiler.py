@@ -28,6 +28,7 @@ from veridelta.connectors.sql import (
     compile_database_partition_range,
     compile_database_probe,
     compile_database_select,
+    compile_duckdb_sandbox,
     compile_duckdb_select,
     compile_mssql_utc_select,
     compile_postgres_columns_query,
@@ -1568,6 +1569,21 @@ class TestDuckDBSelect:
         """Ensure a table name reaching the compiler directly can never carry SQL."""
         with pytest.raises(ConnectorError, match="not a valid unquoted identifier"):
             compile_duckdb_select('orders"; DROP TABLE orders; --')
+
+    def test_it_locks_a_connection_to_its_folders_last(self) -> None:
+        """Ensure the folders are set before access is cut, and the lock comes last.
+
+        Each folder is a string literal, so a quote in its name stays text.
+        """
+        statements = compile_duckdb_sandbox(["/data/", "/it's/"])
+
+        assert statements == (
+            "SET autoinstall_known_extensions = false",
+            "SET autoload_known_extensions = false",
+            "SET allowed_directories = ['/data/', '/it''s/']",
+            "SET enable_external_access = false",
+            "SET lock_configuration = true",
+        )
 
 
 class TestWhitespaceTrim:

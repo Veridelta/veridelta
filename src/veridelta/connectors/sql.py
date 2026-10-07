@@ -536,6 +536,39 @@ def compile_duckdb_select(table: str, *, probe: bool = False) -> str:
     return f"{read} WHERE 1 = 0" if probe else read
 
 
+def compile_duckdb_sandbox(directories: Sequence[str]) -> tuple[str, ...]:
+    """Compile the statements that hold a DuckDB connection to some directories.
+
+    Run right after the connection opens, they stop DuckDB from installing or
+    loading an extension on its own, allow files only under `directories`,
+    and lock the configuration, so no later statement, a `query` included,
+    can undo them. The database the connection already opened stays readable.
+
+    Args:
+        directories (Sequence[str]): The folders files may be read from. DuckDB
+            matches each as a prefix, so each should end in a path separator.
+
+    Returns:
+        tuple[str, ...]: The statements, in the order they must run.
+    """
+    allowed = ", ".join(_string_literal(SQLDialect.DUCKDB, folder) for folder in directories)
+    return (
+        "SET autoinstall_known_extensions = false",
+        "SET autoload_known_extensions = false",
+        f"SET allowed_directories = [{allowed}]",
+        "SET enable_external_access = false",
+        "SET lock_configuration = true",
+    )
+
+
+def _string_literal(dialect: SQLDialect, value: str) -> str:
+    """Render a single-quoted SQL string literal for a dialect."""
+    escaped = value
+    for raw, replacement in _LITERAL_ESCAPES[dialect]:
+        escaped = escaped.replace(raw, replacement)
+    return f"'{escaped}'"
+
+
 def compile_postgres_columns_query(table: str) -> str:
     """Compile a catalog query for a Postgres table's columns and numeric declarations.
 
@@ -1576,10 +1609,7 @@ class SQLPushdownCompiler:
 
     def _literal(self, value: str) -> str:
         """Render a single-quoted SQL string literal for the active dialect."""
-        escaped = value
-        for raw, replacement in _LITERAL_ESCAPES[self.dialect]:
-            escaped = escaped.replace(raw, replacement)
-        return f"'{escaped}'"
+        return _string_literal(self.dialect, value)
 
     def _integer(self, value: object) -> str:
         """Render an integer SQL operand, refusing anything that is not an `int`."""

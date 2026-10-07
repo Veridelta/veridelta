@@ -12,9 +12,10 @@ The person who starts the server names the folders it may read configuration
 files and data on this machine from, and a tool refuses a path outside them. A
 tool returns findings, counts, and column names, never a value from the file.
 Two tools return values from the data, and only when the person who starts the
-server allows it: then at most a set number of rows. The SDK is imported by
-the first `build_server()`, not with this module, so `veridelta` imports
-without the extra.
+server allows it: then at most a set number of rows. A side's `query` runs only
+when that person allows queries too. The SDK is imported by the first
+`build_server()`, not with this module, so `veridelta` imports without the
+extra.
 """
 
 import importlib
@@ -44,6 +45,7 @@ from pydantic import Field
 
 from veridelta import __version__
 from veridelta.config import load_config
+from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.models import (
@@ -151,11 +153,16 @@ class Settings:
             False.
         max_rows (int): The most rows, or value map entries, one of those calls
             returns. At least 1. Defaults to 50.
+        allow_queries (bool): Whether a tool may run a side's `query`, which
+            runs as written with the configuration's credentials. A DuckDB file
+            still reads other files only from under the roots. Defaults to
+            False.
     """
 
     roots: tuple[Path, ...]
     allow_row_values: bool = False
     max_rows: int = DEFAULT_ROW_CAP
+    allow_queries: bool = False
 
     def __post_init__(self) -> None:
         """Resolve every root, so a path compares with them as the filesystem does.
@@ -406,9 +413,10 @@ def check_configuration(
             pass
         else:
             check_data_paths(settings, source, target)
-    findings = DiffEngine.check_config_file(
-        resolved, schemas=schemas, allow_missing_env=allow_missing_env
-    )
+    with sandboxed(settings.roots):
+        findings = DiffEngine.check_config_file(
+            resolved, schemas=schemas, allow_missing_env=allow_missing_env
+        )
     errors = [finding.message for finding in findings if finding.severity == "error"]
     warnings = [finding.message for finding in findings if finding.severity == "warning"]
     return ValidationReport(
@@ -423,9 +431,27 @@ def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceR
     return diff, source, target
 
 
+def _refuse_queries(settings: Settings, source: SourceRef, target: SourceRef) -> None:
+    """Refuse a side that reads through a `query`, unless the server allows queries.
+
+    A query runs as written, with the configuration's credentials, so it can
+    read anything they reach, or change a database that opens read-write.
+    """
+    if settings.allow_queries:
+        return
+    for side, config in (("source", source), ("target", target)):
+        if isinstance(config, (DatabaseConfig, DuckDBConfig)) and config.query is not None:
+            raise ConfigError(
+                f"The {side} reads through a query, and this server was started without "
+                "--allow-queries. A query runs as written, so read a 'table' instead, or "
+                "ask the person who started the server to add the flag."
+            )
+
+
 def _runnable(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
-    """Load a configuration a tool runs, refusing an `output_path` outside the roots too."""
+    """Load a configuration a tool runs, refusing a `query` or an `output_path` the server does not allow."""
     diff, source, target = _load(settings, path)
+    _refuse_queries(settings, source, target)
     if diff.output_path is not None and not _opened_inside(settings, diff.output_path):
         raise ConfigError(
             f"output_path '{diff.output_path}' is outside the folders this server writes to: "
@@ -441,7 +467,8 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
 
     A run writes the rows that differ to `output_path`, so a configuration
     whose `output_path` or data on this machine lies outside the roots is
-    refused before any row is read.
+    refused before any row is read, as is a side's `query` unless the server
+    allows queries.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -452,11 +479,13 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
 
     Raises:
         ConfigError: If the file, its data, or its `output_path` is outside
-            the roots, or the configuration cannot run as written.
+            the roots, a side reads through a `query` the server does not
+            allow, or the configuration cannot run as written.
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If a primary key repeats on either side.
     """
-    summary = DiffEngine.run_from_configs(*_runnable(settings, path)).summary
+    with sandboxed(settings.roots):
+        summary = DiffEngine.run_from_configs(*_runnable(settings, path)).summary
     return cast(
         "RunReport",
         {
@@ -486,7 +515,8 @@ def describe_side(settings: Settings, path: str, side: Literal["source", "target
         ConnectorError: If the side cannot be reached or read.
     """
     _, source, target = _load(settings, path)
-    schema = DiffEngine.read_schema(source if side == "source" else target)
+    with sandboxed(settings.roots):
+        schema = DiffEngine.read_schema(source if side == "source" else target)
     return SchemaReport(side=side, columns={name: str(dtype) for name, dtype in schema.items()})
 
 
@@ -542,14 +572,16 @@ def read_rows(
     Raises:
         ConfigError: If the server does not allow row values, `limit` is below
             1, the file, its data, or its `output_path` is outside the roots,
-            or the configuration cannot run.
+            a side reads through a `query` the server does not allow, or the
+            configuration cannot run.
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If a primary key repeats on either side.
     """
     _allow_rows(settings, "read_discrepancies")
     if limit < 1:
         raise ConfigError(f"limit must be at least 1, got {limit}.")
-    result = DiffEngine.run_from_configs(*_runnable(settings, path))
+    with sandboxed(settings.roots):
+        result = DiffEngine.run_from_configs(*_runnable(settings, path))
     found = {
         "added": (result.added, result.summary.added_count),
         "removed": (result.removed, result.summary.removed_count),
@@ -590,17 +622,23 @@ def propose_maps(
 
     Raises:
         ConfigError: If the server does not allow row values, the file or its
-            data is outside the roots, a threshold is out of range, or the
+            data is outside the roots, a side reads through a `query` the
+            server does not allow, a threshold is out of range, or the
             configuration cannot be proposed from.
         ConnectorError: If a source cannot be read.
     """
     _allow_rows(settings, "propose_value_maps")
-    proposals = DiffEngine.propose_value_maps_from_configs(
-        *_load(settings, path),
-        min_confidence=min_confidence,
-        min_support=min_support,
-        sample_fraction=sample_fraction,
-    )
+    diff, source, target = _load(settings, path)
+    _refuse_queries(settings, source, target)
+    with sandboxed(settings.roots):
+        proposals = DiffEngine.propose_value_maps_from_configs(
+            diff,
+            source,
+            target,
+            min_confidence=min_confidence,
+            min_support=min_support,
+            sample_fraction=sample_fraction,
+        )
     kept: list[dict[str, Any]] = []
     entries = 0
     for proposal in proposals:

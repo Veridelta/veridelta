@@ -16,7 +16,8 @@ connection and reads back only counts and keys.
 A file opens read-only, so the read can never change it. A MotherDuck database
 opens read-write, because a read-only connection needs a read-scaling token.
 Each session reads time in UTC, so a timestamp with a time zone, or a date cast
-in a `query`, does not depend on the machine.
+in a `query`, does not depend on the machine. Inside `sandboxed`, a file's
+connection reads other files only from the folders it names.
 
 A token never reaches a log line or an error. It goes to DuckDB as a
 connection setting, never in the connection string, and a failed read is
@@ -26,6 +27,10 @@ reported with the token replaced and without the driver's exception attached.
 import logging
 import os
 import time
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
+from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Final, cast
 
 import polars as pl
@@ -38,7 +43,12 @@ from veridelta.connectors.base import (
     optional_module,
     read_subject,
 )
-from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler, compile_duckdb_select
+from veridelta.connectors.sql import (
+    SQLDialect,
+    SQLPushdownCompiler,
+    compile_duckdb_sandbox,
+    compile_duckdb_select,
+)
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
 
@@ -63,6 +73,35 @@ _UNREADABLE_TYPES: Final = frozenset({"interval", "union"})
 
 _NESTED_TYPES: Final = frozenset({"struct", "list", "array", "map"})
 """DuckDB types whose members can hold an unreadable type."""
+
+_sandbox: ContextVar[tuple[str, ...] | None] = ContextVar("veridelta_duckdb_sandbox", default=None)
+"""The folders a file's connection may read other files from, or None for no limit."""
+
+
+@contextmanager
+def sandboxed(directories: Iterable[Path]) -> Generator[None]:
+    """Hold each DuckDB file connection opened inside the block to some folders.
+
+    A `query` runs as written, and DuckDB reads any file it names, such as
+    with `read_text`. Inside the block, a connection to a file reads other
+    files, attaches databases, and loads extensions only from under
+    `directories`, whatever its statements ask. The MCP server opens every
+    side inside this block. A MotherDuck connection is not held, since its
+    extension loads and reaches MotherDuck over the network.
+
+    Args:
+        directories (Iterable[Path]): The folders, resolved.
+
+    Yields:
+        None: Control, for the reads to run inside the block.
+    """
+    # DuckDB matches each folder as a prefix, so `/data` alone would admit `/database`.
+    folders = tuple(os.path.join(directory, "") for directory in directories)
+    token = _sandbox.set(folders)
+    try:
+        yield
+    finally:
+        _sandbox.reset(token)
 
 
 class DuckDBConnector(ReaderConnector):
@@ -103,7 +142,6 @@ class DuckDBConnector(ReaderConnector):
         try:
             connection = _open(self._config, token)
             try:
-                connection.execute("SET TimeZone = 'UTC'")
                 frame = _read(connection, statement, self._subject)
             finally:
                 connection.close()
@@ -198,7 +236,6 @@ class DuckDBPushdownSession(PushdownSession):
         token = _token(self._config)
         try:
             connection = _open(self._config, token)
-            connection.execute("SET TimeZone = 'UTC'")
         except Exception as exc:
             logger.warning("DuckDB connection to %s failed", self._config.database)
             raise ConnectorError(
@@ -284,11 +321,27 @@ def _token(config: DuckDBConfig) -> str | None:
 
 
 def _open(config: DuckDBConfig, token: str | None) -> Any:
-    """Open a file read-only, or a MotherDuck database with its token as a setting."""
+    """Open a file read-only, or a MotherDuck database with its token, to read in UTC.
+
+    A file opened inside `sandboxed` is held to its folders before any
+    statement of the caller's runs. A connection whose setup fails is closed.
+    """
+    setup = ["SET TimeZone = 'UTC'"]
     if token is None:
-        return duckdb.connect(config.database, read_only=True)
-    # A read-only MotherDuck connection needs a read-scaling token, so it opens read-write.
-    return duckdb.connect(config.database, config={"motherduck_token": token})
+        connection = duckdb.connect(config.database, read_only=True)
+        folders = _sandbox.get()
+        if folders is not None:
+            setup += compile_duckdb_sandbox(folders)
+    else:
+        # A read-only MotherDuck connection needs a read-scaling token, so it opens read-write.
+        connection = duckdb.connect(config.database, config={"motherduck_token": token})
+    try:
+        for statement in setup:
+            connection.execute(statement)
+    except BaseException:
+        connection.close()
+        raise
+    return connection
 
 
 def _read(connection: Any, statement: str, subject: str) -> pl.DataFrame:
