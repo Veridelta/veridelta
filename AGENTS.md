@@ -56,7 +56,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 
 ## Skills
 
-`.claude/skills/` holds the procedures an agent runs in this repository: `define-personas`, `define-key-metrics`, and `defend-decision`. The folder is the one the Agent Skills standard discovers in a project, so every tool that reads the standard finds them. Claude Code and Cursor, the two tools the repository supports, both read it, and it moves to `.agents/skills/` once Claude Code reads that folder. `skills/veridelta/` is different: it is the product's own skill, which users install into their agents as [the AI agents page](docs/agents.md#agent-skill) says, and nothing in this repository loads it.
+`.claude/skills/` holds the procedures an agent runs in this repository: `define-personas`, `define-key-metrics`, `defend-decision`, and `record-demo`. The folder is the one the Agent Skills standard discovers in a project, so every tool that reads the standard finds them. Claude Code and Cursor, the two tools the repository supports, both read it, and it moves to `.agents/skills/` once Claude Code reads that folder. `skills/veridelta/` is different: it is the product's own skill, which users install into their agents as [the AI agents page](docs/agents.md#agent-skill) says, and nothing in this repository loads it.
 
 ## Product documents
 
