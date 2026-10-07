@@ -5,7 +5,7 @@
 
 from veridelta import datasets
 from veridelta.config import load_config
-from veridelta.engine import DataIngestor, DiffEngine
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import (
     ConfigError,
     ConnectorError,
@@ -47,7 +47,6 @@ __all__ = [
     "ConfigError",
     "ConfigFinding",
     "ConnectorError",
-    "DataIngestor",
     "DataIntegrityError",
     "DatabaseConfig",
     "DatabricksConfig",

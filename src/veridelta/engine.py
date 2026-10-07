@@ -3,13 +3,12 @@
 
 """Load, align, and compare datasets.
 
-Holds the file loaders, the `DataIngestor` that prepares each side, and the
-`DiffEngine` that compares the two sides with Polars.
+Holds the file loaders and the `DiffEngine` that loads, aligns, and compares
+the two sides with Polars.
 """
 
 import logging
 import re
-import warnings
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -1823,58 +1822,6 @@ def _collect_value_map_proposals(
     return proposals
 
 
-class DataIngestor:
-    """Load a source and a target and align them for inspection.
-
-    Deprecated: it warns on construction and goes in 0.15.0. `DiffEngine` aligns
-    its inputs itself, so `DiffEngine.run_from_configs` loads sources without this
-    class, and nothing else in the package uses it. Passing frames from
-    `get_dataframes` to `DiffEngine` aligns them twice, which is harmless except
-    for renames that swap or chain names.
-    """
-
-    def __init__(
-        self, diff_config: DiffConfig, source_config: SourceRef, target_config: SourceRef
-    ) -> None:
-        """Hold the comparison settings and both source configurations.
-
-        Args:
-            diff_config (DiffConfig): Comparison settings and rules.
-            source_config (SourceRef): File, lakehouse, or database settings for the
-                source.
-            target_config (SourceRef): File, lakehouse, or database settings for the
-                target.
-        """
-        warnings.warn(
-            "DataIngestor is deprecated and goes in 0.15.0. Use "
-            "DiffEngine.run_from_configs(diff, source, target), which loads and aligns "
-            "both sides itself.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        self.config = diff_config
-        self.source_config = source_config
-        self.target_config = target_config
-
-    def get_dataframes(self) -> tuple[pl.LazyFrame, pl.LazyFrame]:
-        """Load both datasets and align them.
-
-        Returns:
-            tuple[pl.LazyFrame, pl.LazyFrame]: The aligned source, then the aligned
-                target.
-        """
-        frames: list[pl.LazyFrame] = []
-        for config, is_source in ((self.source_config, True), (self.target_config, False)):
-            frame = LoaderFactory.load(config)
-            if self.config.normalize_column_names:
-                frame = _normalize_header_names(frame)
-            rename_map, to_drop = _alignment_maps(
-                self.config.rules, frame.collect_schema().names(), rename=is_source
-            )
-            frames.append(frame.drop(list(to_drop)).rename(rename_map))
-        return frames[0], frames[1]
-
-
 class DiffEngine:
     """Compare two datasets on their primary keys and report what differs.
 
@@ -1975,9 +1922,9 @@ class DiffEngine:
                 )
             )
 
-        # `run()` normalizes headers and applies renames exactly once. Loading
-        # through `DataIngestor` would align first and have `run()` rename the
-        # aligned frames again, which undoes a swap and collapses a chain.
+        # `run()` normalizes headers and applies renames exactly once, so the
+        # frames go to it straight from the loaders: aligning them first and
+        # renaming again would undo a swap and collapse a chain.
         return cls._on_sources(diff, source, target).run()
 
     @classmethod

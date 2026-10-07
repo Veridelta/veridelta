@@ -217,15 +217,15 @@ class TestEngineConnectorRouting:
     def test_it_pushdown_executes_matching_warehouse_fingerprints_without_file_loaders(
         self, mocker: MockerFixture, backend: str
     ) -> None:
-        """Ensure same-account or same-workspace pairs compile SQL and skip `DataIngestor`."""
+        """Ensure same-account or same-workspace pairs compile SQL and skip the file loaders."""
         connector = _configure_warehouse_compiler(mocker, f"{backend}Connector").return_value
-        ingestor_cls = mocker.patch("veridelta.engine.DataIngestor")
+        load = mocker.patch("veridelta.engine.LoaderFactory.load")
         source, target = _WAREHOUSE_PAIRS[backend]
         diff = DiffConfig(primary_keys=["id"])
 
         summary = DiffEngine.run_from_configs(diff, source, target).summary
 
-        ingestor_cls.assert_not_called()
+        load.assert_not_called()
         connector.connect.assert_called_once()
         connector.compiler.compile_query.assert_called_once_with(
             source.table,
@@ -758,7 +758,7 @@ class TestEngineConnectorRouting:
             DiffEngine.run_from_configs(diff, source, target)
 
     def test_it_ingests_file_sources_through_run_from_configs(self, tmp_path: Path) -> None:
-        """Ensure file pairs still evaluate locally via DataIngestor and DiffEngine.run."""
+        """Ensure file pairs still evaluate locally through the loaders and DiffEngine.run."""
         src_file = tmp_path / "source.csv"
         tgt_file = tmp_path / "target.csv"
         pl.DataFrame({"id": [1], "val": ["A"]}).write_csv(src_file)
@@ -882,7 +882,7 @@ class TestEngineConnectorRouting:
     def test_it_runs_a_delta_pair_locally_through_run_from_configs(
         self, mocker: MockerFixture
     ) -> None:
-        """Ensure two lakehouse scans take the DataIngestor path and produce a full diff."""
+        """Ensure two lakehouse scans take the local path and produce a full diff."""
         source_frame = pl.DataFrame({"id": [1, 2, 3], "amount": [10.0, 20.0, 30.0]}).lazy()
         target_frame = pl.DataFrame({"id": [1, 2, 4], "amount": [10.0, 25.0, 40.0]}).lazy()
         scan = mocker.patch(
