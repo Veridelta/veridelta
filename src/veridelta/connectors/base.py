@@ -11,6 +11,7 @@ from typing import Literal, Self
 import polars as pl
 
 from veridelta.connectors.sql import SQLPushdownCompiler
+from veridelta.models import redacted_location
 
 
 def mask_secrets(text: str, *secrets: str | None) -> str:
@@ -27,6 +28,34 @@ def mask_secrets(text: str, *secrets: str | None) -> str:
     for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
         text = text.replace(secret, "***")
     return text
+
+
+def shown_location(location: str) -> str:
+    """Name a path or URL in a log line or an error, with anything secret left out.
+
+    Args:
+        location (str): A file path, or the URL of a file or a table.
+
+    Returns:
+        str: The location as `redacted_location` returns it, or a note that it
+            does not parse as a URL.
+    """
+    return redacted_location(location) or "a location that does not parse as a URL"
+
+
+def without_location(text: str, location: str) -> str:
+    """Replace a location inside driver text with the form `shown_location` gives.
+
+    A reader's error can quote the location it was given whole, query included.
+
+    Args:
+        text (str): The driver's message.
+        location (str): The location the driver was given.
+
+    Returns:
+        str: The message, with the location's secrets left out.
+    """
+    return text.replace(location, shown_location(location))
 
 
 def read_subject(table: str | None) -> str:

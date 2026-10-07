@@ -25,7 +25,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final, cast
-from urllib.parse import quote, unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 
 import polars as pl
 
@@ -421,14 +421,21 @@ def _connection_uri(config: DatabaseConfig) -> str:
     return urlunsplit(parts._replace(netloc=netloc))
 
 
+_CREDENTIAL_PARAMETERS: Final = ("pass", "pwd", "secret", "token", "key")
+"""Words that mark a URI parameter, such as `password` or `sslkey`, as holding a credential."""
+
+
 def _scrub(config: DatabaseConfig, text: str) -> str:
-    """Replace every form of the password in driver output with `***`."""
+    """Replace every form of the password, or of a credential parameter, in driver output."""
     secrets: set[str] = set()
     if config.password:
         secrets.update({config.password, quote(config.password, safe="")})
-    embedded = urlsplit(config.uri).password
-    if embedded:
-        secrets.update({embedded, unquote(embedded)})
+    parts = urlsplit(config.uri)
+    if parts.password:
+        secrets.update({parts.password, unquote(parts.password)})
+    for name, value in parse_qsl(parts.query):
+        if any(word in name.lower() for word in _CREDENTIAL_PARAMETERS):
+            secrets.update({value, quote(value, safe="")})
     return mask_secrets(text, *secrets)
 
 

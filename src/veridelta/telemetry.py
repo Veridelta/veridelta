@@ -38,7 +38,14 @@ from urllib.parse import unquote_to_bytes, urlsplit, urlunsplit
 
 from veridelta import __version__
 from veridelta.exceptions import ConfigError, ConnectorError
-from veridelta.models import DeltaLakeConfig, DiffResult, IcebergConfig, SourceConfig, SourceRef
+from veridelta.models import (
+    DeltaLakeConfig,
+    DiffResult,
+    IcebergConfig,
+    SourceConfig,
+    SourceRef,
+    redacted_location,
+)
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -48,9 +55,6 @@ SERVICE_NAME: Final[str] = "veridelta"
 
 _ROW_UNIT: Final[str] = "{row}"
 """UCUM annotation for a count of rows; backends treat it as dimensionless."""
-
-_CONTAINER_SCHEMES: Final[frozenset[str]] = frozenset({"abfs", "abfss", "wasb", "wasbs"})
-"""Azure schemes whose `container@account` user part names a container, not a login."""
 
 _BAD_ESCAPE: Final[re.Pattern[str]] = re.compile(r"%(?![0-9A-Fa-f]{2})")
 """A `%` that does not start a two-digit hexadecimal escape."""
@@ -106,28 +110,12 @@ def _gauge(name: str, description: str, unit: str, points: list[_JSONObject]) ->
     return metric
 
 
-def _locator(text: str) -> str | None:
-    """Reduce a path or URL to what may leave the run."""
-    try:
-        parts = urlsplit(text)
-    except ValueError:
-        return None
-    if not (parts.scheme and parts.netloc):
-        return text
-    # The user part can hold a credential, such as a token, and a pre-signed object-store
-    # link carries a signature in its query.
-    user, _, host = parts.netloc.rpartition("@")
-    if user and parts.scheme in _CONTAINER_SCHEMES and ":" not in user:
-        host = f"{user}@{host}"
-    return urlunsplit((parts.scheme, host, parts.path, "", ""))
-
-
 def _side_name(side: SourceRef) -> str | None:
     """Name a source by its table or path, without anything secret."""
     if isinstance(side, SourceConfig):
-        return _locator(side.path)
+        return redacted_location(side.path)
     if isinstance(side, (DeltaLakeConfig, IcebergConfig)):
-        return _locator(side.table_uri)
+        return redacted_location(side.table_uri)
     # Warehouse and database tables are validated identifiers, safe to export as configured.
     # A database `query` has no table, so neither its SQL nor its `uri` leaves the run.
     return side.table
@@ -502,7 +490,7 @@ def send_otlp_metrics(
         time_unix_nano=time_unix_nano,
     )
     # A query can hold a credential too, so messages name the endpoint without one.
-    where = cast("str", _locator(endpoint))
+    where = cast("str", redacted_location(endpoint))
     request = urllib.request.Request(
         endpoint,
         data=export.encode("utf-8"),

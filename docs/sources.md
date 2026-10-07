@@ -118,7 +118,7 @@ Set exactly one of `table` and `query`:
 
 `password` is percent-encoded into the URI. It can contain `@`, `:`, `/`, or any other character, and needs a user name in `uri`.
 
-A password written into `uri` itself must already be percent-encoded, which an expanded `${VAR}` is not. Setting both fails when the file loads. Credentials passed as URI parameters, such as `?password=`, are not masked in logs or errors. Use `password` instead.
+A password written into `uri` itself must already be percent-encoded, which an expanded `${VAR}` is not. Setting both fails when the file loads. Logs and errors print the URI without its query, and mask the value of a parameter named like a credential, such as `?password=`, where a driver's message repeats it. Use `password` all the same.
 
 ### Reading and types
 

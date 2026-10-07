@@ -41,6 +41,8 @@ from veridelta.connectors.base import (
     PushdownSession,
     ReaderConnector,
     optional_module,
+    shown_location,
+    without_location,
 )
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
@@ -327,7 +329,7 @@ class ExcelLoader(BaseLoader):
         )
         if not isinstance(loaded, pl.DataFrame):
             raise ConfigError(
-                f"Excel source '{config.path}' resolved to multiple worksheets. "
+                f"Excel source '{shown_location(config.path)}' resolved to multiple worksheets. "
                 "Name exactly one with the 'sheet_name' or 'sheet_id' option."
             )
         return loaded.lazy()
@@ -344,12 +346,12 @@ def _describe_source(config: SourceRef) -> str:
             table URI under the `type` the user wrote.
     """
     if isinstance(config, SourceConfig):
-        described = f"`{config.path}` read as {config.format}"
+        described = f"`{shown_location(config.path)}` read as {config.format}"
         if "format" in config.model_fields_set:
             return described
         return f"{described} since `format` is not set"
     if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
-        return f"the `{config.type}` source `{config.table_uri}`"
+        return f"the `{config.type}` source `{shown_location(config.table_uri)}`"
     if config.table is not None:
         return f"the `{config.type}` table `{config.table}`"
     return f"the `{config.type}` query"
@@ -454,13 +456,19 @@ class LoaderFactory:
                 columns = len(frame.collect_schema())
             except FileNotFoundError as exc:
                 raise ConnectorError(
-                    f"The {config.format} file '{config.path}' does not exist."
+                    f"The {config.format} file '{shown_location(config.path)}' does not exist."
                 ) from exc
             except (OSError, pl.exceptions.PolarsError) as exc:
                 raise ConnectorError(
-                    f"Reading the {config.format} file '{config.path}' failed: {exc}"
+                    f"Reading the {config.format} file '{shown_location(config.path)}' failed: "
+                    f"{without_location(str(exc), config.path)}"
                 ) from exc
-            logger.info("Opened the %s file '%s' (%d columns)", config.format, config.path, columns)
+            logger.info(
+                "Opened the %s file '%s' (%d columns)",
+                config.format,
+                shown_location(config.path),
+                columns,
+            )
             return frame
         raise ConnectorError(
             "Warehouse sources cannot be loaded via LoaderFactory; "
