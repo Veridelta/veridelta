@@ -174,7 +174,7 @@ An agent that changes a pipeline can check its own work against the data the pip
 4. Find the cause in the change, not in the data. The columns that drift, and how many rows each one changes, point to the code that writes them. With the MCP server started with `--allow-row-values`, `read_discrepancies` returns the rows that differ.
 5. Fix the change, and go back to step 1.
 
-Stop when the run matches, and report the counts. Stop too when the drift that remains is what the user asked for, such as a new rounding, and say which columns it is in. Never add a rule, or raise `threshold`, to make a run pass unless the user agrees: a rule changes what counts as a match, for every later run too.
+Stop when the run matches, and report the counts. Stop too when the drift that remains is what the user asked for, such as a new rounding, and say which columns it is in. Never add a rule, or raise `threshold`, to make a run pass unless the user agrees: a rule changes what counts as a match, for every later run too. When the user accepts the drift that remains, `veridelta run --save-baseline accepted.json` records it, and later runs pass `--baseline accepted.json`, so they fail only on new drift; see [Accepting drift](cli.md#accepting-drift).
 
 ## Docs for language models
 

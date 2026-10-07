@@ -38,6 +38,7 @@ class TestCommandLineInterface:
             json=False,
             quiet=False,
             baseline=None,
+            save_baseline=None,
             html=None,
             html_max_rows=1000,
             markdown=None,
