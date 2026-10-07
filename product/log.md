@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-07
+
+- **Update**: [the feature map](FEATURES.md) drops `DataIngestor`, removed in 0.15.0 as its deprecation in 0.14.6 announced. `DiffEngine.run_from_configs` is the one way to load, align, and compare two sources.
+
 ## 2026-10-06
 
 - **Update**: [DR-01](metrics/DR-01.md) moves from 5 to 3 and [NS-01](metrics/NS-01.md) from 7 to 5, its target: a file's suffix now decides its `format`, so the smallest configuration is the two paths and the keys. [DR-02](metrics/DR-02.md)'s second mistake becomes a Parquet file under a suffix that names no format, since a `.parquet` path no longer needs one. Slice D0 of [issue 126](https://github.com/Veridelta/veridelta/issues/126).

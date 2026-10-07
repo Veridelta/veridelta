@@ -1,7 +1,7 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the core DiffEngine, DataIngestor, and Loaders."""
+"""Unit tests for the core DiffEngine and the loaders."""
 
 import logging
 import re
@@ -22,7 +22,6 @@ from veridelta.engine import (
     _ARTIFACT_WRITERS,
     _CAST_TARGETS,
     _UNCASTABLE,
-    DataIngestor,
     DiffEngine,
     LoaderFactory,
     _alignment_maps,
@@ -59,8 +58,8 @@ from veridelta.models import (
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 
-class TestDataIngestorAndLoaders:
-    """Validate data ingestion, loader factories, and pre-engine dataset preparation."""
+class TestLoaders:
+    """Validate the loader factory and what each loader hands the engine."""
 
     def test_it_logs_each_file_it_opens(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -185,56 +184,6 @@ class TestDataIngestorAndLoaders:
 
         with pytest.raises(ConfigError, match="multiple worksheets"):
             LoaderFactory.load(SourceConfig(path=str(tmp_path / "x.xlsx"), format="excel"))
-
-    def test_it_normalizes_headers_by_stripping_and_lowercasing_when_configured(
-        self, mocker: MockerFixture
-    ) -> None:
-        """Ensure messy CSV headers are standardized before structural alignment."""
-        df = pl.DataFrame({"  Messy_COL  ": [1], "CleanCol": [2]}).lazy()
-        mocker.patch.object(LoaderFactory, "load", return_value=df)
-        config = DiffConfig(primary_keys=["id"], normalize_column_names=True)
-
-        dummy_cfg = SourceConfig(path="dummy.csv", format="csv")
-        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
-            source, _ = DataIngestor(config, dummy_cfg, dummy_cfg).get_dataframes()
-
-        assert source.collect_schema().names() == ["messy_col", "cleancol"]
-
-    def test_it_renames_and_drops_columns_during_ingest_alignment(
-        self, mocker: MockerFixture
-    ) -> None:
-        """Ensure DataIngestor applies ignore and rename_to before the engine sees the frame."""
-        source = pl.DataFrame({"legacy_id": [1], "secret": ["x"], "val": ["A"]}).lazy()
-        mocker.patch.object(LoaderFactory, "load", return_value=source)
-        dummy = SourceConfig(path="dummy.csv", format="csv")
-        config = DiffConfig(
-            primary_keys=["user_id"],
-            rules=[
-                DiffRule(column_names=["legacy_id"], rename_to="user_id"),
-                DiffRule(column_names=["secret"], ignore=True),
-                DiffRule(pattern="^sec"),
-            ],
-        )
-        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
-            aligned, _ = DataIngestor(config, dummy, dummy).get_dataframes()
-
-        assert aligned.collect_schema().names() == ["user_id", "val"]
-
-    def test_it_leaves_target_names_alone_when_aligning_the_target_side(
-        self, mocker: MockerFixture
-    ) -> None:
-        """Ensure rename_to is a source-only mapping."""
-        target = pl.DataFrame({"user_id": [1], "val": ["A"]}).lazy()
-        mocker.patch.object(LoaderFactory, "load", return_value=target)
-        dummy = SourceConfig(path="dummy.csv", format="csv")
-        config = DiffConfig(
-            primary_keys=["user_id"],
-            rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id")],
-        )
-        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
-            _, aligned = DataIngestor(config, dummy, dummy).get_dataframes()
-
-        assert aligned.collect_schema().names() == ["user_id", "val"]
 
     def test_it_treats_a_missing_optional_module_as_absent(self) -> None:
         """Ensure an extra's probe degrades to None instead of raising, and finds what is there."""

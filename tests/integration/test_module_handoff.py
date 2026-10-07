@@ -8,7 +8,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from veridelta.engine import DataIngestor, DiffEngine
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, SourceConfig
 
@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.integration]
 
 
 class TestModuleBoundaryHandoffs:
-    """Validate that Config, Ingestor, and Engine modules interact seamlessly."""
+    """Validate that the configuration and engine modules hand their objects across correctly."""
 
     def test_golden_pipeline_from_config_to_engine_execution(self, tmp_path: Path) -> None:
         """Ensure the data handoff works from disk to computation graph."""
@@ -29,12 +29,7 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="csv")
         diff_cfg = DiffConfig(primary_keys=["id"])
 
-        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
-            ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-        src_lazy, tgt_lazy = ingestor.get_dataframes()
-
-        engine = DiffEngine(diff_cfg, src_lazy, tgt_lazy)
-        summary = engine.run().summary
+        summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg).summary
 
         assert summary.is_match is False
         assert summary.changed_count == 1
@@ -55,10 +50,7 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="parquet")
         diff_cfg = DiffConfig(primary_keys=["id"], strict_types=True)
 
-        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
-            ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-        src_lazy, tgt_lazy = ingestor.get_dataframes()
-        summary = DiffEngine(diff_cfg, src_lazy, tgt_lazy).run().summary
+        summary = DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg).summary
 
         # Because strict_types=True, 100 != "100"
         assert summary.is_match is False
@@ -79,9 +71,5 @@ class TestModuleBoundaryHandoffs:
         tgt_cfg = SourceConfig(path=str(tgt_file), format="csv")
         diff_cfg = DiffConfig(primary_keys=["id"], schema_mode="exact")
 
-        with pytest.warns(DeprecationWarning, match="DataIngestor is deprecated"):
-            ingestor = DataIngestor(diff_cfg, src_cfg, tgt_cfg)
-        src_lazy, tgt_lazy = ingestor.get_dataframes()
-
         with pytest.raises(ConfigError, match="EXACT schema match failed"):
-            DiffEngine(diff_cfg, src_lazy, tgt_lazy).run()
+            DiffEngine.run_from_configs(diff_cfg, src_cfg, tgt_cfg)
