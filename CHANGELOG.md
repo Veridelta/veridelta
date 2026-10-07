@@ -1,3 +1,16 @@
+## v0.19.2 (2026-10-07)
+
+The MCP server checks a configuration's relative data path, and its `output_path`, where
+the reader and the artifact writer open it: the working directory. Before, it checked them
+against the first `--root` folder, which agrees only because `veridelta mcp` runs there. A
+program that called `serve()` or `build_server()` from another folder passed the check for
+a file under the root, then read or wrote the one beside the program. The command line is
+unchanged.
+
+### Fix
+
+- check a configuration's relative paths where they are opened (#201)
+
 ## v0.19.1 (2026-10-07)
 
 Every `veridelta mcp` tool that opens a side now reads data on this machine only from under
