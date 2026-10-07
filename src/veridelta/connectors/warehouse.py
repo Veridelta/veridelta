@@ -312,7 +312,9 @@ class DatabricksConnector(PushdownSession):
             raise
         except Exception as exc:
             logger.warning("Databricks connection to %s failed", self._config.server_hostname)
-            raise ConnectorError(f"Failed to connect to Databricks: {exc}") from exc
+            # Not chained: a traceback would print the driver's message unmasked.
+            message = mask_secrets(str(exc), self._config.access_token)
+            raise ConnectorError(f"Failed to connect to Databricks: {message}") from None
         logger.info(
             "Connected to Databricks host %s, path %s",
             self._config.server_hostname,
@@ -422,7 +424,9 @@ class BigQueryConnector(PushdownSession):
             job_config = driver.QueryJobConfig(**settings)
         except Exception as exc:
             logger.warning("BigQuery connection to project %s failed", project)
-            raise ConnectorError(f"Failed to connect to BigQuery: {exc}") from exc
+            # Not chained, as for the other warehouses: the message already holds the
+            # driver's reason, and its traceback can quote the credentials it read.
+            raise ConnectorError(f"Failed to connect to BigQuery: {exc}") from None
         self._client, self._job_config = client, job_config
         logger.info("Connected to BigQuery project %s", project)
 
