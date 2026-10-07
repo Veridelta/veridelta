@@ -1968,18 +1968,77 @@ def _sentinel_proposal(changed: pl.DataFrame, column: str) -> _Proposal | None:
     return _Proposal({"null_values": sorted(found, key=repr)})
 
 
+_DATE_FORMATS: Final = (
+    "%Y-%m-%d",
+    "%d/%m/%Y",
+    "%m/%d/%Y",
+    "%Y/%m/%d",
+    "%d.%m.%Y",
+    "%d-%m-%Y",
+    "%m-%d-%Y",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%d %H:%M",
+    "%d/%m/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%m/%d/%Y %H:%M",
+)
+"""Formats tried on dates written as text, day first before month first on a tie."""
+
+
+def _format_proposal(changed: pl.DataFrame, column: str) -> _Proposal | None:
+    """Propose a `datetime_format` when text on one side reads as the dates on the other.
+
+    Each format in `_DATE_FORMATS` parses the text side as the comparison would, and
+    the one that matches the most differing rows wins. A timestamp with a zone is
+    left out, since text without an offset names no instant to match it.
+    """
+    dtypes = {side: changed.schema[f"{column}_{side}"] for side in ("source", "target")}
+    texts = [side for side, dtype in dtypes.items() if dtype == pl.String]
+    dates = [
+        side
+        for side, dtype in dtypes.items()
+        if isinstance(dtype, pl.Date) or (isinstance(dtype, pl.Datetime) and not dtype.time_zone)
+    ]
+    if len(texts) != 1 or len(dates) != 1:
+        return None
+    text = pl.col(f"{column}_{texts[0]}")
+    other = pl.col(f"{column}_{dates[0]}").cast(pl.Datetime)
+    counts = (
+        changed.filter(pl.col(f"{column}_is_match").eq(False))
+        .select(
+            (
+                text.str.strptime(pl.Datetime, format=_polars_datetime_format(fmt), strict=False)
+                == other
+            )
+            .sum()
+            .alias(fmt)
+            for fmt in _DATE_FORMATS
+        )
+        .row(0)
+    )
+    best = max(range(len(_DATE_FORMATS)), key=counts.__getitem__)
+    if counts[best] == 0:
+        return None
+    return _Proposal({"datetime_format": _DATE_FORMATS[best]})
+
+
 def _proposal(changed: pl.DataFrame, column: str, max_share: float) -> _Proposal | None:
     """Propose what a column's differing rows call for, its null sentinels included.
 
-    Numbers can take a tolerance and text can take trimming and case folding, and
-    either can take null sentinels beside them, in one rule.
+    Numbers can take a tolerance, text can take trimming and case folding, and text
+    beside dates can take a date format. Any of them can take null sentinels beside,
+    in one rule.
     """
     if _compares_numbers(changed, column):
         typed = _tolerance_proposal(changed, column, max_share)
     elif _compares_text(changed, column):
         typed = _text_proposal(changed, column)
     else:
-        typed = None
+        typed = _format_proposal(changed, column)
     sentinels = _sentinel_proposal(changed, column)
     if typed is None or sentinels is None:
         return typed or sentinels

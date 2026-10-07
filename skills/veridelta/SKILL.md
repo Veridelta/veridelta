@@ -2,7 +2,7 @@
 name: veridelta
 description: Compares two datasets with the Veridelta command line and reports what differs, keeping row values out of the reply. Use when a task compares two tables or files, checks a data migration or pipeline change, or writes or fixes a veridelta.yaml file.
 metadata:
-  version: "1.12.0"
+  version: "1.13.0"
 ---
 
 # Compare two datasets with Veridelta
@@ -37,7 +37,7 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
 
     Show the proposals and their evidence to the user before adding them to the configuration.
 
-6. When a column differs by small amounts, such as rounding, padding, case, or a spelling of NULL, suggest a rule from the data:
+6. When a column differs by small amounts, such as rounding, padding, case, a date format, or a spelling of NULL, suggest a rule from the data:
 
     ```bash
     veridelta suggest -c veridelta.yaml --json

@@ -224,13 +224,15 @@ The tolerance is the first round value, such as 0.005 or 0.01, above the largest
 
 A text column gets trimming, `whitespace_mode: both`, when its differing values match once both ends are stripped, and case folding, `case_insensitive: true`, when they match once lowercased. It gets both only when some rows need both. Text that differs in anything else is a change, so no rule explains it.
 
+A column with text on one side and dates or timestamps on the other gets `datetime_format` when the text reads as those dates under one format. The common formats are tried, such as `%Y-%m-%d`, `%d/%m/%Y`, and `%m/%d/%Y`, with or without a time, and the one that matches the most rows wins. A timestamp with a zone is left out, since text without an offset names no instant.
+
 A column of any type gets `null_values` when a common spelling of NULL stands on one side where the other side is NULL. The spellings are an empty string, `N/A`, `NA`, `#N/A`, `NULL`, `(null)`, `<null>`, `None`, `nil`, `NaN`, `-`, `--`, and `?`, in any case, and the numbers -1, -9, -99, -999, -9999, and -99999. A suggested sentinel joins the column's sentinels today, from its rule or from `default_null_values`. A real value beside NULL, such as a city, is a change, and `false` is never suggested, since it is too often meant.
 
 Then the comparison runs again with the rule, and the evidence counts the rows it makes match, of the rows that differ in that column, with up to three example keys, and for a tolerance, the largest gap. A row with a NULL on one side is explained only by a null sentinel. A rule that would make a row that matches today differ is not suggested, such as case folding ahead of a `value_map` whose keys are capitals.
 
 Each printed rule names its column alone. When a rule governs the column today, such as one that matches it by `pattern`, the suggestion keeps that rule's settings, and a note says to put it first in `rules`, where it wins over the other. In Python, `DiffEngine.suggest_rules()` returns the suggestions as `RuleSuggestion` models.
 
-`suggest` reads both sides locally, so it refuses a pair compared where it is stored, such as two warehouse tables. Suggest rules on files exported from them instead. Date formats are on the [roadmap](roadmap.md).
+`suggest` reads both sides locally, so it refuses a pair compared where it is stored, such as two warehouse tables. Suggest rules on files exported from them instead.
 
 ## Printing the schema
 
