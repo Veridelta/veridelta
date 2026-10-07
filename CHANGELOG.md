@@ -1,3 +1,18 @@
+## v0.26.0 (2026-10-07)
+
+`veridelta run --baseline accepted.json` accepts the drift the file lists and fails only
+on drift it does not list. The file lists added and removed rows by primary key, and
+changed rows with the columns whose drift is accepted on each: drift in any other column
+of that row still counts. Accepted drift is left out of the counts, the verdict, the
+artifacts, and the reports. The summary gains `accepted_count`, in `run --json`, in the
+MCP server's `run_comparison`, and in the published run schema, and
+`veridelta schema baseline` prints the file's JSON Schema. A pair compared where it is
+stored refuses `--baseline`.
+
+### Feat
+
+- accept the drift a baseline file lists with run --baseline (#280)
+
 ## v0.25.0 (2026-10-07)
 
 `veridelta suggest` now proposes `datetime_format` for a column with text on one side and
