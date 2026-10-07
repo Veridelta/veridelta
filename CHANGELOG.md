@@ -1,3 +1,16 @@
+## v0.24.0 (2026-10-07)
+
+`veridelta suggest` now proposes `null_values` for a column of any type when a common
+spelling of NULL stands on one side where the other side is NULL: an empty string, `N/A`,
+`NULL`, `None`, `-`, and the like, in any case, or a number such as -999. A real value
+beside NULL, such as a city, is a change, and `false` is never suggested. A suggested
+sentinel joins the column's sentinels today, and a column with both rounding and a
+sentinel gets one rule with both settings.
+
+### Feat
+
+- suggest null sentinels where one side spells NULL (#276)
+
 ## v0.23.0 (2026-10-07)
 
 `veridelta suggest` now proposes rules for text columns too. A column gets
