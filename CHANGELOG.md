@@ -1,3 +1,15 @@
+## v0.19.4 (2026-10-07)
+
+`veridelta mcp` masks every value a configuration takes from an environment variable, four
+characters or longer, wherever it appears in a tool's answer. Before, `path: ${SECRET}.csv`
+returned the value inside a read's error, and a column named after a variable returned it
+in a schema. `veridelta.config.referenced_variables` names the variables a configuration's
+text references.
+
+### Fix
+
+- mask values taken from the environment in MCP answers (#205)
+
 ## v0.19.3 (2026-10-07)
 
 `veridelta mcp` runs a side's `query` only when it is started with the new
