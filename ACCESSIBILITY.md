@@ -17,7 +17,7 @@ People read four parts of Veridelta:
 - **Plain text on the command line.** The command line prints plain text, with no color, symbol, or animation that carries meaning. The verdict is also an [exit code](https://veridelta.github.io/veridelta/cli/#exit-codes), and `--json` prints every result in a form any tool can read.
 - **Words for every verdict.** The HTML report and the Markdown summary say `PASSED` or `FAILED` in words. Color never carries a result alone.
 - **Structure.** Pages and reports use headings in order, real tables, and link text that names its target. The diagram on the home page is described in the paragraph after it.
-- **Media.** The recording on the README and the documentation home is one animated image with a text alternative that says what happens. GitHub's setting for animated images pauses it on the README.
+- **Media.** The recording on the README and the documentation home is one animated image with a text alternative that says what happens. GitHub's setting for animated images pauses it on the README. The other recordings, on the command line page, sit in closed `<details>` blocks, so they play only when opened, and each has its transcript as text beside it.
 - **Keyboard.** Each control in the HTML report is a native button, reached with Tab and shown with the browser's focus ring. A table wider than the screen takes focus too, so arrow keys scroll it.
 - **Without JavaScript.** The HTML report shows every row it holds. Its script only splits long tables into pages of 25 rows.
 

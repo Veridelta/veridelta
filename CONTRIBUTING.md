@@ -90,14 +90,16 @@ axe-core comes from npm, pinned by version and digest, and Dependabot cannot bum
 
 ### Recording the demos
 
-The README and the docs home embed a recording of the quick start, rendered from `demo/veridelta.tape` by [vhs](https://github.com/charmbracelet/vhs). `make demo` writes `docs/assets/demo.gif`; run it after a change to the quick start or to the run summary. It needs vhs v0.12.1, the release the `Makefile` pins, since another release can draw the same tape differently, and it refuses any other. vhs needs `ttyd` and `ffmpeg` on `PATH`, and a Chromium it finds there or downloads:
+The README and the docs home embed a recording of the quick start, rendered from `demo/veridelta.tape` by [vhs](https://github.com/charmbracelet/vhs), and the command line page shows `validate` and `crosswalk` from their own tapes. `make demo` renders every tape in `demo/` into `docs/assets/`; run it after a change to a command a tape types or to what it prints. It needs vhs v0.12.1, the release the `Makefile` pins, since another release can draw the same tape differently, and it refuses any other. vhs needs `ttyd` and `ffmpeg` on `PATH`, and a Chromium it finds there or downloads:
 
 ```bash
 go install github.com/charmbracelet/vhs@v0.12.1
 sudo apt-get install ttyd ffmpeg   # or: brew install ttyd ffmpeg
 ```
 
-`make demo` renders each tape in `demo/` through `uv run`, so the `veridelta` it records is this checkout's. Each tape requires `veridelta` and sources `demo/settings.tape`, which holds the shell, the font size, the width, and the typing speed every recording shares. The tape types six commands at real speed on the two CI fixture files copied into `demo/`. `demo/transcript.txt` holds what the recording shows, written by hand, and `tests/unit/test_demo_tape.py` holds the commands to the CLI, the data to the fixtures, and the transcript to what the commands print. Commit the new GIF, with the transcript that matches it, in the change that moved the output.
+`make demo` renders each tape in `demo/` through `uv run`, so the `veridelta` it records is this checkout's. Each tape requires `veridelta` and sources `demo/settings.tape`, which holds the shell, the font size, the width, and the typing speed every recording shares. Each tape types its commands at real speed on files in `demo/`; the quick start's are the two CI fixture files. `demo/<tape>.txt` holds what a recording shows, and `tests/unit/test_demo_tape.py` runs each tape's commands and holds that text to what they print, the quick start's data to the fixtures, and each GIF to the page that shows it. A feature page shows its recording in a closed `<details>` block with the transcript as text, so nothing new plays on its own. Commit a new GIF, with the transcript that matches it, in the change that moved the output.
+
+`make demo-video` writes an MP4 of each recording to `demo/video/`, which git ignores, for promotional videos.
 
 ## Commit messages
 

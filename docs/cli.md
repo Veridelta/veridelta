@@ -118,6 +118,30 @@ With `--schemas`, `validate` also connects and checks the rules against each sid
 
 Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, and `warnings`. The verdict goes to stderr.
 
+<details markdown>
+<summary>Watch <code>validate --schemas</code> catch a wrong primary key</summary>
+
+![A terminal shows a configuration whose primary key is order_id, and the first rows of a CSV file keyed by id. veridelta validate with --schemas reports that order_id is not among the columns read, and exits 1.](assets/demo-validate.gif)
+
+```text
+> cat orders.yaml
+primary_keys: [order_id]
+source:
+  path: legacy.csv
+target:
+  path: modern.csv
+> head -n 2 legacy.csv
+id,status,amount
+1,open,10.0
+> veridelta validate -c orders.yaml --schemas
+error: The primary key 'order_id' is not among the columns of the source, `legacy.csv` read as csv. The columns read are: 'id', 'status', 'amount'.
+orders.yaml: 1 error, 0 warnings.
+> echo "exit code: $?"
+exit code: 1
+```
+
+</details>
+
 `--allow-missing-env` checks a file without its secrets, such as in a pull request job. An unset `${NAME}` with no default is read as the text `NAME`, with a warning. That works for fields that take a name, such as `table`, `account`, `password`, or `path`. A field with a required shape, such as a database `uri`, still fails unless its variable is set.
 
 In Python, `DiffEngine.check_config_file(path, schemas=False, allow_missing_env=False)` checks a file as `validate` does, and `DiffEngine.check_configs(diff, source, target, schemas=False)` checks models already loaded. Both return the findings as `ConfigFinding` models. `load_config(path, unset_env=[])` reads unset variables as their names and appends each name to the list.
@@ -140,6 +164,38 @@ veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 | `--sample-fraction SHARE` | Share of source rows to read, chosen by primary key. Default 1.0. |
 | `--json` | Print the proposals and their evidence as JSON on stdout instead of YAML. |
 | `-q`, `--quiet` | Suppress progress and evidence on stderr. |
+
+<details markdown>
+<summary>Watch <code>crosswalk</code> propose a value map</summary>
+
+![A terminal shows the first rows of two CSV files whose active column holds Y and N on one side and true and false on the other. veridelta crosswalk proposes Y to true from 10 of 10 rows and N to false from 5 of 5 rows, and prints the rule as YAML.](assets/demo-crosswalk.gif)
+
+```text
+> head -n 4 crm.csv
+id,active,tier
+1,Y,silver
+2,Y,bronze
+3,N,gold
+> head -n 4 warehouse.csv
+id,active,tier
+1,true,silver
+2,true,bronze
+3,false,gold
+> veridelta crosswalk -c crosswalk.yaml
+Loading configuration from crosswalk.yaml...
+Lining up source and target values...
+active: 2 new value_map entries
+  'Y' -> 'true': 10 of 10 rows (100.0%)
+  'N' -> 'false': 5 of 5 rows (100.0%)
+rules:
+- column_names:
+  - active
+  value_map:
+    Y: 'true'
+    N: 'false'
+```
+
+</details>
 
 ## Printing the schema
 

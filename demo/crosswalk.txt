@@ -1,0 +1,22 @@
+> head -n 4 crm.csv
+id,active,tier
+1,Y,silver
+2,Y,bronze
+3,N,gold
+> head -n 4 warehouse.csv
+id,active,tier
+1,true,silver
+2,true,bronze
+3,false,gold
+> veridelta crosswalk -c crosswalk.yaml
+Loading configuration from crosswalk.yaml...
+Lining up source and target values...
+active: 2 new value_map entries
+  'Y' -> 'true': 10 of 10 rows (100.0%)
+  'N' -> 'false': 5 of 5 rows (100.0%)
+rules:
+- column_names:
+  - active
+  value_map:
+    Y: 'true'
+    N: 'false'

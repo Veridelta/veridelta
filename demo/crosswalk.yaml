@@ -1,0 +1,5 @@
+primary_keys: [id]
+source:
+  path: crm.csv
+target:
+  path: warehouse.csv

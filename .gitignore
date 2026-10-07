@@ -35,3 +35,6 @@ site/
 
 # A contributor's own agent permissions, which Claude Code writes here.
 .claude/settings.local.json
+
+# MP4 copies of the recordings, which `make demo-video` writes for promotional videos.
+demo/video/
