@@ -614,16 +614,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=_directory,
         metavar="DIR",
         help=(
-            "A folder the tools may read configuration files from. Repeat it for more "
-            "folders. The server runs in the first (default: the current directory)."
+            "A folder the tools may read configuration files and data on this machine "
+            "from. Repeat it for more folders. The server runs in the first (default: the "
+            "current directory)."
         ),
     )
     mcp_parser.add_argument(
         "--allow-row-values",
         action="store_true",
         help=(
-            "Let read_discrepancies and propose_value_maps return values from the data, "
-            "read only from files under the roots. Off by default."
+            "Let read_discrepancies and propose_value_maps return values from the data. "
+            "Off by default."
         ),
     )
     mcp_parser.add_argument(

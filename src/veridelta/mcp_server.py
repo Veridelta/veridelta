@@ -9,12 +9,12 @@ tool with a command returns the object that command prints with `--json`, so an
 agent that knows the command line knows the tools.
 
 The person who starts the server names the folders it may read configuration
-files from, and a tool refuses a path outside them. A tool returns findings,
-counts, and column names, never a value from the file. Two tools return values
-from the data, and only when the person who starts the server allows it: then
-at most a set number of rows, from data under the same folders. The SDK is
-imported by the first `build_server()`, not with this module, so `veridelta`
-imports without the extra.
+files and data on this machine from, and a tool refuses a path outside them. A
+tool returns findings, counts, and column names, never a value from the file.
+Two tools return values from the data, and only when the person who starts the
+server allows it: then at most a set number of rows. The SDK is imported by
+the first `build_server()`, not with this module, so `veridelta` imports
+without the extra.
 """
 
 import importlib
@@ -144,8 +144,8 @@ class Settings:
     Attributes:
         roots (tuple[Path, ...]): The folders a tool may read a configuration
             file from, resolved on creation. A relative path in a tool call is
-            read against the first. A tool that returns rows reads data on this
-            machine only from them too.
+            read against the first. Every tool reads data on this machine only
+            from them too.
         allow_row_values (bool): Whether `read_discrepancies` and
             `propose_value_maps` may return values from the data. Defaults to
             False.
@@ -336,7 +336,8 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
 def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -> None:
     """Refuse a side whose data on this machine lies outside the roots.
 
-    A tool that returns rows calls this before it reads one. The paths are
+    Every tool that opens a side calls this first, since a column name or an
+    error message can carry a file's text as a row does. The paths are
     expanded and resolved as the readers do, so neither `~` nor a link leads
     out. Data on another machine, such as an object store, a database server,
     or a warehouse, is read as the command line reads it.
@@ -354,9 +355,9 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
             if _inside(settings, str(Path(location).expanduser())) is None:
                 raise ConfigError(
                     f"The {side} {setting} '{location}' is outside the folders this server "
-                    f"reads from: {_roots(settings)}. A tool returns rows only from data under "
-                    "them, so move the data into one, or ask the person who started the server "
-                    "to add its folder with --root."
+                    f"reads from: {_roots(settings)}. A tool reads data on this machine only "
+                    "from under them, so move the data into one, or ask the person who started "
+                    "the server to add its folder with --root."
                 )
 
 
@@ -377,9 +378,18 @@ def check_configuration(
         ValidationReport: The errors and warnings, with the resolved path.
 
     Raises:
-        ConfigError: If the path is outside the roots.
+        ConfigError: If the path is outside the roots, or, with `schemas`, the
+            data a side reads on this machine is.
     """
     resolved = resolve_path(settings, path)
+    if schemas:
+        try:
+            _, source, target = load_config(resolved, unset_env=[] if allow_missing_env else None)
+        except ConfigError:
+            # The check reports why the file does not load, and then reads no columns.
+            pass
+        else:
+            check_data_paths(settings, source, target)
     findings = DiffEngine.check_config_file(
         resolved, schemas=schemas, allow_missing_env=allow_missing_env
     )
@@ -390,9 +400,16 @@ def check_configuration(
     )
 
 
-def _runnable(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
-    """Load a configuration a tool runs, refusing an `output_path` outside the roots."""
+def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
+    """Load a configuration a tool opens, refusing one whose data on this machine is outside the roots."""
     diff, source, target = load_config(resolve_path(settings, path))
+    check_data_paths(settings, source, target)
+    return diff, source, target
+
+
+def _runnable(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
+    """Load a configuration a tool runs, refusing an `output_path` outside the roots too."""
+    diff, source, target = _load(settings, path)
     if diff.output_path is not None and _inside(settings, diff.output_path) is None:
         raise ConfigError(
             f"output_path '{diff.output_path}' is outside the folders this server writes to: "
@@ -407,8 +424,8 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
     """Compare the two datasets a configuration file names, as `veridelta run --json` does.
 
     A run writes the rows that differ to `output_path`, so a configuration
-    whose `output_path` lies outside the roots is refused before any row is
-    read.
+    whose `output_path` or data on this machine lies outside the roots is
+    refused before any row is read.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -418,8 +435,8 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
         RunReport: The summary, with the verdict and the exit code.
 
     Raises:
-        ConfigError: If the file or its `output_path` is outside the roots, or
-            the configuration cannot run as written.
+        ConfigError: If the file, its data, or its `output_path` is outside
+            the roots, or the configuration cannot run as written.
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If a primary key repeats on either side.
     """
@@ -447,11 +464,12 @@ def describe_side(settings: Settings, path: str, side: Literal["source", "target
         SchemaReport: The side, and each of its columns mapped to its type.
 
     Raises:
-        ConfigError: If the file is outside the roots, does not load, or reads
-            the side through a `query`, which would have to run in full.
+        ConfigError: If the file or its data is outside the roots, the file
+            does not load, or it reads the side through a `query`, which would
+            have to run in full.
         ConnectorError: If the side cannot be reached or read.
     """
-    _, source, target = load_config(resolve_path(settings, path))
+    _, source, target = _load(settings, path)
     schema = DiffEngine.read_schema(source if side == "source" else target)
     return SchemaReport(side=side, columns={name: str(dtype) for name, dtype in schema.items()})
 
@@ -515,9 +533,7 @@ def read_rows(
     _allow_rows(settings, "read_discrepancies")
     if limit < 1:
         raise ConfigError(f"limit must be at least 1, got {limit}.")
-    diff, source, target = _runnable(settings, path)
-    check_data_paths(settings, source, target)
-    result = DiffEngine.run_from_configs(diff, source, target)
+    result = DiffEngine.run_from_configs(*_runnable(settings, path))
     found = {
         "added": (result.added, result.summary.added_count),
         "removed": (result.removed, result.summary.removed_count),
@@ -563,12 +579,8 @@ def propose_maps(
         ConnectorError: If a source cannot be read.
     """
     _allow_rows(settings, "propose_value_maps")
-    diff, source, target = load_config(resolve_path(settings, path))
-    check_data_paths(settings, source, target)
     proposals = DiffEngine.propose_value_maps_from_configs(
-        diff,
-        source,
-        target,
+        *_load(settings, path),
         min_confidence=min_confidence,
         min_support=min_support,
         sample_fraction=sample_fraction,
