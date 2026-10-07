@@ -1,3 +1,13 @@
+## v0.19.20 (2026-10-07)
+
+No behavior changed. The engine opens and closes a warehouse session in one place, and the
+package logger holds the one `NullHandler` that seven modules each added. A program that
+adds no handler still sees no records from Veridelta.
+
+### Refactor
+
+- open a warehouse session in one place, and silence logging once (#248)
+
 ## v0.19.19 (2026-10-07)
 
 No behavior changed, and every SQL statement is byte for byte the same: the unit and
