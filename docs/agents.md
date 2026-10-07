@@ -79,10 +79,11 @@ Where Veridelta is installed without uv, the command is `veridelta mcp` itself. 
 The person who starts the server decides what it may read, and no tool call can change that:
 
 - Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.
+- A tool that opens a side reads files on this machine only from under the roots, `~` and links included, since a column name or an error can carry a file's text as a row does. Data elsewhere, such as an object store or a warehouse, is read as the command line reads it.
 - A run writes the rows that differ to the configuration's `output_path`, so `run_comparison` and `read_discrepancies` refuse one outside every root before they read a row.
 - A tool returns findings, counts, and column names, never the configuration or a value from the data, unless the server is started with `--allow-row-values`. A password inside an error is masked, as on the command line.
-- With `--allow-row-values`, `read_discrepancies` and `propose_value_maps` return at most `--max-rows` rows or value map entries per call, 50 by default, and a proposal comes back whole or not at all. They read files on this machine only from under the roots, `~` and links included, and data elsewhere, such as an object store or a warehouse, as the command line reads it.
-- With `schemas`, a check reads each side's columns wherever the configuration says they are, as `veridelta validate --schemas` does. `describe_schema` reads one side's columns the same way, and a warehouse table with the probe a run starts with.
+- With `--allow-row-values`, `read_discrepancies` and `propose_value_maps` return at most `--max-rows` rows or value map entries per call, 50 by default, and a proposal comes back whole or not at all.
+- With `schemas`, a check reads each side's columns as `veridelta validate --schemas` does, and without it a check opens no data. `describe_schema` reads one side's columns the same way, and a warehouse table with the probe a run starts with.
 - A host may start the server with only some of the user's environment variables. A `${NAME}` that the configuration references must reach the server, through the host's `env` setting for it if need be, or the check reports it unset. `allow_missing_env` checks a file without them.
 
 A call that fails returns its error's type and message, as `run --json` prints them, such as `ConfigError` for a path outside the roots. [Serving tools to an agent](cli.md#serving-tools-to-an-agent) lists the command's flags.

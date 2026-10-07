@@ -69,10 +69,12 @@ _VALID = "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
 """A configuration that loads and passes every offline check."""
 
 _QUERY = (
-    "source:\n  type: database\n  uri: sqlite:///srv/x.db\n  query: SELECT * FROM t\n"
-    "target:\n  path: b.csv\nprimary_keys: [id]\n"
+    "source:\n  type: database\n  uri: postgresql://db.example.com/app\n"
+    "  query: SELECT * FROM t\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
 )
-"""A configuration whose source is a query, which no probe can describe without running it."""
+"""A configuration whose source is a query, which no probe can describe without running it.
+
+The database is on another machine, so no file of it has to lie under a root."""
 
 _SECRET = "hunter2-do-not-print"
 
@@ -111,6 +113,20 @@ def _coded(root: Path) -> Path:
         "id,gender\n" + "".join(f"{i},{'Male' if i % 2 == 0 else 'Female'}\n" for i in range(10))
     )
     return _write(root, _VALID)
+
+
+def _header_from(outside: Path) -> str:
+    """Write a configuration whose source header is the second line of a file outside the roots.
+
+    Reader options choose the header row, so a column name can carry any line
+    of any file a tool opens.
+    """
+    (outside / "notes.txt").write_text(f"public\n{_SECRET}\n")
+    return (
+        f"source:\n  path: '{outside / 'notes.txt'}'\n  format: csv\n"
+        "  options:\n    skip_rows: 1\n    separator: '|'\n"
+        "target:\n  path: b.csv\nprimary_keys: [id]\n"
+    )
 
 
 def _with_client(settings: Settings, work: Callable[[Client], Awaitable[_T]]) -> _T:
@@ -314,6 +330,31 @@ class TestCheckConfiguration:
         assert live["valid"] is False
         assert "Column 'amount' has type Int64, which cannot hold" in live["errors"][0]
 
+    def test_it_opens_no_file_outside_the_roots_to_check_columns(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure `schemas` refuses data outside the roots, and a check without it opens nothing."""
+        _write(tmp_path, _header_from(tmp_path_factory.mktemp("outside")))
+        settings = Settings((tmp_path,))
+
+        offline = check_configuration(settings, "veridelta.yaml")
+        with pytest.raises(ConfigError, match="The source path") as caught:
+            check_configuration(settings, "veridelta.yaml", schemas=True)
+
+        assert offline["valid"] is True
+        assert _SECRET not in str(caught.value)
+
+    def test_it_reports_why_a_file_does_not_load_before_it_checks_data(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure `schemas` on a file that does not load is a finding, as without it."""
+        _write(tmp_path, "source: {}\n")
+
+        report = check_configuration(Settings((tmp_path,)), "veridelta.yaml", schemas=True)
+
+        assert report["valid"] is False
+        assert report["errors"][0].startswith("Configuration must contain both")
+
 
 class TestRunConfiguration:
     """Validate the run `run_comparison` makes, without the SDK in the way.
@@ -405,6 +446,21 @@ class TestRunConfiguration:
         compare.assert_not_called()
         assert list(outside.iterdir()) == []
 
+    def test_it_opens_no_file_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a run reads no data outside the roots, since its column names come back."""
+        _write(tmp_path, _header_from(tmp_path_factory.mktemp("outside")))
+        compare = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+
+        with pytest.raises(ConfigError, match="The source path"):
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        compare.assert_not_called()
+
     def test_it_fails_on_a_configuration_that_cannot_run(self, tmp_path: Path) -> None:
         """Ensure a broken file stops the run, as `run` exits 3, instead of becoming a finding."""
         _write(tmp_path, "source: {}\n")
@@ -453,6 +509,17 @@ class TestDescribeSide:
 
         with pytest.raises(ConfigError, match="outside the folders"):
             describe_side(Settings((tmp_path,)), str(outside), "source")
+
+    def test_it_opens_no_file_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a line of a file outside the roots cannot come back as a column name."""
+        _write(tmp_path, _header_from(tmp_path_factory.mktemp("outside")))
+
+        with pytest.raises(ConfigError, match="The source path") as caught:
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
+
+        assert _SECRET not in str(caught.value)
 
     def test_it_will_not_run_a_query_to_learn_its_columns(self, tmp_path: Path) -> None:
         """Ensure a query side is refused with the probe's own reason, and nothing connects."""
@@ -1014,6 +1081,25 @@ class TestServer:
 
         assert result.is_error is True
         assert "side" in _text(result)
+
+    def test_it_never_returns_a_line_of_a_file_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure no tool that opens a side returns a column name read from outside the roots."""
+        _write(tmp_path, _header_from(tmp_path_factory.mktemp("outside")))
+        settings = Settings((tmp_path,))
+        calls: list[tuple[str, dict[str, Any]]] = [
+            ("validate_config", {"path": "veridelta.yaml", "schemas": True}),
+            ("run_comparison", {"path": "veridelta.yaml"}),
+            ("describe_schema", {"path": "veridelta.yaml", "side": "source"}),
+        ]
+
+        for tool, arguments in calls:
+            result = _call(settings, arguments, tool=tool)
+
+            assert result.is_error is True, tool
+            assert "ConfigError: The source path" in _text(result), tool
+            assert _SECRET not in _text(result), tool
 
     def test_it_fails_to_describe_a_query(self, tmp_path: Path) -> None:
         """Ensure a side read through a query fails the call, named as `run --json` names it."""
