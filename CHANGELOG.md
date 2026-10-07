@@ -1,3 +1,14 @@
+## v0.19.16 (2026-10-07)
+
+No behavior changed. `validate --json` and the MCP server's `validate_config` build their
+report through one function, `validation_report` in `veridelta.mcp_server`, and print the
+same JSON as before. Two argument parsers share their whole-number parse, with every
+message unchanged.
+
+### Refactor
+
+- build the validation report once, and parse whole numbers once (#240)
+
 ## v0.19.15 (2026-10-07)
 
 A `schema_mode` failure lists the columns that break the mode, sorted and quoted, where it
