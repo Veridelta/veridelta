@@ -789,7 +789,7 @@ class DiffSummary(BaseModel):
             f"Match Rate:    {self.match_rate_percentage}%\n"
             f"Source Rows:   {self.total_rows_source:,}\n"
             f"Target Rows:   {self.total_rows_target:,}\n"
-            f"Volume Shift:  {self.volume_shift:+,} rows\n"
+            f"Volume Shift:  {self.volume_shift:+,} {_noun(self.volume_shift, 'row', 'rows')}\n"
             f"\nRow-Level Discrepancies:\n"
             f"---------------------------\n"
             f"Added:         {self.added_count:,}\n"
@@ -805,8 +805,16 @@ class DiffSummary(BaseModel):
             : self.report_limit
         ]
 
-        col_report = "".join(f"- {col}: {count:,} mismatches\n" for col, count in top_cols)
+        col_report = "".join(
+            f"- {col}: {count:,} {_noun(count, 'mismatch', 'mismatches')}\n"
+            for col, count in top_cols
+        )
         return f"{base_report}\nTop Column-Level Drifts:\n---------------------------\n{col_report}"
+
+
+def _noun(count: int, one: str, many: str) -> str:
+    """Pick the singular for a count of one or minus one, and the plural for any other."""
+    return one if abs(count) == 1 else many
 
 
 @dataclass(frozen=True)

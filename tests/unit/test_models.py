@@ -1063,6 +1063,33 @@ class TestDiffSummaryCalculations:
 
         assert report.find("massive_drift") < report.find("moderate_drift")
 
+    @pytest.mark.parametrize(
+        ("count", "shift", "drift_line", "shift_line"),
+        [
+            pytest.param(1, 1, "- status: 1 mismatch\n", "Volume Shift:  +1 row\n", id="one"),
+            pytest.param(
+                1, -1, "- status: 1 mismatch\n", "Volume Shift:  -1 row\n", id="minus-one"
+            ),
+            pytest.param(2, 0, "- status: 2 mismatches\n", "Volume Shift:  +0 rows\n", id="other"),
+        ],
+    )
+    def test_it_counts_one_in_the_singular(
+        self, count: int, shift: int, drift_line: str, shift_line: str
+    ) -> None:
+        """Ensure the report reads "1 mismatch" and "+1 row", as a reader would write them."""
+        summary = DiffSummary(
+            total_rows_source=10,
+            total_rows_target=10 + shift,
+            added_count=max(shift, 0),
+            removed_count=max(-shift, 0),
+            changed_count=count,
+            is_match=False,
+            column_mismatches={"status": count},
+        )
+
+        assert drift_line in summary.report_summary
+        assert shift_line in summary.report_summary
+
 
 class TestDiffResultRowAccess:
     """Validate row-level access to the discrepancies behind the summary."""
