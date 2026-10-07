@@ -28,6 +28,7 @@ _TAPE = _DEMO / "veridelta.tape"
 _TRANSCRIPT = _DEMO / "transcript.txt"
 _GIF = _ROOT / "docs" / "assets" / "demo.gif"
 _GIF_URL = "https://veridelta.github.io/veridelta/assets/demo.gif"
+_SETTINGS = _DEMO / "settings.tape"
 _PROMPT = "> "
 """The prompt vhs shows before each command."""
 
@@ -84,6 +85,23 @@ class TestDemoTape:
             "veridelta run -c veridelta.yaml",
             'echo "exit code for CI: $? (0 match, 1 drift, 3 error)"',
         ]
+
+    def test_it_requires_veridelta_and_shares_the_settings(self) -> None:
+        """Ensure the tape stops without `veridelta`, and draws as every other tape does."""
+        lines = _tape().splitlines()
+        settings = _SETTINGS.read_text(encoding="utf-8").splitlines()
+
+        assert lines.index("Require veridelta") < lines.index("Source settings.tape")
+        assert all(not line or line.startswith(("#", "Set ")) for line in settings)
+
+    def test_make_demo_pins_the_recorder_contributors_install(self) -> None:
+        """Ensure the vhs release `make demo` asks for is the one CONTRIBUTING.md installs."""
+        makefile = (_ROOT / "Makefile").read_text(encoding="utf-8")
+        pinned = re.search(r"^VHS_VERSION := (v[0-9.]+)$", makefile, re.MULTILINE)
+        contributing = (_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+
+        assert pinned, "The Makefile no longer pins the vhs release."
+        assert f"go install github.com/charmbracelet/vhs@{pinned.group(1)}" in contributing
 
     def test_every_veridelta_line_parses_with_the_cli(self) -> None:
         """Ensure a renamed command or flag fails here before the recording lies."""

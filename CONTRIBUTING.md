@@ -88,9 +88,16 @@ The browser fetches only the local site, so a font or a diagram from a CDN never
 
 axe-core comes from npm, pinned by version and digest, and Dependabot cannot bump it. To move to a new release, read `https://registry.npmjs.org/axe-core/<version>`. Copy its `dist.tarball` into `_AXE_CORE` and its `dist.integrity` into `_AXE_CORE_INTEGRITY`, both in `tests/accessibility/test_accessibility.py`.
 
-### The recording
+### Recording the demos
 
-The README and the docs home embed a recording of the quick start, rendered from `demo/veridelta.tape` by [vhs](https://github.com/charmbracelet/vhs). `make demo` writes `docs/assets/demo.gif`; run it after a change to the quick start or to the run summary, with vhs installed from `brew install vhs` or its release binary. The tape types six commands at real speed on the two CI fixture files copied into `demo/`. `demo/transcript.txt` holds what the recording shows, written by hand, and `tests/unit/test_demo_tape.py` holds the commands to the CLI, the data to the fixtures, and the transcript to what the commands print. Commit the new GIF, with the transcript that matches it, in the change that moved the output.
+The README and the docs home embed a recording of the quick start, rendered from `demo/veridelta.tape` by [vhs](https://github.com/charmbracelet/vhs). `make demo` writes `docs/assets/demo.gif`; run it after a change to the quick start or to the run summary. It needs vhs v0.12.1, the release the `Makefile` pins, since another release can draw the same tape differently, and it refuses any other. vhs needs `ttyd` and `ffmpeg` on `PATH`, and a Chromium it finds there or downloads:
+
+```bash
+go install github.com/charmbracelet/vhs@v0.12.1
+sudo apt-get install ttyd ffmpeg   # or: brew install ttyd ffmpeg
+```
+
+`make demo` renders each tape in `demo/` through `uv run`, so the `veridelta` it records is this checkout's. Each tape requires `veridelta` and sources `demo/settings.tape`, which holds the shell, the font size, the width, and the typing speed every recording shares. The tape types six commands at real speed on the two CI fixture files copied into `demo/`. `demo/transcript.txt` holds what the recording shows, written by hand, and `tests/unit/test_demo_tape.py` holds the commands to the CLI, the data to the fixtures, and the transcript to what the commands print. Commit the new GIF, with the transcript that matches it, in the change that moved the output.
 
 ## Commit messages
 
