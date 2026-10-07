@@ -31,7 +31,6 @@ from veridelta.exceptions import ConnectorError
 from veridelta.models import BigQueryConfig, DatabricksConfig, SnowflakeConfig
 
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
 
 # The tests patch each module attribute below, so no test depends on the
 # extras installed where it runs.

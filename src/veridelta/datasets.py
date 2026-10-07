@@ -16,7 +16,6 @@ import polars as pl
 from veridelta.exceptions import DatasetError
 
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
 
 
 def _git_ref() -> str:

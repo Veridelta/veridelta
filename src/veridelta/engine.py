@@ -11,7 +11,8 @@ import logging
 import re
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from importlib.util import find_spec
@@ -92,7 +93,6 @@ from veridelta.models import (
 from veridelta.sentinels import usable_sentinels
 
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
 
 
 fastexcel = optional_module("fastexcel")
@@ -1456,12 +1456,19 @@ class _WarehousePair:
 
     def with_session(self, work: Callable[[PushdownSession, str, str], _T]) -> _T:
         """Open one session, run `work` on it, and close it whatever happens."""
-        session = self.warehouse.session(self.source)
-        session.connect()
-        try:
+        with _warehouse_session(self.source) as session:
             return work(session, _table_name(self.source), _table_name(self.target))
-        finally:
-            session.close()
+
+
+@contextmanager
+def _warehouse_session(config: SourceRef) -> Generator[PushdownSession]:
+    """Connect to the warehouse one side names, and close the session whatever happens."""
+    session = _WAREHOUSES[type(config)].session(config)
+    session.connect()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePair | None:
@@ -2164,12 +2171,8 @@ class DiffEngine:
         """
         if not _is_warehouse(config):
             return _schema_frame(config).collect_schema()
-        session = _WAREHOUSES[type(config)].session(config)
-        session.connect()
-        try:
+        with _warehouse_session(config) as session:
             return _probe_relation(session, _table_name(config))[1]
-        finally:
-            session.close()
 
     @classmethod
     def _local_schema_findings(
