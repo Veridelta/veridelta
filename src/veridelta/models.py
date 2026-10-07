@@ -23,6 +23,43 @@ from veridelta.exceptions import ConfigError
 if TYPE_CHECKING:
     import pandas as pd  # pyright: ignore[reportMissingTypeStubs]
 
+_CONTAINER_SCHEMES: Final[frozenset[str]] = frozenset({"abfs", "abfss", "wasb", "wasbs"})
+"""Azure schemes whose `container@account` user part names a container, not a login."""
+
+
+def redacted_location(location: str) -> str | None:
+    """Return a path or URL with anything secret left out, safe to print or log.
+
+    A URL keeps its scheme, host, and path. Its query goes, since it can hold a
+    token or the signature of a pre-signed link, and so does its user part,
+    which can hold a login, unless an Azure scheme names a container there. A
+    path on this machine comes back as it is.
+
+    Args:
+        location (str): A file path, or the URL of a file or a table.
+
+    Returns:
+        str | None: The location without its secrets, or None when it does not
+            parse as a URL.
+
+    Examples:
+        >>> redacted_location("s3://bucket/events.parquet?X-Amz-Signature=abc")
+        's3://bucket/events.parquet'
+        >>> redacted_location("abfss://lake@account.dfs.core.windows.net/events")
+        'abfss://lake@account.dfs.core.windows.net/events'
+    """
+    try:
+        parts = urlsplit(location)
+    except ValueError:
+        return None
+    if not (parts.scheme and parts.netloc):
+        return location
+    user, _, host = parts.netloc.rpartition("@")
+    if user and parts.scheme in _CONTAINER_SCHEMES and ":" not in user:
+        host = f"{user}@{host}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
 SQL_IDENTIFIER_SEGMENT_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]*$"
 """Unquoted SQL identifier: letter or underscore, then alphanumeric or underscore."""
 
@@ -1322,17 +1359,23 @@ class DatabaseConfig(BaseModel):
 
     @property
     def redacted_uri(self) -> str:
-        """Return the URI with any password in it replaced by `***`.
+        """Return the URI with any password in it replaced by `***`, and no query.
+
+        The query goes whole, since a parameter such as `?password=` can carry
+        a credential too.
 
         Returns:
             str: The URI, safe to print or log.
         """
         parts = urlsplit(self.uri)
-        if parts.password is None:
+        if parts.password is None and not parts.query:
             return self.uri
-        userinfo, _, hostinfo = parts.netloc.rpartition("@")
-        user = userinfo.partition(":")[0]
-        return urlunsplit(parts._replace(netloc=f"{user}:***@{hostinfo}"))
+        netloc = parts.netloc
+        if parts.password is not None:
+            userinfo, _, hostinfo = netloc.rpartition("@")
+            netloc = f"{userinfo.partition(':')[0]}:***@{hostinfo}"
+        # Written out, since `urlunsplit` drops the `//` of a URI with no host, such as SQLite's.
+        return f"{parts.scheme}://{netloc}{parts.path}"
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
         """Print the URI with its password masked.

@@ -141,6 +141,28 @@ class TestLoaders:
         ):
             LoaderFactory.load(SourceConfig(path=str(pattern), format="parquet"))
 
+    def test_it_leaves_a_signature_out_of_a_failed_read(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure a pre-signed link's query reaches no error, even quoted by the reader.
+
+        A signature grants access to the object, so the message names the file
+        by its scheme, host, and path alone.
+        """
+        url = "s3://lake/orders.parquet?X-Amz-Signature=sig-do-not-print"
+        mocker.patch.object(
+            LoaderFactory.get_loader("parquet"), "load", side_effect=OSError(f"cannot open {url}")
+        )
+
+        with pytest.raises(ConnectorError) as exc_info:
+            LoaderFactory.load(SourceConfig(path=url, format="parquet"))
+
+        assert str(exc_info.value) == (
+            "Reading the parquet file 's3://lake/orders.parquet' failed: "
+            "cannot open s3://lake/orders.parquet"
+        )
+        assert "sig-do-not-print" not in caplog.text
+
     def test_it_leaves_a_scan_lazy_once_its_file_opens(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:

@@ -824,12 +824,13 @@ class TestDatabaseConfig:
         """Ensure a password written into the URI is hidden while the rest stays readable.
 
         The URI is the part worth seeing when a connection fails, so only its
-        password is replaced. The connector still needs the real one, which
-        stays in the attribute and in `model_dump()`.
+        password is replaced, and its query, which can carry a credential too,
+        is left out. The connector still needs the real URI, which stays in
+        the attribute and in `model_dump()`.
         """
         uri = f"postgresql://analyst:{_SECRET}@db.internal:5432/sales?sslmode=require"
         config = DatabaseConfig(uri=uri, table="orders")
-        masked = "postgresql://analyst:***@db.internal:5432/sales?sslmode=require"
+        masked = "postgresql://analyst:***@db.internal:5432/sales"
 
         assert config.redacted_uri == masked
         assert _SECRET not in repr(config)
@@ -853,6 +854,26 @@ class TestDatabaseConfig:
 
         assert config.redacted_uri == uri
         assert f"uri='{uri}'" in repr(config)
+
+    @pytest.mark.parametrize(
+        ("uri", "printed"),
+        [
+            pytest.param(
+                f"postgresql://analyst@db.internal/sales?password={_SECRET}",
+                "postgresql://analyst@db.internal/sales",
+                id="password-parameter",
+            ),
+            pytest.param(
+                f"sqlite:///srv/legacy.db?token={_SECRET}", "sqlite:///srv/legacy.db", id="sqlite"
+            ),
+        ],
+    )
+    def test_it_leaves_the_query_out_of_a_printed_uri(self, uri: str, printed: str) -> None:
+        """Ensure a credential passed as a URI parameter, such as `?password=`, is never printed."""
+        config = DatabaseConfig(uri=uri, table="orders")
+
+        assert config.redacted_uri == printed
+        assert _SECRET not in repr(config)
 
 
 class TestDuckDBConfig:

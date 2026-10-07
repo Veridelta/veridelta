@@ -253,6 +253,28 @@ class TestLakehouseConnectors:
         assert schema.names() == ["id", "amount"]
         assert isinstance(lazy, pl.LazyFrame)
 
+    def test_it_leaves_a_token_out_of_a_failed_scan(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure a table URI's query reaches neither the error nor the log, quoted or not."""
+        uri = "s3://lake/events?token=tok-do-not-print"
+        mocker.patch(
+            "veridelta.connectors.lakehouse.pl.scan_delta",
+            side_effect=RuntimeError(f"no table at {uri}"),
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="veridelta.connectors.lakehouse"),
+            pytest.raises(ConnectorError) as exc_info,
+        ):
+            DeltaLakeConnector(DeltaLakeConfig(table_uri=uri)).connect()
+
+        assert str(exc_info.value) == (
+            "Delta Lake scan of 's3://lake/events' failed: no table at s3://lake/events"
+        )
+        assert "tok-do-not-print" not in caplog.text
+        assert "Delta Lake scan of s3://lake/events failed" in caplog.text
+
     def test_it_connects_iceberg_via_scan_iceberg_and_returns_schema(
         self, mocker: MockerFixture
     ) -> None:
@@ -626,6 +648,24 @@ class TestDatabaseConnector:
         rendered = "".join(traceback.format_exception(info.value))
         for secret in secrets:
             assert secret not in rendered
+
+    def test_it_masks_a_credential_parameter_the_driver_repeats(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure `?password=` in the URI is masked when a driver error quotes the URI.
+
+        Other parameters, such as `sslmode`, stay readable in the driver's text.
+        """
+        uri = "postgresql://analyst@db.internal/sales?sslmode=require&password=pw-do-not-print"
+        _read_database(mocker, side_effect=RuntimeError(f"could not connect to {uri}"))
+        config = DatabaseConfig(uri=uri, table="orders")
+
+        with pytest.raises(ConnectorError) as info:
+            DatabaseConnector(config).connect()
+
+        assert "pw-do-not-print" not in str(info.value)
+        assert "sslmode=require&password=***" in str(info.value)
+        assert "from 'postgresql://analyst@db.internal/sales' failed" in str(info.value)
 
     def test_it_names_a_query_source_without_its_sql(self, mocker: MockerFixture) -> None:
         """Ensure a failed query is identified without repeating the statement."""

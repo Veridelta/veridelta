@@ -17,7 +17,7 @@ import logging
 
 import polars as pl
 
-from veridelta.connectors.base import ReaderConnector
+from veridelta.connectors.base import ReaderConnector, shown_location, without_location
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
@@ -67,14 +67,16 @@ class DeltaLakeConnector(ReaderConnector):
         except ImportError as exc:
             raise ConnectorError(_DELTA_EXTRA) from exc
         except Exception as exc:
-            logger.warning("Delta Lake scan of %s failed", self._config.table_uri)
+            where = shown_location(self._config.table_uri)
+            logger.warning("Delta Lake scan of %s failed", where)
             raise ConnectorError(
-                f"Delta Lake scan of '{self._config.table_uri}' failed: {exc}"
+                f"Delta Lake scan of '{where}' failed: "
+                f"{without_location(str(exc), self._config.table_uri)}"
             ) from exc
         self._frame = frame
         logger.info(
             "Opened Delta Lake scan of %s (version=%s)",
-            self._config.table_uri,
+            shown_location(self._config.table_uri),
             "latest" if self._config.version is None else self._config.version,
         )
 
@@ -137,14 +139,16 @@ class IcebergConnector(ReaderConnector):
         except ImportError as exc:
             raise ConnectorError(_ICEBERG_EXTRA) from exc
         except Exception as exc:
-            logger.warning("Iceberg scan of %s failed", self._config.table_uri)
+            where = shown_location(self._config.table_uri)
+            logger.warning("Iceberg scan of %s failed", where)
             raise ConnectorError(
-                f"Iceberg scan of '{self._config.table_uri}' failed: {exc}"
+                f"Iceberg scan of '{where}' failed: "
+                f"{without_location(str(exc), self._config.table_uri)}"
             ) from exc
         self._frame = frame
         logger.info(
             "Opened Iceberg scan of %s (snapshot_id=%s)",
-            self._config.table_uri,
+            shown_location(self._config.table_uri),
             "latest" if self._config.snapshot_id is None else self._config.snapshot_id,
         )
 
