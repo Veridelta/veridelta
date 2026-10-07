@@ -224,7 +224,11 @@ class TestDocumentationLinks:
         blocks = re.findall(r"^extra_(?:css|javascript):\n((?:  - .+\n)+)", text, re.MULTILINE)
         listed = [line.removeprefix("  - ") for block in blocks for line in block.splitlines()]
 
-        assert listed == ["stylesheets/accessibility.css", "javascripts/accessibility.js"]
+        assert listed == [
+            "stylesheets/brand.css",
+            "stylesheets/accessibility.css",
+            "javascripts/accessibility.js",
+        ]
         assert [name for name in listed if not (_DOCS / name).is_file()] == []
 
     def test_notebooks_link_only_by_absolute_url(self) -> None:

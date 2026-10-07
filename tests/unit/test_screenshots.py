@@ -1,11 +1,12 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hold the report screenshots and the link preview card to what uses them.
+"""Hold the report screenshots, the link preview card, and the logo to what uses them.
 
 `make screenshots` writes the images with a browser, so these tests read only
 what it wrote: the card says what PyPI says, every image has the size its use
-takes, and the docs site and the results page point at them.
+takes, and the docs site and the results page point at them. The docs site
+shows the logo the card shows, in the same colors.
 """
 
 import re
@@ -21,6 +22,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _ASSETS = _ROOT / "docs" / "assets"
 _IN_SDIST = not (_ROOT / ".git").exists()
 """Whether the tests run from an unpacked sdist, which leaves out the images."""
+_COLORS = ("#0d2f5a", "#de5807", "#2054b2")
+"""The logo's navy, orange, and blue."""
 
 
 def _size(png: Path) -> tuple[int, int]:
@@ -49,6 +52,32 @@ def test_the_card_shows_the_logo(name: str) -> None:
 
     assert f'src="../docs/assets/{name}"' in card
     assert min(_size(_ASSETS / name)) > 0
+
+
+@pytest.mark.parametrize(
+    ("setting", "name"), [("logo", "veridelta-symbol.png"), ("favicon", "favicon.png")]
+)
+def test_the_docs_site_shows_the_logo(setting: str, name: str) -> None:
+    """Ensure the docs site's header and browser tab show the symbol, from the files the docs keep."""
+    mkdocs = (_ROOT / "mkdocs.yml").read_text(encoding="utf-8")
+
+    assert re.search(rf"^  {setting}: assets/{name}$", mkdocs, re.MULTILINE)
+    assert min(_size(_ASSETS / name)) > 0
+
+
+def test_the_favicon_is_square() -> None:
+    """Ensure the favicon is square, as a browser tab draws it, so the symbol is not stretched."""
+    width, height = _size(_ASSETS / "favicon.png")
+
+    assert width == height
+
+
+@pytest.mark.parametrize("path", ["demo/social-card.html", "docs/stylesheets/brand.css"])
+def test_the_card_and_the_docs_site_take_the_logos_colors(path: str) -> None:
+    """Ensure the card and the docs site both use navy, orange, and blue, so neither drifts alone."""
+    text = (_ROOT / path).read_text(encoding="utf-8").lower()
+
+    assert [color for color in _COLORS if color not in text] == []
 
 
 def test_the_card_has_the_size_link_previews_take() -> None:

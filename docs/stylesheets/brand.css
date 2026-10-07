@@ -1,0 +1,80 @@
+/*
+ * The logo's colors over the Material theme, as the link preview card has them:
+ * navy #0d2f5a, orange #de5807, and blue #2054b2. Each ratio is the contrast
+ * against the background the text sits on. WCAG 2.2 Level AA asks for 4.5:1.
+ */
+
+/*
+ * Light scheme: a white header, so the logo shows in its own colors, with navy
+ * text at 13.36:1. The tabs, at the theme's 70%, are 5.30:1. Links are the logo's
+ * blue, 7.06:1 on white and 6.48:1 inside code. The orange is 3.81:1 on white, so
+ * a link under the pointer takes it 20% darker, 5.57:1.
+ */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #ffffff;
+  --md-primary-fg-color--dark: #0d2f5a12;
+  --md-primary-bg-color: #0d2f5a;
+  --md-primary-bg-color--light: #0d2f5acc;
+  --md-typeset-a-color: #2054b2;
+  --md-accent-fg-color: #b24606;
+  --md-accent-fg-color--transparent: #b246061a;
+}
+
+/* The search box in the white header: its placeholder, navy at 80%, is 6.60:1 on it. */
+@media screen and (min-width: 60em) {
+  [data-md-color-scheme="default"] .md-search__form {
+    background-color: #0d2f5a12;
+  }
+}
+
+/* A line under the white tabs, where the page begins. */
+@media screen and (min-width: 76.25em) {
+  [data-md-color-scheme="default"] .md-tabs {
+    border-bottom: 0.05rem solid #0d2f5a1a;
+  }
+}
+
+/* The line beside the page's headings in the sidebar, which takes the header's color. */
+[data-md-color-scheme="default"] .md-nav--integrated > .md-nav__list > .md-nav__item--active .md-nav--secondary {
+  border-color: #2054b2;
+}
+
+/*
+ * Dark scheme: a navy header with white text at 13.36:1, and tabs at 7.32:1.
+ * The logo's blue is 2.28:1 on the dark background, so links take it 40% lighter,
+ * 5.54:1, and 4.92:1 inside code. A link under the pointer takes the orange 20%
+ * lighter, 5.46:1.
+ */
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #0d2f5a;
+  --md-primary-fg-color--dark: #0a2547;
+  --md-primary-bg-color: #ffffff;
+  --md-typeset-a-color: #7998d1;
+  --md-accent-fg-color: #e57939;
+  --md-accent-fg-color--transparent: #e579391a;
+}
+
+/* The logo, larger than the theme's 1.2rem, inside the header's 2.4rem. */
+.md-header__button.md-logo {
+  padding: 0.2rem;
+}
+
+.md-header__button.md-logo img {
+  height: 1.6rem;
+}
+
+/* The logo's blue is 1.89:1 on the navy header, so the dark scheme sets it on white, as it is drawn. */
+[data-md-color-scheme="slate"] .md-logo img {
+  padding: 0.1rem;
+  border-radius: 0.2rem;
+  background-color: #ffffff;
+}
+
+/* The symbol's two halves, orange into blue, along the top of the header. */
+.md-header::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0.15rem;
+  background: linear-gradient(90deg, #de5807 0%, #de5807 45%, #2054b2 55%, #2054b2 100%);
+  content: "";
+}
