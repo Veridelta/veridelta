@@ -11,7 +11,7 @@ The project uses [uv](https://docs.astral.sh/uv/) and a Makefile:
 | `make install` | Creates the environment with every extra, and installs the Git hooks. |
 | `make all` | Formats, lints, type-checks, tests, and builds the docs, as CI does. Run it before a pull request. |
 | `make notebooks` | Runs the tutorials, after a change to one. |
-| `make schema` | Regenerates `docs/schema/veridelta.schema.json`, after a change to a configuration model. |
+| `make schema` | Regenerates the schemas under `docs/schema/`, after a change to a configuration model or to the JSON a command prints. |
 | `make postgres` | Runs the parity suite inside a live Postgres, after a change to the SQL compiler. |
 | `make live` | Runs the parity suite inside one live warehouse, with that service's account. A release needs it to pass. |
 | `make databases` | Reads real MySQL and SQL Server tables, after a change to the database connector. |
@@ -29,7 +29,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 - Add no dependency without a concrete need.
 - Make the smallest change that meets the need, with no abstraction for a case that does not exist yet.
 - Keep a public API as it is unless the task asks for a breaking change.
-- Never edit a generated file by hand. Run its generator, such as `make schema` for the configuration schema.
+- Never edit a generated file by hand. Run its generator, such as `make schema` for the schemas under `docs/schema/`.
 - A `# type: ignore`, `# noqa`, or `# pyright: ignore` carries its reason on the same line.
 - Assemble warehouse SQL only in `connectors/sql.py`, from allowlisted identifiers, dialect quoting, and strict types, and never concatenate a configuration string into a statement. [The security rules](rules/security.md) hold the whole control.
 - Follow the [writing rules](CONTRIBUTING.md#writing-documentation) in docs, docstrings, CLI help, commit messages, and pull requests. `tests/unit/test_docs_style.py` checks some of them.

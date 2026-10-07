@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridelta.github.io/veridelta/schema/validate.schema.json",
+  "description": "The findings of a check: whether the file is valid, its errors, and its warnings.",
+  "properties": {
+    "config": {
+      "title": "Config",
+      "type": "string"
+    },
+    "valid": {
+      "title": "Valid",
+      "type": "boolean"
+    },
+    "errors": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "config",
+    "valid",
+    "errors",
+    "warnings"
+  ],
+  "title": "veridelta validate --json",
+  "type": "object"
+}

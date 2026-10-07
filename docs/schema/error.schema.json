@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridelta.github.io/veridelta/schema/error.schema.json",
+  "$defs": {
+    "ErrorDetail": {
+      "description": "Why a command could not finish.\n\nAttributes:\n    type: The error's class, such as `ConfigError` or `ConnectorError`.\n    message: What went wrong, as stderr says it.",
+      "properties": {
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "message"
+      ],
+      "title": "ErrorDetail",
+      "type": "object"
+    }
+  },
+  "description": "The one object a command prints with `--json` when it cannot finish, at exit code 3.",
+  "properties": {
+    "error": {
+      "$ref": "#/$defs/ErrorDetail"
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "title": "An error printed with --json",
+  "type": "object"
+}

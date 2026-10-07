@@ -1,13 +1,13 @@
 # Command line
 
-The `veridelta` command runs a comparison, checks a configuration, proposes value maps, prints the configuration schema, and serves its checks and comparisons to an AI agent. `run`, `validate`, and `crosswalk` read `veridelta.yaml` unless `-c` names another file.
+The `veridelta` command runs a comparison, checks a configuration, proposes value maps, prints the JSON Schemas of its files and its output, and serves its checks and comparisons to an AI agent. `run`, `validate`, and `crosswalk` read `veridelta.yaml` unless `-c` names another file.
 
 | Command | Description |
 | :--- | :--- |
 | `veridelta run` | Compare the two datasets and report the result. |
 | `veridelta validate` | Report what would stop a run, without reading any rows. |
 | `veridelta crosswalk` | Propose `value_map` entries from the data. |
-| `veridelta schema` | Print the configuration file's JSON Schema. |
+| `veridelta schema` | Print the JSON Schema of the configuration file, or of what a command prints with `--json`. |
 | `veridelta mcp` | Serve checks and comparisons to an AI agent as Model Context Protocol tools, over stdio. |
 | `veridelta --version` | Print the installed version. |
 
@@ -59,6 +59,8 @@ A command that cannot finish explains why on stderr. With `--json`, it also prin
 ```
 
 `type` names the error. A `ConfigError` is a problem with the configuration file. A `ConnectorError` comes from a source, or from the endpoint `--otel-send` posts to. A `DataIntegrityError` comes from a source's data. Any other type is a bug or an unsupported input: please [report it](https://github.com/Veridelta/veridelta/issues). An error `validate` finds in the file is a finding at exit `1`, in its usual output, not an error object.
+
+`veridelta schema error` prints the JSON Schema of this object; see [Printing the schema](#printing-the-schema).
 
 ## Logging
 
@@ -146,6 +148,21 @@ veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 ```bash
 veridelta schema > veridelta.schema.json
 ```
+
+Given the name of an output, it prints the JSON Schema of what a command prints with `--json` instead, so a script or an agent can check what it parses:
+
+```bash
+veridelta schema run > run.schema.json
+```
+
+| Name | The JSON it describes |
+| :--- | :--- |
+| `run` | The summary `veridelta run --json` prints: the row counts, the verdict, and the drifting columns. |
+| `validate` | The report `veridelta validate --json` prints: whether the file is valid, its errors, and its warnings. |
+| `crosswalk` | The list of value maps `veridelta crosswalk --json` proposes. |
+| `error` | The one object `run`, `validate`, or `crosswalk` prints with `--json` in place of its usual output when it [exits 3](#exit-codes). |
+
+The docs site serves each one too, at the URL its `$id` names, such as [`schema/run.schema.json`](schema/run.schema.json). A schema changes with the release that changes its output, and the changelog says so.
 
 ## Serving tools to an agent
 

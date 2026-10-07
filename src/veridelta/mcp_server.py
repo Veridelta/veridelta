@@ -23,7 +23,7 @@ import inspect
 import json
 import logging
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -52,7 +52,6 @@ from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.models import (
-    ConfigFinding,
     DatabaseConfig,
     DeltaLakeConfig,
     DiffConfig,
@@ -61,6 +60,7 @@ from veridelta.models import (
     SourceConfig,
     SourceRef,
 )
+from veridelta.outputs import ValidationReport, validation_report
 
 if TYPE_CHECKING:
     from mcp.server import MCPServer
@@ -185,38 +185,6 @@ class Settings:
         if self.max_rows < 1:
             raise ConfigError(f"The MCP server's row cap must be at least 1, got {self.max_rows}.")
         object.__setattr__(self, "roots", tuple(Path(root).resolve() for root in self.roots))
-
-
-class ValidationReport(TypedDict):
-    """What `validate_config` returns, the object `veridelta validate --json` prints.
-
-    Attributes:
-        config: The configuration file, resolved.
-        valid: Whether no finding is an error.
-        errors: What would stop a run.
-        warnings: What a run may still trip on, such as an unset variable.
-    """
-
-    config: str
-    valid: bool
-    errors: list[str]
-    warnings: list[str]
-
-
-def validation_report(config: str, findings: Iterable[ConfigFinding]) -> ValidationReport:
-    """Sort a check's findings into what `validate --json` prints and `validate_config` returns.
-
-    Args:
-        config (str): The configuration file, as the report names it.
-        findings (Iterable[ConfigFinding]): What the check found, in order.
-
-    Returns:
-        ValidationReport: The errors and the warnings, each in the order found.
-    """
-    found = list(findings)
-    errors = [finding.message for finding in found if finding.severity == "error"]
-    warnings = [finding.message for finding in found if finding.severity == "warning"]
-    return ValidationReport(config=config, valid=not errors, errors=errors, warnings=warnings)
 
 
 class RunReport(TypedDict):

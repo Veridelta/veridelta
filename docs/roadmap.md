@@ -24,7 +24,6 @@ These items build on [AI agents](agents.md), in this order, tracked in [issue 12
 
 ### Next
 
-- Schemas for the JSON that `run`, `validate`, and `crosswalk` print, published as the configuration schema is. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
 - A tutorial that compares two model evaluation runs, keyed by example ID, with tolerances and fuzzy text matching. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - A section of the GitHub Action's pull request comment that an agent can parse. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request) and [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
 - A recipe for an agent's fix loop: edit the pipeline, let CI run Veridelta, read the result, and fix what it reports. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).

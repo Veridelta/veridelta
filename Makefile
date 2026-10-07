@@ -45,6 +45,9 @@ demo:
 
 schema:
 	uv run veridelta schema > docs/schema/veridelta.schema.json
+	for output in run validate crosswalk error; do \
+		uv run veridelta schema $$output > docs/schema/$$output.schema.json; \
+	done
 
 docs:
 	uv run mkdocs build --strict

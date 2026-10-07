@@ -51,6 +51,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
 | The JSON summary with `--json`, and one JSON object for a failure | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Command line](../docs/cli.md), [Results](../docs/results.md) | [DR-02](metrics/DR-02.md) |
+| A published JSON Schema for what `run`, `validate`, and `crosswalk` print with `--json`, and for the error object, printed by `veridelta schema NAME` | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Command line](../docs/cli.md), [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
 | The HTML report, readable without JavaScript and by keyboard, checked with axe-core | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Results](../docs/results.md) | [GR-03](metrics/GR-03.md) |
 | The Markdown summary for a pull request, with row values off unless asked | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Results](../docs/results.md) | [GR-03](metrics/GR-03.md) |
 | Discrepancy files of the rows that differ, as CSV, Parquet, JSON, NDJSON, or Arrow | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Results](../docs/results.md) | [GR-02](metrics/GR-02.md) |
@@ -71,7 +72,6 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | :--- | :--- | :--- |
 | Pushdown for more SQL dialects, such as Redshift and Synapse | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [GR-01](metrics/GR-01.md) |
 | The VS Code extension, its run command, and its MCP registration | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
-| Schemas for the JSON the commands print | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
 | A tutorial comparing two model evaluation runs | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [NS-01](metrics/NS-01.md) |
 | A parsable section of the Action's pull request comment, and a recipe for an agent's fix loop | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
 | `veridelta suggest`, proposing rules from the pairs that differ, with no model | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [NS-01](metrics/NS-01.md) |
