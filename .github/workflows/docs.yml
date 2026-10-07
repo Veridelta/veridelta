@@ -34,11 +34,12 @@ jobs:
       - name: Install uv and Set up Python
         uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
+          version: "0.12.23"
           enable-cache: false
           python-version: "3.12"
 
       - name: Install Dependencies
-        run: uv sync --all-extras
+        run: uv sync --locked --all-extras
 
       - name: Build MkDocs
         run: uv run mkdocs build --strict
