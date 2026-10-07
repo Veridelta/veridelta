@@ -3,8 +3,10 @@
 
 """Unit tests for Veridelta dataset utilities and cache management."""
 
+import hashlib
 import importlib.metadata
 import io
+import logging
 import urllib.error
 from email.message import Message
 from pathlib import Path
@@ -15,6 +17,8 @@ import pytest
 from pytest_mock import MockerFixture
 
 from veridelta.datasets import (  # pyright: ignore[reportPrivateUsage]
+    _TAXI_MAX_BYTES,
+    _TAXI_SHA256,
     _get_cache_dir,
     _git_ref,
     load_nyc_taxi,
@@ -22,6 +26,18 @@ from veridelta.datasets import (  # pyright: ignore[reportPrivateUsage]
 from veridelta.exceptions import DatasetError, VerideltaError
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
+_SAMPLE = (
+    Path(__file__).resolve().parents[2] / "docs" / "assets" / "data" / "sample_taxi_data.parquet"
+)
+"""The published sample, which a download must match byte for byte."""
+
+
+def _response(data: bytes) -> MagicMock:
+    """Stand in for the HTTP response that `urlopen` returns, serving `data`."""
+    response = MagicMock()
+    response.__enter__.return_value = io.BytesIO(data)
+    return response
 
 
 class TestGitRef:
@@ -64,15 +80,12 @@ class TestDatasetCacheManagement:
         mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
         mock_urlopen = mocker.patch("veridelta.datasets.urllib.request.urlopen")
 
-        df = pl.DataFrame({"trip_id": [1, 2, 3]})
-        cache_file = tmp_path / "sample_taxi_data.parquet"
-        df.write_parquet(cache_file)
+        (tmp_path / "sample_taxi_data.parquet").write_bytes(_SAMPLE.read_bytes())
 
         result_df = load_nyc_taxi()
 
         mock_urlopen.assert_not_called()
-        assert result_df.height == 3
-        assert result_df.columns == ["trip_id"]
+        assert result_df.equals(pl.read_parquet(_SAMPLE))
 
     def test_it_downloads_and_saves_dataset_when_cache_is_empty(
         self, mocker: MockerFixture, tmp_path: Path
@@ -80,16 +93,9 @@ class TestDatasetCacheManagement:
         """Ensure missing datasets trigger a targeted download and save the file permanently."""
         mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
 
-        # Generate an in-memory parquet byte stream to act as a "download"
-        df = pl.DataFrame({"downloaded_col": ["A", "B"]})
-        parquet_bytes = io.BytesIO()
-        df.write_parquet(parquet_bytes)
-        parquet_bytes.seek(0)
-
-        mock_response = MagicMock()
-        mock_response.__enter__.return_value = parquet_bytes
         mock_urlopen = mocker.patch(
-            "veridelta.datasets.urllib.request.urlopen", return_value=mock_response
+            "veridelta.datasets.urllib.request.urlopen",
+            return_value=_response(_SAMPLE.read_bytes()),
         )
 
         result_df = load_nyc_taxi()
@@ -101,10 +107,9 @@ class TestDatasetCacheManagement:
         assert request_obj.full_url.startswith("https://raw.githubusercontent.com/Veridelta")
         assert kwargs["timeout"] == 15.0
 
-        assert (tmp_path / "sample_taxi_data.parquet").exists()
-
-        assert result_df.columns == ["downloaded_col"]
-        assert result_df.height == 2
+        assert (tmp_path / "sample_taxi_data.parquet").read_bytes() == _SAMPLE.read_bytes()
+        assert not (tmp_path / "sample_taxi_data.parquet.part").exists()
+        assert result_df.equals(pl.read_parquet(_SAMPLE))
 
     def test_it_cleans_up_partial_files_and_raises_dataset_error_on_download_failure(
         self, mocker: MockerFixture, tmp_path: Path
@@ -162,28 +167,56 @@ class TestDatasetCacheManagement:
         http_error.close()
 
     def test_it_automatically_evicts_corrupted_cache_and_redownloads_the_file(
-        self, mocker: MockerFixture, tmp_path: Path
+        self, mocker: MockerFixture, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Ensure corrupted cache files are automatically deleted and re-downloaded."""
+        """Ensure a cached file that is not the sample, such as a corrupt one, is downloaded again."""
         mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
 
         cache_file = tmp_path / "sample_taxi_data.parquet"
         cache_file.write_text("This is definitely not a valid parquet binary.")
-
-        df = pl.DataFrame({"recovered_col": [1, 2]})
-        parquet_bytes = io.BytesIO()
-        df.write_parquet(parquet_bytes)
-        parquet_bytes.seek(0)
-
-        mock_response = MagicMock()
-        mock_response.__enter__.return_value = parquet_bytes
         mock_urlopen = mocker.patch(
-            "veridelta.datasets.urllib.request.urlopen", return_value=mock_response
+            "veridelta.datasets.urllib.request.urlopen",
+            return_value=_response(_SAMPLE.read_bytes()),
         )
 
-        result_df = load_nyc_taxi()
+        with caplog.at_level(logging.WARNING, logger="veridelta.datasets"):
+            result_df = load_nyc_taxi()
 
-        # The network SHOULD be called oncebecause it realized the cache was corrupt
         mock_urlopen.assert_called_once()
-        assert result_df.columns == ["recovered_col"]
-        assert result_df.height == 2
+        assert "differs from the published one" in caplog.text
+        assert result_df.equals(pl.read_parquet(_SAMPLE))
+
+    def test_it_caches_nothing_that_is_not_the_published_sample(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a download whose SHA-256 differs, such as from a tampered mirror, is dropped."""
+        mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
+        other = io.BytesIO()
+        pl.DataFrame({"trip_id": [1]}).write_parquet(other)
+        mocker.patch(
+            "veridelta.datasets.urllib.request.urlopen", return_value=_response(other.getvalue())
+        )
+
+        with pytest.raises(DatasetError, match="is not the published sample"):
+            load_nyc_taxi()
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_it_stops_a_download_that_passes_the_size_cap(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure an endless or oversized response is cut off and leaves nothing behind."""
+        mocker.patch("veridelta.datasets._get_cache_dir", return_value=tmp_path)
+        mocker.patch(
+            "veridelta.datasets.urllib.request.urlopen",
+            return_value=_response(b"\0" * (_TAXI_MAX_BYTES + 1)),
+        )
+
+        with pytest.raises(DatasetError, match="passed 1,048,576 bytes"):
+            load_nyc_taxi()
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_it_pins_the_hash_of_the_published_sample(self) -> None:
+        """Ensure the pinned SHA-256 is the one of the file the docs publish, so a new sample needs a new pin."""
+        assert hashlib.sha256(_SAMPLE.read_bytes()).hexdigest() == _TAXI_SHA256
