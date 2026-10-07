@@ -24,6 +24,7 @@ is refused rather than followed to a second host.
 """
 
 import http.client
+import ipaddress
 import json
 import logging
 import os
@@ -403,7 +404,8 @@ def _otlp_timeout() -> float:
     if setting is None:
         return _DEFAULT_TIMEOUT_MS / 1000
     name, text = setting
-    if not text.isdigit() or int(text) == 0:
+    # `isdigit` alone accepts digits such as `²`, which `int` then refuses.
+    if not (text.isascii() and text.isdigit()) or int(text) == 0:
         raise ConfigError(f"{name} must be a whole number of milliseconds above 0, such as 10000.")
     return int(text) / 1000
 
@@ -417,6 +419,16 @@ def _check_otlp_protocol() -> None:
             f"{name} is '{protocol}', but Veridelta sends metrics only as {_JSON_PROTOCOL}. "
             f"Set it to {_JSON_PROTOCOL}, or unset it."
         )
+
+
+def _on_this_machine(host: str) -> bool:
+    """Return whether a host name is this machine: `localhost`, or a loopback address."""
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
@@ -491,6 +503,14 @@ def send_otlp_metrics(
     )
     # A query can hold a credential too, so messages name the endpoint without one.
     where = cast("str", redacted_location(endpoint))
+    parts = urlsplit(endpoint)
+    if headers and parts.scheme == "http" and not _on_this_machine(parts.hostname or ""):
+        # Headers often carry an API key, which plain http sends readable on the way.
+        logger.warning(
+            "Sending OTLP headers to %s over plain http, so anyone on the network path can "
+            "read them. Use an https:// endpoint.",
+            where,
+        )
     request = urllib.request.Request(
         endpoint,
         data=export.encode("utf-8"),
