@@ -32,6 +32,7 @@ from veridelta.mcp_server import (
     Settings,
     build_server,
     check_configuration,
+    describe_side,
     resolve_path,
     run_configuration,
     serve,
@@ -49,6 +50,12 @@ _INSTRUCTIONS_BUDGET = 500
 
 _VALID = "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
 """A configuration that loads and passes every offline check."""
+
+_QUERY = (
+    "source:\n  type: database\n  uri: sqlite:///srv/x.db\n  query: SELECT * FROM t\n"
+    "target:\n  path: b.csv\nprimary_keys: [id]\n"
+)
+"""A configuration whose source is a query, which no probe can describe without running it."""
 
 _SECRET = "hunter2-do-not-print"
 
@@ -363,15 +370,71 @@ class TestRunConfiguration:
             run_configuration(Settings((tmp_path,)), "veridelta.yaml")
 
 
+class TestDescribeSide:
+    """Validate the read `describe_schema` makes, without the SDK in the way."""
+
+    def test_it_lists_a_sides_columns_and_their_types(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure each column comes back in its stored order, with the type Polars reads."""
+        monkeypatch.chdir(tmp_path)
+        _project(tmp_path, "modern_drift.csv")
+
+        report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
+
+        assert report == {
+            "side": "source",
+            "columns": {"id": "Int64", "status": "String", "amount": "Float64"},
+        }
+        assert list(report["columns"]) == ["id", "status", "amount"]
+
+    def test_it_reads_the_side_it_is_asked_for(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `target` describes the target, whose columns differ from the source's here."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.csv").write_text("id,amount\n1,10\n")
+        (tmp_path / "b.csv").write_text("id,label\n1,x\n")
+        _write(tmp_path, _VALID)
+
+        report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert report["side"] == "target"
+        assert report["columns"] == {"id": "Int64", "label": "String"}
+
+    def test_it_refuses_a_configuration_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure the folder guard holds for this tool too."""
+        outside = _write(tmp_path_factory.mktemp("outside"), _VALID)
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            describe_side(Settings((tmp_path,)), str(outside), "source")
+
+    def test_it_will_not_run_a_query_to_learn_its_columns(self, tmp_path: Path) -> None:
+        """Ensure a query side is refused with the probe's own reason, and nothing connects."""
+        _write(tmp_path, _QUERY)
+
+        with pytest.raises(ConfigError, match="A schema probe reads a 'table'"):
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
+
+
 class TestServer:
     """Validate the server as a host sees it, through the SDK's client."""
 
     def test_it_lists_each_tool_with_its_arguments_and_result(self, tmp_path: Path) -> None:
-        """Ensure the host sees each tool, what it takes, and what it returns."""
+        """Ensure the host sees each tool, what it takes, and what it returns.
+
+        The SDK drops a tool's output schema without a word when pydantic cannot
+        build one, as for a `typing.TypedDict` nested in another on Python 3.11,
+        and the tool then returns text alone. So every tool is held to one.
+        """
         tools = {tool.name: tool for tool in _tools(Settings((tmp_path,)))}
 
-        assert list(tools) == ["validate_config", "run_comparison"]
+        assert list(tools) == ["validate_config", "run_comparison", "describe_schema"]
+        assert [name for name, tool in tools.items() if tool.output_schema is None] == []
         validate, run = tools["validate_config"], tools["run_comparison"]
+        describe = tools["describe_schema"]
         assert validate.input_schema["required"] == ["path"]
         assert set(validate.input_schema["properties"]) == {"path", "schemas", "allow_missing_env"}
         assert validate.output_schema is not None
@@ -385,6 +448,10 @@ class TestServer:
         assert set(run.input_schema["properties"]) == {"path"}
         assert run.output_schema is not None
         assert set(run.output_schema["properties"]) == RunReport.__required_keys__
+        assert describe.input_schema["required"] == ["path", "side"]
+        assert describe.input_schema["properties"]["side"]["enum"] == ["source", "target"]
+        assert describe.output_schema is not None
+        assert set(describe.output_schema["properties"]) == {"side", "columns"}
 
     def test_it_keeps_every_description_within_its_budget(self, tmp_path: Path) -> None:
         """Ensure each description fits the budget and reads the same on every Python.
@@ -456,6 +523,45 @@ class TestServer:
 
         assert result.is_error is True
         assert "ConfigError: Configuration must contain both" in _text(result)
+
+    def test_it_describes_a_side(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure `describe_schema` returns the side's columns as its structured result."""
+        monkeypatch.chdir(tmp_path)
+        _project(tmp_path, "modern_drift.csv")
+        settings = Settings((tmp_path,))
+
+        result = _call(
+            settings, {"path": "veridelta.yaml", "side": "target"}, tool="describe_schema"
+        )
+
+        assert result.is_error is False
+        assert result.structured_content == describe_side(settings, "veridelta.yaml", "target")
+
+    def test_it_refuses_a_side_that_is_neither(self, tmp_path: Path) -> None:
+        """Ensure a side other than `source` or `target` fails the call before anything is read."""
+        _write(tmp_path, _VALID)
+
+        result = _call(
+            Settings((tmp_path,)),
+            {"path": "veridelta.yaml", "side": "both"},
+            tool="describe_schema",
+        )
+
+        assert result.is_error is True
+        assert "side" in _text(result)
+
+    def test_it_fails_to_describe_a_query(self, tmp_path: Path) -> None:
+        """Ensure a side read through a query fails the call, named as `run --json` names it."""
+        _write(tmp_path, _QUERY)
+
+        result = _call(
+            Settings((tmp_path,)),
+            {"path": "veridelta.yaml", "side": "source"},
+            tool="describe_schema",
+        )
+
+        assert result.is_error is True
+        assert "ConfigError: A schema probe reads a 'table'" in _text(result)
 
     def test_it_reports_a_broken_file_as_a_finding(self, tmp_path: Path) -> None:
         """Ensure a file that does not load is a result the agent can act on, not a failed call."""

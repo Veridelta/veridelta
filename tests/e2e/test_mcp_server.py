@@ -34,7 +34,7 @@ def _text(result: CallToolResult) -> str:
 def test_the_console_script_serves_its_tools(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """Ensure a host lists the tools, checks and runs files under the root, and is refused elsewhere."""
+    """Ensure a host lists the tools, uses each on files under the root, and is refused elsewhere."""
     root = tmp_path / "project"
     root.mkdir()
     (root / "veridelta.yaml").write_text(_VALID)
@@ -54,7 +54,7 @@ def test_the_console_script_serves_its_tools(
     log = tmp_path / "server-stderr.log"
 
     async def session() -> tuple[
-        list[str], CallToolResult, CallToolResult, CallToolResult, CallToolResult
+        list[str], CallToolResult, CallToolResult, CallToolResult, CallToolResult, CallToolResult
     ]:
         with log.open("w", encoding="utf-8") as errlog:
             async with Client(stdio_client(server, errlog=errlog)) as client:
@@ -63,11 +63,14 @@ def test_the_console_script_serves_its_tools(
                 broken = await client.call_tool("validate_config", {"path": "broken.yaml"})
                 refused = await client.call_tool("validate_config", {"path": str(outside)})
                 drift = await client.call_tool("run_comparison", {"path": "drift.yaml"})
-        return tools, valid, broken, refused, drift
+                described = await client.call_tool(
+                    "describe_schema", {"path": "drift.yaml", "side": "target"}
+                )
+        return tools, valid, broken, refused, drift, described
 
-    tools, valid, broken, refused, drift = anyio.run(session)
+    tools, valid, broken, refused, drift, described = anyio.run(session)
 
-    assert tools == ["validate_config", "run_comparison"]
+    assert tools == ["validate_config", "run_comparison", "describe_schema"]
     assert valid.structured_content == {
         "config": str((root / "veridelta.yaml").resolve()),
         "valid": True,
@@ -82,4 +85,6 @@ def test_the_console_script_serves_its_tools(
     assert drift.structured_content is not None
     assert drift.structured_content["verdict"] == "drift"
     assert drift.structured_content["exit_code"] == 1
+    assert described.structured_content is not None
+    assert list(described.structured_content["columns"]) == ["id", "status", "amount"]
     assert "Traceback" not in log.read_text(encoding="utf-8")

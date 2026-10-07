@@ -253,6 +253,35 @@ class TestDuckDBSchemaChecks:
         assert finding.severity == "error"
         assert "Column 'paid' has type Boolean, which cannot hold" in finding.message
 
+    def test_it_reads_a_tables_columns_through_the_probe(self, tmp_path: Path) -> None:
+        """Ensure `read_schema` names each stored column and its type, and reads no rows."""
+        database = _orders(tmp_path / "legacy.duckdb")
+
+        schema = DiffEngine.read_schema(DuckDBConfig(database=database, table="sales.orders"))
+
+        assert schema == pl.Schema(
+            {
+                "id": pl.Int32(),
+                "total": pl.Decimal(10, 2),
+                "status": pl.String(),
+                "placed": pl.Date(),
+                "shipped": pl.Datetime("us"),
+                "paid_at": pl.Datetime("us", "UTC"),
+                "paid": pl.Boolean(),
+                "ratio": pl.Float64(),
+                "sizes": pl.Array(pl.Int32, 3),
+            }
+        )
+
+    def test_it_will_not_describe_a_query(self, tmp_path: Path) -> None:
+        """Ensure a query side is refused, since only running it would name its columns."""
+        database = _orders(tmp_path / "legacy.duckdb")
+
+        with pytest.raises(ConfigError, match="A schema probe reads a 'table'"):
+            DiffEngine.read_schema(
+                DuckDBConfig(database=database, query="SELECT * FROM sales.orders")
+            )
+
     def test_it_reports_an_unreadable_column_instead_of_crashing(self, tmp_path: Path) -> None:
         """Ensure an empty probe of an INTERVAL column, where Polars would panic, is a finding."""
         database = _duckdb(tmp_path / "odd.duckdb", "CREATE TABLE odd (id INTEGER, span INTERVAL)")
@@ -361,6 +390,15 @@ class TestDuckDBPushdown:
         assert (
             DiffEngine.check_configs(DiffConfig(primary_keys=["id"]), source, target, schemas=True)
             == []
+        )
+
+    def test_it_describes_a_table_compared_in_place(self, tmp_path: Path) -> None:
+        """Ensure `read_schema` reads a pushdown table with the probe a run starts with."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        source, _ = _sides(database, pushdown=True)
+
+        assert DiffEngine.read_schema(source) == pl.Schema(
+            {"id": pl.Int32(), "tier": pl.String(), "balance": pl.Decimal(3, 1)}
         )
 
     def test_it_reads_time_in_utc(self, tmp_path: Path) -> None:

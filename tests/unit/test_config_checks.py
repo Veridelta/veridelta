@@ -1,7 +1,11 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for `DiffEngine.check_configs`, the offline half of `veridelta validate`."""
+"""Unit tests for `DiffEngine.check_configs`, the offline half of `veridelta validate`.
+
+`DiffEngine.read_schema` reads one side's columns the way the live half of the
+check does, so its tests sit here too.
+"""
 
 from pathlib import Path
 from typing import Any, get_args
@@ -17,6 +21,7 @@ from veridelta.connectors.sql import (
     compile_postgres_columns_query,
 )
 from veridelta.engine import _EXTRA_PROBES, DiffEngine
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
     ConfigFinding,
     DatabaseConfig,
@@ -563,3 +568,52 @@ class TestLiveSchemaChecks:
 
         assert severity == "error"
         assert expected in message
+
+
+@pytest.mark.usefixtures("drivers")
+class TestReadSchema:
+    """Validate `DiffEngine.read_schema`, which reads one side's columns and none of its rows."""
+
+    def test_it_reads_a_files_columns_in_their_stored_order(self, tmp_path: Path) -> None:
+        """Ensure a file side returns its columns and types as its loader reads them."""
+        source, _ = _parquet_pair(tmp_path)
+
+        assert DiffEngine.read_schema(source) == pl.Schema(
+            {"id": pl.Int64(), "amount": pl.Int64(), "name": pl.String()}
+        )
+
+    def test_it_probes_a_warehouse_table_in_a_session_of_its_own(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a warehouse side gets the probe a run starts with, and its session closes."""
+        session = _warehouse_session(mocker)
+
+        schema = DiffEngine.read_schema(_snowflake("SRC"))
+
+        assert schema == pl.Schema(_WAREHOUSE_SCHEMA)
+        session.connect.assert_called_once()
+        session.execute_pushdown.assert_called_once_with(
+            session.compiler.compile_schema_probe_query("SRC"), query_type="schema"
+        )
+        session.close.assert_called_once()
+
+    def test_it_closes_the_session_when_the_probe_fails(self, mocker: MockerFixture) -> None:
+        """Ensure a probe that fails still closes the warehouse session."""
+        session = _warehouse_session(mocker)
+        session.execute_pushdown.side_effect = ConnectorError("probe failed")
+
+        with pytest.raises(ConnectorError, match="probe failed"):
+            DiffEngine.read_schema(_snowflake("SRC"))
+
+        session.close.assert_called_once()
+
+    def test_it_never_runs_a_database_query(self, mocker: MockerFixture) -> None:
+        """Ensure a query side is refused, since only running it in full would name its columns."""
+        read = mocker.patch("veridelta.connectors.database.pl.read_database_uri")
+
+        with pytest.raises(ConfigError, match="A schema probe reads a 'table'"):
+            DiffEngine.read_schema(
+                DatabaseConfig(uri="sqlite:///srv/x.db", query="SELECT * FROM t")
+            )
+
+        read.assert_not_called()
