@@ -10,6 +10,7 @@ the tool together.
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import anyio
@@ -22,20 +23,27 @@ pytestmark = [pytest.mark.e2e]
 
 _VALID = "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
 
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
+
 
 def _text(result: CallToolResult) -> str:
     """Join the text a tool call returned for the model."""
     return "".join(getattr(block, "text", "") for block in result.content)
 
 
-def test_the_console_script_serves_validate_config(
+def test_the_console_script_serves_its_tools(
     tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """Ensure a host can list the tool, validate files under the root, and is refused elsewhere."""
+    """Ensure a host lists the tools, checks and runs files under the root, and is refused elsewhere."""
     root = tmp_path / "project"
     root.mkdir()
     (root / "veridelta.yaml").write_text(_VALID)
     (root / "broken.yaml").write_text("source: {}\n")
+    for name in ("legacy.csv", "modern_drift.csv"):
+        shutil.copy(_FIXTURES / name, root / name)
+    (root / "drift.yaml").write_text(
+        "source:\n  path: legacy.csv\ntarget:\n  path: modern_drift.csv\nprimary_keys: [id]\n"
+    )
     outside = tmp_path_factory.mktemp("outside") / "veridelta.yaml"
     outside.write_text(_VALID)
     # The SDK gives the child a short allow-list of variables, not this
@@ -45,18 +53,21 @@ def test_the_console_script_serves_validate_config(
     )
     log = tmp_path / "server-stderr.log"
 
-    async def session() -> tuple[list[str], CallToolResult, CallToolResult, CallToolResult]:
+    async def session() -> tuple[
+        list[str], CallToolResult, CallToolResult, CallToolResult, CallToolResult
+    ]:
         with log.open("w", encoding="utf-8") as errlog:
             async with Client(stdio_client(server, errlog=errlog)) as client:
                 tools = [tool.name for tool in (await client.list_tools()).tools]
                 valid = await client.call_tool("validate_config", {"path": "veridelta.yaml"})
                 broken = await client.call_tool("validate_config", {"path": "broken.yaml"})
                 refused = await client.call_tool("validate_config", {"path": str(outside)})
-        return tools, valid, broken, refused
+                drift = await client.call_tool("run_comparison", {"path": "drift.yaml"})
+        return tools, valid, broken, refused, drift
 
-    tools, valid, broken, refused = anyio.run(session)
+    tools, valid, broken, refused, drift = anyio.run(session)
 
-    assert tools == ["validate_config"]
+    assert tools == ["validate_config", "run_comparison"]
     assert valid.structured_content == {
         "config": str((root / "veridelta.yaml").resolve()),
         "valid": True,
@@ -68,4 +79,7 @@ def test_the_console_script_serves_validate_config(
     assert refused.is_error is True
     assert "outside the folders this server reads from" in _text(refused)
     assert json.loads(_text(valid)) == valid.structured_content
+    assert drift.structured_content is not None
+    assert drift.structured_content["verdict"] == "drift"
+    assert drift.structured_content["exit_code"] == 1
     assert "Traceback" not in log.read_text(encoding="utf-8")

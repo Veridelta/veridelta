@@ -10,6 +10,7 @@ whether a call failed.
 
 import json
 import logging
+import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -22,15 +23,20 @@ from mcp.types import CallToolResult, Tool
 from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
+from veridelta.config import load_config
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.mcp_server import (
     INSTRUCTIONS,
+    RunReport,
     Settings,
     build_server,
     check_configuration,
     resolve_path,
+    run_configuration,
     serve,
 )
+from veridelta.models import DiffSummary
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -46,6 +52,9 @@ _VALID = "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
 
 _SECRET = "hunter2-do-not-print"
 
+_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
+"""The CSV files the CI jobs and the recording compare."""
+
 _T = TypeVar("_T")
 
 
@@ -54,6 +63,16 @@ def _write(folder: Path, text: str, name: str = "veridelta.yaml") -> Path:
     path = folder / name
     path.write_text(text)
     return path
+
+
+def _project(root: Path, target: str, extra: str = "") -> Path:
+    """Copy the CI fixtures into a root, and write a configuration that compares them."""
+    shutil.copy(_FIXTURES / "legacy.csv", root / "legacy.csv")
+    shutil.copy(_FIXTURES / target, root / target)
+    return _write(
+        root,
+        f"source:\n  path: legacy.csv\ntarget:\n  path: {target}\nprimary_keys: [id]\n{extra}",
+    )
 
 
 def _with_client(settings: Settings, work: Callable[[Client], Awaitable[_T]]) -> _T:
@@ -70,11 +89,13 @@ def _with_client(settings: Settings, work: Callable[[Client], Awaitable[_T]]) ->
     return anyio.run(session)
 
 
-def _call(settings: Settings, arguments: dict[str, Any]) -> CallToolResult:
-    """Call `validate_config` with the arguments given, through the client."""
+def _call(
+    settings: Settings, arguments: dict[str, Any], tool: str = "validate_config"
+) -> CallToolResult:
+    """Call a tool, `validate_config` unless another is named, through the client."""
 
     async def work(client: Client) -> CallToolResult:
-        return await client.call_tool("validate_config", arguments)
+        return await client.call_tool(tool, arguments)
 
     return _with_client(settings, work)
 
@@ -244,19 +265,126 @@ class TestCheckConfiguration:
         assert "Column 'amount' has type Int64, which cannot hold" in live["errors"][0]
 
 
+class TestRunConfiguration:
+    """Validate the run `run_comparison` makes, without the SDK in the way.
+
+    Each test runs in its root, as the server does, so the relative paths in
+    the configuration resolve there.
+    """
+
+    def test_its_fields_are_the_summary_and_the_verdict(self) -> None:
+        """Ensure the result names every field `run --json` prints, so neither can drift apart."""
+        summary = DiffSummary(
+            total_rows_source=1,
+            total_rows_target=1,
+            added_count=0,
+            removed_count=0,
+            changed_count=0,
+            is_match=True,
+        )
+
+        assert RunReport.__required_keys__ == {
+            "verdict",
+            "exit_code",
+            "artifacts_written",
+            *summary.model_dump(mode="json"),
+        }
+
+    def test_it_reports_a_match(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure a match reads as `match`, with the exit code `run` gives it."""
+        monkeypatch.chdir(tmp_path)
+        _project(tmp_path, "modern_match.csv")
+
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert report["verdict"] == "match"
+        assert report["exit_code"] == 0
+        assert report["total_rows_source"] == 3
+        assert report["artifacts_written"] is False
+
+    def test_it_reports_drift_as_run_json_prints_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure drift reads as `drift`, around the very summary `run --json` prints."""
+        monkeypatch.chdir(tmp_path)
+        path = _project(tmp_path, "modern_drift.csv")
+
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        printed = DiffEngine.run_from_configs(*load_config(path)).summary.model_dump(mode="json")
+        assert report == {
+            "verdict": "drift",
+            "exit_code": 1,
+            **printed,
+            "artifacts_written": False,
+        }
+        assert (report["added_count"], report["removed_count"], report["changed_count"]) == (
+            1,
+            1,
+            1,
+        )
+
+    def test_it_writes_the_rows_that_differ_under_a_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure an `output_path` under a root is written, and the result says so."""
+        monkeypatch.chdir(tmp_path)
+        _project(tmp_path, "modern_drift.csv", "output_path: out\n")
+
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert report["artifacts_written"] is True
+        assert any((tmp_path / "out").iterdir())
+
+    def test_it_refuses_an_output_path_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a run that would write rows outside the roots stops before it reads any."""
+        monkeypatch.chdir(tmp_path)
+        outside = tmp_path_factory.mktemp("outside")
+        _project(tmp_path, "modern_drift.csv", f"output_path: '{outside}'\n")
+        compare = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+
+        with pytest.raises(ConfigError, match="is outside the folders this server writes to"):
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        compare.assert_not_called()
+        assert list(outside.iterdir()) == []
+
+    def test_it_fails_on_a_configuration_that_cannot_run(self, tmp_path: Path) -> None:
+        """Ensure a broken file stops the run, as `run` exits 3, instead of becoming a finding."""
+        _write(tmp_path, "source: {}\n")
+
+        with pytest.raises(ConfigError, match="Configuration must contain both"):
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+
 class TestServer:
     """Validate the server as a host sees it, through the SDK's client."""
 
-    def test_it_lists_one_tool_with_its_arguments_and_result(self, tmp_path: Path) -> None:
-        """Ensure the host sees `validate_config`, what it takes, and what it returns."""
-        tools = _tools(Settings((tmp_path,)))
+    def test_it_lists_each_tool_with_its_arguments_and_result(self, tmp_path: Path) -> None:
+        """Ensure the host sees each tool, what it takes, and what it returns."""
+        tools = {tool.name: tool for tool in _tools(Settings((tmp_path,)))}
 
-        assert [tool.name for tool in tools] == ["validate_config"]
-        (tool,) = tools
-        assert tool.input_schema["required"] == ["path"]
-        assert set(tool.input_schema["properties"]) == {"path", "schemas", "allow_missing_env"}
-        assert tool.output_schema is not None
-        assert set(tool.output_schema["properties"]) == {"config", "valid", "errors", "warnings"}
+        assert list(tools) == ["validate_config", "run_comparison"]
+        validate, run = tools["validate_config"], tools["run_comparison"]
+        assert validate.input_schema["required"] == ["path"]
+        assert set(validate.input_schema["properties"]) == {"path", "schemas", "allow_missing_env"}
+        assert validate.output_schema is not None
+        assert set(validate.output_schema["properties"]) == {
+            "config",
+            "valid",
+            "errors",
+            "warnings",
+        }
+        assert run.input_schema["required"] == ["path"]
+        assert set(run.input_schema["properties"]) == {"path"}
+        assert run.output_schema is not None
+        assert set(run.output_schema["properties"]) == RunReport.__required_keys__
 
     def test_it_keeps_every_description_within_its_budget(self, tmp_path: Path) -> None:
         """Ensure each description fits the budget and reads the same on every Python.
@@ -308,6 +436,26 @@ class TestServer:
 
         assert result.structured_content is not None
         assert result.structured_content["valid"] is True
+
+    def test_it_runs_a_comparison(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ensure `run_comparison` returns the run's report as its structured result."""
+        monkeypatch.chdir(tmp_path)
+        _project(tmp_path, "modern_drift.csv")
+        settings = Settings((tmp_path,))
+
+        result = _call(settings, {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert result.is_error is False
+        assert result.structured_content == run_configuration(settings, "veridelta.yaml")
+
+    def test_it_fails_a_run_that_cannot_start(self, tmp_path: Path) -> None:
+        """Ensure a broken file fails `run_comparison`, named as `run --json` names it."""
+        _write(tmp_path, "source: {}\n")
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert result.is_error is True
+        assert "ConfigError: Configuration must contain both" in _text(result)
 
     def test_it_reports_a_broken_file_as_a_finding(self, tmp_path: Path) -> None:
         """Ensure a file that does not load is a result the agent can act on, not a failed call."""
