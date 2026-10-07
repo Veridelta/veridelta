@@ -812,10 +812,19 @@ class TestSchemaCommand:
 
 
 def _serve_args(
-    roots: list[Path] | None, *, allow_row_values: bool = False, max_rows: int = 50
+    roots: list[Path] | None,
+    *,
+    allow_row_values: bool = False,
+    max_rows: int = 50,
+    allow_queries: bool = False,
 ) -> argparse.Namespace:
-    """Build the arguments `veridelta mcp` parses, with row values off by default."""
-    return argparse.Namespace(root=roots, allow_row_values=allow_row_values, max_rows=max_rows)
+    """Build the arguments `veridelta mcp` parses, with row values and queries off by default."""
+    return argparse.Namespace(
+        root=roots,
+        allow_row_values=allow_row_values,
+        max_rows=max_rows,
+        allow_queries=allow_queries,
+    )
 
 
 class TestMCPCommand:
@@ -852,6 +861,11 @@ class TestMCPCommand:
         assert (default.allow_row_values, default.max_rows) == (False, 50)
         assert (allowed.allow_row_values, allowed.max_rows) == (True, 5)
 
+    def test_it_takes_the_query_flag(self) -> None:
+        """Ensure a side's query stays off unless `--allow-queries` is given."""
+        assert build_parser().parse_args(["mcp"]).allow_queries is False
+        assert build_parser().parse_args(["mcp", "--allow-queries"]).allow_queries is True
+
     @pytest.mark.parametrize(
         ("value", "message"),
         [("0", "must be at least 1, got 0"), ("many", "expected a whole number, got 'many'")],
@@ -873,8 +887,10 @@ class TestMCPCommand:
         monkeypatch.chdir(tmp_path)
         serve = mocker.patch("veridelta.cli.serve")
 
-        assert mcp(_serve_args(None, allow_row_values=True, max_rows=5)) == 0
-        serve.assert_called_once_with(Settings((tmp_path,), allow_row_values=True, max_rows=5))
+        assert mcp(_serve_args(None, allow_row_values=True, max_rows=5, allow_queries=True)) == 0
+        serve.assert_called_once_with(
+            Settings((tmp_path,), allow_row_values=True, max_rows=5, allow_queries=True)
+        )
 
     def test_it_serves_from_the_first_root(
         self,

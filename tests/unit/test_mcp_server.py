@@ -19,6 +19,7 @@ from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
 
 import anyio
+import duckdb
 import polars as pl
 import pytest
 from mcp import Client
@@ -28,7 +29,7 @@ from pytest_mock import MockerFixture
 from veridelta import __version__, mcp_server
 from veridelta.config import load_config
 from veridelta.engine import DiffEngine
-from veridelta.exceptions import ConfigError, VerideltaError
+from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError
 from veridelta.mcp_server import (
     DEFAULT_ROW_CAP,
     INSTRUCTIONS,
@@ -136,6 +137,22 @@ def _header_from(outside: Path) -> str:
         f"source:\n  path: '{outside / 'notes.txt'}'\n  format: csv\n"
         "  options:\n    skip_rows: 1\n    separator: '|'\n"
         "target:\n  path: b.csv\nprimary_keys: [id]\n"
+    )
+
+
+def _queried(root: Path, query: str) -> Path:
+    """Write a configuration whose source runs `query` in a DuckDB file under the root.
+
+    The query is written as a JSON string, which YAML reads, so a Windows path's
+    backslashes stay as they are.
+    """
+    with duckdb.connect(str(root / "warehouse.duckdb")) as connection:
+        connection.execute("CREATE TABLE t AS SELECT 1 AS id")
+    (root / "b.csv").write_text("id\n1\n")
+    return _write(
+        root,
+        "source:\n  type: duckdb\n  database: warehouse.duckdb\n"
+        f"  query: {json.dumps(query)}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
     )
 
 
@@ -491,6 +508,40 @@ class TestRunConfiguration:
             run_configuration(Settings((tmp_path,)), "veridelta.yaml")
 
         compare.assert_not_called()
+
+    def test_it_runs_no_query_unless_the_server_allows_queries(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a side's query, which runs as written, is refused before anything connects."""
+        _queried(tmp_path, "SELECT * FROM t")
+        compare = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+
+        with pytest.raises(ConfigError, match="The source reads through a query"):
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        compare.assert_not_called()
+
+    def test_it_runs_a_query_when_the_server_allows_queries(self, tmp_path: Path) -> None:
+        """Ensure `--allow-queries` lets a query read its database and files under the roots."""
+        (tmp_path / "a.csv").write_text("id\n1\n")
+        _queried(tmp_path, f"SELECT t.id FROM t JOIN read_csv('{tmp_path / 'a.csv'}') USING (id)")
+
+        report = run_configuration(Settings((tmp_path,), allow_queries=True), "veridelta.yaml")
+
+        assert report["verdict"] == "match"
+
+    def test_it_holds_an_allowed_query_to_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a query cannot read a file outside the roots, even with `--allow-queries`."""
+        secret = tmp_path_factory.mktemp("outside") / "secret.txt"
+        secret.write_text(f"{_SECRET}\n")
+        _queried(tmp_path, f"SELECT 1 AS id, content FROM read_text('{secret}')")
+
+        with pytest.raises(ConnectorError, match="Permission Error") as refused:
+            run_configuration(Settings((tmp_path,), allow_queries=True), "veridelta.yaml")
+
+        assert _SECRET not in str(refused.value)
 
     def test_it_fails_on_a_configuration_that_cannot_run(self, tmp_path: Path) -> None:
         """Ensure a broken file stops the run, as `run` exits 3, instead of becoming a finding."""
@@ -922,6 +973,18 @@ class TestProposeMaps:
 
         with pytest.raises(ConfigError, match="started without --allow-row-values"):
             propose_maps(Settings((tmp_path,)), "veridelta.yaml")
+
+        propose.assert_not_called()
+
+    def test_it_runs_no_query_unless_the_server_allows_queries(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a proposal reads no side through a query the server does not allow."""
+        _queried(tmp_path, "SELECT * FROM t")
+        propose = mocker.patch("veridelta.mcp_server.DiffEngine.propose_value_maps_from_configs")
+
+        with pytest.raises(ConfigError, match="The source reads through a query"):
+            propose_maps(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml")
 
         propose.assert_not_called()
 

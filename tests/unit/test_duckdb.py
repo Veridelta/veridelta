@@ -4,15 +4,17 @@
 """Unit tests for the DuckDB and MotherDuck connector, with the driver replaced."""
 
 import logging
+import os
 import traceback
+from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
-from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
-from veridelta.connectors.sql import SQLDialect
+from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession, sandboxed
+from veridelta.connectors.sql import SQLDialect, compile_duckdb_sandbox
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DuckDBConfig
 
@@ -100,6 +102,36 @@ class TestDuckDBConnector:
             call.sql('SELECT * FROM "main"."orders"'),
         ]
 
+    def test_it_holds_a_file_to_its_folders_before_reading(self, mocker: MockerFixture) -> None:
+        """Ensure a read inside `sandboxed` locks the connection to its folders first."""
+        connection = _driver(mocker).connect.return_value
+
+        with sandboxed([Path("/data")]):
+            DuckDBConnector(_FILE).connect()
+        DuckDBConnector(_FILE).connect()
+
+        held = [call.execute("SET TimeZone = 'UTC'")]
+        # Each folder ends in the platform's separator, so `/data` admits no `/data-old`.
+        folder = f"{Path('/data')}{os.sep}"
+        held += [call.execute(statement) for statement in compile_duckdb_sandbox([folder])]
+        assert connection.mock_calls[: len(held) + 1] == [
+            *held,
+            call.sql('SELECT * FROM "main"."orders"'),
+        ]
+        # The read outside the block sets the time zone alone.
+        assert connection.execute.call_args_list[len(held) :] == [call("SET TimeZone = 'UTC'")]
+
+    def test_it_closes_a_connection_whose_setup_fails(self, mocker: MockerFixture) -> None:
+        """Ensure a connection is released when a setting fails, before any read."""
+        connection = _driver(mocker).connect.return_value
+        connection.execute.side_effect = RuntimeError("Invalid Input Error")
+
+        with pytest.raises(ConnectorError, match="Invalid Input Error"):
+            DuckDBConnector(_FILE).connect()
+
+        connection.close.assert_called_once_with()
+        connection.sql.assert_not_called()
+
     def test_it_closes_the_connection_after_reading(self, mocker: MockerFixture) -> None:
         """Ensure the file is released once the rows are in memory, read or not."""
         connection = _driver(mocker).connect.return_value
@@ -122,6 +154,15 @@ class TestMotherDuckToken:
         DuckDBConnector(_MOTHERDUCK).connect()
 
         driver.connect.assert_called_once_with("md:sales", config={"motherduck_token": _SECRET})
+
+    def test_it_leaves_motherduck_out_of_the_folders(self, mocker: MockerFixture) -> None:
+        """Ensure `sandboxed` sets nothing on MotherDuck, whose extension needs the network."""
+        connection = _driver(mocker).connect.return_value
+
+        with sandboxed([Path("/data")]):
+            DuckDBConnector(_MOTHERDUCK).connect()
+
+        assert connection.execute.call_args_list == [call("SET TimeZone = 'UTC'")]
 
     @pytest.mark.parametrize("variable", ["MOTHERDUCK_TOKEN", "motherduck_token"])
     def test_it_reads_the_token_from_the_environment(
@@ -315,6 +356,19 @@ class TestDuckDBPushdownSession:
         assert connection.sql.call_args_list == [call("SELECT 1"), call("SELECT 2")]
         assert first.collect().equals(frame)
         connection.close.assert_called_once_with()
+
+    def test_it_closes_a_connection_whose_setup_fails(self, mocker: MockerFixture) -> None:
+        """Ensure a session whose settings fail holds no connection open."""
+        connection = _driver(mocker).connect.return_value
+        connection.execute.side_effect = RuntimeError("Invalid Input Error")
+        session = DuckDBPushdownSession(_PUSHDOWN)
+
+        with pytest.raises(ConnectorError, match="Invalid Input Error"):
+            session.connect()
+
+        connection.close.assert_called_once_with()
+        with pytest.raises(ConnectorError, match="not connected"):
+            session.execute_pushdown("SELECT 1")
 
     def test_it_compiles_for_the_duckdb_dialect(self) -> None:
         """Ensure the engine asks this session for DuckDB SQL."""

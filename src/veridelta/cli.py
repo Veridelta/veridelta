@@ -364,6 +364,7 @@ def mcp(args: argparse.Namespace) -> int:
             tuple(args.root or [Path.cwd()]),
             allow_row_values=args.allow_row_values,
             max_rows=args.max_rows,
+            allow_queries=args.allow_queries,
         )
         os.chdir(settings.roots[0])
         serve(settings)
@@ -625,6 +626,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Let read_discrepancies and propose_value_maps return values from the data. "
             "Off by default."
+        ),
+    )
+    mcp_parser.add_argument(
+        "--allow-queries",
+        action="store_true",
+        help=(
+            "Let a tool run a side's query, which runs as written. A DuckDB file still "
+            "reads other files only from under the roots. Off by default."
         ),
     )
     mcp_parser.add_argument(
