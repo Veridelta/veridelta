@@ -12,7 +12,7 @@ This page lists work that is not built yet. The current release is v{{ config.ex
 
 ## Editor
 
-Completion and checking of configuration files already work through the published JSON Schema, and a VS Code task runs `veridelta validate` on the open file; see [Editor support](configuration.md#editor-support). The steps that follow come one at a time, tracked in [issue 127](https://github.com/Veridelta/veridelta/issues/127):
+These steps build on [Editor support](configuration.md#editor-support), one at a time, tracked in [issue 127](https://github.com/Veridelta/veridelta/issues/127):
 
 - A VS Code extension, in its own repository, whose first command runs `veridelta validate --json` on the open file and fills the Problems panel. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - A second command that runs the comparison, opens the HTML report in the editor, and opens the discrepancy files. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files) and [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
@@ -20,7 +20,7 @@ Completion and checking of configuration files already work through the publishe
 
 ## AI workflows
 
-An AI agent can drive Veridelta through the [command line](cli.md) today. `run`, `validate`, and `crosswalk` print JSON with `--json`, and every command returns an [exit code](cli.md#exit-codes). `veridelta mcp` serves the same work as [Model Context Protocol](https://modelcontextprotocol.io/) tools, from checking a file to proposing value maps, and returns row values only when the person who starts it allows them; see [AI agents](agents.md#mcp-server). A model never decides a verdict on its own: `run` stays deterministic, offline, and free, because a model that forgives drift cannot show why. A model sits on top, driving the command line, explaining a run, or proposing a rule with its evidence. Inside a rule the user declares, with a threshold and its evidence, a provider may compute a similarity, as fuzzy text matching does today without one. The items below come in this order, tracked in [issue 128](https://github.com/Veridelta/veridelta/issues/128).
+These items build on [AI agents](agents.md), in this order, tracked in [issue 128](https://github.com/Veridelta/veridelta/issues/128). A model never decides a verdict: it drives the command line, explains a run, or proposes a rule with its evidence, and only a rule the user declares changes what matches.
 
 ### Next
 

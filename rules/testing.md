@@ -21,4 +21,4 @@ These rules apply to every change under `tests/`, on top of the root [AGENTS.md]
 - Mark each module once with `pytestmark`, such as `pytestmark = [pytest.mark.unit, pytest.mark.fast]`. A class or test that needs more, such as `property` or `skip_on`, adds its own decorator.
 - `tests/integration/test_parity_fuzz.py` draws cases from `parity_strategies.py` and requires the local engine and DuckDB pushdown to agree. Its `ci` profile is derandomized; run `VERIDELTA_HYPOTHESIS_PROFILE=deep` before changing either engine. A case it finds is fixed with a deterministic regression test, or, for a documented difference, kept out of the generator and pinned by a test. New branches are covered by deterministic tests, never by Hypothesis alone.
 - Mock only external side effects. Use real `polars.DataFrame` instances for tabular computations.
-- Coverage gate is 90% (`fail_under` in `pyproject.toml`).
+- Coverage gates: 90% of the package (`fail_under` in `pyproject.toml`), and 100% branch coverage of the modules `CORE_MODULES` names in the `Makefile`, which `make test` and CI both enforce.

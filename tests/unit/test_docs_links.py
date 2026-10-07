@@ -41,6 +41,7 @@ _FENCE = re.compile(r"^\s*(```|~~~)")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
 _AGENTS = _ROOT / "AGENTS.md"
+_RULES = _ROOT / "rules"
 _SKIPPED = frozenset({".git", ".venv", "site", "node_modules", ".cache", "__pycache__"})
 """Folders no tool reads instructions from, left out of the walk."""
 _SHADOWING = frozenset({"claude.md", "claude.local.md"})
@@ -130,8 +131,10 @@ def _notebook_markdown() -> Iterator[tuple[str, str]]:
 
 def _texts() -> Iterator[tuple[str, str]]:
     """Yield every text that can link to the site by absolute URL."""
-    for name in ("README.md", "CONTRIBUTING.md", "ACCESSIBILITY.md"):
+    for name in ("README.md", "CONTRIBUTING.md", "ACCESSIBILITY.md", "skills/veridelta/SKILL.md"):
         yield name, (_ROOT / name).read_text(encoding="utf-8")
+    for form in sorted((_ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.yml")):
+        yield str(form.relative_to(_ROOT)), form.read_text(encoding="utf-8")
     for page in sorted(_DOCS.rglob("*.md")):
         yield str(page.relative_to(_ROOT)), page.read_text(encoding="utf-8")
     yield from _notebook_markdown()
@@ -170,6 +173,10 @@ def _repository_urls() -> list[tuple[str, str, str | None]]:
         *sorted((_ROOT / "product").rglob("*.md")),
         *sorted((_ROOT / "decisions").glob("*.md")),
         *sorted((_ROOT / "rules").glob("*.md")),
+        _ROOT / "CONTRIBUTING.md",
+        _ROOT / "ACCESSIBILITY.md",
+        _ROOT / "skills" / "veridelta" / "SKILL.md",
+        *sorted((_ROOT / ".github" / "ISSUE_TEMPLATE").glob("*.yml")),
     ]
     return [
         (page.relative_to(_ROOT).as_posix(), path, anchor or None)
@@ -256,6 +263,27 @@ class TestDocumentationLinks:
 
         assert links, "No link to a file on main was found."
         assert not broken, "These links name no file or heading on main:\n" + "\n".join(broken)
+
+    @pytest.mark.parametrize(
+        "page",
+        [_ROOT / "CONTRIBUTING.md", _ROOT / "ACCESSIBILITY.md", *sorted(_RULES.glob("*.md"))],
+        ids=lambda page: page.relative_to(_ROOT).as_posix(),
+    )
+    def test_every_relative_link_names_a_file_and_a_heading(self, page: Path) -> None:
+        """Ensure a relative link in a contributor page reaches its file and heading on GitHub.
+
+        GitHub resolves such a link from the page's own folder, as `rules/` pages
+        reach `../AGENTS.md`.
+        """
+        broken = []
+        for target in _repository_links(page):
+            path, _, anchor = target.partition("#")
+            linked = page.parent / path
+            if not linked.is_file() or (anchor and anchor not in _anchors(linked)):
+                broken.append(target)
+
+        assert _repository_links(page), f"{page.name} has no relative link to check."
+        assert not broken, f"These {page.name} links name nothing:\n" + "\n".join(broken)
 
     @pytest.mark.parametrize(
         ("heading", "anchor"),

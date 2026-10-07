@@ -326,7 +326,7 @@ class ExcelLoader(BaseLoader):
                 "Reading Excel requires the optional 'excel' extra. "
                 "Install it with: uv add 'veridelta[excel]'"
             )
-        loaded = pl.read_excel(  # pyright: ignore[reportUnknownVariableType]
+        loaded = pl.read_excel(  # pyright: ignore[reportUnknownVariableType] - untyped **options
             config.path, **config.options
         )
         if not isinstance(loaded, pl.DataFrame):

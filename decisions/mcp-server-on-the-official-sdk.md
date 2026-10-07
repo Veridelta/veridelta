@@ -15,4 +15,4 @@ generated: { by: claude-code, at: 2026-10-07T03:14:00Z }
 
 **Why rejected:** It would reimplement the handshake, both protocol revisions, the tool schemas, and the error shapes, and follow every revision after them, which is protocol work and not Veridelta's. The SDK's cost stays inside an extra that only `veridelta mcp` imports, and its one side effect, a root logger configured when the server is built, is undone in `build_server` and held by a test.
 
-**How to reverse:** The tools call `check_configuration` and `resolve_path`, which take no SDK type, so only `build_server` and `serve` in `src/veridelta/mcp_server.py` change for another server layer. To drop the server, remove the `mcp` extra from `pyproject.toml`, the module, the `mcp` subcommand in `src/veridelta/cli.py`, and their tests.
+**How to reverse:** The tool functions take no SDK type, so only `build_server` and `serve` in `src/veridelta/mcp_server.py` change for another server layer. To drop the server, remove the `mcp` extra from `pyproject.toml`, the module, the `mcp` subcommand in `src/veridelta/cli.py`, and their tests.

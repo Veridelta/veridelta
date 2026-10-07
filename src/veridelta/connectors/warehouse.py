@@ -64,7 +64,7 @@ def _lazy_from_arrow(table: Any) -> pl.LazyFrame:
     """Convert a driver Arrow payload into an unevaluated Polars LazyFrame."""
     if table is None:
         raise ConnectorError(_NON_TABULAR)
-    frame = pl.from_arrow(table)  # pyright: ignore[reportUnknownMemberType]
+    frame = pl.from_arrow(table)  # pyright: ignore[reportUnknownMemberType] - untyped Arrow
     if not isinstance(frame, pl.DataFrame):
         raise ConnectorError(_NON_TABULAR)
     return frame.lazy()
