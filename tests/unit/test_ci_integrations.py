@@ -522,6 +522,18 @@ class TestReleaseWorkflow:
         assert triggers["push"]["branches"] == ["main"]
         assert triggers["push"]["tags"] == ["v[0-9]+.[0-9]+.[0-9]+"]
 
+    def test_runs_on_one_ref_take_turns(self) -> None:
+        """Ensure two merges never race to make one tag, and no run stops partway.
+
+        A group per commit would let the runs of two quick merges both find the
+        tag missing and both push it. GitHub cancels only a run that is still
+        waiting, and the newer run behind it tags the version on main.
+        """
+        assert _release()["concurrency"] == {
+            "group": "release-${{ github.ref }}",
+            "cancel-in-progress": False,
+        }
+
     def test_it_tags_only_from_main(self) -> None:
         """Ensure a branch dispatched by hand cannot tag its own commit."""
         assert _release_job("tag")["if"] == "github.ref == 'refs/heads/main'"

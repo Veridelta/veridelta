@@ -4,10 +4,11 @@ name: Publish to PyPI
 # main tags the version when PyPI does not have it yet and starts a run on that
 # tag, which builds, publishes once the `pypi` environment approves, and
 # creates the GitHub Release, marked Latest when it is the newest version. A
-# merge that lands before that run finishes leaves the tag where it is; it
-# starts the tag's run again only if none is under way. A version tag pushed by
-# hand publishes the same way. PyPI's trusted publisher is bound to this file's
-# name and to that environment, so rename neither without updating PyPI first.
+# merge that lands while that run waits leaves the tag where it is and starts
+# nothing. A run that was rejected or cancelled is started again by hand, on the
+# tag. A version tag pushed by hand publishes the same way. PyPI's trusted
+# publisher is bound to this file's name and to that environment, so rename
+# neither without updating PyPI first.
 
 on:
   push:
@@ -20,8 +21,12 @@ on:
   # Run on a version tag to retry a release that stopped partway.
   workflow_dispatch:
 
-# Two runs for one tag, such as a hand-pushed tag and a dispatched one, take
-# turns, and the second finds the files already uploaded.
+# Runs for one ref take turns. On main, that keeps two merges from racing to
+# make one tag. On a tag, a second run finds the files the first uploaded.
+# GitHub cancels a waiting run when a newer one arrives, and the newer run tags
+# the version main holds then. So a release is left untagged only if its run
+# waits behind another and the next release merges before it starts. Push that
+# tag by hand.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
