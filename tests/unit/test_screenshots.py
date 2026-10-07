@@ -19,10 +19,14 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _ROOT = Path(__file__).resolve().parents[2]
 _ASSETS = _ROOT / "docs" / "assets"
+_IN_SDIST = not (_ROOT / ".git").exists()
+"""Whether the tests run from an unpacked sdist, which leaves out the images."""
 
 
 def _size(png: Path) -> tuple[int, int]:
     """Return a PNG's width and height, from its header."""
+    if _IN_SDIST and not png.exists():
+        pytest.skip("The sdist leaves out the PNGs; the repository holds them.")
     data = png.read_bytes()
     assert data[:8] == b"\x89PNG\r\n\x1a\n", f"{png.name} is not a PNG."
     width, height = struct.unpack(">II", data[16:24])

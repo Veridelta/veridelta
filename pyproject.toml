@@ -155,6 +155,11 @@ accessibility = [
 [project.scripts]
 veridelta = "veridelta.cli:main"
 
+[tool.hatch.build.targets.sdist]
+# The recordings and screenshots serve the docs site, which builds from the
+# repository. They would make up about half of the source archive.
+exclude = ["docs/assets/*.gif", "docs/assets/*.png"]
+
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "src"
