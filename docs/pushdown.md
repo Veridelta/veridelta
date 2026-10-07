@@ -20,7 +20,7 @@ Database and DuckDB sources are read into memory and compared locally. Two Postg
 
 ## Statements
 
-A pushdown run issues up to ten statements:
+A pushdown run issues these statements:
 
 1. A zero-row column probe, a duplicate key check, and a `COUNT(*)` for each side.
 2. The changed rows: an inner join that finds mismatches.

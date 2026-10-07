@@ -198,7 +198,7 @@ Only compared text columns qualify, and only when no later stage changes the map
 
 An existing `value_map` is kept and extended. Rows it already translates are left out of the counts, so a raw value equal to one of its outputs cannot receive an entry.
 
-One rule governs each column. When a rule already governs a column, the command says so on stderr, even with `--quiet`, and the new entries belong in that rule's `value_map`. When that rule also governs other columns, through several names or a `pattern`, the column needs a rule of its own first: a map merged into a shared rule applies to every column it governs. The note says which case applies.
+One rule governs each column. When a rule already governs a column, the command says so on stderr, even with `--quiet`, and the new entries belong in that rule's `value_map`. When that rule also governs other columns, through several names or a `pattern`, the column needs a rule of its own first. A map merged into a shared rule applies to every column it governs. The note says which case applies.
 
 `--sample-fraction` (default 1.0) reads that share of the source rows, chosen by a hash of the primary keys. Rerunning on the same data with the same Polars version samples the same rows. `--json` prints each proposal with its evidence instead of YAML.
 

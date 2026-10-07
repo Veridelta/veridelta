@@ -1914,9 +1914,10 @@ class DiffEngine:
     - `DiffEngine(config, source, target).run()` for frames you already hold.
       In-memory `DataFrame` inputs must be wrapped with `.lazy()` first.
     - `DiffEngine.run_from_configs(diff, source, target)` for `SourceRef`
-      pairs from YAML. File, lakehouse, and database pairs load through
-      `LoaderFactory` and run locally; same-warehouse pairs compile to SQL
-      pushdown instead.
+      pairs from YAML. File, lakehouse, database, and DuckDB pairs load
+      through `LoaderFactory` and run locally. A same-warehouse pair, or a
+      Postgres or DuckDB pair that sets `pushdown`, compiles to SQL and runs
+      where it is stored.
     - `DiffEngine.validate_schemas(...)` to enforce `schema_mode` and primary
       key presence on metadata alone, before any rows are read.
     - `DiffEngine.validate_rules(...)` to also resolve every rule and build
@@ -1968,12 +1969,12 @@ class DiffEngine:
 
     @classmethod
     def run_from_configs(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
-        """Route a comparison to warehouse pushdown or local Polars evaluation.
+        """Route a comparison to pushdown or local Polars evaluation.
 
         Args:
             diff (DiffConfig): Comparison settings and rules.
-            source (SourceRef): Source file, lakehouse, database, or warehouse config.
-            target (SourceRef): Target file, lakehouse, database, or warehouse config.
+            source (SourceRef): Source file, lakehouse, database, DuckDB, or warehouse config.
+            target (SourceRef): Target file, lakehouse, database, DuckDB, or warehouse config.
 
         Returns:
             DiffResult: The result. A pushdown pair returns counts and keys, and a

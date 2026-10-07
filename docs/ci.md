@@ -45,7 +45,7 @@ jobs:
 
 - appends the summary to the job summary;
 - uploads `summary.json`, `summary.md`, `report.html`, and `otel-metrics.json` as one artifact;
-- on `pull_request` and `pull_request_target` events, keeps one comment per configuration up to date on the pull request.
+- on `pull_request` and `pull_request_target` events, keeps one comment per `config` path up to date on the pull request. Matrix legs that run the same path write over each other's comment, so set `comment` to `false` on all but one.
 
 **Forks.** A pull request from a fork gets a read-only token, so the comment step logs a warning instead of failing.
 

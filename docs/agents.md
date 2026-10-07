@@ -27,7 +27,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
     | `2` | Invalid arguments. | Nothing. |
     | `3` | The run could not finish. | One object, `{"error": {"type": ..., "message": ...}}`, which stderr explains too. |
 
-    Read `type` before acting on `message`. A `ConfigError` means the configuration file needs a fix. Any type that is not a Veridelta error, such as one from a driver, is worth reporting to the user as a possible bug.
+    Read `type` before acting on `message`. A `ConfigError` means the configuration file needs a fix, and [Exit codes](cli.md#exit-codes) says what the other types mean. Any type that is not a Veridelta error, such as one from a driver, is worth reporting to the user as a possible bug.
 
 4. Report counts and column names, which is all the summary holds. Leave row values out of a reply unless the user asks for them.
 
@@ -41,7 +41,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
 ## MCP server
 
-`veridelta mcp` serves steps 1, 2, and 5 above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, with two more that list a side's columns and read the rows that differ, so an agent's host can call them without a shell. It needs the `mcp` extra:
+`veridelta mcp` serves steps 1, 2, and 5 above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. Two more tools list a side's columns and read the rows that differ. It needs the `mcp` extra:
 
 ```bash
 uv add 'veridelta[mcp]'
@@ -114,7 +114,7 @@ The site publishes two plain-text files for language models, as the [llms.txt pr
 
 ## Agent skill
 
-The steps above are also an agent skill, in [`skills/veridelta/SKILL.md`](https://github.com/Veridelta/veridelta/blob/main/skills/veridelta/SKILL.md). An agent that reads the Agent Skills standard, which Claude Code, Cursor, Codex, and Copilot follow, loads it from a project's skills folder. This installs it in a project:
+The steps above are also an agent skill, in [`skills/veridelta/SKILL.md`](https://github.com/Veridelta/veridelta/blob/main/skills/veridelta/SKILL.md). An agent that follows the Agent Skills standard loads it from a skills folder in the project. This installs it where Claude Code reads skills; for another agent, use the folder its documentation names:
 
 ```bash
 mkdir -p .claude/skills/veridelta
