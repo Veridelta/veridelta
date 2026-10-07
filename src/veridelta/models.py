@@ -997,6 +997,52 @@ class ValueMapProposal(BaseModel):
         return DiffRule(column_names=[self.column], value_map=self.value_map)
 
 
+SuggestedSetting = float | bool | str | list[SentinelValue]
+"""The value of one rule setting a suggestion adds, as `DiffRule` takes it."""
+
+
+class RuleSuggestion(BaseModel):
+    """A rule `suggest` proposes for one column, with the evidence for it.
+
+    Attributes:
+        column (str): Compared column, named as it appears after any `rename_to`.
+        settings (dict[str, SuggestedSetting]): The `DiffRule` settings the rule
+            adds, such as `{"absolute_tolerance": 0.005}`.
+        differing (int): Joined rows whose values in the column differ under the
+            declared rules.
+        explained (int): Of those, the rows that match once the rule is added,
+            counted by running the comparison again with it.
+        largest_gap (float | None): For a tolerance, the largest absolute
+            difference among the rows it explains, and None for other settings.
+        examples (tuple[dict[str, Any], ...]): The primary keys of up to three
+            rows the rule explains, lowest first.
+        rule (DiffRule): The rule to add: the settings of the rule that governs
+            the column today, if any, with `settings` added, naming the column
+            alone.
+        governing_rule_index (int | None): Position in `DiffConfig.rules` of the
+            rule that governs the column today, or None when no rule does.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    column: str = Field(..., description="Compared column, after any rename_to.")
+    settings: dict[str, SuggestedSetting] = Field(
+        ..., min_length=1, description="The rule settings the suggestion adds."
+    )
+    differing: int = Field(..., ge=1, description="Rows that differ in the column today.")
+    explained: int = Field(..., ge=1, description="Of those, rows the rule makes match.")
+    largest_gap: float | None = Field(
+        default=None, ge=0, description="For a tolerance, the largest gap it explains."
+    )
+    examples: tuple[dict[str, Any], ...] = Field(
+        ..., description="Primary keys of up to three explained rows, lowest first."
+    )
+    rule: DiffRule = Field(..., description="The rule to add, first in rules.")
+    governing_rule_index: int | None = Field(
+        default=None, description="Index of the rule that governs the column today."
+    )
+
+
 FindingSeverity = Literal["error", "warning"]
 """How sure a configuration check is: an `error` stops the run, and a `warning`
 stops it only if the tables hold what the setting cannot handle."""

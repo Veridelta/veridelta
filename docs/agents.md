@@ -39,6 +39,14 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
     Show the proposals and their evidence to the user before adding them to the configuration.
 
+6. When a numeric column differs by small amounts, such as rounding, suggest a tolerance from the data:
+
+    ```bash
+    veridelta suggest -c veridelta.yaml --json
+    ```
+
+    Each suggestion names the rows it explains, and its example keys come from the data. Show the suggestions to the user before adding a rule: a tolerance forgives every gap below it, in later runs too.
+
 ## MCP server
 
 `veridelta mcp` serves steps 1, 2, and 5 above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. Two more tools list a side's columns and read the rows that differ. It needs the `mcp` extra:
@@ -152,7 +160,7 @@ A pair compared in place, such as two warehouse tables, brings back counts and p
 
 ## Checking the output
 
-`veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints, and `validate`, `crosswalk`, and `error` name the others. The docs site serves the same files; see [Printing the schema](cli.md#printing-the-schema). A script or an agent can check what it parses against them.
+`veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints, and `validate`, `crosswalk`, `suggest`, and `error` name the others. The docs site serves the same files; see [Printing the schema](cli.md#printing-the-schema). A script or an agent can check what it parses against them.
 
 On a pull request, the comment the [GitHub Action](ci.md#github-actions) keeps ends with the run's summary as JSON, in an HTML comment that readers never see. It holds counts and the column names the comment shows, never a value, and [Markdown summary](results.md#markdown-summary) shows how to parse it.
 

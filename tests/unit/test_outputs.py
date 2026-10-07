@@ -148,6 +148,19 @@ class TestOutputsMatchTheirSchemas:
         assert printed[0]["value_map"] == {"N": "false", "Y": "true"}
         _check("crosswalk", printed)
 
+    def test_suggest(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a suggestion, its rule and example keys included, prints as the schema says."""
+        _pair(tmp_path, "id,fare\n1,10.00\n2,20.00\n", "id,fare\n1,10.004\n2,20.004\n")
+        monkeypatch.chdir(tmp_path)
+
+        code, printed = _printed(monkeypatch, capsys, "suggest", "--json", "--quiet")
+
+        assert code == 0
+        assert printed[0]["rule"]["absolute_tolerance"] == 0.005
+        _check("suggest", printed)
+
     def test_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
