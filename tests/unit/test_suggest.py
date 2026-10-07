@@ -5,6 +5,7 @@
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import polars as pl
@@ -343,6 +344,58 @@ class TestSentinelSuggestions:
         assert suggestion.settings == {"absolute_tolerance": 0.005, "null_values": [-999.0]}
         assert suggestion.explained == 3
         assert suggestion.largest_gap == pytest.approx(0.004)
+
+
+class TestFormatSuggestions:
+    """Validate the date format suggested for text that reads as the dates on the other side."""
+
+    @pytest.mark.parametrize(
+        ("text", "fmt"),
+        [
+            pytest.param(["05/01/2024", "13/02/2024"], "%d/%m/%Y", id="day-first"),
+            pytest.param(["01/05/2024", "02/13/2024"], "%m/%d/%Y", id="month-first"),
+            pytest.param(["05.01.2024", "13.02.2024"], "%d.%m.%Y", id="dotted"),
+        ],
+    )
+    def test_it_picks_the_format_that_matches_the_dates(self, text: list[str], fmt: str) -> None:
+        """Ensure the format that reads the text as the other side's dates wins."""
+        dates = [date(2024, 1, 5), date(2024, 2, 13)]
+        engine = _engine({"id": [1, 2], "day": text}, {"id": [1, 2], "day": dates})
+
+        (suggestion,) = engine.suggest_rules()
+
+        assert suggestion.settings == {"datetime_format": fmt}
+        assert suggestion.explained == 2
+
+    def test_it_reads_the_text_on_either_side(self) -> None:
+        """Ensure text on the target, beside timestamps on the source, gets a format too."""
+        engine = _engine(
+            {"id": [1], "at": [datetime(2024, 1, 5, 13, 45)]},
+            {"id": [1], "at": ["2024-01-05 13:45:00"]},
+        )
+
+        (suggestion,) = engine.suggest_rules()
+
+        assert suggestion.settings == {"datetime_format": "%Y-%m-%d %H:%M:%S"}
+
+    @pytest.mark.parametrize(
+        ("text", "other"),
+        [
+            pytest.param(["soon"], [date(2024, 1, 5)], id="no-format-reads-it"),
+            pytest.param(
+                ["2024-01-05 13:45:00"],
+                [datetime(2024, 1, 5, 13, 45, tzinfo=UTC)],
+                id="zoned-timestamp",
+            ),
+        ],
+    )
+    def test_it_suggests_no_format_it_cannot_check(
+        self, text: list[str], other: list[object]
+    ) -> None:
+        """Ensure text no format reads, or a timestamp with a zone, gets no format."""
+        engine = _engine({"id": [1], "day": text}, {"id": [1], "day": other})
+
+        assert engine.suggest_rules() == []
 
 
 class TestSuggestCommand:
