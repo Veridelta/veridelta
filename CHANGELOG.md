@@ -1,3 +1,13 @@
+## v0.19.14 (2026-10-07)
+
+The HTML report and the Markdown summary say a keys-only comparison ran as pushdown,
+inside the database that stores both tables. They said warehouse pushdown, which was wrong
+for two Postgres or DuckDB tables that set `pushdown`.
+
+### Fix
+
+- say pushdown, not warehouse pushdown, in the reports (#225)
+
 ## v0.19.13 (2026-10-07)
 
 `OTEL_EXPORTER_OTLP_TIMEOUT` must be ASCII digits, so a value such as `²` names the
