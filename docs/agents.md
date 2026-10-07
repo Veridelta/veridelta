@@ -41,7 +41,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
 ## MCP server
 
-`veridelta mcp` serves the first two steps above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. It needs the `mcp` extra:
+`veridelta mcp` serves the first two steps above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, with a third that lists a side's columns, so an agent's host can call them without a shell. It needs the `mcp` extra:
 
 ```bash
 uv add 'veridelta[mcp]'
@@ -66,19 +66,20 @@ A host that reads its servers from a file takes the same command as an entry. Cl
 }
 ```
 
-Where Veridelta is installed without uv, the command is `veridelta mcp` itself. The server has two tools:
+Where Veridelta is installed without uv, the command is `veridelta mcp` itself. The server has three tools:
 
 | Tool | Returns | Reads |
 | :--- | :--- | :--- |
 | `validate_config` | What `veridelta validate --json` prints: `config`, `valid`, `errors`, and `warnings`. Its `schemas` and `allow_missing_env` arguments work as the command's flags do. | No rows. With `schemas`, each side's columns. |
 | `run_comparison` | What `veridelta run --json` prints, the [summary](results.md#summary), with `verdict`, `match` or `drift`, the `exit_code` the command gives, 0 or 1, and `artifacts_written`. | Both sides. |
+| `describe_schema` | One side's `columns`, each name as stored mapped to its type as Polars names it, such as `Int64`, and the `side`. Its `side` argument is `source` or `target`. | That side's columns, and no rows. A side that reads a `query` is refused, since only running it would name its columns. |
 
 The person who starts the server decides what it may read, and no tool call can change that:
 
 - Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.
 - A run writes the rows that differ to the configuration's `output_path`, so `run_comparison` refuses one outside every root before it reads a row.
 - A tool returns findings, counts, and column names, never the configuration or a value from the data. A password inside an error is masked, as on the command line.
-- With `schemas`, a check reads each side's columns wherever the configuration says they are, as `veridelta validate --schemas` does.
+- With `schemas`, a check reads each side's columns wherever the configuration says they are, as `veridelta validate --schemas` does. `describe_schema` reads one side's columns the same way, and a warehouse table with the probe a run starts with.
 - A host may start the server with only some of the user's environment variables. A `${NAME}` that the configuration references must reach the server, through the host's `env` setting for it if need be, or the check reports it unset. `allow_missing_env` checks a file without them.
 
 A call that fails returns its error's type and message, as `run --json` prints them, such as `ConfigError` for a path outside the roots. [Serving tools to an agent](cli.md#serving-tools-to-an-agent) lists the command's flags.

@@ -1097,6 +1097,22 @@ def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema
         )
 
 
+def _probe_relation(connector: PushdownSession, table: str) -> tuple[pl.LazyFrame, pl.Schema]:
+    """Read a relation's columns with a zero-row probe, as a warehouse run starts.
+
+    Returns the probe, which `validate_schemas` reads, and the columns with the
+    types the warehouse declares.
+    """
+    probe = connector.execute_pushdown(
+        connector.compiler.compile_schema_probe_query(table), query_type="schema"
+    )
+    schema = probe.collect_schema()
+    if isinstance(connector, database_connectors.PostgresPushdownSession):
+        # The probe reads every numeric as Decimal(38, 10); the catalog has the declared type.
+        schema = _with_declared_types(schema, connector.declared_types(table))
+    return probe, schema
+
+
 def _validate_pushdown_schema(
     connector: PushdownSession,
     source_table: str,
@@ -1104,18 +1120,8 @@ def _validate_pushdown_schema(
     diff: DiffConfig,
 ) -> tuple[pl.Schema, pl.Schema]:
     """Enforce `schema_mode` against warehouse relations before comparing them."""
-    source_probe = connector.execute_pushdown(
-        connector.compiler.compile_schema_probe_query(source_table), query_type="schema"
-    )
-    target_probe = connector.execute_pushdown(
-        connector.compiler.compile_schema_probe_query(target_table), query_type="schema"
-    )
-    source_schema = source_probe.collect_schema()
-    target_schema = target_probe.collect_schema()
-    if isinstance(connector, database_connectors.PostgresPushdownSession):
-        # The probe reads every numeric as Decimal(38, 10); the catalog has the declared type.
-        source_schema = _with_declared_types(source_schema, connector.declared_types(source_table))
-        target_schema = _with_declared_types(target_schema, connector.declared_types(target_table))
+    source_probe, source_schema = _probe_relation(connector, source_table)
+    target_probe, target_schema = _probe_relation(connector, target_table)
     _reject_warehouse_header_normalization(diff, source_schema, target_schema)
     DiffEngine.validate_schemas(diff, source_probe, target_probe)
     return source_schema, target_schema
@@ -2063,6 +2069,38 @@ class DiffEngine:
             for name in unset or []
         ]
         return [*unset_findings, *findings]
+
+    @staticmethod
+    def read_schema(config: SourceRef) -> pl.Schema:
+        """Read one side's columns and their types, and return none of its rows.
+
+        Each side is read as a run reads it before its first row. A file is
+        read by its loader, and a CSV file's types come from its first rows; a
+        lakehouse table gives its schema; a database or DuckDB `table` is read
+        with a probe that returns no rows. A warehouse table, or a table with
+        `pushdown`, gets the probe a pushdown run starts with, in a session of
+        its own that is closed after.
+
+        Args:
+            config (SourceRef): One side of a configuration.
+
+        Returns:
+            pl.Schema: The columns in their stored order and with their stored
+                names, before `normalize_column_names` or a `rename_to`.
+
+        Raises:
+            ConfigError: If the side reads a database or DuckDB `query`, which a
+                probe would have to run in full.
+            ConnectorError: If the side cannot be reached or read.
+        """
+        if not _is_warehouse(config):
+            return _schema_frame(config).collect_schema()
+        session = _WAREHOUSES[type(config)].session(config)
+        session.connect()
+        try:
+            return _probe_relation(session, _table_name(config))[1]
+        finally:
+            session.close()
 
     @classmethod
     def _local_schema_findings(

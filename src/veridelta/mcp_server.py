@@ -4,9 +4,9 @@
 """Serve Veridelta to an AI agent as Model Context Protocol tools.
 
 `veridelta mcp` calls `serve`, which answers an agent's host over stdio through
-the official MCP SDK, from the `mcp` extra. Each tool calls a function here that
-returns the object its command prints with `--json`, so an agent that knows the
-command line knows the tools.
+the official MCP SDK, from the `mcp` extra. Each tool calls a function here. A
+tool with a command returns the object that command prints with `--json`, so an
+agent that knows the command line knows the tools.
 
 The person who starts the server names the folders it may read configuration
 files from, and a tool refuses a path outside them. A tool returns findings,
@@ -45,8 +45,9 @@ if TYPE_CHECKING:
 INSTRUCTIONS: Final = (
     "Veridelta compares two datasets under the rules in a YAML configuration file. "
     "Check a file with validate_config, and fix each error it reports, before you run it "
-    "with run_comparison. Report counts and column names, and leave row values out of a "
-    "reply. This server uses only files under the folders it was started with."
+    "with run_comparison. Use describe_schema to list a side's columns when a rule must name "
+    "one. Report counts and column names, and leave row values out of a reply. This server "
+    "reads configuration files only from the folders it was started with."
 )
 """What the server tells an agent's host about itself when the host connects."""
 
@@ -151,6 +152,20 @@ class RunReport(TypedDict):
     volume_shift: int
     report_summary: str
     artifacts_written: bool
+
+
+class SchemaReport(TypedDict):
+    """What `describe_schema` returns: one side's columns, and none of its rows.
+
+    Attributes:
+        side: `source` or `target`.
+        columns: Each column's name, as stored and before
+            `normalize_column_names` or a `rename_to`, mapped to its type as
+            Polars names it, such as `Int64`, in the stored order.
+    """
+
+    side: Literal["source", "target"]
+    columns: dict[str, str]
 
 
 def _inside(settings: Settings, path: str) -> Path | None:
@@ -259,6 +274,27 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
     )
 
 
+def describe_side(settings: Settings, path: str, side: Literal["source", "target"]) -> SchemaReport:
+    """List one side's columns and their types, as a run reads them before its first row.
+
+    Args:
+        settings (Settings): The roots the server was started with.
+        path (str): The configuration file, under a root.
+        side (Literal["source", "target"]): The side to describe.
+
+    Returns:
+        SchemaReport: The side, and each of its columns mapped to its type.
+
+    Raises:
+        ConfigError: If the file is outside the roots, does not load, or reads
+            the side through a `query`, which would have to run in full.
+        ConnectorError: If the side cannot be reached or read.
+    """
+    _, source, target = load_config(resolve_path(settings, path))
+    schema = DiffEngine.read_schema(source if side == "source" else target)
+    return SchemaReport(side=side, columns={name: str(dtype) for name, dtype in schema.items()})
+
+
 def _failure(exc: Exception) -> str:
     """Name a failure as `run --json` does: its type, then its message."""
     return f"{type(exc).__name__}: {str(exc).strip()}"
@@ -330,7 +366,17 @@ def build_server(settings: Settings) -> "MCPServer":
         """
         return _answer(loaded.tool_error, lambda: run_configuration(settings, path))
 
-    for tool in (validate_config, run_comparison):
+    def describe_schema(
+        path: Annotated[str, Field(description="The configuration file.")],
+        side: Annotated[Literal["source", "target"], Field(description="The side to describe.")],
+    ) -> SchemaReport:
+        """List the columns of one side a Veridelta configuration file names, with their types.
+
+        Reads no rows. Names are as stored, before normalize_column_names or a rename_to.
+        """
+        return _answer(loaded.tool_error, lambda: describe_side(settings, path, side))
+
+    for tool in (validate_config, run_comparison, describe_schema):
         server.tool(description=inspect.getdoc(tool))(tool)
     return server
 

@@ -4,6 +4,7 @@ What changed in the product bundle and why, newest first. A commit's diff shows 
 
 ## 2026-10-07
 
+- **Update**: [the feature map](FEATURES.md) adds `describe_schema` to the tools `veridelta mcp` ships. It lists one side's columns and types, and reads no rows. The roadmap keeps two tools and the guard on row values. Slice F1c of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds `run_comparison` to the tools `veridelta mcp` ships. A run refuses an `output_path` outside the server's folders, since it writes the rows that differ there. Slice F1b of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: [the feature map](FEATURES.md) adds `veridelta mcp` to the shipped features, with its first tool, `validate_config`, and the folders it is held to. The roadmap keeps the other four tools and the guard on row values. Slice F1a of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 - **Update**: the README and the docs home lead with the three-line case, the two paths and the keys, which is the file the recording runs, and tutorial 2 drops its `format` lines. This is the decision [DR-01](metrics/DR-01.md) at 3 and [NS-01](metrics/NS-01.md) at 5 called for. Slice D1 of [issue 126](https://github.com/Veridelta/veridelta/issues/126).
