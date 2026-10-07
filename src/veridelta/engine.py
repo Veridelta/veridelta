@@ -86,6 +86,8 @@ from veridelta.models import (
     ValueMapEntry,
     ValueMapProposal,
     WhitespaceMode,
+    mismatch_ratio_of,
+    normalize_column_name,
 )
 from veridelta.sentinels import usable_sentinels
 
@@ -592,7 +594,7 @@ def _alignment_maps(
 def _normalize_header_names(frame: pl.LazyFrame) -> pl.LazyFrame:
     """Strip and lowercase every column name, as `normalize_column_names` asks."""
     names = frame.collect_schema().names()
-    normalized = [name.strip().lower() for name in names]
+    normalized = [normalize_column_name(name) for name in names]
     collisions = sorted(name for name, count in Counter(normalized).items() if count > 1)
     if collisions:
         raise ConfigError(
@@ -1098,7 +1100,6 @@ def _summary(
     added_count = added.height
     removed_count = removed.height
     total_mismatches = added_count + removed_count + changed_count
-    mismatch_ratio = float(total_mismatches) / float(max(source_total, 1))
     return DiffSummary(
         total_rows_source=source_total,
         total_rows_target=target_total,
@@ -1106,7 +1107,7 @@ def _summary(
         removed_count=removed_count,
         changed_count=changed_count,
         column_mismatches=column_mismatches,
-        is_match=mismatch_ratio <= diff.threshold,
+        is_match=mismatch_ratio_of(total_mismatches, source_total) <= diff.threshold,
         report_limit=diff.report_top_columns_limit,
         artifacts_written=artifacts_written,
     )
@@ -1153,7 +1154,7 @@ def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema
     if not diff.normalize_column_names:
         return
     changed = [
-        name for schema in schemas for name in schema.names() if name != name.strip().lower()
+        name for schema in schemas for name in schema.names() if name != normalize_column_name(name)
     ]
     if changed:
         raise ConfigError(
