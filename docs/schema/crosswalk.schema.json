@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridelta.github.io/veridelta/schema/crosswalk.schema.json",
+  "$defs": {
+    "ValueMapEntry": {
+      "additionalProperties": false,
+      "description": "One proposed `value_map` entry and the rows that support it.\n\nAttributes:\n    source_value (str): Source text as the `value_map` stage sees it, after\n        null sentinels, regex replacement, whitespace, and case folding.\n    target_value (str): The target value those rows compare against, as text.\n    rows (int): Joined rows whose source holds `source_value`, whatever\n        their target, NULL included.\n    agreeing_rows (int): Those rows whose target is `target_value`.\n    confidence (float): `agreeing_rows / rows`, the share of the source\n        value's rows the entry would make match.",
+      "properties": {
+        "source_value": {
+          "description": "Source text as the value_map stage sees it.",
+          "title": "Source Value",
+          "type": "string"
+        },
+        "target_value": {
+          "description": "Target value the rows compare against.",
+          "title": "Target Value",
+          "type": "string"
+        },
+        "rows": {
+          "description": "Joined rows holding the source value.",
+          "minimum": 1,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "agreeing_rows": {
+          "description": "Rows among them whose target is the target value.",
+          "minimum": 1,
+          "title": "Agreeing Rows",
+          "type": "integer"
+        },
+        "confidence": {
+          "description": "Return the share of the source value's rows that agree.\n\nReturns:\n    float: `agreeing_rows / rows`.",
+          "readOnly": true,
+          "title": "Confidence",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_value",
+        "target_value",
+        "rows",
+        "agreeing_rows",
+        "confidence"
+      ],
+      "title": "ValueMapEntry",
+      "type": "object"
+    },
+    "ValueMapProposal": {
+      "additionalProperties": false,
+      "description": "A proposed `value_map` for one column, with the evidence for each new entry.\n\nAttributes:\n    column (str): Compared column, named as it appears after any `rename_to`.\n    value_map (dict[str, str]): The governing rule's existing entries plus\n        the proposed ones.\n    entries (tuple[ValueMapEntry, ...]): The proposed entries alone, most\n        agreeing rows first.\n    governing_rule_index (int | None): Position in `DiffConfig.rules` of the\n        rule that governs the column today, or None when no rule does. Only\n        one rule governs a column, so new entries belong in that rule.",
+      "properties": {
+        "column": {
+          "description": "Compared column, after any rename_to.",
+          "title": "Column",
+          "type": "string"
+        },
+        "value_map": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Existing plus proposed entries.",
+          "title": "Value Map",
+          "type": "object"
+        },
+        "entries": {
+          "description": "Proposed entries alone.",
+          "items": {
+            "$ref": "#/$defs/ValueMapEntry"
+          },
+          "title": "Entries",
+          "type": "array"
+        },
+        "governing_rule_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Index of the rule that governs the column today.",
+          "title": "Governing Rule Index"
+        }
+      },
+      "required": [
+        "column",
+        "value_map",
+        "entries"
+      ],
+      "title": "ValueMapProposal",
+      "type": "object"
+    }
+  },
+  "items": {
+    "$ref": "#/$defs/ValueMapProposal"
+  },
+  "type": "array",
+  "title": "veridelta crosswalk --json",
+  "description": "The value maps proposed for columns that hold the same values in two encodings."
+}

@@ -36,6 +36,8 @@ result.to_pandas()
 | `volume_shift` | `total_rows_target` minus `total_rows_source`. |
 | `report_summary` | A plain-text report of these counts and the most drifting columns. |
 
+[`schema/run.schema.json`](schema/run.schema.json) is the JSON Schema of this object, and `veridelta schema run` prints it; see [Printing the schema](cli.md#printing-the-schema).
+
 ## Rows
 
 `added` holds the rows found only in the target, and `removed` the rows found only in the source. `changed` holds the rows found in both with at least one difference. Each changed row carries its primary keys and, for every compared column, `{column}_source`, `{column}_target`, and `{column}_is_match`.

@@ -105,6 +105,10 @@ A pair compared in place, such as two warehouse tables, brings back counts and p
 
 `veridelta schema` prints the JSON Schema of the configuration file. Check a draft against it, then run `veridelta validate`.
 
+## Checking the output
+
+`veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints, and `validate`, `crosswalk`, and `error` name the others. The docs site serves the same files; see [Printing the schema](cli.md#printing-the-schema). A script or an agent can check what it parses against them.
+
 ## Docs for language models
 
 The site publishes two plain-text files for language models, as the [llms.txt proposal](https://llmstxt.org/) describes:

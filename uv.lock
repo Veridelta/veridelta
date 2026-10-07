@@ -4507,6 +4507,7 @@ dependencies = [
     { name = "polars" },
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -4621,6 +4622,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rapidfuzz", marker = "extra == 'fuzzy'", specifier = ">=3.0.0" },
     { name = "snowflake-connector-python", marker = "extra == 'snowflake'", specifier = ">=4.7.3" },
+    { name = "typing-extensions", specifier = ">=4.14.1" },
     { name = "veridelta", extras = ["bigquery"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["database"], marker = "extra == 'all'" },
     { name = "veridelta", extras = ["databricks"], marker = "extra == 'all'" },

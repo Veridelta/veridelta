@@ -29,7 +29,8 @@ from veridelta import __version__
 from veridelta.config import config_json_schema, load_config
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
-from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve, validation_report
+from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve
+from veridelta.outputs import OUTPUTS, error_report, output_json_schema, validation_report
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
@@ -165,8 +166,7 @@ def _report_failure(exc: BaseException, *, as_json: bool) -> int:
         )
     print(message, file=sys.stderr)
     if as_json:
-        error = {"type": type(exc).__name__, "message": str(exc).strip()}
-        print(json.dumps({"error": error}, indent=2))
+        print(json.dumps(error_report(exc), indent=2))
     return EXIT_ERROR
 
 
@@ -329,16 +329,18 @@ def crosswalk(args: argparse.Namespace) -> int:
 
 
 def schema(args: argparse.Namespace) -> int:
-    """Print the JSON Schema for configuration files on stdout.
+    """Print a JSON Schema on stdout: the configuration file's, or one output's.
 
     Args:
-        args (argparse.Namespace): Parsed arguments; the command takes none.
+        args (argparse.Namespace): Parsed arguments carrying `output`: `run`,
+            `validate`, `crosswalk`, or `error` for what that command prints
+            with `--json`, or None for configuration files.
 
     Returns:
         int: `EXIT_MATCH`.
     """
-    _ = args
-    print(json.dumps(config_json_schema(), indent=2))
+    printed = config_json_schema() if args.output is None else output_json_schema(args.output)
+    print(json.dumps(printed, indent=2))
     return EXIT_MATCH
 
 
@@ -597,9 +599,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Suppress the verdict line on stderr.",
     )
-    subparsers.add_parser(
+    schema_parser = subparsers.add_parser(
         "schema",
-        help="Print the JSON Schema for configuration files, for editors and validators.",
+        help="Print the JSON Schema for configuration files, or for what a command prints with --json.",
+    )
+    schema_parser.add_argument(
+        "output",
+        nargs="?",
+        choices=OUTPUTS,
+        help="The output whose schema to print, instead of the configuration file's.",
     )
     mcp_parser = subparsers.add_parser(
         "mcp",

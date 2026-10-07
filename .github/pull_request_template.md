@@ -9,6 +9,6 @@
 - [ ] `make all` passes.
 - [ ] Tests cover new or changed behavior.
 - [ ] The documentation describes any change a user can see.
-- [ ] `make schema` ran, if a configuration model changed.
+- [ ] `make schema` ran, if a configuration model or the JSON a command prints changed.
 - [ ] `make notebooks` passes, if a tutorial changed.
 - [ ] `CHANGELOG.md` is unchanged. The release pull request writes it.

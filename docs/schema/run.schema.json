@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridelta.github.io/veridelta/schema/run.schema.json",
+  "additionalProperties": false,
+  "description": "The summary of a comparison: the row counts, the verdict, and the drifting columns.",
+  "properties": {
+    "total_rows_source": {
+      "title": "Total Rows Source",
+      "type": "integer"
+    },
+    "total_rows_target": {
+      "title": "Total Rows Target",
+      "type": "integer"
+    },
+    "added_count": {
+      "title": "Added Count",
+      "type": "integer"
+    },
+    "removed_count": {
+      "title": "Removed Count",
+      "type": "integer"
+    },
+    "changed_count": {
+      "title": "Changed Count",
+      "type": "integer"
+    },
+    "column_mismatches": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Column Mismatches",
+      "type": "object"
+    },
+    "is_match": {
+      "title": "Is Match",
+      "type": "boolean"
+    },
+    "total_mismatches": {
+      "description": "Count added, removed, and changed rows together.\n\nReturns:\n    int: The total.",
+      "readOnly": true,
+      "title": "Total Mismatches",
+      "type": "integer"
+    },
+    "mismatch_ratio": {
+      "description": "Divide the mismatches by the source row count.\n\nReturns:\n    float: The ratio, which can exceed 1.",
+      "readOnly": true,
+      "title": "Mismatch Ratio",
+      "type": "number"
+    },
+    "match_rate_percentage": {
+      "description": "Express the match rate as a percentage.\n\nReturns:\n    float: The percentage, rounded to two decimal places, such as `99.98`.",
+      "readOnly": true,
+      "title": "Match Rate Percentage",
+      "type": "number"
+    },
+    "is_perfect_match": {
+      "description": "Return whether nothing mismatched under the configured rules.\n\nReturns:\n    bool: Whether `total_mismatches` is zero.",
+      "readOnly": true,
+      "title": "Is Perfect Match",
+      "type": "boolean"
+    },
+    "volume_shift": {
+      "description": "Subtract the source row count from the target's.\n\nReturns:\n    int: Target rows minus source rows.",
+      "readOnly": true,
+      "title": "Volume Shift",
+      "type": "integer"
+    },
+    "report_summary": {
+      "description": "Format the counts and the most drifted columns as plain text for a CI log.\n\nReturns:\n    str: The report.",
+      "readOnly": true,
+      "title": "Report Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "total_rows_source",
+    "total_rows_target",
+    "added_count",
+    "removed_count",
+    "changed_count",
+    "is_match",
+    "total_mismatches",
+    "mismatch_ratio",
+    "match_rate_percentage",
+    "is_perfect_match",
+    "volume_shift",
+    "report_summary"
+  ],
+  "title": "veridelta run --json",
+  "type": "object"
+}

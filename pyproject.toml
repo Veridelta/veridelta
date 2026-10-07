@@ -40,7 +40,13 @@ classifiers = [
     "Topic :: Software Development :: Testing",
     "Typing :: Typed",
 ]
-dependencies = ["polars>=1.39.3", "pydantic>=2.12.5", "pyyaml>=6.0.3"]
+dependencies = [
+    "polars>=1.39.3",
+    "pydantic>=2.12.5",
+    "pyyaml>=6.0.3",
+    # The output schemas need its `TypedDict` on Python 3.11. Pydantic requires it too.
+    "typing-extensions>=4.14.1",
+]
 
 [project.urls]
 Homepage = "https://veridelta.github.io/veridelta/"
