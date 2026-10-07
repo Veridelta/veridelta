@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 
 import polars as pl
 
+from veridelta.config import load_config
 from veridelta.connectors import database as database_connectors
 from veridelta.connectors import duckdb as duckdb_connectors
 from veridelta.connectors import warehouse as warehouse_connectors
@@ -2023,6 +2024,45 @@ class DiffEngine:
         if pair is None:
             return findings + DiffEngine._local_schema_findings(diff, source, target)
         return findings + _pushdown_schema_findings(diff, pair)
+
+    @staticmethod
+    def check_config_file(
+        path: str | Path, *, schemas: bool = False, allow_missing_env: bool = False
+    ) -> list[ConfigFinding]:
+        """Load a configuration file and check it for what would stop a run.
+
+        A file that does not load is one error finding, with the loader's
+        message, so every problem is reported the same way. A file that loads
+        gets the checks of `check_configs`. `veridelta validate` and the MCP
+        server's `validate_config` tool both report through this method.
+
+        Args:
+            path (str | Path): The configuration file.
+            schemas (bool): Whether to also connect and check the rules against
+                the stored columns.
+            allow_missing_env (bool): Whether to read an unset `${NAME}` as the
+                text `NAME` and warn, instead of failing, so a file can be
+                checked without its secrets.
+
+        Returns:
+            list[ConfigFinding]: A warning for each unset variable first, then
+                the findings of `check_configs`, or the error that stopped the
+                load.
+        """
+        unset: list[str] | None = [] if allow_missing_env else None
+        try:
+            diff, source, target = load_config(path, unset_env=unset)
+            findings = DiffEngine.check_configs(diff, source, target, schemas=schemas)
+        except ConfigError as exc:
+            findings = [_error(str(exc).strip())]
+        unset_findings = [
+            _warning(
+                f"Environment variable '{name}' is not set, so its references were checked "
+                f"as the text '{name}'."
+            )
+            for name in unset or []
+        ]
+        return [*unset_findings, *findings]
 
     @classmethod
     def _local_schema_findings(

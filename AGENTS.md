@@ -75,5 +75,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [The GitLab CI template is frozen](decisions/gitlab-template-is-frozen.md)
 - [llms.txt comes from a hook in the repository](decisions/llms-txt-from-a-hook.md)
 - [The quick start is recorded with vhs](decisions/recording-with-vhs.md)
+- [The MCP server runs on the official SDK, from an extra, over stdio](decisions/mcp-server-on-the-official-sdk.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

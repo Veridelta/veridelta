@@ -51,6 +51,15 @@ Warehouse sessions, lakehouse scanners, and the database and DuckDB readers. `Ve
       show_root_heading: false
       show_source: true
 
+## MCP server
+
+The tools `veridelta mcp` serves, and the folder guard each one goes through. The SDK they run on comes with the `mcp` extra, and this module imports without it.
+
+::: veridelta.mcp_server
+    options:
+      show_root_heading: false
+      show_source: true
+
 ## Reports
 
 Standalone HTML reports and Markdown summaries, rendered from a `DiffResult`.

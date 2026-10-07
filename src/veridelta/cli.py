@@ -14,6 +14,7 @@ object, and exits with `EXIT_ERROR` rather than the code for drift. With
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from collections.abc import Callable, Generator, Sequence
@@ -27,7 +28,7 @@ from veridelta import __version__
 from veridelta.config import config_json_schema, load_config
 from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
-from veridelta.models import ConfigFinding
+from veridelta.mcp_server import Settings, serve
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
@@ -122,6 +123,14 @@ def _support(text: str) -> int:
     if value < 1:
         raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
     return value
+
+
+def _directory(text: str) -> Path:
+    """Parse `--root`, a folder that exists, resolved."""
+    path = Path(text).resolve()
+    if not path.is_dir():
+        raise argparse.ArgumentTypeError(f"not a directory: {text!r}")
+    return path
 
 
 def _report_failure(exc: Exception, *, as_json: bool) -> int:
@@ -330,6 +339,35 @@ def schema(args: argparse.Namespace) -> int:
     return EXIT_MATCH
 
 
+def mcp(args: argparse.Namespace) -> int:
+    """Serve the MCP tools over stdio until the agent's host disconnects.
+
+    The tools read configuration files only under the `--root` folders, or
+    the current directory when none is given. The server runs in the first,
+    so a relative path in a tool call or in a configuration file resolves
+    there, as it would for a person running the command line in it. Stdout
+    carries the protocol, so this command prints nothing else there.
+
+    Args:
+        args (argparse.Namespace): Parsed arguments carrying the roots.
+
+    Returns:
+        int: `EXIT_MATCH` once the host disconnects or Ctrl-C stops the server,
+            and `EXIT_ERROR` when it cannot start, such as without the `mcp`
+            extra.
+    """
+    try:
+        settings = Settings(tuple(args.root or [Path.cwd()]))
+        os.chdir(settings.roots[0])
+        serve(settings)
+    except KeyboardInterrupt:
+        # Ctrl-C is how a person stops a server they started by hand.
+        return EXIT_MATCH
+    except Exception as exc:
+        return _report_failure(exc, as_json=False)
+    return EXIT_MATCH
+
+
 def _plural(count: int, noun: str) -> str:
     """Write a count with its noun, such as `1 error` or `2 warnings`."""
     return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
@@ -352,27 +390,14 @@ def validate(args: argparse.Namespace) -> int:
             `EXIT_MISMATCH` when there is one, and `EXIT_ERROR` when the
             check cannot finish.
     """
-    unset: list[str] | None = [] if args.allow_missing_env else None
     try:
-        diff_config, source_config, target_config = load_config(args.config, unset_env=unset)
-        findings = DiffEngine.check_configs(
-            diff_config, source_config, target_config, schemas=bool(args.schemas)
+        findings = DiffEngine.check_config_file(
+            args.config,
+            schemas=bool(args.schemas),
+            allow_missing_env=bool(args.allow_missing_env),
         )
-    except ConfigError as exc:
-        findings = [ConfigFinding(severity="error", message=str(exc).strip())]
     except Exception as exc:
         return _report_failure(exc, as_json=bool(args.json))
-    unset_findings = [
-        ConfigFinding(
-            severity="warning",
-            message=(
-                f"Environment variable '{name}' is not set, so its references were checked "
-                f"as the text '{name}'."
-            ),
-        )
-        for name in unset or []
-    ]
-    findings = [*unset_findings, *findings]
 
     errors = [finding.message for finding in findings if finding.severity == "error"]
     warnings = [finding.message for finding in findings if finding.severity == "warning"]
@@ -416,7 +441,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    # Every command but `schema` reads a configuration file.
+    # `run`, `crosswalk`, and `validate` read the configuration file named here.
     config = argparse.ArgumentParser(add_help=False)
     config.add_argument(
         "-c",
@@ -424,7 +449,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="veridelta.yaml",
         help="Path to the YAML configuration file (default: veridelta.yaml).",
     )
-    config.add_argument(
+    # Every command but `schema` reads data, so it can log what it reads.
+    verbose = argparse.ArgumentParser(add_help=False)
+    verbose.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -432,7 +459,9 @@ def build_parser() -> argparse.ArgumentParser:
         "No line holds a credential or SQL.",
     )
 
-    run_parser = subparsers.add_parser("run", parents=[config], help="Run a Veridelta comparison.")
+    run_parser = subparsers.add_parser(
+        "run", parents=[config, verbose], help="Run a Veridelta comparison."
+    )
     run_parser.add_argument(
         "--json",
         action="store_true",
@@ -488,7 +517,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     crosswalk_parser = subparsers.add_parser(
         "crosswalk",
-        parents=[config],
+        parents=[config, verbose],
         help="Propose value_map rules from how source and target values line up.",
     )
     crosswalk_parser.add_argument(
@@ -529,7 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate_parser = subparsers.add_parser(
         "validate",
-        parents=[config],
+        parents=[config, verbose],
         help="Check a configuration for what would stop a run, without reading any rows.",
     )
     validate_parser.add_argument(
@@ -564,6 +593,21 @@ def build_parser() -> argparse.ArgumentParser:
         "schema",
         help="Print the JSON Schema for configuration files, for editors and validators.",
     )
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        parents=[verbose],
+        help="Serve checks to an AI agent as Model Context Protocol tools, over stdio.",
+    )
+    mcp_parser.add_argument(
+        "--root",
+        action="append",
+        type=_directory,
+        metavar="DIR",
+        help=(
+            "A folder the tools may read configuration files from. Repeat it for more "
+            "folders. The server runs in the first (default: the current directory)."
+        ),
+    )
     return parser
 
 
@@ -577,6 +621,7 @@ def main() -> None:
         "crosswalk": crosswalk,
         "validate": validate,
         "schema": schema,
+        "mcp": mcp,
     }
     # `schema` reads no configuration and logs nothing, so it has no `--verbose`.
     with _verbose_logging(getattr(args, "verbose", False)):

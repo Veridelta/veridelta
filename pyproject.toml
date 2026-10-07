@@ -71,6 +71,9 @@ bigquery = [
     "google-cloud-bigquery>=3.11.0",
     "pyarrow>=14.0.1",
 ]
+# The server is written against the SDK's 2.x API, which renamed the server
+# class and moved its transport settings, and is tested on 2.3.0.
+mcp = ["mcp>=2.3.0,<3"]
 all = [
     "veridelta[snowflake]",
     "veridelta[databricks]",
@@ -81,6 +84,7 @@ all = [
     "veridelta[fuzzy]",
     "veridelta[database]",
     "veridelta[duckdb]",
+    "veridelta[mcp]",
 ]
 
 [dependency-groups]
@@ -163,6 +167,10 @@ module = [
     "nbclient.*",
     "jsonschema",
     "jsonschema.*",
+    "mcp",
+    "mcp.*",
+    "anyio",
+    "anyio.*",
     "psycopg",
     "psycopg.*",
     "pymysql",

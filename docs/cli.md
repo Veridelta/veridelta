@@ -1,6 +1,6 @@
 # Command line
 
-The `veridelta` command runs a comparison, checks a configuration, proposes value maps, and prints the configuration schema. Each command reads `veridelta.yaml` unless `-c` names another file.
+The `veridelta` command runs a comparison, checks a configuration, proposes value maps, prints the configuration schema, and serves its checks to an AI agent. `run`, `validate`, and `crosswalk` read `veridelta.yaml` unless `-c` names another file.
 
 | Command | Description |
 | :--- | :--- |
@@ -8,6 +8,7 @@ The `veridelta` command runs a comparison, checks a configuration, proposes valu
 | `veridelta validate` | Report what would stop a run, without reading any rows. |
 | `veridelta crosswalk` | Propose `value_map` entries from the data. |
 | `veridelta schema` | Print the configuration file's JSON Schema. |
+| `veridelta mcp` | Serve the checks to an AI agent as Model Context Protocol tools, over stdio. |
 | `veridelta --version` | Print the installed version. |
 
 ## Running a comparison
@@ -39,12 +40,12 @@ Progress messages always go to stderr, so `veridelta run --json | jq` needs no f
 
 Every command exits `2` for invalid arguments, and `3` when it cannot finish:
 
-| Code | `run` | `validate` | `crosswalk` |
-| :--- | :--- | :--- | :--- |
-| `0` | A match within `threshold`. | No errors. Warnings are allowed. | Proposals computed, whether or not any were found. |
-| `1` | Drift. | At least one error. | Not used. |
-| `2` | Invalid arguments. | Invalid arguments. | Invalid arguments. |
-| `3` | The run could not finish, such as on a configuration error, an unreachable source, a missing extra, or metrics `--otel-send` could not send. | The check could not finish, such as when `--schemas` cannot reach a source. | The proposals could not be computed. |
+| Code | `run` | `validate` | `crosswalk` | `mcp` |
+| :--- | :--- | :--- | :--- | :--- |
+| `0` | A match within `threshold`. | No errors. Warnings are allowed. | Proposals computed, whether or not any were found. | The host disconnected, or Ctrl-C stopped the server. |
+| `1` | Drift. | At least one error. | Not used. | Not used. |
+| `2` | Invalid arguments. | Invalid arguments. | Invalid arguments. | Invalid arguments, such as a `--root` that is not a directory. |
+| `3` | The run could not finish, such as on a configuration error, an unreachable source, a missing extra, or metrics `--otel-send` could not send. | The check could not finish, such as when `--schemas` cannot reach a source. | The proposals could not be computed. | The server could not start, such as without the `mcp` extra. |
 
 A command that cannot finish explains why on stderr. With `--json`, it also prints the error on stdout, as one JSON object in place of its usual output:
 
@@ -61,7 +62,7 @@ A command that cannot finish explains why on stderr. With `--json`, it also prin
 
 ## Logging
 
-`-v` or `--verbose` prints Veridelta's own log lines on stderr, for `run`, `validate`, and `crosswalk`. Each line records a file opened, a connection, a read, or a pushdown statement. Reads and statements carry their timings:
+`-v` or `--verbose` prints Veridelta's own log lines on stderr, for `run`, `validate`, `crosswalk`, and `mcp`. Each line records a file opened, a connection, a read, or a pushdown statement. Reads and statements carry their timings:
 
 ```text
 INFO veridelta.connectors.database: Read 1200 rows of table 'orders' from postgresql://analyst@db.internal/sales in 0.412s
@@ -145,3 +146,18 @@ veridelta crosswalk -c veridelta.yaml --min-confidence 0.99 --json
 ```bash
 veridelta schema > veridelta.schema.json
 ```
+
+## Serving tools to an agent
+
+`veridelta mcp` serves Veridelta's checks to an AI agent as [Model Context Protocol](https://modelcontextprotocol.io/) tools. The agent's host, such as Claude Code or Cursor, starts the command and speaks to it over stdin and stdout. It needs the `mcp` extra, and [AI agents](agents.md#mcp-server) shows how to register it with a host and lists its tools. This serves the configuration files in the current directory:
+
+```bash
+veridelta mcp --root .
+```
+
+| Flag | Description |
+| :--- | :--- |
+| `--root DIR` | A folder the tools may read configuration files from. Repeat it for more folders. Default: the current directory. |
+| `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |
+
+A tool refuses a path outside every root. The server runs in the first root, so a relative path in a tool call, or in a configuration file, resolves there. Stdout carries the protocol and nothing else, and log lines go to stderr, which the host keeps. The server stops when the host disconnects, or on Ctrl-C.

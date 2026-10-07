@@ -63,6 +63,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | The JSON Schema for configuration files, for completion and checking in an editor | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The schema mapped to `veridelta*.yaml` in VS Code, the YAML extension recommended, and a task that runs `veridelta validate` on the open file with its verdict in the Problems panel | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The AI agents page, `llms.txt`, and the installable agent skill | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
+| `veridelta mcp`, which serves `validate_config` to an agent's host over stdio, held to the folders it was started with | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md), [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |
 
 ## On the roadmap
 
@@ -73,7 +74,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Schemas for the JSON the commands print | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
 | A tutorial comparing two model evaluation runs | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [NS-01](metrics/NS-01.md) |
 | A parsable section of the Action's pull request comment, and a recipe for an agent's fix loop | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
-| `veridelta mcp` and its guardrails | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
+| The rest of `veridelta mcp`'s tools, and the guard on row values | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [DR-02](metrics/DR-02.md) |
 | `veridelta suggest`, proposing rules from the pairs that differ, with no model | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [NS-01](metrics/NS-01.md) |
 | Accepted drift with `run --baseline` | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [GR-02](metrics/GR-02.md) |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
