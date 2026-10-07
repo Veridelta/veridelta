@@ -29,7 +29,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 ## Drivers
 
 - [DR-01](metrics/DR-01.md) counts the keys in the smallest configuration that compares two Parquet files: 3, since the format follows the file's suffix.
-- [DR-02](metrics/DR-02.md) counts the quick-start mistakes whose error names the cause and not a symptom: 3 of 4 today.
+- [DR-02](metrics/DR-02.md) counts the quick-start mistakes whose error names the cause and not a symptom: 4 of 4 today.
 - [DR-03](metrics/DR-03.md) measures how long a reported wrong verdict stays unfixed on PyPI. No such report exists yet.
 
 ## Guardrails
@@ -50,7 +50,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 
 | Metric | Where |
 | :--- | :--- |
-| [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) | `veridelta run` on the configurations each card gives. The recording in the README, once it exists, shows [NS-01](metrics/NS-01.md). |
+| [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) | `veridelta run` on the configurations each card gives. The recording in the README shows [NS-01](metrics/NS-01.md). |
 | [DR-03](metrics/DR-03.md), [GR-02](metrics/GR-02.md) | `gh issue list --label bug`, and the release dates on PyPI |
 | [GR-01](metrics/GR-01.md) | The `test-core` and `test-postgres` jobs of the CI Pipeline on the release commit, and the latest run of the Live Warehouses workflow |
 | [GR-03](metrics/GR-03.md) | The Accessibility job of the CI Pipeline on the release commit |
