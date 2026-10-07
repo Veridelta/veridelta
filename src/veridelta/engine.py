@@ -991,6 +991,48 @@ _ARTIFACT_WRITERS: Final[dict[ArtifactFormat, Callable[[pl.DataFrame, Path], Non
 """Artifact format to writer."""
 
 
+_TEXT_FORMATS: Final[frozenset[ArtifactFormat]] = frozenset({"csv", "json", "ndjson"})
+"""Artifact formats with no type for bytes."""
+
+
+def _holds_binary(dtype: object) -> bool:
+    """Return whether a type is binary, or nests a binary type anywhere inside it.
+
+    A nested type names its members as instances or as bare classes, so both count.
+    """
+    if dtype == pl.Binary:
+        return True
+    if isinstance(dtype, (pl.List, pl.Array)):
+        return _holds_binary(dtype.inner)
+    if isinstance(dtype, pl.Struct):
+        return any(_holds_binary(field.dtype) for field in dtype.fields)
+    return False
+
+
+def _writable(frame: pl.DataFrame, output_format: ArtifactFormat) -> pl.DataFrame:
+    """Write each binary column as hexadecimal text in a format that has no bytes type.
+
+    Polars refuses a binary column in CSV and panics on one in JSON, a panic no
+    `except Exception` catches, so the bytes become text first.
+
+    Raises:
+        ConfigError: If a column nests binary values in a list or a struct,
+            which a text format cannot hold.
+    """
+    if output_format not in _TEXT_FORMATS:
+        return frame
+    binary: list[str] = []
+    for name, dtype in frame.schema.items():
+        if isinstance(dtype, pl.Binary):
+            binary.append(name)
+        elif _holds_binary(dtype):
+            raise ConfigError(
+                f"Column '{name}' nests binary values, which output_format '{output_format}' "
+                "cannot hold. Set output_format to parquet or arrow."
+            )
+    return frame.with_columns(pl.col(binary).bin.encode("hex")) if binary else frame
+
+
 def _export_artifacts(
     frames: dict[str, pl.DataFrame], output_path: str | None, output_format: ArtifactFormat
 ) -> bool:
@@ -1012,7 +1054,9 @@ def _export_artifacts(
     for name, frame in frames.items():
         if frame.height == 0:
             continue
-        _ARTIFACT_WRITERS[output_format](frame, out_dir / f"{name}.{output_format}")
+        _ARTIFACT_WRITERS[output_format](
+            _writable(frame, output_format), out_dir / f"{name}.{output_format}"
+        )
         written = True
     return written
 
