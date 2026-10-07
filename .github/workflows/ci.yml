@@ -91,6 +91,66 @@ jobs:
       - name: Execute Smoke Tests
         run: uv run pytest tests/smoke --no-cov
 
+  test-package:
+    name: Package
+    needs: static-analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      # uv builds the sdist, then the wheel from the unpacked sdist, so a file
+      # the sdist leaves out breaks the wheel here rather than on PyPI.
+      - name: Build the Sdist and the Wheel
+        run: uv build
+
+      # The dependencies come at their locked versions, so a new upstream
+      # release cannot fail a pull request in this job.
+      - name: Install the Wheel Alone
+        run: |
+          set -euo pipefail
+          uv export --locked --no-dev --no-emit-project --format requirements-txt --output-file "$RUNNER_TEMP/requirements.txt"
+          uv venv "$RUNNER_TEMP/wheel"
+          uv pip install --python "$RUNNER_TEMP/wheel" --requirements "$RUNNER_TEMP/requirements.txt" dist/veridelta-*.whl
+
+      - name: Run the Installed Package
+        working-directory: demo
+        env:
+          WHEEL_ENV: ${{ runner.temp }}/wheel
+        run: |
+          set -euo pipefail
+          "$WHEEL_ENV/bin/veridelta" --version
+          # Every module imports without an extra, and the typing marker ships.
+          "$WHEEL_ENV/bin/python" - <<'EOF'
+          import importlib
+          import importlib.resources
+          import pkgutil
+
+          import veridelta
+
+          assert "site-packages" in veridelta.__file__, veridelta.__file__
+          for module in pkgutil.walk_packages(veridelta.__path__, "veridelta."):
+              importlib.import_module(module.name)
+          assert importlib.resources.files("veridelta").joinpath("py.typed").is_file()
+          EOF
+          # The quick start's two files differ on purpose, so a working install exits 1.
+          status=0
+          "$WHEEL_ENV/bin/veridelta" run -c veridelta.yaml --html "$RUNNER_TEMP/report.html" --markdown "$RUNNER_TEMP/summary.md" || status=$?
+          test "$status" -eq 1
+          test -s "$RUNNER_TEMP/report.html"
+          test -s "$RUNNER_TEMP/summary.md"
+
   test-core:
     name: Core Engine (Py ${{ matrix.python-version }}, ${{ matrix.os }})
     needs: test-smoke
@@ -405,7 +465,7 @@ jobs:
   ci-passed:
     name: CI Passed
     if: always()
-    needs: [static-analysis, docs, test-smoke, test-core, test-e2e, test-notebooks, test-postgres, test-databases, test-accessibility, action]
+    needs: [static-analysis, docs, test-smoke, test-package, test-core, test-e2e, test-notebooks, test-postgres, test-databases, test-accessibility, action]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

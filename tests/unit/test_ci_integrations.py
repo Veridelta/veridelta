@@ -872,6 +872,25 @@ class TestCIWorkflow:
         for name, job in _workflow(workflow)["jobs"].items():
             assert 1 <= job.get("timeout-minutes", 0) <= 15, (workflow.name, name)
 
+    def test_a_pull_request_builds_the_package_and_runs_it_installed_alone(self) -> None:
+        """Ensure a packaging mistake fails a pull request, not a release.
+
+        The wheel is built from the sdist and installed by itself, with its
+        dependencies at their locked versions, so the checkout cannot stand in
+        for a file the package leaves out. Then every module imports, and the
+        quick start runs as a user's install would run it.
+        """
+        job = _workflow(_CI)["jobs"]["test-package"]
+        script = "\n".join(step.get("run", "") for step in job["steps"])
+
+        assert job["needs"] == "static-analysis"
+        assert "uv build" in script
+        assert "uv export --locked --no-dev --no-emit-project" in script
+        assert 'uv pip install --python "$RUNNER_TEMP/wheel"' in script
+        assert "dist/veridelta-*.whl" in script
+        assert "pkgutil.walk_packages(veridelta.__path__" in script
+        assert '"$WHEEL_ENV/bin/veridelta" run -c veridelta.yaml' in script
+
     def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
         """Ensure the CLI runs as a real command on each OS the core suite runs on."""
         jobs = _workflow(_CI)["jobs"]
