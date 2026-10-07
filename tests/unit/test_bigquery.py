@@ -295,8 +295,10 @@ class TestBigQueryConnector:
         driver = _driver(mocker)
         driver.Client.side_effect = RuntimeError("no default credentials")
 
-        with pytest.raises(ConnectorError, match="Failed to connect to BigQuery"):
+        with pytest.raises(ConnectorError, match="Failed to connect to BigQuery") as exc_info:
             BigQueryConnector(BigQueryConfig(**_BASE)).connect()
+
+        assert exc_info.value.__cause__ is None
 
     def test_it_imports_the_client_only_when_connecting(self, mocker: MockerFixture) -> None:
         """Ensure the driver loads on first use, so importing Veridelta never imports it."""

@@ -431,6 +431,25 @@ class TestDatabricksExecution:
         assert [call.args[0] for call in cursor.execute.call_args_list] == [count_sql, probe_sql]
         assert count_frame.collect().item() == 4096
 
+    def test_it_masks_the_token_in_a_connect_failure(self, mocker: MockerFixture) -> None:
+        """Ensure a driver message that repeats the access token reaches no error or traceback.
+
+        The message keeps the driver's reason with the token masked, and the
+        driver's own exception is not chained, as for Snowflake.
+        """
+        token = "dapi-do-not-print"
+        driver = mocker.MagicMock()
+        driver.connect.side_effect = RuntimeError(f"token {token} rejected")
+        mocker.patch("veridelta.connectors.warehouse.databricks_sql", driver)
+        config = _databricks_config().model_copy(update={"access_token": token})
+
+        with pytest.raises(ConnectorError) as exc_info:
+            DatabricksConnector(config).connect()
+
+        assert str(exc_info.value) == "Failed to connect to Databricks: token *** rejected"
+        assert token not in "".join(traceback.format_exception(exc_info.value))
+        assert exc_info.value.__cause__ is None
+
     def test_it_wraps_driver_connect_failures(
         self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:
