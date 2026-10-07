@@ -50,7 +50,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 
 ## Skills
 
-`.claude/skills/` holds the procedures an agent runs in this repository: `define-personas`, `define-key-metrics`, and `defend-decision`. The folder is the one the Agent Skills standard discovers in a project, so every tool that reads the standard finds them, and the repository supports no harness in particular. `skills/veridelta/` is different: it is the product's own skill, which users install into their agents as [the AI agents page](docs/agents.md#agent-skill) says, and nothing in this repository loads it.
+`.claude/skills/` holds the procedures an agent runs in this repository: `define-personas`, `define-key-metrics`, and `defend-decision`. The folder is the one the Agent Skills standard discovers in a project, so every tool that reads the standard finds them. Claude Code and Cursor, the two tools the repository supports, both read it, and it moves to `.agents/skills/` once Claude Code reads that folder. `skills/veridelta/` is different: it is the product's own skill, which users install into their agents as [the AI agents page](docs/agents.md#agent-skill) says, and nothing in this repository loads it.
 
 ## Product documents
 
@@ -70,6 +70,7 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 
 - [The accessibility check runs axe-core from Python, with a pinned download](decisions/accessibility-check-in-python.md)
 - [Each rule is one concept of the bundle](decisions/one-text-for-each-rule.md), which replaces [The agent rules live in AGENTS.md files beside the code](decisions/rules-live-beside-the-code.md) and, before it, [AGENTS.md holds the rules for coding agents](decisions/agents-md-is-canonical.md)
+- [A tool has a file of its own only where it reads no shared one](decisions/a-tool-file-only-where-the-tool-needs-it.md)
 - [The MySQL and SQL Server test drivers sit in their own dependency group](decisions/database-drivers-in-their-own-group.md)
 - [The GitLab CI template is frozen](decisions/gitlab-template-is-frozen.md)
 - [llms.txt comes from a hook in the repository](decisions/llms-txt-from-a-hook.md)
