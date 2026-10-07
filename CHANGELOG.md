@@ -1,3 +1,15 @@
+## v0.19.10 (2026-10-07)
+
+The `snowflake` extra needs `snowflake-connector-python` 4.7.3 or later, past six
+advisories in earlier releases, such as logged credentials and a skipped TLS hostname
+check. The `snowflake` and `databricks` extras need `pyarrow` 14.0.1 or later, past a flaw
+that runs code from a crafted IPC file. An install that already has an older driver now
+upgrades it.
+
+### Fix
+
+- **deps**: raise the floors of two drivers past their advisories (#217)
+
 ## v0.19.9 (2026-10-07)
 
 Errors and logs name a file or table without the query of its URL, which can hold a token
