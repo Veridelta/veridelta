@@ -284,7 +284,12 @@ class TestHTMLReport:
             keys_only=True,
         )
 
-        assert "primary keys rather than values" in render_html(result)
+        document = render_html(result)
+
+        assert "primary keys rather than values" in document
+        # Postgres and DuckDB push down too, so the note names no warehouse.
+        assert "ran as pushdown, inside the database that stores both tables" in document
+        assert "warehouse" not in document
 
     def test_it_omits_the_keys_only_note_for_a_local_run(self) -> None:
         """Ensure the caveat appears only where it applies."""
@@ -465,6 +470,8 @@ class TestMarkdownSummary:
         document = render_markdown(_with_summary(_summary(), keys_only=True))
 
         assert "primary keys only" in document
+        assert "> Pushdown compared these tables inside the database that stores them" in document
+        assert "warehouse" not in document.lower()
 
     @pytest.mark.parametrize(
         ("column", "cell"),
