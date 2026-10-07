@@ -916,6 +916,21 @@ class TestCIWorkflow:
         for name, job in _workflow(workflow)["jobs"].items():
             assert 1 <= job.get("timeout-minutes", 0) <= 15, (workflow.name, name)
 
+    def test_a_stalled_chromium_install_is_tried_again(self) -> None:
+        """Ensure a stalled package mirror cannot use up the Accessibility job.
+
+        `playwright install --with-deps` runs `apt-get update`, which has hung on
+        the Ubuntu archive until the job's limit. Each try is bounded, and a
+        second one follows, so both fit in the job's 15 minutes.
+        """
+        job = _workflow(_CI)["jobs"]["test-accessibility"]
+        [step] = [step for step in job["steps"] if step.get("name") == "Install Chromium"]
+
+        assert "for attempt in 1 2; do" in step["run"]
+        assert "timeout --kill-after=10 240 uv run" in step["run"]
+        assert "playwright install --with-deps chromium && exit 0" in step["run"]
+        assert step["run"].rstrip().endswith("exit 1")
+
     def test_a_pull_request_builds_the_package_and_runs_it_installed_alone(self) -> None:
         """Ensure a packaging mistake fails a pull request, not a release.
 
