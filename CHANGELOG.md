@@ -1,3 +1,19 @@
+## v0.19.1 (2026-10-07)
+
+Every `veridelta mcp` tool that opens a side now reads data on this machine only from under
+the server's `--root` folders. Before, only `read_discrepancies` and `propose_value_maps`
+checked, while `run_comparison`, `describe_schema`, and `validate_config` with `schemas`
+opened a file anywhere. A column name can carry a file's text: reader options that skip
+lines and split on an unused separator turn any line of any file into the header, which
+`describe_schema` returned. A check without `schemas` opens no data and is unchanged.
+
+The PyPI summary, the docs, and `veridelta --help` now describe Veridelta in one sentence,
+and the pushdown guide says which services the generated SQL has run in.
+
+### Fix
+
+- hold every MCP tool that opens a side to the server's folders (#199)
+
 ## v0.19.0 (2026-10-07)
 
 `veridelta mcp` gains its last two tools, which return values from the data.
