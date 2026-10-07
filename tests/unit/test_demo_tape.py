@@ -13,14 +13,17 @@ the CI fixtures.
 
 import contextlib
 import io
+import os
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
 from veridelta.cli import build_parser, main
+from veridelta.engine import DiffEngine
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -41,6 +44,7 @@ _EMBEDDED_IN = {
     "veridelta": "docs/index.md",
     "validate": "docs/cli.md",
     "crosswalk": "docs/cli.md",
+    "mcp": "docs/agents.md",
 }
 """The docs page that shows each recording, by tape."""
 
@@ -65,8 +69,25 @@ def _transcript(tape: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     for command in _typed(tape):
         shown += _PROMPT + command + "\n"
         head = _HEAD.match(command)
+        if command.startswith("#"):
+            # A comment labels the recording, and the shell prints nothing for it.
+            continue
         if command.startswith("cat "):
             shown += Path(command[4:]).read_text(encoding="utf-8")
+        elif command.startswith("python "):
+            # A demo script, such as the MCP client, which starts `veridelta mcp` itself,
+            # from this environment's scripts, as `uv run vhs` puts them on PATH.
+            scripts = str(Path(sys.executable).parent)
+            ran = subprocess.run(
+                [sys.executable, *shlex.split(command)[1:]],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+                env={**os.environ, "PATH": scripts + os.pathsep + os.environ.get("PATH", "")},
+            )
+            assert ran.returncode == 0, ran.stderr
+            shown += ran.stdout
         elif head:
             lines = Path(head.group(2)).read_text(encoding="utf-8").splitlines(keepends=True)
             shown += "".join(lines[: int(head.group(1))])
@@ -200,3 +221,34 @@ class TestQuickStart:
 
         assert _gif(_QUICK_START).name == "demo.gif"
         assert f"]({_GIF_URL})" in readme
+
+
+class TestAgentKit:
+    """Hold the kit for recording a real agent to the server and the files it registers."""
+
+    def test_it_registers_a_server_the_cli_starts(self) -> None:
+        """Ensure the kit's command starts `veridelta mcp` with flags the CLI accepts, rows allowed."""
+        readme = (_DEMO / "agent" / "README.md").read_text(encoding="utf-8")
+        added = re.search(r"^ *(claude mcp add veridelta -- .+)$", readme, re.MULTILINE)
+        assert added, "The kit's README no longer registers the server."
+        args = shlex.split(added.group(1))
+        command = args[args.index("mcp", args.index("--")) :]
+
+        parsed = build_parser().parse_args(command)
+
+        assert parsed.allow_row_values is True
+        assert command[command.index("--root") + 1] == "."
+
+    def test_its_configuration_is_valid_and_finds_drift(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the agent finds something to report: a valid file over two drifting exports."""
+        monkeypatch.chdir(_DEMO / "agent")
+
+        findings = DiffEngine.check_config_file("veridelta.yaml", schemas=True)
+        monkeypatch.setattr(sys, "argv", ["veridelta", "run", "-c", "veridelta.yaml", "--quiet"])
+        with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exited:
+            main()
+
+        assert findings == []
+        assert exited.value.code == 1

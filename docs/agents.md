@@ -76,6 +76,51 @@ Where Veridelta is installed without uv, the command is `veridelta mcp` itself. 
 | `read_discrepancies` | The rows of one `kind`, `added`, `removed`, or `changed`, up to `limit`, 20 by default: `kind`, `total`, `rows`, `truncated`, and `keys_only`, which says the pair was compared in place, so each row holds its primary key alone. | Both sides, since each call runs the comparison. Only on a server started with `--allow-row-values`. |
 | `propose_value_maps` | What `veridelta crosswalk --json` prints, as `proposals`, with `total` and `truncated`. Its `min_confidence`, `min_support`, and `sample_fraction` arguments work as the command's flags do. | Both sides. Only on a server started with `--allow-row-values`. |
 
+<details markdown>
+<summary>Watch a client call three tools, as an agent's host does</summary>
+
+![A terminal runs a script that starts veridelta mcp with row values allowed and calls three tools. validate_config answers valid with no errors. run_comparison answers drift, exit code 1, with one added, one removed, and one changed row, and one mismatch in status. read_discrepancies returns the changed row, id 2, whose status is closed in the source and shipped in the target.](assets/demo-mcp.gif)
+
+```text
+> # A client calls the MCP server's tools, as an agent's host does.
+> python mcp_client.py
+-> validate_config {"path": "veridelta.yaml"}
+<- {
+  "valid": true,
+  "errors": [],
+  "warnings": []
+}
+-> run_comparison {"path": "veridelta.yaml"}
+<- {
+  "verdict": "drift",
+  "exit_code": 1,
+  "added_count": 1,
+  "removed_count": 1,
+  "changed_count": 1,
+  "column_mismatches": {
+    "status": 1
+  }
+}
+-> read_discrepancies {"path": "veridelta.yaml", "kind": "changed"}
+<- {
+  "total": 1,
+  "truncated": false,
+  "rows": [
+    {
+      "id": 2,
+      "status_source": "closed",
+      "amount_source": 20.5,
+      "status_target": "shipped",
+      "amount_target": 20.5,
+      "status_is_match": false,
+      "amount_is_match": true
+    }
+  ]
+}
+```
+
+</details>
+
 The person who starts the server decides what it may read, and no tool call can change that:
 
 - Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.
