@@ -39,7 +39,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
     Show the proposals and their evidence to the user before adding them to the configuration.
 
-6. When a column differs by small amounts, such as rounding, padding, or case, suggest a rule from the data:
+6. When a column differs by small amounts, such as rounding, padding, case, or a spelling of NULL, suggest a rule from the data:
 
     ```bash
     veridelta suggest -c veridelta.yaml --json

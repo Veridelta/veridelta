@@ -24,7 +24,7 @@ These items build on [AI agents](agents.md), in this order, tracked in [issue 12
 
 ### Next
 
-- More rules for [`veridelta suggest`](cli.md#suggesting-rules), which suggests numeric tolerances, trimming, and case folding today: a null sentinel and a date format, one at a time. Each shows its evidence, and no model is called. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
+- More rules for [`veridelta suggest`](cli.md#suggesting-rules), which suggests numeric tolerances, trimming, case folding, and null sentinels today: a date format. Each shows its evidence, and no model is called. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - Accepted drift: `run --baseline accepted.json` fails only on drift that the baseline does not list. An agent that changes a pipeline on purpose can show that nothing else moved. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
 
 ### Ambitious

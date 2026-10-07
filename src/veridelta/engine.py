@@ -1935,19 +1935,68 @@ def _text_proposal(changed: pl.DataFrame, column: str) -> _Proposal | None:
     return _Proposal({"whitespace_mode": "both", "case_insensitive": True})
 
 
+_NULL_SPELLINGS: Final = frozenset(
+    {"", "-", "--", "?", "n/a", "na", "#n/a", "null", "(null)", "<null>", "none", "nil", "nan"}
+)
+"""Text a system writes in place of NULL, compared stripped and in lowercase."""
+
+_NULL_NUMBERS: Final = frozenset({-1, -9, -99, -999, -9999, -99999})
+"""Numbers a system writes in place of NULL."""
+
+
+def _looks_like_null(value: object) -> bool:
+    """Return whether a value is a common spelling of NULL, such as `N/A` or -999."""
+    if isinstance(value, str):
+        return value.strip().lower() in _NULL_SPELLINGS
+    # A flag is never proposed: `false` where the other side is NULL is too often meant.
+    return isinstance(value, int | float) and not isinstance(value, bool) and value in _NULL_NUMBERS
+
+
+def _sentinel_proposal(changed: pl.DataFrame, column: str) -> _Proposal | None:
+    """Propose `null_values` for spellings of NULL that stand where the other side is NULL."""
+    differing = pl.col(f"{column}_is_match").eq(False)
+    found: set[SentinelValue] = set()
+    for side, other in (("source", "target"), ("target", "source")):
+        values = changed.filter(
+            differing
+            & pl.col(f"{column}_{other}").is_null()
+            & pl.col(f"{column}_{side}").is_not_null()
+        )[f"{column}_{side}"]
+        found.update(value for value in values.unique().to_list() if _looks_like_null(value))
+    if not found:
+        return None
+    return _Proposal({"null_values": sorted(found, key=repr)})
+
+
 def _proposal(changed: pl.DataFrame, column: str, max_share: float) -> _Proposal | None:
-    """Propose what a column's differing rows call for: a tolerance, or trimming and case."""
+    """Propose what a column's differing rows call for, its null sentinels included.
+
+    Numbers can take a tolerance and text can take trimming and case folding, and
+    either can take null sentinels beside them, in one rule.
+    """
     if _compares_numbers(changed, column):
-        return _tolerance_proposal(changed, column, max_share)
-    if _compares_text(changed, column):
-        return _text_proposal(changed, column)
-    return None
+        typed = _tolerance_proposal(changed, column, max_share)
+    elif _compares_text(changed, column):
+        typed = _text_proposal(changed, column)
+    else:
+        typed = None
+    sentinels = _sentinel_proposal(changed, column)
+    if typed is None or sentinels is None:
+        return typed or sentinels
+    return _Proposal({**typed.settings, **sentinels.settings}, typed.largest_gap)
 
 
 def _suggested_rule(
-    governing: DiffRule | None, column: str, settings: dict[str, SuggestedSetting]
+    governing: DiffRule | None,
+    column: str,
+    settings: dict[str, SuggestedSetting],
+    default_null_values: list[SentinelValue],
 ) -> DiffRule:
-    """Name the column alone, keep the settings that govern it today, and add `settings`."""
+    """Name the column alone, keep the settings that govern it today, and add `settings`.
+
+    Suggested null sentinels join the column's sentinels today, since a rule's
+    `null_values` replaces `default_null_values` rather than adding to them.
+    """
     kept = (
         {}
         if governing is None
@@ -1955,7 +2004,12 @@ def _suggested_rule(
             exclude_unset=True, exclude={"column_names", "pattern", "rename_to"}
         )
     )
-    return DiffRule.model_validate({**kept, "column_names": [column], **settings})
+    added = dict(settings)
+    sentinels = settings.get("null_values")
+    if isinstance(sentinels, list):
+        current = kept.get("null_values", default_null_values)
+        added["null_values"] = [*current, *(value for value in sentinels if value not in current)]
+    return DiffRule.model_validate({**kept, "column_names": [column], **added})
 
 
 def _differing_only_in(
@@ -2582,10 +2636,17 @@ class DiffEngine:
             if proposal is None:
                 continue
             governing = _match_rule(self.config.rules, column)
-            rule = _suggested_rule(governing, column, proposal.settings)
-            tried = self._run_copy(
-                self.config.model_copy(update={"rules": [rule, *self.config.rules]})
+            rule = _suggested_rule(
+                governing, column, proposal.settings, self.config.default_null_values
             )
+            try:
+                tried = self._run_copy(
+                    self.config.model_copy(update={"rules": [rule, *self.config.rules]})
+                )
+            except ConfigError:
+                # The configuration refuses the rule, such as a sentinel that one side's
+                # type cannot hold, so it explains nothing.
+                continue
             explained = _differing_only_in(result.changed, tried.changed, keys, column)
             # A rule that makes a matching row differ, such as case folding ahead of a
             # `value_map` written in capitals, is no explanation.

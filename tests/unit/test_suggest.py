@@ -268,6 +268,83 @@ class TestTextSuggestions:
         assert RuleSuggestion.model_validate_json(suggestion.model_dump_json()) == suggestion
 
 
+class TestSentinelSuggestions:
+    """Validate null sentinels, suggested where one side spells NULL and the other holds it."""
+
+    @pytest.mark.parametrize(
+        ("source", "target", "sentinels"),
+        [
+            pytest.param(["N/A", "Oslo"], [None, "Oslo"], ["N/A"], id="text"),
+            pytest.param(["Oslo", ""], ["Oslo", None], [""], id="empty-text"),
+            pytest.param([None, 4.5], [-999.0, 4.5], [-999.0], id="number-on-the-target"),
+        ],
+    )
+    def test_it_suggests_the_spelling_of_null_it_finds(
+        self, source: list[object], target: list[object], sentinels: list[object]
+    ) -> None:
+        """Ensure a common spelling of NULL where the other side is NULL becomes a sentinel."""
+        engine = _engine({"id": [1, 2], "x": source}, {"id": [1, 2], "x": target})
+
+        (suggestion,) = engine.suggest_rules()
+
+        assert suggestion.settings == {"null_values": sentinels}
+        assert suggestion.explained == 1
+
+    def test_it_leaves_a_real_value_beside_null_alone(self) -> None:
+        """Ensure a value that is not a spelling of NULL, such as a city, is no sentinel."""
+        engine = _engine({"id": [1], "city": ["Oslo"]}, {"id": [1], "city": [None]})
+
+        assert engine.suggest_rules() == []
+
+    def test_it_never_suggests_a_flag(self) -> None:
+        """Ensure `false` where the other side is NULL, too often meant, is no sentinel."""
+        engine = _engine({"id": [1], "paid": [False]}, {"id": [1], "paid": [None]})
+
+        assert engine.suggest_rules() == []
+
+    def test_it_keeps_the_sentinels_the_column_has_today(self) -> None:
+        """Ensure a new sentinel joins the defaults, which a rule's list would replace."""
+        engine = _engine(
+            {"id": [1, 2, 3], "x": ["N/A", "-", "Oslo"]},
+            {"id": [1, 2, 3], "x": [None, None, "Oslo"]},
+            default_null_values=["-"],
+        )
+
+        (suggestion,) = engine.suggest_rules()
+
+        assert suggestion.settings == {"null_values": ["N/A"]}
+        assert suggestion.rule.null_values == ["-", "N/A"]
+
+    def test_it_suggests_nothing_the_configuration_refuses(self) -> None:
+        """Ensure a text sentinel for a column that is a number on the other side is left out."""
+        engine = _engine({"id": [1, 2], "x": ["N/A", "5"]}, {"id": [1, 2], "x": [None, 5]})
+
+        assert engine.suggest_rules() == []
+
+    def test_it_suggests_nothing_when_null_never_equals_null(self) -> None:
+        """Ensure a sentinel that would only turn a match into NULL against NULL is left out."""
+        engine = _engine(
+            {"id": [1, 2], "x": ["N/A", "N/A"]},
+            {"id": [1, 2], "x": [None, "N/A"]},
+            default_treat_null_as_equal=False,
+        )
+
+        assert engine.suggest_rules() == []
+
+    def test_it_joins_a_tolerance_and_a_sentinel_in_one_rule(self) -> None:
+        """Ensure a column with rounding and a sentinel gets one rule with both settings."""
+        engine = _engine(
+            {"id": [1, 2, 3], "fare": [10.0, 20.0, -999.0]},
+            {"id": [1, 2, 3], "fare": [10.004, 20.003, None]},
+        )
+
+        (suggestion,) = engine.suggest_rules()
+
+        assert suggestion.settings == {"absolute_tolerance": 0.005, "null_values": [-999.0]}
+        assert suggestion.explained == 3
+        assert suggestion.largest_gap == pytest.approx(0.004)
+
+
 class TestSuggestCommand:
     """Validate `veridelta suggest` on the command line."""
 
