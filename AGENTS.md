@@ -1,6 +1,6 @@
 # Agent instructions
 
-This file holds the rules for coding agents that change this repository. It sums up [CONTRIBUTING.md](CONTRIBUTING.md), which people follow, and links the rules that apply under `src/` and `tests/`.
+This file holds the rules for coding agents that change this repository. Claude Code and Cursor read it directly, as does any tool that reads `AGENTS.md`. It sums up [CONTRIBUTING.md](CONTRIBUTING.md), which people follow, and links the rules that apply under `src/` and `tests/`.
 
 ## Commands
 
@@ -33,6 +33,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 - A `# type: ignore`, `# noqa`, or `# pyright: ignore` carries its reason on the same line.
 - Follow the [writing rules](CONTRIBUTING.md#writing-documentation) in docs, docstrings, CLI help, commit messages, and pull requests. `tests/unit/test_docs_style.py` checks some of them.
 - Meet the [accessibility expectations](ACCESSIBILITY.md#contributor-expectations) in a change to the HTML report or the docs site.
+- Add no `CLAUDE.md`, `.claude/CLAUDE.md`, or `CLAUDE.local.md`, even uncommitted: Claude Code reads this file only while none is here or above it, so the suite fails on any of them here. Personal notes go in your own instructions, outside the project.
 
 ## Detailed rules
 

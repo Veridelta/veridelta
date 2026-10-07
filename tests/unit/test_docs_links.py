@@ -14,6 +14,7 @@ this module resolves those too.
 """
 
 import json
+import os
 import re
 import unicodedata
 from collections.abc import Iterator
@@ -40,6 +41,17 @@ _FENCE = re.compile(r"^\s*(```|~~~)")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 _FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
 _AGENTS = _ROOT / "AGENTS.md"
+_SKIPPED = frozenset({".git", ".venv", "site", "node_modules", ".cache", "__pycache__"})
+"""Folders no tool reads instructions from, left out of the walk."""
+_SHADOWING = frozenset({"claude.md", "claude.local.md"})
+"""The names, lowercased, of the files that stop Claude Code from reading `AGENTS.md`."""
+
+
+def _files_under(root: Path) -> Iterator[Path]:
+    """Yield every file below a folder by its name on disk, pruning folders no tool reads."""
+    for folder, subfolders, names in os.walk(root):
+        subfolders[:] = sorted(name for name in subfolders if name not in _SKIPPED)
+        yield from (Path(folder, name) for name in sorted(names))
 
 
 def _nested_rules_files() -> set[str]:
@@ -275,7 +287,7 @@ class TestDocumentationLinks:
 
 
 class TestAgentInstructions:
-    """Keep `AGENTS.md` pointing at the rules files and headings that exist."""
+    """Keep `AGENTS.md` the one instruction file the tools read, with every link resolving."""
 
     def test_it_links_every_nested_rules_file(self) -> None:
         """Ensure an `AGENTS.md` beside the code cannot ship without a row in the root one.
@@ -301,9 +313,21 @@ class TestAgentInstructions:
         assert not broken, "These AGENTS.md links name nothing:\n" + "\n".join(broken)
 
     def test_no_claude_md_shadows_it(self) -> None:
-        """Ensure no `CLAUDE.md` exists, so Claude Code reads `AGENTS.md` like every other agent.
+        """Ensure no `CLAUDE.md` exists anywhere, so Claude Code reads `AGENTS.md`.
 
-        Claude Code 2.1.277 and later read `AGENTS.md` when there is no `CLAUDE.md`,
-        and only `CLAUDE.md` when both exist.
+        Claude Code 2.1.277 and later read `AGENTS.md` only while no `CLAUDE.md`,
+        `.claude/CLAUDE.md`, or `CLAUDE.local.md` is in the working directory or any
+        directory above it, and `~/.claude/CLAUDE.md` does not count. A nested one
+        would be a second instruction file for one tool, and a `claude.md` shadows
+        on a case-insensitive disk, so the walk compares lowercased names.
         """
-        assert not (_ROOT / "CLAUDE.md").exists()
+        found = [
+            path.relative_to(_ROOT).as_posix()
+            for path in _files_under(_ROOT)
+            if path.name.lower() in _SHADOWING
+        ]
+
+        assert not found, (
+            "Claude Code reads AGENTS.md only while no CLAUDE.md, .claude/CLAUDE.md, or"
+            " CLAUDE.local.md is in the working directory or above it. Delete:\n" + "\n".join(found)
+        )
