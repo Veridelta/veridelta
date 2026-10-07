@@ -42,6 +42,20 @@ _FRONT_MATTER = re.compile(r"\A---\n.*?\n---\n", re.DOTALL)
 _AGENTS = _ROOT / "AGENTS.md"
 
 
+def _nested_rules_files() -> set[str]:
+    """Return every `AGENTS.md` one folder below the root, as a posix path.
+
+    Not a glob: on a case-insensitive filesystem `Path.glob` also returns
+    `docs/agents.md` for `*/AGENTS.md`, on Windows and, but for Python 3.12,
+    on macOS.
+    """
+    return {
+        f"{folder.name}/AGENTS.md"
+        for folder in _ROOT.iterdir()
+        if folder.is_dir() and any(child.name == "AGENTS.md" for child in folder.iterdir())
+    }
+
+
 def _slug(heading: str) -> str:
     """Return the anchor Python Markdown's `toc` extension gives a heading.
 
@@ -263,12 +277,16 @@ class TestDocumentationLinks:
 class TestAgentInstructions:
     """Keep `AGENTS.md` pointing at the rules files and headings that exist."""
 
-    def test_it_links_every_rules_file(self) -> None:
-        """Ensure a new file in `.cursor/rules` cannot ship without a row in `AGENTS.md`."""
-        rules = {path.relative_to(_ROOT).as_posix() for path in _ROOT.glob(".cursor/rules/*.mdc")}
+    def test_it_links_every_nested_rules_file(self) -> None:
+        """Ensure an `AGENTS.md` beside the code cannot ship without a row in the root one.
+
+        A harness that scopes rules by folder loads the nested file on its own; every
+        other agent reaches it through the root's link.
+        """
+        rules = _nested_rules_files()
         linked = {target.partition("#")[0] for target in _repository_links(_AGENTS)}
 
-        assert rules, "No rules files found under .cursor/rules."
+        assert rules, "No nested AGENTS.md found."
         assert rules <= linked, "Link these from AGENTS.md:\n" + "\n".join(sorted(rules - linked))
 
     def test_it_resolves_every_repository_link(self) -> None:
@@ -282,6 +300,10 @@ class TestAgentInstructions:
 
         assert not broken, "These AGENTS.md links name nothing:\n" + "\n".join(broken)
 
-    def test_claude_code_reads_it(self) -> None:
-        """Ensure `CLAUDE.md` only imports `AGENTS.md`, so the rules live in one file."""
-        assert (_ROOT / "CLAUDE.md").read_text(encoding="utf-8").split() == ["@AGENTS.md"]
+    def test_no_claude_md_shadows_it(self) -> None:
+        """Ensure no `CLAUDE.md` exists, so Claude Code reads `AGENTS.md` like every other agent.
+
+        Claude Code 2.1.277 and later read `AGENTS.md` when there is no `CLAUDE.md`,
+        and only `CLAUDE.md` when both exist.
+        """
+        assert not (_ROOT / "CLAUDE.md").exists()

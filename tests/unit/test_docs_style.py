@@ -69,11 +69,20 @@ def _markdown_files() -> list[Path]:
         _ROOT / name
         for name in ("README.md", "CONTRIBUTING.md", "SECURITY.md", "AGENTS.md", "ACCESSIBILITY.md")
     ]
+    # Not a glob, which on a case-insensitive filesystem also returns `docs/agents.md`
+    # and would read it a second time: on Windows and, but for Python 3.12, on macOS.
+    nested = sorted(
+        child
+        for folder in _ROOT.iterdir()
+        if folder.is_dir()
+        for child in folder.iterdir()
+        if child.name == "AGENTS.md"
+    )
     records = sorted((_ROOT / "decisions").glob("*.md"))
     product = sorted((_ROOT / "product").rglob("*.md"))
     skills = sorted([*_ROOT.glob("skills/*/SKILL.md"), *_ROOT.glob(".claude/skills/*/SKILL.md")])
     template = _ROOT / ".github" / "pull_request_template.md"
-    return [*root, template, *pages, *records, *product, *skills]
+    return [*root, *nested, template, *pages, *records, *product, *skills]
 
 
 def _notebook_cells() -> Iterator[_Text]:
@@ -172,6 +181,7 @@ class TestDocumentationStyle:
         assert {
             "README.md",
             "AGENTS.md",
+            "src/AGENTS.md",
             "ACCESSIBILITY.md",
             ".github/ISSUE_TEMPLATE/accessibility.yml",
             "docs/configuration.md",

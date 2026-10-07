@@ -1,14 +1,8 @@
----
-description: Standards for unit, integration, and smoke test suites
-globs: tests/**/*.py
-alwaysApply: false
----
+# Rules under `tests/`
 
-# Veridelta Testing Standards
+These rules apply to every change under `tests/`, on top of the root [AGENTS.md](../AGENTS.md).
 
-Apply these rules when writing or updating tests in `tests/`.
-
-## Architecture
+## Layout
 
 - Framework: `pytest` via `uv run pytest` or `make test`.
 - Organization:

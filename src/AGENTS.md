@@ -1,14 +1,34 @@
----
-description: SQL pushdown safety, identifier allowlists, and execution-boundary isolation
-globs: src/veridelta/**/*.py
-alwaysApply: false
----
+# Rules under `src/`
 
-# Veridelta Security
+These rules apply to every change under `src/veridelta/`, on top of the root [AGENTS.md](../AGENTS.md). The security rules matter most in `connectors/sql.py`, where every warehouse statement is assembled.
 
-Apply these rules when modifying files inside `src/veridelta/`.
+## Engine and models
 
-## Warehouse SQL assembly
+### Data manipulation
+
+- Prefer Polars lazy execution (`pl.LazyFrame`, `scan_*`) wherever feasible.
+- Do not convert Polars frames to Python dicts or lists on performance-critical paths.
+- Keep column schemas deterministically typed. Avoid schema inference inside hot loops.
+
+### Models and configuration
+
+- Validate config with Pydantic `BaseModel` and `extra="forbid"`. Prefer `frozen=True` for new immutable models.
+- Raise `veridelta.exceptions.VerideltaError` subclasses (`ConfigError`, `DataIntegrityError`). Do not raise generic runtime exceptions for domain failures.
+- Keep the module split: schema parsing in `config.py`, execution in `engine.py`, representations in `models.py`. Do not invent new packages.
+
+### Loaders
+
+- New file formats go through `LoaderFactory` and `BaseLoader`.
+- `SourceType` and `ArtifactFormat` are bound to `LoaderFactory._loaders` and `_ARTIFACT_WRITERS` by tests. Adding a name to either literal without a matching implementation fails the suite. Do not list aspirational formats.
+- Unimplemented formats raise `ConfigError`, not `NotImplementedError`. Choosing a format is a config decision, so it belongs in the same error class as the rest of them and must reach the CLI's `VerideltaError` handler. The literals now catch this at load time; the runtime guards remain for configs built with `model_construct`.
+- Derive the supported-format list in those messages from the registry that backs it. Do not hardcode it.
+- Prefer a `scan_*` reader. `json` and `excel` are eager because Polars has no lazy reader for either; both wrap with `.lazy()` and say so in the class docstring. Do not add another eager loader without the same note.
+- Optional readers use the conditional-import probe pattern (`fastexcel` in `engine.py`, the drivers in `warehouse.py`, `connectorx` in `database.py`) so a missing extra reads as an install hint rather than an `ImportError` from inside Polars.
+- Database sources (`DatabaseConnector`) are eager too: Polars has no lazy SQL reader, and `pl.defer` reruns the query on every schema read. The connector reads once in `connect()` and wraps the frame with `.lazy()`.
+
+## Security
+
+### Warehouse SQL assembly
 
 - Assemble warehouse SQL only in `connectors/sql.py`. Do not f-string or concatenate YAML/user strings in `warehouse.py` or `engine.py`.
 - `execute_pushdown` runs compiler-produced `statement` only. Do not concatenate config fields into a second SQL string.
@@ -30,7 +50,7 @@ Apply these rules when modifying files inside `src/veridelta/`.
 - `datetime_format` is translated one token at a time against `_STRPTIME_DIRECTIVES`, with literal runs restricted to `_FORMAT_LITERALS` and wrapped in the dialect's quoting. The allowlist excludes both quote characters, so no literal run can close its own quoting. Do not replace this with a regex substitution pass, which cannot tell a directive from literal text and leaves unrecognized input in the emitted format.
 - Do not add sanitization libraries. Quoting plus allowlists plus strict types is the control.
 
-## Execution boundary
+### Execution boundary
 
 - Drivers receive compiled SQL or native scan kwargs. Never interpolate passwords, tokens, or URIs into SQL.
 - Pattern-only `DiffRule` values stay rejected at compile time.
