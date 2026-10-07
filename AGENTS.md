@@ -43,6 +43,10 @@ Two more files hold the rules for the code they sit beside. An agent that loads 
 | [Rules under `src/`](src/AGENTS.md) | `src/veridelta/`: the engine, the models, the loaders, and above all the SQL in `connectors/sql.py` |
 | [Rules under `tests/`](tests/AGENTS.md) | `tests/` |
 
+## Skills
+
+`.claude/skills/` holds the procedures an agent runs in this repository: `define-personas`, `define-key-metrics`, and `defend-decision`. The folder is the one the Agent Skills standard discovers in a project, so every tool that reads the standard finds them, and the repository supports no harness in particular. `skills/veridelta/` is different: it is the product's own skill, which users install into their agents as [the AI agents page](docs/agents.md#agent-skill) says, and nothing in this repository loads it.
+
 ## Product documents
 
 `product/` holds what the project knows about its users and its goals, as an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format) bundle: one concept per Markdown file. `product/USERS.md` holds the personas and use cases, `product/KEY_METRICS.md` and `product/metrics/` the north star with its drivers and guardrails, `product/FEATURES.md` the map from each feature and roadmap item to the use case it serves, and `product/log.md` what changed and why. Each directory has an `index.md` that lists its concepts.

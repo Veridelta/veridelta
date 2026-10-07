@@ -61,7 +61,7 @@ The site publishes two plain-text files for language models, as the [llms.txt pr
 
 ## Agent skill
 
-The steps above are also an agent skill, in [`skills/veridelta/SKILL.md`](https://github.com/Veridelta/veridelta/blob/main/skills/veridelta/SKILL.md). An agent that reads skills, such as Claude Code, loads it from a skills folder. This installs it in a project:
+The steps above are also an agent skill, in [`skills/veridelta/SKILL.md`](https://github.com/Veridelta/veridelta/blob/main/skills/veridelta/SKILL.md). An agent that reads the Agent Skills standard, which Claude Code, Cursor, Codex, and Copilot follow, loads it from a project's skills folder. This installs it in a project:
 
 ```bash
 mkdir -p .claude/skills/veridelta
