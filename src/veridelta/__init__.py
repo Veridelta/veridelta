@@ -38,7 +38,7 @@ from veridelta.models import (
     WhitespaceMode,
 )
 
-__version__ = "0.19.7"
+__version__ = "0.19.8"
 
 __all__ = [
     "ArtifactFormat",
