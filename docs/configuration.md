@@ -39,7 +39,7 @@ Every setting except `primary_keys` is optional:
 | `default_whitespace_mode` | `none` | Whitespace to strip from each text column without its own `whitespace_mode`: `none`, `left`, `right`, or `both`. |
 | `default_null_values` | `[]` | Values to read as NULL. Each applies only to columns whose type can hold it. |
 | `rules` | `[]` | Rules for particular columns. See [Rules](rules.md). |
-| `report_top_columns_limit` | `5` | Drifting columns to list in `report_summary`. `0` hides the list. |
+| `report_top_columns_limit` | `5` | Drifting columns to list in `report_summary` and the Markdown summary. `0` hides the list in both. |
 | `pushdown_sample_rows` | `0` | Pushdown only. Changed rows to fetch with their values. `0` fetches none, and no value leaves the warehouse. Local runs ignore it, since they hold every row. See [Row samples](pushdown.md#row-samples). |
 | `output_path` | none | Directory for discrepancy files. Without it, no files are written. See [Artifacts](results.md#artifacts). |
 | `output_format` | `parquet` | Format of the discrepancy files: `parquet`, `csv`, `json`, `ndjson`, or `arrow`. |
@@ -159,11 +159,13 @@ It raises `ConfigError` on a violation and returns nothing otherwise.
 
 `DiffEngine.validate_rules` takes the same arguments and goes one step further. It resolves every rule against the aligned columns and builds each column's comparison, still without reading a row, then returns the columns a run would compare. A rule the run could not honor fails here, such as a null sentinel the column's type cannot hold, or a similarity limit without the `fuzzy` extra. Repeated keys and invalid regular expressions surface only once rows are read.
 
+`DiffEngine.read_schema(source)` reads one side's columns and their types, as a run reads them before its first row, and returns no rows. A database or DuckDB side that sets `query` is refused, since only running the query would name its columns.
+
 To check a whole configuration file from the command line, use `veridelta validate`; see [Checking a configuration](cli.md#checking-a-configuration).
 
 ## Editor support
 
-Veridelta publishes a JSON Schema for configuration files. An editor that uses the YAML language server, such as VS Code with the `redhat.vscode-yaml` extension, then completes keys, shows each field's description, and flags a typo such as `primary_key` or `absolute_tolerence` as you type.
+Veridelta publishes a JSON Schema for configuration files. It serves an editor that uses the YAML language server, such as VS Code with the `redhat.vscode-yaml` extension. The editor then completes keys, shows each field's description, and flags a typo such as `primary_key` or `absolute_tolerence` as you type.
 
 Point a file at the schema with a comment on its first line:
 
@@ -174,7 +176,6 @@ source:
 
 target:
   path: "modern_system.parquet"
-  format: "parquet"
 
 primary_keys: ["user_id"]
 ```

@@ -38,7 +38,7 @@ Progress messages always go to stderr, so `veridelta run --json | jq` needs no f
 
 ## Exit codes
 
-Every command exits `2` for invalid arguments, and `3` when it cannot finish:
+Every command exits `2` for invalid arguments. Every command but `schema`, which only prints, exits `3` when it cannot finish:
 
 | Code | `run` | `validate` | `crosswalk` | `mcp` |
 | :--- | :--- | :--- | :--- | :--- |
@@ -118,7 +118,7 @@ Errors print to stdout as `error:` lines and warnings as `warning:` lines. With 
 
 `--allow-missing-env` checks a file without its secrets, such as in a pull request job. An unset `${NAME}` with no default is read as the text `NAME`, with a warning. That works for fields that take a name, such as `table`, `account`, `password`, or `path`. A field with a required shape, such as a database `uri`, still fails unless its variable is set.
 
-In Python, `DiffEngine.check_configs(diff, source, target, schemas=False)` returns the same findings as `ConfigFinding` models. `load_config(path, unset_env=[])` reads unset variables as their names and appends each name to the list.
+In Python, `DiffEngine.check_config_file(path, schemas=False, allow_missing_env=False)` checks a file as `validate` does, and `DiffEngine.check_configs(diff, source, target, schemas=False)` checks models already loaded. Both return the findings as `ConfigFinding` models. `load_config(path, unset_env=[])` reads unset variables as their names and appends each name to the list.
 
 ## Proposing value maps
 
