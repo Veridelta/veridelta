@@ -160,4 +160,4 @@ veridelta mcp --root .
 | `--root DIR` | A folder the tools may read configuration files from. Repeat it for more folders. Default: the current directory. |
 | `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 
-A tool refuses a path outside every root. The server runs in the first root, so a relative path in a tool call, or in a configuration file, resolves there. Stdout carries the protocol and nothing else, and log lines go to stderr, which the host keeps. The server stops when the host disconnects, or on Ctrl-C.
+A tool refuses a path outside every root, and `run_comparison` refuses a configuration whose `output_path` lies outside them. The server runs in the first root, so a relative path in a tool call, or in a configuration file, resolves there. Stdout carries the protocol and nothing else, and log lines go to stderr, which the host keeps. The server stops when the host disconnects, or on Ctrl-C.

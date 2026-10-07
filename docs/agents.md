@@ -41,7 +41,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
 ## MCP server
 
-`veridelta mcp` serves the first step above as a [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tool, so an agent's host can call it without a shell. It needs the `mcp` extra:
+`veridelta mcp` serves the first two steps above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. It needs the `mcp` extra:
 
 ```bash
 uv add 'veridelta[mcp]'
@@ -66,16 +66,18 @@ A host that reads its servers from a file takes the same command as an entry. Cl
 }
 ```
 
-Where Veridelta is installed without uv, the command is `veridelta mcp` itself. The server has one tool:
+Where Veridelta is installed without uv, the command is `veridelta mcp` itself. The server has two tools:
 
 | Tool | Returns | Reads |
 | :--- | :--- | :--- |
 | `validate_config` | What `veridelta validate --json` prints: `config`, `valid`, `errors`, and `warnings`. Its `schemas` and `allow_missing_env` arguments work as the command's flags do. | No rows. With `schemas`, each side's columns. |
+| `run_comparison` | What `veridelta run --json` prints, the [summary](results.md#summary), with `verdict`, `match` or `drift`, the `exit_code` the command gives, 0 or 1, and `artifacts_written`. | Both sides. |
 
 The person who starts the server decides what it may read, and no tool call can change that:
 
 - Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.
-- A tool returns findings, never the configuration or a value from it. A password inside an error is masked, as on the command line.
+- A run writes the rows that differ to the configuration's `output_path`, so `run_comparison` refuses one outside every root before it reads a row.
+- A tool returns findings, counts, and column names, never the configuration or a value from the data. A password inside an error is masked, as on the command line.
 - With `schemas`, a check reads each side's columns wherever the configuration says they are, as `veridelta validate --schemas` does.
 - A host may start the server with only some of the user's environment variables. A `${NAME}` that the configuration references must reach the server, through the host's `env` setting for it if need be, or the check reports it unset. `allow_missing_env` checks a file without them.
 

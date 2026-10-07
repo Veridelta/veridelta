@@ -17,13 +17,25 @@ not with this module, so `veridelta` imports without the extra.
 import importlib
 import inspect
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Final, NamedTuple, TypedDict
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Final,
+    Literal,
+    NamedTuple,
+    TypedDict,
+    TypeVar,
+    cast,
+)
 
 from pydantic import Field
 
 from veridelta import __version__
+from veridelta.config import load_config
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, VerideltaError
 
@@ -32,12 +44,15 @@ if TYPE_CHECKING:
 
 INSTRUCTIONS: Final = (
     "Veridelta compares two datasets under the rules in a YAML configuration file. "
-    "Check a file with validate_config, and fix each error it reports, before anything "
-    "else. This server reads only files under the folders it was started with."
+    "Check a file with validate_config, and fix each error it reports, before you run it "
+    "with run_comparison. Report counts and column names, and leave row values out of a "
+    "reply. This server uses only files under the folders it was started with."
 )
 """What the server tells an agent's host about itself when the host connects."""
 
 _MCP_EXTRA = "MCP extra is not installed. Install it with: uv add 'veridelta[mcp]'"
+
+_R = TypeVar("_R")
 
 
 class _Sdk(NamedTuple):
@@ -111,6 +126,44 @@ class ValidationReport(TypedDict):
     warnings: list[str]
 
 
+class RunReport(TypedDict):
+    """What `run_comparison` returns: the summary `veridelta run --json` prints, with its verdict.
+
+    `verdict` is `match` when the comparison falls within `threshold`, and
+    `drift` otherwise, and `exit_code` is what `veridelta run` exits with, 0
+    or 1. `artifacts_written` says whether the rows that differ were written
+    to `output_path`. The fields between them are `DiffSummary`'s.
+    """
+
+    verdict: Literal["match", "drift"]
+    exit_code: int
+    total_rows_source: int
+    total_rows_target: int
+    added_count: int
+    removed_count: int
+    changed_count: int
+    column_mismatches: dict[str, int]
+    is_match: bool
+    total_mismatches: int
+    mismatch_ratio: float
+    match_rate_percentage: float
+    is_perfect_match: bool
+    volume_shift: int
+    report_summary: str
+    artifacts_written: bool
+
+
+def _inside(settings: Settings, path: str) -> Path | None:
+    """Resolve a path against the first root, or return None when it lies outside every root."""
+    resolved = (settings.roots[0] / path).resolve()
+    return resolved if any(resolved.is_relative_to(root) for root in settings.roots) else None
+
+
+def _roots(settings: Settings) -> str:
+    """List the roots for a message."""
+    return ", ".join(str(root) for root in settings.roots)
+
+
 def resolve_path(settings: Settings, path: str) -> Path:
     """Resolve a path from a tool call, and refuse one outside the roots.
 
@@ -127,14 +180,13 @@ def resolve_path(settings: Settings, path: str) -> Path:
     Raises:
         ConfigError: If the path resolves outside every root.
     """
-    resolved = (settings.roots[0] / path).resolve()
-    if any(resolved.is_relative_to(root) for root in settings.roots):
-        return resolved
-    roots = ", ".join(str(root) for root in settings.roots)
-    raise ConfigError(
-        f"'{path}' is outside the folders this server reads from: {roots}. Ask the "
-        "person who started it to add the folder with --root."
-    )
+    resolved = _inside(settings, path)
+    if resolved is None:
+        raise ConfigError(
+            f"'{path}' is outside the folders this server reads from: {_roots(settings)}. "
+            "Ask the person who started it to add the folder with --root."
+        )
+    return resolved
 
 
 def check_configuration(
@@ -167,9 +219,61 @@ def check_configuration(
     )
 
 
+def run_configuration(settings: Settings, path: str) -> RunReport:
+    """Compare the two datasets a configuration file names, as `veridelta run --json` does.
+
+    A run writes the rows that differ to `output_path`, so a configuration
+    whose `output_path` lies outside the roots is refused before any row is
+    read.
+
+    Args:
+        settings (Settings): The roots the server was started with.
+        path (str): The configuration file, under a root.
+
+    Returns:
+        RunReport: The summary, with the verdict and the exit code.
+
+    Raises:
+        ConfigError: If the file or its `output_path` is outside the roots, or
+            the configuration cannot run as written.
+        ConnectorError: If a source cannot be read.
+        DataIntegrityError: If a primary key repeats on either side.
+    """
+    diff, source, target = load_config(resolve_path(settings, path))
+    if diff.output_path is not None and _inside(settings, diff.output_path) is None:
+        raise ConfigError(
+            f"output_path '{diff.output_path}' is outside the folders this server writes to: "
+            f"{_roots(settings)}. A run writes the rows that differ there, so point it into "
+            "one of them, or ask the person who started the server to add the folder with "
+            "--root."
+        )
+    summary = DiffEngine.run_from_configs(diff, source, target).summary
+    return cast(
+        "RunReport",
+        {
+            "verdict": "match" if summary.is_match else "drift",
+            "exit_code": 0 if summary.is_match else 1,
+            **summary.model_dump(mode="json"),
+            "artifacts_written": summary.artifacts_written,
+        },
+    )
+
+
 def _failure(exc: Exception) -> str:
     """Name a failure as `run --json` does: its type, then its message."""
     return f"{type(exc).__name__}: {str(exc).strip()}"
+
+
+def _answer(tool_error: Any, work: Callable[[], _R]) -> _R:
+    """Run a tool's work, and fail the call with the failure's type and message.
+
+    The SDK passes only a `ToolError`'s message on to the agent, so every
+    failure becomes one, named as `run --json` names it.
+    """
+    try:
+        return work()
+    except Exception as exc:
+        raise tool_error(_failure(exc)) from exc
 
 
 def build_server(settings: Settings) -> "MCPServer":
@@ -210,14 +314,23 @@ def build_server(settings: Settings) -> "MCPServer":
 
         Reads no rows. Returns what `veridelta validate --json` prints: its errors and warnings.
         """
-        try:
-            return check_configuration(
+        return _answer(
+            loaded.tool_error,
+            lambda: check_configuration(
                 settings, path, schemas=schemas, allow_missing_env=allow_missing_env
-            )
-        except Exception as exc:
-            raise loaded.tool_error(_failure(exc)) from exc
+            ),
+        )
 
-    for tool in (validate_config,):
+    def run_comparison(
+        path: Annotated[str, Field(description="The configuration file.")],
+    ) -> RunReport:
+        """Compare the two datasets a Veridelta configuration file names.
+
+        Returns what `veridelta run --json` prints, with the verdict and the exit code a run gives.
+        """
+        return _answer(loaded.tool_error, lambda: run_configuration(settings, path))
+
+    for tool in (validate_config, run_comparison):
         server.tool(description=inspect.getdoc(tool))(tool)
     return server
 
