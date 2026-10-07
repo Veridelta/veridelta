@@ -1,5 +1,5 @@
-# Keeps the commit-pinned actions and uv.lock current, with one grouped pull
-# request per ecosystem a week.
+# Keeps the commit-pinned actions, uv.lock, and the Dev Container's image digests
+# current, with one grouped pull request per ecosystem a week.
 version: 2
 updates:
   # Covers the workflows and the composite action.yml at the root.
@@ -26,4 +26,16 @@ updates:
       include: scope
     groups:
       dependencies:
+        patterns: ["*"]
+
+  # The Dev Container's base image and its uv, each pinned by digest.
+  - package-ecosystem: docker
+    directory: /.devcontainer
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      images:
         patterns: ["*"]

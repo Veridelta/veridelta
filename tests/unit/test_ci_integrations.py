@@ -763,6 +763,24 @@ class TestWorkflowPins:
         assert len(versions) == 1
         assert re.fullmatch(r"\d+\.\d+\.\d+", versions.pop())
 
+    def test_every_container_image_is_pinned_by_digest(self) -> None:
+        """Ensure a moved tag upstream cannot change the containers CI or the Dev Container runs.
+
+        Each image keeps its tag beside the digest, so a reader sees the release.
+        """
+        images = [
+            str(service["image"])
+            for workflow in _WORKFLOWS
+            for job in _workflow(workflow)["jobs"].values()
+            for service in job.get("services", {}).values()
+        ]
+        dockerfile = (_ROOT / ".devcontainer" / "Dockerfile").read_text(encoding="utf-8")
+        images += re.findall(r"^(?:FROM\s+|COPY --from=)(\S+)", dockerfile, re.MULTILINE)
+
+        assert len(images) == 5
+        for image in images:
+            assert re.fullmatch(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", image), image
+
     @pytest.mark.parametrize("path", [*_WORKFLOWS, _ACTION], ids=lambda path: path.name)
     def test_it_names_the_release_behind_every_pin(self, path: Path) -> None:
         """Ensure each commit pin says which release it is, as Dependabot keeps it."""
@@ -771,13 +789,18 @@ class TestWorkflowPins:
                 assert re.search(r"@[0-9a-f]{40} # v\d+(\.\d+)*$", line), line
 
     def test_dependabot_keeps_the_pins_and_the_lockfile_current(self) -> None:
-        """Ensure Dependabot updates action pins and `uv.lock`, never the package's floors."""
+        """Ensure Dependabot updates action pins, `uv.lock`, and the Dev Container's images.
+
+        It never raises the package's floors.
+        """
         config: dict[str, Any] = yaml.safe_load(_DEPENDABOT.read_text(encoding="utf-8"))
         updates = {update["package-ecosystem"]: update for update in config["updates"]}
 
         assert config["version"] == 2
-        assert set(updates) == {"github-actions", "uv"}
-        assert all(update["directory"] == "/" for update in updates.values())
+        assert set(updates) == {"github-actions", "uv", "docker"}
+        assert updates["github-actions"]["directory"] == "/"
+        assert updates["uv"]["directory"] == "/"
+        assert updates["docker"]["directory"] == "/.devcontainer"
         assert all(update["schedule"]["interval"] == "weekly" for update in updates.values())
         # The floors in pyproject.toml are a promise to users; only the lockfile moves.
         assert updates["uv"]["versioning-strategy"] == "lockfile-only"
