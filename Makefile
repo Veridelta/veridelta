@@ -1,4 +1,4 @@
-.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean demo
+.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check
 
 # The modules held to full branch coverage. CI's core-module gate names the same
 # list, which tests/unit/test_ci_integrations.py checks.
@@ -44,15 +44,26 @@ accessibility:
 # differently, so `make demo` refuses it.
 VHS_VERSION := v0.12.1
 
-demo:
+vhs-check:
 	@vhs --version 2>/dev/null | grep -qx "vhs version $(VHS_VERSION)" || { \
-		echo "make demo needs vhs $(VHS_VERSION), with ttyd and ffmpeg on PATH:"; \
+		echo "Recording needs vhs $(VHS_VERSION), with ttyd and ffmpeg on PATH:"; \
 		echo "  go install github.com/charmbracelet/vhs@$(VHS_VERSION)"; \
 		echo "See Recording the demos in CONTRIBUTING.md."; \
 		exit 1; \
 	}
+
+demo: vhs-check
 	cd demo && for tape in *.tape; do \
 		[ "$$tape" = settings.tape ] || uv run vhs "$$tape" || exit 1; \
+	done
+
+# MP4 copies of the recordings for promotional videos, in demo/video/, which git ignores.
+# Each renders from a copy of its tape whose only output is the MP4, so no GIF changes.
+demo-video: vhs-check
+	cd demo && mkdir -p video && for tape in *.tape; do \
+		[ "$$tape" = settings.tape ] && continue; \
+		sed "s|^Output .*|Output video/$${tape%.tape}.mp4|" "$$tape" > "video/$$tape" && \
+		uv run vhs "video/$$tape" || exit 1; \
 	done
 
 schema:

@@ -1,0 +1,14 @@
+> cat orders.yaml
+primary_keys: [order_id]
+source:
+  path: legacy.csv
+target:
+  path: modern.csv
+> head -n 2 legacy.csv
+id,status,amount
+1,open,10.0
+> veridelta validate -c orders.yaml --schemas
+error: The primary key 'order_id' is not among the columns of the source, `legacy.csv` read as csv. The columns read are: 'id', 'status', 'amount'.
+orders.yaml: 1 error, 0 warnings.
+> echo "exit code: $?"
+exit code: 1

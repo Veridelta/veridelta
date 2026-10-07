@@ -63,6 +63,8 @@ validation:
 
 markdown_extensions:
   - admonition
+  # Markdown inside the <details> blocks that hold the recordings.
+  - md_in_html
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid

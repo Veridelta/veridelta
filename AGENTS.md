@@ -16,7 +16,7 @@ The project uses [uv](https://docs.astral.sh/uv/) and a Makefile:
 | `make live` | Runs the parity suite inside one live warehouse, with that service's account. A release needs it to pass. |
 | `make databases` | Reads real MySQL and SQL Server tables, after a change to the database connector. |
 | `make accessibility` | Checks the docs site and the HTML report with axe-core and a keyboard, in Chromium, after a change to either. |
-| `make demo` | Renders the recording the README and the docs home embed from `demo/veridelta.tape` with vhs v0.12.1, after a change to the quick start or to the summary. |
+| `make demo` | Renders every recording from its tape in `demo/` with vhs v0.12.1, after a change to a command a tape types or to what it prints. |
 
 Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip`, `poetry`, or `conda`.
 
