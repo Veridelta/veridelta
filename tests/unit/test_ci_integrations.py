@@ -783,6 +783,27 @@ class TestWorkflowPins:
         assert updates["uv"]["versioning-strategy"] == "lockfile-only"
 
 
+class TestGitHooks:
+    """Pin the Git hooks, which CI's lint job also runs, to the tools uv.lock pins."""
+
+    def test_the_locked_tools_run_from_the_project_environment(self) -> None:
+        """Ensure a hook runs the ruff, mypy, and commitizen that `make lint` runs.
+
+        A hook repository pins its own release, which drifts from uv.lock, so
+        CI's hook run and `make lint` could disagree about the same file.
+        """
+        config: dict[str, Any] = yaml.safe_load(
+            (_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        )
+        hooks = {hook["id"]: hook for repo in config["repos"] for hook in repo["hooks"]}
+        remote = {repo["repo"] for repo in config["repos"] if repo["repo"] != "local"}
+        tools = {"ruff-check": "ruff", "ruff-format": "ruff", "mypy": "mypy", "commitizen": "cz"}
+
+        for hook, tool in tools.items():
+            assert hooks[hook]["entry"].startswith(f"uv run --frozen {tool} "), hook
+        assert remote == {"https://github.com/Lucas-C/pre-commit-hooks"}
+
+
 class TestDocsWorkflow:
     """Pin how the documentation site builds and deploys."""
 

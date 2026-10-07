@@ -20,7 +20,7 @@ Veridelta uses [uv](https://docs.astral.sh/uv/) for its environment and dependen
    make install
    ```
 
-`make install` creates the virtual environment and installs the `pre-commit` hooks, which check formatting, license headers, and commit messages.
+`make install` creates the virtual environment and installs the `pre-commit` hooks, which check formatting, license headers, and commit messages. The hooks run ruff, mypy, and commitizen from that environment, so they use the versions `uv.lock` pins, as `make lint` does.
 
 ### Dev Container
 
