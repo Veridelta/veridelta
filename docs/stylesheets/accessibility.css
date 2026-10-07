@@ -10,11 +10,6 @@
   text-underline-offset: 0.15em;
 }
 
-/* Navigation tabs: white at 70% on indigo is 4.28:1, and at 80% it is 5.04:1. */
-.md-tabs__link {
-  opacity: 0.8;
-}
-
 /* Footer: the copyright line at 45% white is 4.48:1, and at 70% it is 9.14:1. */
 .md-copyright {
   color: var(--md-footer-fg-color--light);
@@ -38,11 +33,6 @@
     --md-code-hl-number-color: #e76f62;
     --md-code-hl-constant-color: #9787e3;
   }
-}
-
-/* Links, dark scheme with the indigo palette: 4.13:1 inside code, now 4.70:1. */
-[data-md-color-scheme="slate"][data-md-color-primary="indigo"] {
-  --md-typeset-a-color: #6493ea;
 }
 
 /*

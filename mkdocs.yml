@@ -9,6 +9,9 @@ theme:
   name: material
   # The link preview tags, in overrides/main.html.
   custom_dir: overrides
+  # The logo's symbol, from the files the link preview card shows.
+  logo: assets/veridelta-symbol.png
+  favicon: assets/favicon.png
   features:
     - navigation.tabs
     - navigation.sections
@@ -17,15 +20,15 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
@@ -52,8 +55,10 @@ hooks:
 extra:
   version: 0.27.0
 
-# Accessibility fixes over the Material theme. Each file says what it fixes.
+# The logo's colors, then accessibility fixes over the Material theme. Each file
+# says what it changes.
 extra_css:
+  - stylesheets/brand.css
   - stylesheets/accessibility.css
 extra_javascript:
   - javascripts/accessibility.js
