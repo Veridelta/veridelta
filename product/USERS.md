@@ -76,14 +76,14 @@ The last answer is the product's constraint, read as three rules. A newcomer rea
 
 - **Role and setting.** A coding agent, such as Claude Code or Cursor, running Veridelta for a person: in a chat, in a fix loop, or on a schedule.
 - **What they compare, and where it lives.** Whatever the person's configuration names. The agent reads the file, not the data.
-- **The tools they use today.** The command line with `--json`, the exit codes, and the published `llms.txt`.
+- **The tools they use today.** The command line with `--json`, the exit codes, the published `llms.txt`, and `veridelta mcp`, whose tools return the same JSON.
 - **What they read from Veridelta.** The JSON summary, the exit code, and `validate --json` before a run.
 - **What they must never be shown.** Row values and credentials, so that neither ends up in a transcript or a pull request comment.
 - **Tolerances.** The person's. The agent proposes a rule and shows its evidence, as `crosswalk` does, and the person adds it.
 - **Trust posture.** It trusts a stable JSON shape and a documented exit code, and nothing it has to parse from prose.
 - **Success, in one sentence.** It runs a comparison and reports the counts without a person reading the docs for it.
 - **Evidence.** [The AI agents page](../docs/agents.md), `skills/veridelta/SKILL.md`, the `llms.txt` hook, and this repository's own development: agents in Claude Code sessions run `veridelta` here, and measured the metrics in this bundle.
-- **Unknown.** Which agents people use, and whether a person lets one add a rule. To learn it: the roadmap's MCP server, once it exists, and the issue forms.
+- **Unknown.** Which agents people use, and whether a person lets one add a rule. To learn it: the issue forms, and the hosts people name when they report a problem with `veridelta mcp`.
 
 ## Anti-personas
 
@@ -146,7 +146,7 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 - **What a wrong answer costs, and to whom.** The agent acts on it: it edits the pipeline against a false mismatch, or stops against a false match.
 - **The alternative it beats.** The agent writing its own comparison in `pandas`, which nobody reviewed.
 - **Refusal behavior.** `validate --json` reports what would stop a run before any row is read, and a failure prints one JSON object with its type and message.
-- **The docs that describe it.** [The AI agents page](../docs/agents.md) and `skills/veridelta/SKILL.md`.
+- **The docs that describe it.** [The AI agents page](../docs/agents.md), which also covers `veridelta mcp`, and `skills/veridelta/SKILL.md`.
 - **The metric that proves it.** [DR-02](metrics/DR-02.md), mistakes that name their cause, which an agent can act on; [NS-01](metrics/NS-01.md), the steps it runs.
 
 ### UC-05: Compare two tables where they are stored
@@ -174,5 +174,5 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 | [UC-01](#uc-01-a-first-verdict-on-two-files) | [P-02](#p-02-the-developer-comparing-two-csv-files), [P-01](#p-01-the-engineer-verifying-a-migration) | `veridelta validate` and `veridelta run` on two files: the README's quick start, [the command line](../docs/cli.md) | [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) |
 | [UC-02](#uc-02-the-same-verdict-on-every-pull-request) | [P-02](#p-02-the-developer-comparing-two-csv-files), [P-01](#p-01-the-engineer-verifying-a-migration) | The GitHub Action: [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md), [DR-03](metrics/DR-03.md) |
 | [UC-03](#uc-03-sign-off-from-the-report-alone) | [P-03](#p-03-the-reviewer-who-reads-the-report) | The HTML report and the Markdown summary: [Results](../docs/results.md) | [GR-03](metrics/GR-03.md), [GR-02](metrics/GR-02.md) |
-| [UC-04](#uc-04-let-an-agent-run-the-comparison) | [P-04](#p-04-the-ai-coding-agent-driving-the-command-line) | `--json`, the exit codes, and `validate --json`: [the AI agents page](../docs/agents.md) | [DR-02](metrics/DR-02.md), [NS-01](metrics/NS-01.md) |
+| [UC-04](#uc-04-let-an-agent-run-the-comparison) | [P-04](#p-04-the-ai-coding-agent-driving-the-command-line) | `--json`, the exit codes, `validate --json`, and `veridelta mcp`: [the AI agents page](../docs/agents.md) | [DR-02](metrics/DR-02.md), [NS-01](metrics/NS-01.md) |
 | [UC-05](#uc-05-compare-two-tables-where-they-are-stored) | [P-01](#p-01-the-engineer-verifying-a-migration) | Pushdown: [Pushdown](../docs/pushdown.md) | [GR-01](metrics/GR-01.md) |

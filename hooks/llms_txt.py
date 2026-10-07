@@ -26,9 +26,9 @@ from mkdocs.structure.pages import Page
 _GUIDE = (
     "Veridelta compares two datasets under the rules in a YAML file and reports what "
     "differs. Check a file with `veridelta validate --json`, run it with "
-    "`veridelta run --json`, and read the exit code. The [AI agents]({site}agents/) page "
-    "gives the steps, and [llms-full.txt]({site}llms-full.txt) holds every page under "
-    "Docs in one file."
+    "`veridelta run --json`, and read the exit code, or call the same steps as tools of the "
+    "`veridelta mcp` server. The [AI agents]({site}agents/) page gives the steps, and "
+    "[llms-full.txt]({site}llms-full.txt) holds every page under Docs in one file."
 )
 """The paragraph under the summary in `llms.txt`, with `{site}` for the site's URL."""
 

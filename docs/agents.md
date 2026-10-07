@@ -1,6 +1,6 @@
 # AI agents
 
-An AI agent, such as a coding assistant, runs Veridelta through its command line. This page gives the steps that keep its runs predictable and its replies free of row values.
+An AI agent, such as a coding assistant, runs Veridelta through its command line or through its MCP server. This page gives the steps that keep its runs predictable and its replies free of row values.
 
 ## Steps
 
@@ -10,7 +10,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
     veridelta validate -c veridelta.yaml --json
     ```
 
-    The JSON holds `valid`, `errors`, and `warnings`, and the command exits `1` when there is an error. Fix each error before a run. A check that cannot finish exits `3` and prints an `error` object instead. `--allow-missing-env` checks a file whose secrets are not set, such as in a pull request job.
+    The JSON holds the `config` it checked, `valid`, `errors`, and `warnings`, and the command exits `1` when there is an error. Fix each error before a run. A check that cannot finish exits `3` and prints an `error` object instead. `--allow-missing-env` checks a file whose secrets are not set, such as in a pull request job.
 
 2. Run the comparison with `--json`, so stdout carries only the [summary](results.md#summary):
 
@@ -66,7 +66,7 @@ A host that reads its servers from a file takes the same command as an entry. Cl
 }
 ```
 
-Where Veridelta is installed without uv, the command is `veridelta mcp` itself. To let the agent read rows, add `--allow-row-values` to the command. The server has five tools:
+Where Veridelta is installed without uv, the command is `veridelta mcp` itself. To let the agent read rows, add `--allow-row-values` to the command. The server has five tools, and each takes `path`, the configuration file, which a relative path reads against the first root:
 
 | Tool | Returns | Reads |
 | :--- | :--- | :--- |
@@ -83,7 +83,7 @@ The person who starts the server decides what it may read, and no tool call can 
 - A run writes the rows that differ to the configuration's `output_path`, so `run_comparison` and `read_discrepancies` refuse one outside every root before they read a row.
 - A side's `query` runs as written, with the configuration's credentials, so a tool that would run one refuses unless the server is started with `--allow-queries`. Even then, a DuckDB file's connection reads other files, attaches databases, and loads extensions only from under the roots. A MotherDuck connection is not held to the roots.
 - A tool returns findings, counts, and column names, never the configuration or a value from the data, unless the server is started with `--allow-row-values`. A password inside an error is masked, as on the command line, and so is every value of four characters or more that the configuration takes from an environment variable, wherever it appears in an answer.
-- With `--allow-row-values`, `read_discrepancies` and `propose_value_maps` return at most `--max-rows` rows or value map entries per call, 50 by default, and a proposal comes back whole or not at all.
+- With `--allow-row-values`, `read_discrepancies` returns at most `--max-rows` rows per call, 50 by default. `propose_value_maps` returns at most that many value map entries, counting the entries a column's rule already has, and a proposal comes back whole or not at all.
 - With `schemas`, a check reads each side's columns as `veridelta validate --schemas` does, and without it a check opens no data. `describe_schema` reads one side's columns the same way, and a warehouse table with the probe a run starts with.
 - A host may start the server with only some of the user's environment variables. A `${NAME}` that the configuration references must reach the server, through the host's `env` setting for it if need be, or the check reports it unset. `allow_missing_env` checks a file without them.
 
@@ -101,14 +101,16 @@ The summary holds counts and column names only. These outputs hold values from t
 
 A pair compared in place, such as two warehouse tables, brings back counts and primary keys only, unless it fetches a [row sample](pushdown.md#row-samples).
 
+## Writing a configuration
+
+`veridelta schema` prints the JSON Schema of the configuration file. Check a draft against it, then run `veridelta validate`.
+
 ## Docs for language models
 
 The site publishes two plain-text files for language models, as the [llms.txt proposal](https://llmstxt.org/) describes:
 
 - [`llms.txt`](https://veridelta.github.io/veridelta/llms.txt) links every page, each with its opening sentence.
 - [`llms-full.txt`](https://veridelta.github.io/veridelta/llms-full.txt) holds every page of prose in one file, this one included.
-
-`veridelta schema` prints the JSON Schema of the configuration file. Check a draft against it, then run `veridelta validate`.
 
 ## Agent skill
 
