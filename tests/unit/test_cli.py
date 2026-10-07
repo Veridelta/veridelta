@@ -308,6 +308,8 @@ class TestCommandLineInterface:
         assert "Status: PASSED" not in captured.out
         assert "Loading configuration" in captured.err
         assert "Loading configuration" not in captured.out
+        # The product compares under declared rules; "semantic diff" names nothing it does.
+        assert "Comparing...\n" in captured.err
         mock_summary.model_dump_json.assert_called_once_with(indent=2)
 
     def test_it_writes_an_html_report_when_asked(

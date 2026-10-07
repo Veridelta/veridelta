@@ -189,7 +189,7 @@ def run(args: argparse.Namespace) -> int:
         _progress(f"Loading configuration from {args.config}...", quiet=quiet)
         diff_config, source_config, target_config = load_config(args.config)
 
-        _progress("Executing semantic diff...", quiet=quiet)
+        _progress("Comparing...", quiet=quiet)
         result = DiffEngine.run_from_configs(diff_config, source_config, target_config)
         summary = result.summary
 
