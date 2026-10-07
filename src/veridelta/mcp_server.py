@@ -205,6 +205,7 @@ class RunReport(TypedDict):
     changed_count: int
     column_mismatches: dict[str, int]
     is_match: bool
+    accepted_count: int
     total_mismatches: int
     mismatch_ratio: float
     match_rate_percentage: float

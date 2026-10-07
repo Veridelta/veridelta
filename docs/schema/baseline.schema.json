@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://veridelta.github.io/veridelta/schema/baseline.schema.json",
+  "$defs": {
+    "AcceptedChange": {
+      "additionalProperties": false,
+      "description": "One changed row a baseline accepts, and the columns whose drift it accepts.\n\nAttributes:\n    key (dict[str, Any]): The row's primary key, by key column.\n    columns (list[str]): Compared columns whose drift on this row is accepted.",
+      "properties": {
+        "key": {
+          "additionalProperties": true,
+          "description": "The row's primary key, by key column.",
+          "title": "Key",
+          "type": "object"
+        },
+        "columns": {
+          "description": "Compared columns whose drift on this row is accepted.",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Columns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "columns"
+      ],
+      "title": "AcceptedChange",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The drift a run accepts: rows by kind and primary key, and changed columns by row.",
+  "properties": {
+    "primary_keys": {
+      "description": "The key columns.",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Primary Keys",
+      "type": "array"
+    },
+    "added": {
+      "description": "Keys of accepted rows only in the target.",
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Added",
+      "type": "array"
+    },
+    "removed": {
+      "description": "Keys of accepted rows only in the source.",
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Removed",
+      "type": "array"
+    },
+    "changed": {
+      "description": "Accepted changed rows, with their columns.",
+      "items": {
+        "$ref": "#/$defs/AcceptedChange"
+      },
+      "title": "Changed",
+      "type": "array"
+    }
+  },
+  "required": [
+    "primary_keys"
+  ],
+  "title": "veridelta run --baseline",
+  "type": "object"
+}

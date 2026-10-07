@@ -28,6 +28,7 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 | `--json` | Print the [summary](results.md#summary) as JSON on stdout instead of the text report. |
 | `-q`, `--quiet` | Suppress progress messages on stderr. The report or the JSON still prints. |
+| `--baseline PATH` | Accept the drift the JSON file lists, and fail only on drift it does not list. See [Accepting drift](#accepting-drift). |
 | `--html PATH` | Also write a standalone [HTML report](results.md#html-report), which loads nothing from a CDN. |
 | `--html-max-rows N` | Rows per table in the HTML report, zero or more. Default 1000, so a large diff cannot produce a file too large to open. |
 | `--markdown PATH` | Also write the [Markdown summary](results.md#markdown-summary) that the [CI integrations](ci.md) post. |
@@ -234,6 +235,23 @@ Each printed rule names its column alone. When a rule governs the column today, 
 
 `suggest` reads both sides locally, so it refuses a pair compared where it is stored, such as two warehouse tables. Suggest rules on files exported from them instead.
 
+## Accepting drift
+
+`veridelta run --baseline accepted.json` accepts the drift the file lists and fails only on drift it does not list, so a change made on purpose stops failing the run while any new drift still fails it:
+
+```json
+{
+  "primary_keys": ["order_id"],
+  "added": [{"order_id": 1121}],
+  "removed": [{"order_id": 1017}],
+  "changed": [{"key": {"order_id": 1034}, "columns": ["amount"]}]
+}
+```
+
+`added` and `removed` list rows by their primary key. `changed` lists a row with the columns whose drift is accepted on it: drift in any other column of that row still counts. The keys are the run's `primary_keys`, as the run compares them, after any rule normalizes them. JSON has no type for a date, so a date key is written as text, such as `"2026-10-07"`, and read back as the key column's type.
+
+Accepted drift is left out of the counts, the verdict, the artifacts, and the reports, and the summary's `accepted_count` says how many rows the file accepted. A run compared where its data is stored refuses `--baseline`, since its rows stay where they are. `veridelta schema baseline` prints the file's JSON Schema.
+
 ## Printing the schema
 
 `veridelta schema` prints the configuration file's JSON Schema, which editors use to complete and check a file; see [Editor support](configuration.md#editor-support):
@@ -254,6 +272,7 @@ veridelta schema run > run.schema.json
 | `validate` | The report `veridelta validate --json` prints: whether the file is valid, its errors, and its warnings. |
 | `crosswalk` | The list of value maps `veridelta crosswalk --json` proposes. |
 | `suggest` | The list of rules `veridelta suggest --json` suggests, with their evidence. |
+| `baseline` | The file `veridelta run --baseline` reads: the drift a run accepts. See [Accepting drift](#accepting-drift). |
 | `error` | The one object `run`, `validate`, `crosswalk`, or `suggest` prints with `--json` in place of its usual output when it [exits 3](#exit-codes). |
 
 The docs site serves each one too, at the URL its `$id` names, such as [`schema/run.schema.json`](schema/run.schema.json). A schema changes with the release that changes its output, and the changelog says so.

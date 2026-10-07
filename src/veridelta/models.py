@@ -11,7 +11,7 @@ import math
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -696,6 +696,8 @@ class DiffSummary(BaseModel):
             column.
         column_mismatches (dict[str, int]): Mismatched rows per compared column.
         is_match (bool): Whether the mismatch ratio is within `threshold`.
+        accepted_count (int): Rows of drift a baseline accepted, which the counts
+            above leave out. Zero without `--baseline`.
         total_mismatches (int): Added, removed, and changed rows together.
         mismatch_ratio (float): `total_mismatches` divided by the source row count.
         match_rate_percentage (float): Match rate as a percentage, such as `99.98`.
@@ -717,6 +719,7 @@ class DiffSummary(BaseModel):
     changed_count: int
     column_mismatches: dict[str, int] = Field(default_factory=dict)
     is_match: bool
+    accepted_count: int = Field(default=0, ge=0)
 
     report_limit: int = Field(default=5, exclude=True)
     artifacts_written: bool = Field(default=False, exclude=True)
@@ -797,6 +800,8 @@ class DiffSummary(BaseModel):
             f"Changed:       {self.changed_count:,}\n"
             f"Total Issues:  {self.total_mismatches:,}\n"
         )
+        if self.accepted_count:
+            base_report += f"Accepted:      {self.accepted_count:,}\n"
 
         if not self.column_mismatches or self.report_limit == 0:
             return base_report
@@ -1041,6 +1046,89 @@ class RuleSuggestion(BaseModel):
     governing_rule_index: int | None = Field(
         default=None, description="Index of the rule that governs the column today."
     )
+
+
+class AcceptedChange(BaseModel):
+    """One changed row a baseline accepts, and the columns whose drift it accepts.
+
+    Attributes:
+        key (dict[str, Any]): The row's primary key, by key column.
+        columns (list[str]): Compared columns whose drift on this row is accepted.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    key: dict[str, Any] = Field(..., description="The row's primary key, by key column.")
+    columns: list[str] = Field(
+        ..., min_length=1, description="Compared columns whose drift on this row is accepted."
+    )
+
+
+class Baseline(BaseModel):
+    """Drift a run accepts: rows by kind and primary key, and changed columns by row.
+
+    `veridelta run --baseline FILE` reads one and leaves what it lists out of the
+    counts and the verdict, so a run fails only on drift the file does not list.
+    A changed row is accepted only in the columns its entry names: drift in any
+    other column still counts.
+
+    Attributes:
+        primary_keys (list[str]): The key columns every entry names, as the
+            configuration's `primary_keys` does.
+        added (list[dict[str, Any]]): Keys of accepted rows only in the target.
+        removed (list[dict[str, Any]]): Keys of accepted rows only in the source.
+        changed (list[AcceptedChange]): Accepted changed rows, with their columns.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    primary_keys: list[str] = Field(..., min_length=1, description="The key columns.")
+    added: list[dict[str, Any]] = Field(
+        default_factory=list[dict[str, Any]],
+        description="Keys of accepted rows only in the target.",
+    )
+    removed: list[dict[str, Any]] = Field(
+        default_factory=list[dict[str, Any]],
+        description="Keys of accepted rows only in the source.",
+    )
+    changed: list[AcceptedChange] = Field(
+        default_factory=list[AcceptedChange],
+        description="Accepted changed rows, with their columns.",
+    )
+
+    @model_validator(mode="after")
+    def _entries_name_the_keys(self) -> "Baseline":
+        """Hold every entry to exactly the key columns the baseline names."""
+        expected = set(self.primary_keys)
+        for key in [*self.added, *self.removed, *(entry.key for entry in self.changed)]:
+            if set(key) != expected:
+                raise ValueError(
+                    f"every entry names the primary keys {sorted(expected)}, "
+                    f"but one names {sorted(key)}"
+                )
+        return self
+
+    @classmethod
+    def read(cls, path: str) -> "Baseline":
+        """Read a baseline from a JSON file.
+
+        Args:
+            path (str): The file, such as `accepted.json`.
+
+        Returns:
+            Baseline: The drift it accepts.
+
+        Raises:
+            ConfigError: If the file cannot be read or is not a valid baseline.
+        """
+        try:
+            text = Path(path).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise ConfigError(f"Cannot read the baseline {path}: {exc.strerror}.") from exc
+        try:
+            return cls.model_validate_json(text)
+        except ValueError as exc:
+            raise ConfigError(f"The baseline {path} is not valid: {exc}") from exc
 
 
 FindingSeverity = Literal["error", "warning"]

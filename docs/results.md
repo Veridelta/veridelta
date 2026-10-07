@@ -32,6 +32,7 @@ result.to_pandas()
 | `mismatch_ratio` | `total_mismatches` over `total_rows_source`. |
 | `match_rate_percentage` | One minus `mismatch_ratio`, as a percentage rounded to two places. |
 | `is_match` | Whether `mismatch_ratio` is at most `threshold`. |
+| `accepted_count` | Rows of drift a [baseline](cli.md#accepting-drift) accepted, which the counts above leave out. `0` without one. |
 | `is_perfect_match` | Whether nothing differs. |
 | `volume_shift` | `total_rows_target` minus `total_rows_source`. |
 | `report_summary` | A plain-text report of these counts and the most drifting columns. |

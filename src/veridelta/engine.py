@@ -68,7 +68,9 @@ from veridelta.connectors.warehouse import (
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError, VerideltaError
 from veridelta.models import (
+    AcceptedChange,
     ArtifactFormat,
+    Baseline,
     BigQueryConfig,
     CastTarget,
     ConfigFinding,
@@ -1097,6 +1099,7 @@ def _summary(
     target_total: int,
     column_mismatches: dict[str, int],
     artifacts_written: bool,
+    accepted_count: int = 0,
 ) -> DiffSummary:
     """Count a comparison's discrepancies and apply the threshold, for either engine."""
     changed_count = changed.height
@@ -1111,9 +1114,102 @@ def _summary(
         changed_count=changed_count,
         column_mismatches=column_mismatches,
         is_match=mismatch_ratio_of(total_mismatches, source_total) <= diff.threshold,
+        accepted_count=accepted_count,
         report_limit=diff.report_top_columns_limit,
         artifacts_written=artifacts_written,
     )
+
+
+def _baseline_keys(
+    keys: Sequence[Mapping[str, Any]], names: list[str], schema: pl.Schema
+) -> pl.DataFrame:
+    """Build a baseline's keys as a frame, typed as the result's key columns.
+
+    JSON has no type for a date or a timestamp, so a key read as text casts to the
+    column's type, and one that cannot cast matches no row.
+    """
+    frame = pl.DataFrame({name: [key[name] for key in keys] for name in names}, strict=False)
+    return frame.select(pl.col(name).cast(schema[name], strict=False) for name in names)
+
+
+def _unaccepted_rows(
+    frame: pl.DataFrame, keys: Sequence[Mapping[str, Any]], names: list[str]
+) -> pl.DataFrame:
+    """Drop the rows of an added or removed frame whose key a baseline lists."""
+    if not keys or frame.is_empty():
+        return frame
+    accepted = _baseline_keys(keys, names, frame.schema)
+    return frame.join(accepted, on=names, how="anti", nulls_equal=True)
+
+
+def _unaccepted_changes(
+    changed: pl.DataFrame,
+    entries: Sequence[AcceptedChange],
+    names: list[str],
+    compared_columns: list[str],
+) -> pl.DataFrame:
+    """Mark accepted columns as matching on their rows, and drop rows left matching."""
+    if not entries or changed.is_empty():
+        return changed
+    accepted = (
+        _baseline_keys([entry.key for entry in entries], names, changed.schema)
+        .with_columns(
+            pl.Series(
+                _ACCEPTED_COLUMNS, [entry.columns for entry in entries], dtype=pl.List(pl.String)
+            )
+        )
+        # A key listed twice keeps one row, with every column either entry names.
+        .group_by(names)
+        .agg(pl.col(_ACCEPTED_COLUMNS).list.explode(keep_nulls=False, empty_as_null=False))
+    )
+    flags = [f"{column}_is_match" for column in compared_columns]
+    return (
+        changed.join(accepted, on=names, how="left", nulls_equal=True)
+        .with_columns(
+            (
+                pl.col(flag)
+                | pl.col(_ACCEPTED_COLUMNS).list.contains(column).fill_null(value=False)
+            ).alias(flag)
+            for column, flag in zip(compared_columns, flags, strict=True)
+        )
+        .drop(_ACCEPTED_COLUMNS)
+        .filter(~pl.all_horizontal(flags))
+    )
+
+
+_ACCEPTED_COLUMNS: Final = "__veridelta_accepted_columns"
+"""A working column for the columns a baseline accepts on each changed row."""
+
+
+def _accept_baseline(
+    baseline: Baseline,
+    names: list[str],
+    frames: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
+    compared_columns: list[str],
+) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, int]:
+    """Leave the drift a baseline lists out of the added, removed, and changed rows.
+
+    Returns:
+        tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame, int]: The rows left, and
+            how many rows the baseline accepted.
+
+    Raises:
+        ConfigError: If the baseline names other primary keys than the run.
+    """
+    if baseline.primary_keys != names:
+        raise ConfigError(
+            f"The baseline lists rows by the primary keys {baseline.primary_keys}, and "
+            f"this configuration compares on {names}. Save the baseline again from a run "
+            "of this configuration."
+        )
+    added, removed, changed = frames
+    kept = (
+        _unaccepted_rows(added, baseline.added, names),
+        _unaccepted_rows(removed, baseline.removed, names),
+        _unaccepted_changes(changed, baseline.changed, names, compared_columns),
+    )
+    accepted = sum(before.height - after.height for before, after in zip(frames, kept, strict=True))
+    return (*kept, accepted)
 
 
 def _pushdown_scalar(
@@ -2244,20 +2340,30 @@ class DiffEngine:
         return engine
 
     @classmethod
-    def run_from_configs(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> DiffResult:
+    def run_from_configs(
+        cls,
+        diff: DiffConfig,
+        source: SourceRef,
+        target: SourceRef,
+        *,
+        baseline: Baseline | None = None,
+    ) -> DiffResult:
         """Route a comparison to pushdown or local Polars evaluation.
 
         Args:
             diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source file, lakehouse, database, DuckDB, or warehouse config.
             target (SourceRef): Target file, lakehouse, database, DuckDB, or warehouse config.
+            baseline (Baseline | None): Drift to accept, which a local run leaves out
+                of the counts and the verdict.
 
         Returns:
             DiffResult: The result. A pushdown pair returns counts and keys, and a
                 local pair also returns the differing rows.
 
         Raises:
-            ConfigError: If primary keys are missing or `schema_mode` is violated.
+            ConfigError: If primary keys are missing, `schema_mode` is violated, or a
+                baseline is given for a pair compared where it is stored.
             DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
 
@@ -2270,6 +2376,12 @@ class DiffEngine:
         """
         pair = _check_backend_pairing(source, target)
         if pair is not None:
+            if baseline is not None:
+                raise ConfigError(
+                    "A baseline applies to a run that compares both sides locally, and this "
+                    "pair is compared where it is stored. Leave out --baseline, or compare "
+                    "files exported from it."
+                )
             return pair.with_session(
                 lambda session, source_table, target_table: _collect_pushdown_summary(
                     session, source_table, target_table, diff
@@ -2279,7 +2391,7 @@ class DiffEngine:
         # `run()` normalizes headers and applies renames exactly once, so the
         # frames go to it straight from the loaders: aligning them first and
         # renaming again would undo a swap and collapse a chain.
-        return cls._on_sources(diff, source, target).run()
+        return cls._on_sources(diff, source, target).run(baseline=baseline)
 
     @classmethod
     def validate_schemas(
@@ -3013,7 +3125,7 @@ class DiffEngine:
             message += f" The source is {self._sides['source']}, and the target is {self._sides['target']}."
         raise ConfigError(message)
 
-    def run(self) -> DiffResult:
+    def run(self, *, baseline: Baseline | None = None) -> DiffResult:
         """Compare the two datasets and return the result.
 
         The comparison stays lazy until it collects the joins, so the inputs can be
@@ -3026,8 +3138,14 @@ class DiffEngine:
            build each column's stage 8 and 9 comparison, so a rule the run cannot
            honor fails before any rows move.
         4. Check that the normalized primary keys are unique on each side.
-        5. Find the added, removed, and changed rows, and count the mismatches.
+        5. Find the added, removed, and changed rows, leave out the drift
+           `baseline` accepts, and count the mismatches.
         6. Write the artifacts, when `output_path` is set.
+
+        Args:
+            baseline (Baseline | None): Drift to accept: rows by kind and key, and
+                changed columns by row. The counts, the verdict, the artifacts,
+                and the reports leave it out, and `accepted_count` counts it.
 
         Returns:
             DiffResult: Counts, column-level drift, and the differing rows.
@@ -3060,7 +3178,12 @@ class DiffEngine:
         added_df = self.target.join(self.source, on=keys, how="anti").collect()
         removed_df = self.source.join(self.target, on=keys, how="anti").collect()
         changed_df = self._collect_changed_rows(compared_columns, match_expressions)
-        return self._build_result(added_df, removed_df, changed_df, compared_columns)
+        accepted = 0
+        if baseline is not None:
+            added_df, removed_df, changed_df, accepted = _accept_baseline(
+                baseline, list(keys), (added_df, removed_df, changed_df), compared_columns
+            )
+        return self._build_result(added_df, removed_df, changed_df, compared_columns, accepted)
 
     def _plan(self) -> tuple[list[str], list[pl.Expr]]:
         """Align, validate, and normalize both frames, then build the comparisons."""
@@ -3111,6 +3234,7 @@ class DiffEngine:
         removed_df: pl.DataFrame,
         changed_df: pl.DataFrame,
         compared_columns: list[str],
+        accepted_count: int = 0,
     ) -> DiffResult:
         """Count totals, apply the threshold, export artifacts, and assemble the result."""
         column_mismatches = _local_column_mismatches(changed_df, compared_columns)
@@ -3136,6 +3260,7 @@ class DiffEngine:
                 tgt_total,
                 column_mismatches,
                 artifacts_written,
+                accepted_count,
             ),
             added=added_df,
             removed=removed_df,

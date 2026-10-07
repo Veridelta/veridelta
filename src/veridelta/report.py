@@ -222,6 +222,7 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
             _card("Added", f"{summary.added_count:,}"),
             _card("Removed", f"{summary.removed_count:,}"),
             _card("Changed", f"{summary.changed_count:,}"),
+            *([_card("Accepted", f"{summary.accepted_count:,}")] if summary.accepted_count else []),
         ]
     )
 
@@ -386,6 +387,8 @@ def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
         f"| Removed | {summary.removed_count:,} |",
         f"| Changed | {summary.changed_count:,} |",
     ]
+    if summary.accepted_count:
+        lines.append(f"| Accepted by the baseline | {summary.accepted_count:,} |")
     if result.keys_only:
         lines += [
             "",
