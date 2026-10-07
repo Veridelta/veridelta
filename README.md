@@ -1,4 +1,10 @@
-# Veridelta
+<h1 align="center">
+  <img src="https://veridelta.github.io/veridelta/assets/veridelta-symbol.png" alt="" height="72" align="middle">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://veridelta.github.io/veridelta/assets/veridelta-wordmark-dark.png">
+    <img src="https://veridelta.github.io/veridelta/assets/veridelta-wordmark.png" alt="Veridelta" height="44" align="middle">
+  </picture>
+</h1>
 
 [![CI Pipeline](https://github.com/veridelta/veridelta/actions/workflows/ci.yml/badge.svg)](https://github.com/veridelta/veridelta/actions)
 [![codecov](https://codecov.io/gh/veridelta/veridelta/graph/badge.svg)](https://codecov.io/gh/veridelta/veridelta)
