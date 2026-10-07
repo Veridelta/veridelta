@@ -49,6 +49,8 @@ jobs:
 
 **Forks.** A pull request from a fork gets a read-only token, so the comment step logs a warning instead of failing.
 
+**Untrusted configurations.** A configuration can read any URL and put any environment variable in it, so it can send a secret to whoever wrote it. Run the action with secrets in its environment only on a configuration from a ref you trust. A `pull_request` from a fork gets no secrets, which keeps that event safe. Never run the action under `pull_request_target` with the pull request's head checked out: that event has your secrets and a write token, while the head holds whatever the pull request's author wrote.
+
 ### Inputs
 
 | Input | Default | Meaning |
