@@ -1,3 +1,14 @@
+## v0.19.15 (2026-10-07)
+
+A `schema_mode` failure lists the columns that break the mode, sorted and quoted, where it
+printed a Python set in an order that changed between runs. `exact` says which columns
+only the source has and which only the target has, and a run from a configuration says
+what each side read. The messages keep their opening words.
+
+### Fix
+
+- list the columns a schema_mode refuses in a fixed order (#227)
+
 ## v0.19.14 (2026-10-07)
 
 The HTML report and the Markdown summary say a keys-only comparison ran as pushdown,
