@@ -1,3 +1,16 @@
+## v0.27.0 (2026-10-07)
+
+`veridelta run --save-baseline accepted.json` writes the file `run --baseline` reads:
+every row of drift the run finds, in key order, with each changed row's differing
+columns. A change made on purpose is accepted in one step. With `--baseline` too, the new
+file keeps what the old one accepted, and leaves out entries for rows that no longer
+drift. In Python, `Baseline.of(result)` builds the same file. The run's verdict and exit
+code stay as they are.
+
+### Feat
+
+- write the drift a run finds as a baseline with run --save-baseline (#283)
+
 ## v0.26.0 (2026-10-07)
 
 `veridelta run --baseline accepted.json` accepts the drift the file lists and fails only
