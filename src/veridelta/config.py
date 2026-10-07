@@ -41,6 +41,7 @@ __all__ = [
     "SourceRef",
     "config_json_schema",
     "load_config",
+    "referenced_variables",
 ]
 
 # The blocks carry credentials, and an unknown `type` fails before `SourceRef` picks a
@@ -114,6 +115,32 @@ def _expand_env(
         # `sub` never rescans substituted text, so a secret holding `${` arrives intact.
         return _ENV_REFERENCE.sub(lambda match: _substitute(match, location, unset), value)
     return value
+
+
+def referenced_variables(text: str) -> list[str]:
+    """Name each environment variable a configuration's text references, once, in order.
+
+    The text is read as written, so a file that does not load names its
+    variables too, and a reference outside `source` and `target`, which the
+    loader leaves as it is, counts as well.
+
+    Args:
+        text (str): The text of a configuration file.
+
+    Returns:
+        list[str]: The name in each `${NAME}` or `${NAME:-default}`. An escaped
+            `$${` names none.
+
+    Examples:
+        >>> referenced_variables("{password: ${PASSWORD}, role: '${ROLE:-ANALYST}$${X}'}")
+        ['PASSWORD', 'ROLE']
+    """
+    names: list[str] = []
+    for match in _ENV_REFERENCE.finditer(text):
+        name = match["name"]
+        if name is not None and name not in names:
+            names.append(name)
+    return names
 
 
 SCHEMA_URL = "https://veridelta.github.io/veridelta/schema/veridelta.schema.json"
