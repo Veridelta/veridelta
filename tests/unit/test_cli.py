@@ -14,6 +14,7 @@ from urllib.parse import quote
 import polars as pl
 import pytest
 import yaml
+from polars.exceptions import PanicException
 from pytest_mock import MockerFixture
 
 from tests.otlp_collector import running_collector
@@ -476,6 +477,28 @@ class TestCommandLineInterface:
         assert getattr(parser.parse_args(["run"]), flag) == default
         assert getattr(parser.parse_args(["run", option, "0"]), flag) == 0
         assert getattr(parser.parse_args(["run", option, "25"]), flag) == 25
+
+    def test_main_exits_3_when_polars_panics(
+        self, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a panic, which no `except Exception` catches, is an error and not drift.
+
+        Python exits 1 on an uncaught exception, the code a run gives for drift.
+        """
+        mocker.patch("veridelta.cli.load_config", return_value=(MagicMock(), None, None))
+        mocker.patch(
+            "veridelta.cli.DiffEngine.run_from_configs",
+            side_effect=PanicException("not yet implemented: Writing BinaryView to JSON"),
+        )
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "run", "-c", "a.yaml", "--json"])
+
+        with pytest.raises(SystemExit) as stopped:
+            main()
+
+        captured = capsys.readouterr()
+        assert stopped.value.code == 3
+        assert "Unexpected System Error\nPanicException: not yet implemented" in captured.err
+        assert json.loads(captured.out)["error"]["type"] == "PanicException"
 
     def test_main_parses_arguments_and_delegates_to_run(self, mocker: MockerFixture) -> None:
         """Ensure the main entrypoint correctly routes the run command and exits."""

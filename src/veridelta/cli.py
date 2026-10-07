@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
+from polars.exceptions import PanicException
 
 from veridelta import __version__
 from veridelta.config import config_json_schema, load_config
@@ -133,11 +134,11 @@ def _directory(text: str) -> Path:
     return path
 
 
-def _report_failure(exc: Exception, *, as_json: bool) -> int:
+def _report_failure(exc: BaseException, *, as_json: bool) -> int:
     """Explain on stderr why a command stopped, and as JSON on stdout under `--json`.
 
     Args:
-        exc (Exception): What stopped the command.
+        exc (BaseException): What stopped the command.
         as_json (bool): Whether stdout carries JSON, so the error goes there as
             one object too: `{"error": {"type": ..., "message": ...}}`.
 
@@ -660,7 +661,12 @@ def main() -> None:
     }
     # `schema` reads no configuration and logs nothing, so it has no `--verbose`.
     with _verbose_logging(getattr(args, "verbose", False)):
-        code = commands[args.command](args)
+        try:
+            code = commands[args.command](args)
+        except PanicException as exc:
+            # A panic in Polars is no `Exception`, so no command catches it, and an
+            # uncaught one would exit 1, the code for drift.
+            code = _report_failure(exc, as_json=bool(getattr(args, "json", False)))
     sys.exit(code)
 
 

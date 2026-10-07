@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
+from polars.exceptions import PanicException
 from pydantic import Field
 
 from veridelta import __version__
@@ -660,7 +661,7 @@ def propose_maps(
     )
 
 
-def _failure(exc: Exception) -> str:
+def _failure(exc: BaseException) -> str:
     """Name a failure as `run --json` does: its type, then its message."""
     return f"{type(exc).__name__}: {str(exc).strip()}"
 
@@ -709,7 +710,8 @@ def _answer(tool_error: Any, work: Callable[[], _R], secrets: tuple[str, ...] = 
     """
     try:
         result = work()
-    except Exception as exc:
+    except (Exception, PanicException) as exc:
+        # A panic in Polars is no `Exception`, and would stop the server instead.
         raise tool_error(mask_secrets(_failure(exc), *secrets)) from exc
     return cast("_R", _masked(result, secrets))
 

@@ -24,6 +24,7 @@ import polars as pl
 import pytest
 from mcp import Client
 from mcp.types import CallToolResult, Tool
+from polars.exceptions import PanicException
 from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
@@ -1413,6 +1414,21 @@ class TestServer:
         }
         for result in (failed, described):
             assert _SECRET not in json.dumps(result.structured_content) + _text(result)
+
+    def test_it_fails_the_call_when_polars_panics(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a panic fails one call, named, instead of stopping the server."""
+        _write(tmp_path, _VALID)
+        mocker.patch(
+            "veridelta.mcp_server.DiffEngine.run_from_configs",
+            side_effect=PanicException("not yet implemented"),
+        )
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert result.is_error is True
+        assert "PanicException: not yet implemented" in _text(result)
 
     def test_it_leaves_the_root_logger_as_it_found_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
