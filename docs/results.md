@@ -5,6 +5,13 @@
 The summary prints as a plain-text report, and one call isolates the rows where a single column disagrees:
 
 ```python
+import polars as pl
+
+from veridelta import DiffConfig, DiffEngine
+
+diff = DiffConfig(primary_keys=["trip_id"])
+source_df = pl.scan_parquet("legacy_trips.parquet")
+target_df = pl.scan_parquet("modern_trips.parquet")
 result = DiffEngine(diff, source_df, target_df).run()
 
 print(result.summary.report_summary)
@@ -104,8 +111,11 @@ CI posts the summary where more people may read it than may read the data. Ask f
 `veridelta run --otel otel-metrics.json` writes the run's metrics to a file, and `--otel-send` sends them to an OTLP/HTTP endpoint. Either reaches an observability backend, such as Datadog or Grafana, through an OpenTelemetry Collector or the backend's own OTLP intake. Neither needs an OpenTelemetry package. From Python:
 
 ```python
+from veridelta import DiffEngine, load_config
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
+diff, source, target = load_config("veridelta.yaml")
+result = DiffEngine.run_from_configs(diff, source, target)
 write_otlp_metrics(
     result, "reports/otel-metrics.json", config_path="veridelta.yaml", source=source, target=target
 )
