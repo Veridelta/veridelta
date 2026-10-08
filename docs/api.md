@@ -22,7 +22,7 @@ Pydantic models for a comparison and its sources. Build them in Python, or read 
 
 ## Configuration loading
 
-Functions that read and check a YAML file and return configuration models. The module also re-exports the source models, which [Configuration models](#configuration-models) documents.
+Functions that read and check a YAML file, or build a configuration from two files, and return configuration models. The models themselves live in `veridelta.models`, which [Configuration models](#configuration-models) documents.
 
 ::: veridelta.config
     options:

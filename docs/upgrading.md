@@ -21,6 +21,16 @@ veridelta validate -c veridelta.yaml
 
 Then run a comparison whose verdict you already know, and confirm the new release agrees. In CI, move the GitHub Action's `@v` ref, and the tag in the GitLab template's `remote` URL, to the new release, as [CI integrations](ci.md) shows.
 
+## 0.32.0
+
+`veridelta.config` no longer re-exports the seven source models. Importing `BigQueryConfig`, `DatabaseConfig`, `DatabricksConfig`, `DeltaLakeConfig`, `DuckDBConfig`, `IcebergConfig`, or `SnowflakeConfig` from it raises `ImportError`. Import them from the package root, or from `veridelta.models`:
+
+```python
+from veridelta import SnowflakeConfig
+```
+
+`veridelta.config` still exports `load_config`, `files_config`, `config_json_schema`, `referenced_variables`, `SCHEMA_URL`, and `SourceRef`.
+
 ## 0.28.0
 
 The `compile_` methods of `SQLPushdownCompiler` that read both sides no longer take `source_alias` or `target_alias`. They are `compile_query`, `compile_column_predicate`, `compile_changed_sample_query`, `compile_missing_query`, `compile_added_query`, `compile_column_mismatch_query`, and `compile_value_map_query`. A call that passes either raises `TypeError`. Drop the argument: the aliases were always `src` and `tgt`.

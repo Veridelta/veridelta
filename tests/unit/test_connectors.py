@@ -16,13 +16,6 @@ import pytest
 from pydantic import BaseModel, ValidationError
 from pytest_mock import MockerFixture
 
-from veridelta.config import (
-    DatabaseConfig,
-    DatabricksConfig,
-    DeltaLakeConfig,
-    IcebergConfig,
-    SnowflakeConfig,
-)
 from veridelta.connectors import (
     BigQueryConnector,
     DatabaseConnector,
@@ -41,6 +34,13 @@ from veridelta.connectors import (
 from veridelta.connectors.base import mask_secrets, read_subject
 from veridelta.connectors.sql import compile_postgres_columns_query
 from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.models import (
+    DatabaseConfig,
+    DatabricksConfig,
+    DeltaLakeConfig,
+    IcebergConfig,
+    SnowflakeConfig,
+)
 
 pytestmark = [
     pytest.mark.unit,

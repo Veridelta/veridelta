@@ -575,3 +575,18 @@ class TestFilesConfig:
         """Ensure an empty key list fails as an empty `primary_keys` in a file does."""
         with pytest.raises(ConfigError, match=r"\[primary_keys\]"):
             files_config("a.csv", "b.csv", [])
+
+
+def test_it_exports_its_functions_and_no_source_model() -> None:
+    """Ensure the source models are imported from `veridelta.models`, their one home."""
+    import veridelta.config
+
+    assert veridelta.config.__all__ == [
+        "SCHEMA_URL",
+        "SourceRef",
+        "config_json_schema",
+        "files_config",
+        "load_config",
+        "referenced_variables",
+    ]
+    assert not hasattr(veridelta.config, "SnowflakeConfig")
