@@ -38,6 +38,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _ACTION = _ROOT / "action.yml"
 _GITLAB = _ROOT / "ci" / "gitlab" / "veridelta.yml"
 _RELEASE = _ROOT / ".github" / "workflows" / "release.yml"
+_RELEASE_NOTES = _ROOT / ".github" / "workflows" / "release-notes.yml"
+_NOTES_SCRIPT = _ROOT / ".github" / "scripts" / "release-notes.sh"
 _WORKFLOWS = sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
 _DEPENDABOT = _ROOT / ".github" / "dependabot.yml"
 _DOCS = _ROOT / ".github" / "workflows" / "docs.yml"
@@ -692,10 +694,32 @@ class TestReleaseWorkflow:
             "(needs.publish.result == 'success' || needs.publish.result == 'skipped')"
         )
         assert (
-            'gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" '
-            '--latest="$latest"'
+            'gh release create "$TAG" --verify-tag "${notes[@]}" --title "$TAG" --latest="$latest"'
         ) in script
         assert 'gh release view "$TAG"' in script
+
+    def test_its_notes_come_from_the_tags_changelog(self) -> None:
+        """Ensure a release's notes are its version's section of CHANGELOG.md, at the tag.
+
+        The job checks out only the changelog and the script that reads it, with
+        no token kept, and a version the changelog has no section for takes
+        GitHub's generated notes. A rerun refreshes an existing release's notes.
+        """
+        [checkout, *_] = _release_job("github-release")["steps"]
+        script = _release_script("github-release")
+
+        assert checkout["uses"].startswith("actions/checkout@")
+        assert checkout["with"]["persist-credentials"] is False
+        assert checkout["with"]["sparse-checkout"].split() == [
+            "CHANGELOG.md",
+            ".github/scripts/release-notes.sh",
+        ]
+        assert (
+            'bash .github/scripts/release-notes.sh CHANGELOG.md "$TAG" "$previous" "$GH_REPO"'
+            in script
+        )
+        assert "notes=(--generate-notes)" in script
+        assert 'gh release edit "$TAG" --notes-file notes.md' in script
 
     def test_it_marks_the_newest_version_latest(self) -> None:
         """Ensure the newest version's release is Latest, and only that one.
@@ -718,6 +742,108 @@ class TestReleaseWorkflow:
         assert _release_job("build")["permissions"] == {"contents": "read"}
         assert _release_job("publish")["permissions"] == {"id-token": "write"}
         assert _release_job("github-release")["permissions"] == {"contents": "write"}
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="The release jobs run the script with bash on a Linux runner.",
+)
+class TestReleaseNotes:
+    """Hold the release notes to the changelog section the release pull request wrote."""
+
+    @staticmethod
+    def _notes(changelog: Path, tag: str, previous: str) -> str:
+        """Run the script as the release jobs do, and return what it prints."""
+        ran = subprocess.run(
+            ["bash", str(_NOTES_SCRIPT), str(changelog), tag, previous, "Veridelta/veridelta"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return ran.stdout
+
+    def test_they_are_the_versions_section_on_one_line_a_paragraph(self) -> None:
+        """Ensure the newest version's notes are its section, unwrapped, and a compare link."""
+        changelog = _ROOT / "CHANGELOG.md"
+        heads = re.findall(
+            r"^## (v[0-9.]+) \(", changelog.read_text(encoding="utf-8"), re.MULTILINE
+        )
+        tag, previous = heads[0], heads[1]
+
+        notes = self._notes(changelog, tag, previous)
+
+        assert "## v" not in notes
+        assert notes.endswith(
+            f"**Full Changelog**: https://github.com/Veridelta/veridelta/compare/{previous}...{tag}\n"
+        )
+        first = notes.split("\n\n")[0]
+        assert "\n" not in first
+        assert first in " ".join(changelog.read_text(encoding="utf-8").split("\n"))
+
+    def test_they_keep_headings_lists_and_code_and_join_wrapped_lines(self, tmp_path: Path) -> None:
+        """Ensure a wrapped paragraph and list item join, and a code block stays as written."""
+        changelog = tmp_path / "CHANGELOG.md"
+        changelog.write_text(
+            "## v0.2.0 (2026-01-02)\n\nA paragraph that wraps\nonto a second line.\n\n"
+            "```python\nfirst = 1\nsecond = 2\n```\n\n### Fix\n\n- a fix that wraps\n"
+            "  onto a second line (#2)\n- another fix (#3)\n\n## v0.1.0 (2026-01-01)\n\nOlder.\n",
+            encoding="utf-8",
+        )
+
+        notes = self._notes(changelog, "v0.2.0", "v0.1.0")
+
+        assert notes == (
+            "A paragraph that wraps onto a second line.\n\n"
+            "```python\nfirst = 1\nsecond = 2\n```\n\n### Fix\n\n"
+            "- a fix that wraps onto a second line (#2)\n- another fix (#3)\n\n"
+            "**Full Changelog**: https://github.com/Veridelta/veridelta/compare/v0.1.0...v0.2.0\n"
+        )
+
+    def test_the_first_version_has_no_compare_link(self, tmp_path: Path) -> None:
+        """Ensure a version with no version before it gets its section alone."""
+        changelog = tmp_path / "CHANGELOG.md"
+        changelog.write_text("## v0.1.0 (2026-01-01)\n\nFirst.\n", encoding="utf-8")
+
+        assert self._notes(changelog, "v0.1.0", "") == "First.\n"
+
+    def test_they_are_empty_for_a_version_without_a_section(self, tmp_path: Path) -> None:
+        """Ensure a version the changelog lacks prints nothing, so the release keeps other notes."""
+        changelog = tmp_path / "CHANGELOG.md"
+        changelog.write_text("## v0.1.0 (2026-01-01)\n\nFirst.\n", encoding="utf-8")
+
+        assert self._notes(changelog, "v0.1.1", "v0.1.0") == ""
+        assert self._notes(changelog, "v0.1", "") == ""
+
+
+class TestReleaseNotesWorkflow:
+    """Pin the workflow that rewrites the notes of existing releases from the changelog."""
+
+    def test_it_runs_only_by_hand_with_write_access_in_its_one_job(self) -> None:
+        """Ensure only a dispatch runs it, and only its job may edit releases."""
+        workflow = _workflow(_RELEASE_NOTES)
+        # YAML reads the key `on` as True.
+        assert set(workflow[True]) == {"workflow_dispatch"}
+        assert workflow[True]["workflow_dispatch"]["inputs"]["tags"]["default"] == "all"
+        assert workflow["permissions"] == {"contents": "read"}
+        assert workflow["jobs"]["notes"]["permissions"] == {"contents": "write"}
+
+    def test_it_reads_the_changelog_through_the_release_script(self) -> None:
+        """Ensure it writes the notes a new release gets, and edits only version tags."""
+        [checkout, rewrite] = _workflow(_RELEASE_NOTES)["jobs"]["notes"]["steps"]
+        script = rewrite["run"]
+
+        assert checkout["with"]["persist-credentials"] is False
+        assert checkout["with"]["sparse-checkout"].split() == [
+            "CHANGELOG.md",
+            ".github/scripts/release-notes.sh",
+        ]
+        assert (
+            'bash .github/scripts/release-notes.sh CHANGELOG.md "$tag" "$previous" "$GH_REPO"'
+            in script
+        )
+        assert "grep -E '^v[0-9]+\\.[0-9]+\\.[0-9]+$'" in script
+        assert 'grep -qx -- "$tag" <<< "$tags"' in script
+        assert 'gh release edit "$tag" --notes-file notes.md' in script
 
 
 def _workflow(path: Path) -> dict[Any, Any]:
