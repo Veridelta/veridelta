@@ -1,3 +1,21 @@
+## v0.33.2 (2026-10-08)
+
+A primary key whose two sides held two types a join cannot pair failed inside the join,
+with an error that named no side and called itself a bug. A CSV and a Parquet export that
+type one key differently were enough: Int64 against text, Int64 against Float64, two
+decimal precisions, or a date against a timestamp. Each key's two types are now checked
+before rows are paired, in `run`, `validate --schemas`, `suggest`, and `crosswalk`. Such a
+key raises `ConfigError`, naming it, both of its types, and the `cast_to` rule that
+resolves it. A key of one type, two integer types, or two float types pairs as before.
+Pushdown is unchanged, since a database converts one side of the key itself, and
+[Pushdown](https://veridelta.github.io/veridelta/pushdown/#differences-from-a-local-run)
+lists that difference. The docs also gained a How-to guides section, a changelog page,
+and tests that hold them to the command line, the GitHub Action, and the MCP server.
+
+### Fix
+
+- name a primary key whose two sides cannot pair rows (#332)
+
 ## v0.33.1 (2026-10-08)
 
 No behavior changed. The Snowflake and Databricks connectors share one cursor session for
