@@ -583,43 +583,27 @@ def _config_parent(default: str | None) -> argparse.ArgumentParser:
     return parent
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Construct the argument parser.
-
-    Returns:
-        argparse.ArgumentParser: Parser covering every subcommand and flag.
-    """
-    parser = argparse.ArgumentParser(
-        prog="veridelta",
-        description=(
-            "Compare two datasets on their primary keys under rules you declare, "
-            "on a laptop, in CI, or inside a warehouse."
-        ),
-    )
-    parser.add_argument(
-        "-V",
-        "--version",
-        action="version",
-        version=f"veridelta {__version__}",
-    )
-
-    subparsers = parser.add_subparsers(dest="command", required=True)
-    # `run`, `crosswalk`, `suggest`, and `validate` read the configuration file named here.
-    config = _config_parent(DEFAULT_CONFIG)
-    # Every command but `schema` reads data, so it can log what it reads.
-    verbose = argparse.ArgumentParser(add_help=False)
-    verbose.add_argument(
+def _verbose_parent() -> argparse.ArgumentParser:
+    """Return a parent parser with `-v`, for every command that reads data."""
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Log connections, reads, and statements to stderr, with timings. "
         "No line holds a credential or SQL.",
     )
+    return parent
 
-    # `run`'s -c defaults to None, so two FILE arguments can tell it was not given.
-    run_parser = subparsers.add_parser(
-        "run", parents=[_config_parent(None), verbose], help="Run a Veridelta comparison."
-    )
+
+def _add_output_flags(parser: argparse.ArgumentParser, *, json_help: str, quiet_help: str) -> None:
+    """Add `--json` and `-q`, which each command but `schema` and `mcp` takes, with its own help."""
+    parser.add_argument("--json", action="store_true", help=json_help)
+    parser.add_argument("-q", "--quiet", action="store_true", help=quiet_help)
+
+
+def _add_run_arguments(run_parser: argparse.ArgumentParser) -> None:
+    """Add the arguments of `run`."""
     run_parser.add_argument(
         "files",
         nargs="*",
@@ -635,17 +619,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="A primary key column of the two FILE arguments. Repeat it for a key of "
         "several columns.",
     )
-    run_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the summary as JSON on stdout instead of a formatted report, or the error "
-        "when the run cannot finish.",
-    )
-    run_parser.add_argument(
-        "-q",
-        "--quiet",
-        action="store_true",
-        help="Suppress progress messages on stderr.",
+    _add_output_flags(
+        run_parser,
+        json_help="Print the summary as JSON on stdout instead of a formatted report, or the "
+        "error when the run cannot finish.",
+        quiet_help="Suppress progress messages on stderr.",
     )
     run_parser.add_argument(
         "--baseline",
@@ -698,11 +676,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    crosswalk_parser = subparsers.add_parser(
-        "crosswalk",
-        parents=[config, verbose],
-        help="Propose value_map rules from how source and target values line up.",
-    )
+
+def _add_crosswalk_arguments(crosswalk_parser: argparse.ArgumentParser) -> None:
+    """Add the arguments of `crosswalk`."""
     crosswalk_parser.add_argument(
         "--min-confidence",
         type=_confidence,
@@ -727,23 +703,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SHARE",
         help="Share of source rows to read, chosen by primary key (default: 1.0).",
     )
-    crosswalk_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the proposals and their evidence as JSON on stdout instead of YAML, or the "
-        "error when they cannot be computed.",
+    _add_output_flags(
+        crosswalk_parser,
+        json_help="Print the proposals and their evidence as JSON on stdout instead of YAML, "
+        "or the error when they cannot be computed.",
+        quiet_help="Suppress progress and evidence on stderr.",
     )
-    crosswalk_parser.add_argument(
-        "-q",
-        "--quiet",
-        action="store_true",
-        help="Suppress progress and evidence on stderr.",
-    )
-    suggest_parser = subparsers.add_parser(
-        "suggest",
-        parents=[config, verbose],
-        help="Suggest rules that would explain the differences, each with its evidence.",
-    )
+
+
+def _add_suggest_arguments(suggest_parser: argparse.ArgumentParser) -> None:
+    """Add the arguments of `suggest`."""
     suggest_parser.add_argument(
         "--max-share",
         type=_share,
@@ -754,23 +723,16 @@ def build_parser() -> argparse.ArgumentParser:
             f"above 0 and at most 1 (default: {DEFAULT_MAX_SHARE})."
         ),
     )
-    suggest_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the suggestions and their evidence as JSON on stdout instead of YAML, or "
-        "the error when they cannot be computed.",
+    _add_output_flags(
+        suggest_parser,
+        json_help="Print the suggestions and their evidence as JSON on stdout instead of YAML, "
+        "or the error when they cannot be computed.",
+        quiet_help="Suppress progress and evidence on stderr.",
     )
-    suggest_parser.add_argument(
-        "-q",
-        "--quiet",
-        action="store_true",
-        help="Suppress progress and evidence on stderr.",
-    )
-    validate_parser = subparsers.add_parser(
-        "validate",
-        parents=[config, verbose],
-        help="Check a configuration for what would stop a run, without reading any rows.",
-    )
+
+
+def _add_validate_arguments(validate_parser: argparse.ArgumentParser) -> None:
+    """Add the arguments of `validate`."""
     validate_parser.add_argument(
         "--schemas",
         action="store_true",
@@ -787,33 +749,26 @@ def build_parser() -> argparse.ArgumentParser:
             "file can be checked without its secrets."
         ),
     )
-    validate_parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the findings as one JSON object on stdout, or the error when the check "
-        "cannot finish.",
+    _add_output_flags(
+        validate_parser,
+        json_help="Print the findings as one JSON object on stdout, or the error when the "
+        "check cannot finish.",
+        quiet_help="Suppress the verdict line on stderr.",
     )
-    validate_parser.add_argument(
-        "-q",
-        "--quiet",
-        action="store_true",
-        help="Suppress the verdict line on stderr.",
-    )
-    schema_parser = subparsers.add_parser(
-        "schema",
-        help="Print the JSON Schema for configuration files, or for what a command prints with --json.",
-    )
+
+
+def _add_schema_arguments(schema_parser: argparse.ArgumentParser) -> None:
+    """Add the arguments of `schema`."""
     schema_parser.add_argument(
         "output",
         nargs="?",
         choices=OUTPUTS,
         help="The output whose schema to print, instead of the configuration file's.",
     )
-    mcp_parser = subparsers.add_parser(
-        "mcp",
-        parents=[verbose],
-        help="Serve checks and comparisons to an AI agent as Model Context Protocol tools, over stdio.",
-    )
+
+
+def _add_mcp_arguments(mcp_parser: argparse.ArgumentParser) -> None:
+    """Add the arguments of `mcp`."""
     mcp_parser.add_argument(
         "--root",
         action="append",
@@ -847,6 +802,75 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_ROW_CAP,
         metavar="N",
         help=f"The most rows, or value map entries, one call returns (default: {DEFAULT_ROW_CAP}).",
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the argument parser.
+
+    Returns:
+        argparse.ArgumentParser: Parser covering every subcommand and flag.
+    """
+    parser = argparse.ArgumentParser(
+        prog="veridelta",
+        description=(
+            "Compare two datasets on their primary keys under rules you declare, "
+            "on a laptop, in CI, or inside a warehouse."
+        ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"veridelta {__version__}",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    # `crosswalk`, `suggest`, and `validate` read the configuration file named here.
+    config = _config_parent(DEFAULT_CONFIG)
+    # Every command but `schema` reads data, so it can log what it reads.
+    verbose = _verbose_parent()
+    # `run`'s -c defaults to None, so two FILE arguments can tell it was not given.
+    _add_run_arguments(
+        subparsers.add_parser(
+            "run", parents=[_config_parent(None), verbose], help="Run a Veridelta comparison."
+        )
+    )
+    _add_crosswalk_arguments(
+        subparsers.add_parser(
+            "crosswalk",
+            parents=[config, verbose],
+            help="Propose value_map rules from how source and target values line up.",
+        )
+    )
+    _add_suggest_arguments(
+        subparsers.add_parser(
+            "suggest",
+            parents=[config, verbose],
+            help="Suggest rules that would explain the differences, each with its evidence.",
+        )
+    )
+    _add_validate_arguments(
+        subparsers.add_parser(
+            "validate",
+            parents=[config, verbose],
+            help="Check a configuration for what would stop a run, without reading any rows.",
+        )
+    )
+    _add_schema_arguments(
+        subparsers.add_parser(
+            "schema",
+            help="Print the JSON Schema for configuration files, or for what a command prints "
+            "with --json.",
+        )
+    )
+    _add_mcp_arguments(
+        subparsers.add_parser(
+            "mcp",
+            parents=[verbose],
+            help="Serve checks and comparisons to an AI agent as Model Context Protocol tools, "
+            "over stdio.",
+        )
     )
     return parser
 
