@@ -1,3 +1,15 @@
+## v0.31.2 (2026-10-08)
+
+No behavior changed. `ReaderConnector` now holds what `connect()` opened, and gives every
+reader the same `lazyframe()` and `close()`. The database, DuckDB, Delta Lake, and Iceberg
+readers each wrote that pair themselves, and now keep only `connect()`. Each still names
+its own kind of source when read before `connect()`, in the words it used before. A reader
+of your own may still define both methods.
+
+### Refactor
+
+- give ReaderConnector a concrete lazyframe and close (#312)
+
 ## v0.31.1 (2026-10-08)
 
 Every message for an optional extra that is not installed now reads the same way: what
