@@ -23,11 +23,12 @@ pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _ROOT = Path(__file__).resolve().parents[2]
 _PIN_SHAPE = re.compile(
-    r"(?:Veridelta/veridelta@v|uvx veridelta@|Veridelta/veridelta/v"
+    r"(?:Veridelta/veridelta@v|uvx veridelta@|Veridelta/veridelta/v|Veridelta/veridelta/blob/v"
     r"|veridelta(?:\[[a-z,]+\])?==|veridelta )(\d+\.\d+\.\d+)"
 )
-"""The ways a user copies a version: an Action ref, a `uvx` spec, a raw URL, a uv spec, and
-the bug form's placeholder. A password such as `veridelta@127.0.0.1` matches none of them."""
+"""The ways a user copies a version: an Action ref, a `uvx` spec, a raw URL, a tutorial's Colab
+link, a pip spec, and the bug form's placeholder. A password such as `veridelta@127.0.0.1`
+matches none of them."""
 _SWEPT = ("README.md", "CONTRIBUTING.md", "ACCESSIBILITY.md", "action.yml", "ci", "docs", ".github")
 _SUFFIXES = {".md", ".yml", ".yaml", ".ipynb", ".toml"}
 _VERSION_SHAPE = re.compile(r"\b\d+\.\d+\.\d+\b")
