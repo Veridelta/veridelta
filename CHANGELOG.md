@@ -1,3 +1,16 @@
+## v0.30.0 (2026-10-08)
+
+`veridelta mcp` serves a sixth tool, `suggest_rules`. It returns what
+`veridelta suggest --json` prints: rules that would explain each column's differences,
+each with its evidence. Its `max_share` argument works as the command's `--max-share`
+does. Each suggestion's examples hold primary keys from the data, so the tool answers only
+on a server started with `--allow-row-values`, and `--max-rows` caps those keys. It reads
+both sides locally, so a pair compared in place is refused, as the command refuses it.
+
+### Feat
+
+- **mcp**: suggest rules through a suggest_rules tool (#305)
+
 ## v0.29.0 (2026-10-08)
 
 `veridelta validate --schemas` now warns about a rule whose `column_names` holds a name
