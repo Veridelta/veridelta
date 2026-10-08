@@ -1026,6 +1026,30 @@ class TestCIWorkflow:
         assert gate["run"] == f"uv run coverage report --include='{modules}' --fail-under=100"
         assert [path for path in modules.split(",") if not (_ROOT / path).is_file()] == []
 
+    def test_the_core_suite_runs_every_python_on_linux_and_the_ends_elsewhere(self) -> None:
+        """Ensure each supported Python runs somewhere, and each OS runs the oldest and newest."""
+        matrix = _workflow(_CI)["jobs"]["test-core"]["strategy"]["matrix"]
+        with (_ROOT / "pyproject.toml").open("rb") as file:
+            project = tomllib.load(file)["project"]
+        supported = [
+            classifier.rsplit(" :: ", 1)[1]
+            for classifier in project["classifiers"]
+            if re.fullmatch(r"Programming Language :: Python :: 3\.\d+", classifier)
+        ]
+        excluded = [(cell["os"], cell["python-version"]) for cell in matrix["exclude"]]
+        runs = {
+            (os_name, python)
+            for os_name in matrix["os"]
+            for python in matrix["python-version"]
+            if (os_name, python) not in excluded
+        }
+
+        assert matrix["python-version"] == supported
+        assert {python for os_name, python in runs if os_name == "ubuntu-latest"} == set(supported)
+        for os_name in matrix["os"]:
+            assert {supported[0], supported[-1]} <= {p for o, p in runs if o == os_name}, os_name
+        assert len(runs) == 8
+
     def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
         """Ensure the CLI runs as a real command on each OS the core suite runs on."""
         jobs = _workflow(_CI)["jobs"]
