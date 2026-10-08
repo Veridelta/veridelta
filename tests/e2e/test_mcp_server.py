@@ -101,3 +101,55 @@ def test_the_console_script_serves_its_tools(
     assert changed.structured_content["total"] == 1
     assert [row["id"] for row in changed.structured_content["rows"]] == [2]
     assert "Traceback" not in log.read_text(encoding="utf-8")
+
+
+def test_the_console_script_proposes_rules_and_value_maps(tmp_path: Path) -> None:
+    """Ensure a host gets the exact rule and value map a known pair calls for, within the cap."""
+    root = tmp_path / "project"
+    root.mkdir()
+    ids = range(1, 13)
+    statuses = ["active" if i % 2 else "closed" for i in ids]
+    (root / "source.csv").write_text(
+        "id,amount,status\n"
+        + "".join(f"{i},{10 + i:.3f},{s}\n" for i, s in zip(ids, statuses, strict=True))
+    )
+    # Two amounts move by a rounding gap, and every status is written as a code.
+    (root / "target.csv").write_text(
+        "id,amount,status\n"
+        + "".join(
+            f"{i},{10 + i + (0.004 if i <= 2 else 0):.3f},{s[0].upper()}\n"
+            for i, s in zip(ids, statuses, strict=True)
+        )
+    )
+    (root / "rules.yaml").write_text(
+        "source:\n  path: source.csv\ntarget:\n  path: target.csv\nprimary_keys: [id]\n"
+    )
+    server = StdioServerParameters(
+        command="veridelta",
+        args=["mcp", "--root", str(root), "--allow-row-values", "--max-rows", "2"],
+        env=dict(os.environ),
+    )
+    log = tmp_path / "server-stderr.log"
+
+    async def session() -> tuple[CallToolResult, CallToolResult]:
+        with log.open("w", encoding="utf-8") as errlog:
+            async with Client(stdio_client(server, errlog=errlog)) as client:
+                suggested = await client.call_tool("suggest_rules", {"path": "rules.yaml"})
+                proposed = await client.call_tool("propose_value_maps", {"path": "rules.yaml"})
+        return suggested, proposed
+
+    suggested, proposed = anyio.run(session)
+
+    assert suggested.structured_content is not None
+    assert suggested.structured_content["total"] == 1
+    assert suggested.structured_content["truncated"] is False
+    (suggestion,) = suggested.structured_content["suggestions"]
+    assert suggestion["column"] == "amount"
+    assert suggestion["settings"] == {"absolute_tolerance": 0.005}
+    assert (suggestion["explained"], suggestion["examples"]) == (2, [{"id": 1}, {"id": 2}])
+    assert proposed.structured_content is not None
+    assert proposed.structured_content["total"] == 1
+    (proposal,) = proposed.structured_content["proposals"]
+    assert proposal["column"] == "status"
+    assert proposal["value_map"] == {"active": "A", "closed": "C"}
+    assert "Traceback" not in log.read_text(encoding="utf-8")
