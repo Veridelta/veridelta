@@ -1,3 +1,16 @@
+## v0.33.3 (2026-10-08)
+
+No behavior changed. `build_parser` added every command's arguments in one function of 270
+lines. It now names each command, its parents, and its help in one place, and one function
+per command adds that command's arguments. Every command's `--help` prints the same text as
+before, byte for byte. The docs also gained a
+[troubleshooting guide](https://veridelta.github.io/veridelta/how-to/troubleshooting/), which
+starts from what a failed or surprising run shows and gives the cause and the fix.
+
+### Refactor
+
+- one function per command in build_parser (#335)
+
 ## v0.33.2 (2026-10-08)
 
 A primary key whose two sides held two types a join cannot pair failed inside the join,
