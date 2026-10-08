@@ -15,8 +15,9 @@ and timings, never SQL text or credentials.
 import importlib
 import logging
 import time
+from abc import abstractmethod
 from collections.abc import Mapping
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 
 import polars as pl
 
@@ -157,7 +158,75 @@ def _snowflake_credentials(config: SnowflakeConfig) -> dict[str, str | None]:
     return credentials
 
 
-class SnowflakeConnector(PushdownSession):
+class _CursorSession(PushdownSession):
+    """A warehouse session that runs each statement on a fresh cursor and fetches Arrow.
+
+    Snowflake and Databricks differ only in how `connect()` signs in and in the
+    cursor's Arrow fetch, so this class holds the rest: the session, the check
+    before each statement, the fetch, and `close()`.
+    """
+
+    _backend: ClassVar[str]
+    """The warehouse's name, for log lines."""
+
+    _fetch: ClassVar[str]
+    """The cursor method that fetches the whole result as Arrow."""
+
+    _fetch_kwargs: ClassVar[Mapping[str, Any] | None] = None
+    """Arguments for `_fetch`, if it needs any."""
+
+    _session: Any = None
+    """The driver session `connect()` opened, and None before it and after `close()`."""
+
+    @abstractmethod
+    def _missing_extra(self) -> str | None:
+        """Return the install hint when the driver is not installed, else None."""
+
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
+        """Execute compiler SQL on the warehouse and return a LazyFrame.
+
+        Args:
+            statement (str): SQL produced by `SQLPushdownCompiler`.
+            query_type (PushdownQueryType): Which comparison round-trip this
+                statement represents; recorded in the log line for the call.
+
+        Returns:
+            pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
+
+        Raises:
+            ConnectorError: If the extra is missing, the session is closed, or
+                the cursor does not return a table.
+        """
+        missing = self._missing_extra()
+        if missing is not None:
+            raise ConnectorError(missing)
+        if self._session is None:
+            raise ConnectorError(_UNCONNECTED)
+        table = _run_arrow_query(
+            self._session,
+            statement,
+            self._fetch,
+            backend=self._backend,
+            query_type=query_type,
+            fetch_kwargs=self._fetch_kwargs,
+        )
+        return _lazy_from_arrow(table)
+
+    def close(self) -> None:
+        """Close the session, if one is open.
+
+        Idempotent. Afterwards `execute_pushdown` raises `ConnectorError` until
+        `connect()` is called again.
+        """
+        if self._session is None:
+            return
+        session, self._session = self._session, None
+        _close_session(session, self._backend)
+
+
+class SnowflakeConnector(_CursorSession):
     """Snowflake SQL warehouse connector backed by the optional Snowflake extra.
 
     `connect()` opens a `snowflake.connector` session from the frozen
@@ -171,6 +240,10 @@ class SnowflakeConnector(PushdownSession):
             uses to build every statement this connector executes.
     """
 
+    _backend = "Snowflake"
+    _fetch = "fetch_arrow_all"
+    _fetch_kwargs = _SNOWFLAKE_FETCH_KWARGS
+
     def __init__(self, config: SnowflakeConfig) -> None:
         """Initialize the connector with validated Snowflake settings.
 
@@ -180,7 +253,6 @@ class SnowflakeConnector(PushdownSession):
         """
         self._config = config
         self.compiler = SQLPushdownCompiler(SQLDialect.SNOWFLAKE)
-        self._session: Any = None
 
     def connect(self) -> None:
         """Open a Snowflake session for subsequent pushdown statements.
@@ -189,8 +261,9 @@ class SnowflakeConnector(PushdownSession):
             ConnectorError: If the Snowflake extra is missing or authentication
                 fails.
         """
-        if snowflake_connector is None:
-            raise ConnectorError(_SNOWFLAKE_EXTRA)
+        missing = self._missing_extra()
+        if missing is not None:
+            raise ConnectorError(missing)
         config = self._config
         try:
             self._session = snowflake_connector.connect(
@@ -215,54 +288,12 @@ class SnowflakeConnector(PushdownSession):
             self._config.warehouse,
         )
 
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Execute compiler SQL on Snowflake and return a LazyFrame.
-
-        Args:
-            statement (str): SQL produced by `SQLPushdownCompiler`.
-            query_type (PushdownQueryType): Which comparison round-trip this
-                statement represents; recorded in the log line for the call.
-
-        Returns:
-            pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
-
-        Raises:
-            ConnectorError: If the extra is missing, the session is closed, or
-                the cursor does not return a table.
-        """
-        self._require_session()
-        table = _run_arrow_query(
-            self._session,
-            statement,
-            "fetch_arrow_all",
-            backend="Snowflake",
-            query_type=query_type,
-            fetch_kwargs=_SNOWFLAKE_FETCH_KWARGS,
-        )
-        return _lazy_from_arrow(table)
-
-    def close(self) -> None:
-        """Close the Snowflake session, if one is open.
-
-        Idempotent. Afterwards `execute_pushdown` raises `ConnectorError` until
-        `connect()` is called again.
-        """
-        if self._session is None:
-            return
-        session, self._session = self._session, None
-        _close_session(session, "Snowflake")
-
-    def _require_session(self) -> None:
-        """Ensure the Snowflake extra is present and a session is open."""
-        if snowflake_connector is None:
-            raise ConnectorError(_SNOWFLAKE_EXTRA)
-        if self._session is None:
-            raise ConnectorError(_UNCONNECTED)
+    def _missing_extra(self) -> str | None:
+        """Return the Snowflake install hint when its driver is not installed."""
+        return _SNOWFLAKE_EXTRA if snowflake_connector is None else None
 
 
-class DatabricksConnector(PushdownSession):
+class DatabricksConnector(_CursorSession):
     """Databricks SQL warehouse connector backed by the optional Databricks extra.
 
     `connect()` opens a `databricks.sql` session against the configured SQL
@@ -276,6 +307,9 @@ class DatabricksConnector(PushdownSession):
             quoting, Spark type names) the engine uses for every statement.
     """
 
+    _backend = "Databricks"
+    _fetch = "fetchall_arrow"
+
     def __init__(self, config: DatabricksConfig) -> None:
         """Initialize the connector with validated Databricks settings.
 
@@ -284,7 +318,6 @@ class DatabricksConnector(PushdownSession):
         """
         self._config = config
         self.compiler = SQLPushdownCompiler(SQLDialect.DATABRICKS)
-        self._session: Any = None
 
     def connect(self) -> None:
         """Open a Databricks SQL session for subsequent pushdown statements.
@@ -293,8 +326,9 @@ class DatabricksConnector(PushdownSession):
             ConnectorError: If the Databricks extra is missing or authentication
                 fails.
         """
-        if databricks_sql is None:
-            raise ConnectorError(_DATABRICKS_EXTRA)
+        missing = self._missing_extra()
+        if missing is not None:
+            raise ConnectorError(missing)
         try:
             self._session = databricks_sql.connect(
                 server_hostname=self._config.server_hostname,
@@ -316,50 +350,9 @@ class DatabricksConnector(PushdownSession):
             self._config.http_path,
         )
 
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Execute compiler SQL on Databricks and return a LazyFrame.
-
-        Args:
-            statement (str): SQL produced by `SQLPushdownCompiler`.
-            query_type (PushdownQueryType): Which comparison round-trip this
-                statement represents; recorded in the log line for the call.
-
-        Returns:
-            pl.LazyFrame: Unevaluated frame wrapped around the Arrow result.
-
-        Raises:
-            ConnectorError: If the extra is missing, the session is closed, or
-                the cursor does not return a table.
-        """
-        self._require_session()
-        table = _run_arrow_query(
-            self._session,
-            statement,
-            "fetchall_arrow",
-            backend="Databricks",
-            query_type=query_type,
-        )
-        return _lazy_from_arrow(table)
-
-    def close(self) -> None:
-        """Close the Databricks session, if one is open.
-
-        Idempotent. Afterwards `execute_pushdown` raises `ConnectorError` until
-        `connect()` is called again.
-        """
-        if self._session is None:
-            return
-        session, self._session = self._session, None
-        _close_session(session, "Databricks")
-
-    def _require_session(self) -> None:
-        """Ensure the Databricks extra is present and a session is open."""
-        if databricks_sql is None:
-            raise ConnectorError(_DATABRICKS_EXTRA)
-        if self._session is None:
-            raise ConnectorError(_UNCONNECTED)
+    def _missing_extra(self) -> str | None:
+        """Return the Databricks install hint when its driver is not installed."""
+        return _DATABRICKS_EXTRA if databricks_sql is None else None
 
 
 class BigQueryConnector(PushdownSession):
