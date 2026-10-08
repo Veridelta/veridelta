@@ -1,3 +1,16 @@
+## v0.33.1 (2026-10-08)
+
+No behavior changed. The Snowflake and Databricks connectors share one cursor session for
+what they did the same way: the check before each statement, a fresh cursor's Arrow
+fetch, and `close()`. Each keeps only how it signs in and which fetch its driver offers,
+and the statements, log lines, and errors stay the same. This is also the first release
+the new pipeline publishes (#324): it builds in one job, and publishes from another that
+runs no code from the release, with an attestation for each file.
+
+### Refactor
+
+- one cursor session for Snowflake and Databricks (#325)
+
 ## v0.33.0 (2026-10-08)
 
 Pushdown and a local run could reach different verdicts on a column whose two sides hold
