@@ -3,6 +3,8 @@
 
 """Unit tests for dialect-specific SQL pushdown compilation."""
 
+import inspect
+
 import polars as pl
 import pytest
 
@@ -443,6 +445,19 @@ class TestPredicateCompilation:
 
 class TestQueryAssembly:
     """Validate SELECT / JOIN / WHERE assembly."""
+
+    def test_no_compile_method_takes_a_relation_alias(self) -> None:
+        """Ensure every statement names the two relations `src` and `tgt`, since no caller chose others."""
+        methods = [name for name in dir(SQLPushdownCompiler) if name.startswith("compile_")]
+        taking = [
+            name
+            for name in methods
+            if {"source_alias", "target_alias"}
+            & set(inspect.signature(getattr(SQLPushdownCompiler, name)).parameters)
+        ]
+
+        assert len(methods) == 10
+        assert taking == []
 
     def test_it_builds_changed_row_query_with_two_keys_and_two_rules(self) -> None:
         """Ensure the full statement shape uses INNER JOIN and WHERE NOT."""

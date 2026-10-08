@@ -71,6 +71,12 @@ sample and in the value map query."""
 SAMPLE_MATCH_PREFIX = "_veridelta_match_"
 """Positional alias prefix for each compared column's match flag in a sample."""
 
+_SOURCE_ALIAS = "src"
+"""The source relation's alias in every statement that reads both sides."""
+
+_TARGET_ALIAS = "tgt"
+"""The target relation's alias in every statement that reads both sides."""
+
 _SOURCE_CTE = "_src_normalized"
 """The CTE holding the source's normalized columns."""
 
@@ -737,8 +743,6 @@ class SQLPushdownCompiler:
         source_column: str,
         target_column: str | None = None,
         *,
-        source_alias: str = "src",
-        target_alias: str = "tgt",
         source_dtype: pl.DataType | None = None,
         target_dtype: pl.DataType | None = None,
     ) -> str:
@@ -760,8 +764,6 @@ class SQLPushdownCompiler:
             source_column (str): Column name on the source relation.
             target_column (str | None): Column name on the target relation. Defaults
                 to `source_column` when omitted.
-            source_alias (str): SQL alias of the source relation.
-            target_alias (str): SQL alias of the target relation.
             source_dtype (pl.DataType | None): Probed source dtype, used to drop
                 sentinels the column cannot hold. Each side is filtered
                 separately because the two relations can disagree on a type.
@@ -778,13 +780,13 @@ class SQLPushdownCompiler:
         """
         tgt_name = target_column if target_column is not None else source_column
         src_expr = self._normalize_expr(
-            self._qualify(source_alias, source_column),
+            self._qualify(_SOURCE_ALIAS, source_column),
             rule,
             source_dtype,
             is_source=True,
         )
         tgt_expr = self._normalize_expr(
-            self._qualify(target_alias, tgt_name),
+            self._qualify(_TARGET_ALIAS, tgt_name),
             rule,
             target_dtype,
             is_source=False,
@@ -798,8 +800,6 @@ class SQLPushdownCompiler:
         primary_keys: list[str],
         rules: list[DiffRule],
         *,
-        source_alias: str = "src",
-        target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
@@ -818,8 +818,6 @@ class SQLPushdownCompiler:
             target_table (str): Target relation (optionally dotted catalog path).
             primary_keys (list[str]): Join keys, spelled as the target stores them.
             rules (list[DiffRule]): Per-column semantic overrides.
-            source_alias (str): Alias assigned to the source relation.
-            target_alias (str): Alias assigned to the target relation.
             source_types (ColumnTypes | None): Probed source dtypes, used to drop
                 null sentinels the column cannot hold. When None, sentinels are
                 emitted unfiltered.
@@ -858,20 +856,14 @@ class SQLPushdownCompiler:
             source_table,
             target_table,
             [*keys, *compared],
-            source_alias=source_alias,
-            target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
         )
-        select_list = ", ".join(self._qualify(source_alias, pk) for pk in primary_keys)
-        join = self._normalized_join(
-            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
-        )
+        select_list = ", ".join(self._qualify(_SOURCE_ALIAS, pk) for pk in primary_keys)
+        join = self._normalized_join("INNER", primary_keys)
         statement = f"{with_clause} SELECT {select_list} {join}"
         predicates = self._column_predicates(
             compared,
-            source_alias=source_alias,
-            target_alias=target_alias,
             wide_integers=wide_integers,
             type_drift=type_drift,
         )
@@ -889,8 +881,6 @@ class SQLPushdownCompiler:
         rules: list[DiffRule],
         *,
         limit: int,
-        source_alias: str = "src",
-        target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
@@ -913,8 +903,6 @@ class SQLPushdownCompiler:
             primary_keys (list[str]): Join keys, spelled as the target stores them.
             rules (list[DiffRule]): Per-column semantic overrides.
             limit (int): Most rows to return, at least 1.
-            source_alias (str): Alias assigned to the source relation.
-            target_alias (str): Alias assigned to the target relation.
             source_types (ColumnTypes | None): Probed source dtypes, as for
                 `compile_query`.
             target_types (ColumnTypes | None): Probed target dtypes.
@@ -949,15 +937,11 @@ class SQLPushdownCompiler:
             source_table,
             target_table,
             [*keys, *compared],
-            source_alias=source_alias,
-            target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
         )
         predicates = self._column_predicates(
             compared,
-            source_alias=source_alias,
-            target_alias=target_alias,
             wide_integers=wide_integers,
             type_drift=type_drift,
         )
@@ -965,23 +949,21 @@ class SQLPushdownCompiler:
         projections: list[str] = []
         for index, key in enumerate(primary_keys):
             alias = f"{SAMPLE_KEY_PREFIX}{index}"
-            projections.append(f"{self._qualify(source_alias, key)} AS {self._quote_ident(alias)}")
+            projections.append(f"{self._qualify(_SOURCE_ALIAS, key)} AS {self._quote_ident(alias)}")
             renames[alias] = key
         for index, ((_source_column, target_column, _rule), predicate) in enumerate(
             zip(compared, predicates, strict=True)
         ):
             outputs = (
-                (SAMPLE_SOURCE_PREFIX, self._qualify(source_alias, target_column), "source"),
-                (SAMPLE_TARGET_PREFIX, self._qualify(target_alias, target_column), "target"),
+                (SAMPLE_SOURCE_PREFIX, self._qualify(_SOURCE_ALIAS, target_column), "source"),
+                (SAMPLE_TARGET_PREFIX, self._qualify(_TARGET_ALIAS, target_column), "target"),
                 (SAMPLE_MATCH_PREFIX, f"COALESCE({predicate}, FALSE)", "is_match"),
             )
             for prefix, expression, suffix in outputs:
                 alias = f"{prefix}{index}"
                 projections.append(f"{expression} AS {self._quote_ident(alias)}")
                 renames[alias] = f"{target_column}_{suffix}"
-        join = self._normalized_join(
-            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
-        )
+        join = self._normalized_join("INNER", primary_keys)
         order = ", ".join(
             self._quote_ident(f"{SAMPLE_KEY_PREFIX}{index}") for index in range(len(primary_keys))
         )
@@ -997,8 +979,6 @@ class SQLPushdownCompiler:
         target_table: str,
         primary_keys: list[str],
         *,
-        source_alias: str = "src",
-        target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
@@ -1009,8 +989,6 @@ class SQLPushdownCompiler:
             source_table (str): Source relation (optionally dotted catalog path).
             target_table (str): Target relation (optionally dotted catalog path).
             primary_keys (list[str]): Join keys, spelled as the target stores them.
-            source_alias (str): Alias assigned to the source relation.
-            target_alias (str): Alias assigned to the target relation.
             source_types (ColumnTypes | None): Probed source dtypes.
             target_types (ColumnTypes | None): Probed target dtypes.
             key_rules (Sequence[DiffRule] | None): Key normalization, as for
@@ -1028,8 +1006,6 @@ class SQLPushdownCompiler:
             target_table,
             primary_keys,
             join_kind="LEFT",
-            source_alias=source_alias,
-            target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
             key_rules=key_rules,
@@ -1041,8 +1017,6 @@ class SQLPushdownCompiler:
         target_table: str,
         primary_keys: list[str],
         *,
-        source_alias: str = "src",
-        target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
@@ -1053,8 +1027,6 @@ class SQLPushdownCompiler:
             source_table (str): Source relation (optionally dotted catalog path).
             target_table (str): Target relation (optionally dotted catalog path).
             primary_keys (list[str]): Join keys, spelled as the target stores them.
-            source_alias (str): Alias assigned to the source relation.
-            target_alias (str): Alias assigned to the target relation.
             source_types (ColumnTypes | None): Probed source dtypes.
             target_types (ColumnTypes | None): Probed target dtypes.
             key_rules (Sequence[DiffRule] | None): Key normalization, as for
@@ -1072,8 +1044,6 @@ class SQLPushdownCompiler:
             target_table,
             primary_keys,
             join_kind="RIGHT",
-            source_alias=source_alias,
-            target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
             key_rules=key_rules,
@@ -1086,8 +1056,6 @@ class SQLPushdownCompiler:
         primary_keys: list[str],
         rules: list[DiffRule],
         *,
-        source_alias: str = "src",
-        target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
@@ -1108,8 +1076,6 @@ class SQLPushdownCompiler:
             target_table (str): Target relation (optionally dotted catalog path).
             primary_keys (list[str]): Join keys present on both relations.
             rules (list[DiffRule]): Per-column semantic overrides.
-            source_alias (str): Alias assigned to the source relation.
-            target_alias (str): Alias assigned to the target relation.
             source_types (ColumnTypes | None): Probed source dtypes, used to drop
                 null sentinels the column cannot hold. When None, sentinels are
                 emitted unfiltered.
@@ -1142,15 +1108,11 @@ class SQLPushdownCompiler:
             source_table,
             target_table,
             [*keys, *compared],
-            source_alias=source_alias,
-            target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
         )
         predicates = self._column_predicates(
             compared,
-            source_alias=source_alias,
-            target_alias=target_alias,
             wide_integers=wide_integers,
             type_drift=type_drift,
         )
@@ -1161,9 +1123,7 @@ class SQLPushdownCompiler:
                 compared, predicates, strict=True
             )
         ]
-        join = self._normalized_join(
-            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
-        )
+        join = self._normalized_join("INNER", primary_keys)
         return f"{with_clause} SELECT {', '.join(terms)} {join}"
 
     def compile_value_map_query(
@@ -1175,8 +1135,6 @@ class SQLPushdownCompiler:
         *,
         min_support: int,
         sample_fraction: float = 1.0,
-        source_alias: str = "src",
-        target_alias: str = "tgt",
         source_types: ColumnTypes | None = None,
         target_types: ColumnTypes | None = None,
         key_rules: Sequence[DiffRule] | None = None,
@@ -1204,8 +1162,6 @@ class SQLPushdownCompiler:
             min_support (int): Agreeing rows a pair needs.
             sample_fraction (float): Share of source keys to read, chosen by a
                 hash of the normalized keys. 1 reads every row.
-            source_alias (str): Alias assigned to the source relation.
-            target_alias (str): Alias assigned to the target relation.
             source_types (ColumnTypes | None): Probed source dtypes.
             target_types (ColumnTypes | None): Probed target dtypes.
             key_rules (Sequence[DiffRule] | None): Key normalization, as for
@@ -1230,8 +1186,6 @@ class SQLPushdownCompiler:
             source_table,
             target_table,
             [*keys, *compared],
-            source_alias=source_alias,
-            target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
         )
@@ -1239,8 +1193,6 @@ class SQLPushdownCompiler:
             [target for _source, target, _rule in compared],
             primary_keys,
             sample_fraction,
-            source_alias=source_alias,
-            target_alias=target_alias,
         )
         branches = " UNION ALL ".join(
             self._value_map_branch(label, rule)
@@ -1253,22 +1205,17 @@ class SQLPushdownCompiler:
         columns: list[str],
         primary_keys: list[str],
         sample_fraction: float,
-        *,
-        source_alias: str,
-        target_alias: str,
     ) -> str:
         """Build the CTE pairing each candidate's normalized values on the keys."""
         projections = ", ".join(
-            f"{self._qualify(source_alias, column)} AS {self._quote_ident(f'{SAMPLE_SOURCE_PREFIX}{label}')}, "
-            f"{self._qualify(target_alias, column)} AS {self._quote_ident(f'{SAMPLE_TARGET_PREFIX}{label}')}"
+            f"{self._qualify(_SOURCE_ALIAS, column)} AS {self._quote_ident(f'{SAMPLE_SOURCE_PREFIX}{label}')}, "
+            f"{self._qualify(_TARGET_ALIAS, column)} AS {self._quote_ident(f'{SAMPLE_TARGET_PREFIX}{label}')}"
             for label, column in enumerate(columns)
         )
-        join = self._normalized_join(
-            "INNER", primary_keys, source_alias=source_alias, target_alias=target_alias
-        )
+        join = self._normalized_join("INNER", primary_keys)
         sample = ""
         if sample_fraction < 1:
-            keys = [self._qualify(source_alias, key) for key in primary_keys]
+            keys = [self._qualify(_SOURCE_ALIAS, key) for key in primary_keys]
             cutoff = self._integer(round(sample_fraction * SAMPLE_BUCKETS))
             sample = f" WHERE {self._sample_bucket(keys)} < {cutoff}"
         return f"{self._quote_ident(_JOINED_CTE)} AS (SELECT {projections} {join}{sample})"
@@ -1427,8 +1374,6 @@ class SQLPushdownCompiler:
         primary_keys: list[str],
         *,
         join_kind: str,
-        source_alias: str,
-        target_alias: str,
         source_types: ColumnTypes | None,
         target_types: ColumnTypes | None,
         key_rules: Sequence[DiffRule] | None,
@@ -1439,35 +1384,31 @@ class SQLPushdownCompiler:
             source_table,
             target_table,
             keys,
-            source_alias=source_alias,
-            target_alias=target_alias,
             source_types=source_types,
             target_types=target_types,
         )
         select_alias, null_alias = (
-            (source_alias, target_alias) if join_kind == "LEFT" else (target_alias, source_alias)
+            (_SOURCE_ALIAS, _TARGET_ALIAS)
+            if join_kind == "LEFT"
+            else (_TARGET_ALIAS, _SOURCE_ALIAS)
         )
         select_list = ", ".join(self._qualify(select_alias, pk) for pk in primary_keys)
-        join = self._normalized_join(
-            join_kind, primary_keys, source_alias=source_alias, target_alias=target_alias
-        )
+        join = self._normalized_join(join_kind, primary_keys)
         where_clause = " AND ".join(
             f"{self._qualify(null_alias, pk)} IS NULL" for pk in primary_keys
         )
         return f"{with_clause} SELECT {select_list} {join} WHERE {where_clause}"
 
-    def _normalized_join(
-        self, join_kind: str, primary_keys: list[str], *, source_alias: str, target_alias: str
-    ) -> str:
+    def _normalized_join(self, join_kind: str, primary_keys: list[str]) -> str:
         """Join the two normalized CTEs on their keys."""
         on_clause = " AND ".join(
-            f"{self._qualify(source_alias, pk)} = {self._qualify(target_alias, pk)}"
+            f"{self._qualify(_SOURCE_ALIAS, pk)} = {self._qualify(_TARGET_ALIAS, pk)}"
             for pk in primary_keys
         )
         return (
-            f"FROM {self._quote_ident(_SOURCE_CTE)} AS {self._quote_ident(source_alias)} "
+            f"FROM {self._quote_ident(_SOURCE_CTE)} AS {self._quote_ident(_SOURCE_ALIAS)} "
             f"{join_kind} JOIN {self._quote_ident(_TARGET_CTE)} "
-            f"AS {self._quote_ident(target_alias)} ON {on_clause}"
+            f"AS {self._quote_ident(_TARGET_ALIAS)} ON {on_clause}"
         )
 
     def _normalize_expr(
@@ -1520,16 +1461,14 @@ class SQLPushdownCompiler:
         self,
         compared: list[tuple[str, str, DiffRule]],
         *,
-        source_alias: str,
-        target_alias: str,
         wide_integers: frozenset[str],
         type_drift: frozenset[str],
     ) -> list[str]:
         """Build each compared column's match predicate over the normalized CTEs."""
         return [
             self._compare(
-                self._qualify(source_alias, target_column),
-                self._qualify(target_alias, target_column),
+                self._qualify(_SOURCE_ALIAS, target_column),
+                self._qualify(_TARGET_ALIAS, target_column),
                 rule,
                 wide=target_column in wide_integers,
                 drift=target_column in type_drift,
@@ -1569,18 +1508,16 @@ class SQLPushdownCompiler:
         target_table: str,
         columns: Sequence[_Projection],
         *,
-        source_alias: str,
-        target_alias: str,
         source_types: ColumnTypes | None,
         target_types: ColumnTypes | None,
     ) -> str:
         """Build the CTE pair that applies stages 1-7 once per column."""
         # Projecting each normalized value once keeps later SQL linear in the number of columns.
         src_select = self._normalized_select(
-            source_table, source_alias, columns, types=source_types, is_source=True
+            source_table, _SOURCE_ALIAS, columns, types=source_types, is_source=True
         )
         tgt_select = self._normalized_select(
-            target_table, target_alias, columns, types=target_types, is_source=False
+            target_table, _TARGET_ALIAS, columns, types=target_types, is_source=False
         )
         return (
             f"WITH {self._quote_ident(_SOURCE_CTE)} AS ({src_select}), "
