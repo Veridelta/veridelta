@@ -2,7 +2,7 @@
 name: veridelta
 description: Compares two datasets with the Veridelta command line and reports what differs, keeping row values out of the reply. Use when a task compares two tables or files, checks a data migration or pipeline change, or writes or fixes a veridelta.yaml file.
 metadata:
-  version: "1.17.0"
+  version: "1.17.1"
 ---
 
 # Compare two datasets with Veridelta
@@ -49,7 +49,7 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
 
 ## As MCP tools
 
-Where the `mcp` extra is installed, `veridelta mcp` serves steps 1, 2, and 5 as Model Context Protocol tools, `validate_config`, `run_comparison`, and `propose_value_maps`, which return what `veridelta validate --json`, `veridelta run --json`, and `veridelta crosswalk --json` print. A third tool, `describe_schema`, lists one side's columns and their types, and reads no rows, which helps when a rule must name a column. `read_discrepancies`, `propose_value_maps`, and `suggest_rules`, which returns what `veridelta suggest --json` prints, return values from the data, so they work only on a server started with `--allow-row-values`; keep those values out of a reply unless the user asks. The guide for AI agents shows how to register it with a host.
+Where the `mcp` extra is installed, `veridelta mcp` serves steps 1, 2, 5, and 6 as Model Context Protocol tools: `validate_config`, `run_comparison`, `propose_value_maps`, and `suggest_rules`. They return what `veridelta validate --json`, `veridelta run --json`, `veridelta crosswalk --json`, and `veridelta suggest --json` print. Another tool, `describe_schema`, lists one side's columns and their types, and reads no rows, which helps when a rule must name a column. `read_discrepancies`, `propose_value_maps`, and `suggest_rules` return values from the data, so they work only on a server started with `--allow-row-values`; keep those values out of a reply unless the user asks. The guide for AI agents shows how to register it with a host.
 
 ## Writing a configuration
 

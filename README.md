@@ -95,7 +95,7 @@ if not result.summary.is_match:
 
 ## Documentation
 
-- [Tutorials](https://veridelta.github.io/veridelta/examples/01_core_concepts/): five notebooks, from a first comparison in Python to a CI pipeline.
+- [Tutorials](https://veridelta.github.io/veridelta/examples/01_core_concepts/): six notebooks, from a first comparison in Python to a CI pipeline.
 - [User guide](https://veridelta.github.io/veridelta/configuration/): configuration, sources, rules, pushdown, results, the command line, and AI agents.
 - [CI integrations](https://veridelta.github.io/veridelta/ci/): the GitHub Action and the GitLab CI template.
 - [API reference](https://veridelta.github.io/veridelta/api/): the public Python interface.
