@@ -66,7 +66,13 @@ from veridelta.connectors.warehouse import (
     DatabricksConnector,
     SnowflakeConnector,
 )
-from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError, VerideltaError
+from veridelta.exceptions import (
+    ConfigError,
+    ConnectorError,
+    DataIntegrityError,
+    VerideltaError,
+    missing_extra,
+)
 from veridelta.models import (
     AcceptedChange,
     ArtifactFormat,
@@ -327,10 +333,7 @@ class ExcelLoader(BaseLoader):
                 than one worksheet.
         """
         if fastexcel is None:
-            raise ConfigError(
-                "Reading Excel requires the optional 'excel' extra. "
-                "Install it with: uv add 'veridelta[excel]'"
-            )
+            raise ConfigError(missing_extra("excel", "Reading an Excel file"))
         loaded = pl.read_excel(  # pyright: ignore[reportUnknownVariableType] - untyped **options
             config.path, **config.options
         )
@@ -962,8 +965,11 @@ def _fuzzy_measures() -> ModuleType:
     """Return rapidfuzz's distance module, or explain how to install it."""
     if rapidfuzz_distance is None:
         raise ConfigError(
-            "max_levenshtein_distance and min_jaro_winkler_similarity need the optional "
-            "'fuzzy' extra to compare text locally. Install it with: uv add 'veridelta[fuzzy]'"
+            missing_extra(
+                "fuzzy",
+                "Comparing text locally under max_levenshtein_distance or "
+                "min_jaro_winkler_similarity",
+            )
         )
     return rapidfuzz_distance
 
@@ -1698,10 +1704,7 @@ def _missing_extra_findings(source: SourceRef, target: SourceRef) -> list[Config
         if required is not None and not required[1]():
             sides.setdefault(required[0], []).append(label)
     return [
-        _error(
-            f"Reading the {' and '.join(labels)} needs the optional '{extra}' extra, which "
-            f"is not installed. Install it with: uv add 'veridelta[{extra}]'"
-        )
+        _error(missing_extra(extra, f"Reading the {' and '.join(labels)}"))
         for extra, labels in sides.items()
     ]
 
@@ -1790,9 +1793,7 @@ def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
         return []
     return [
         _error(
-            f"rules[{index}] sets a similarity limit, which a local run scores with the "
-            "optional 'fuzzy' extra, and it is not installed. Install it with: "
-            "uv add 'veridelta[fuzzy]'"
+            missing_extra("fuzzy", f"rules[{index}], whose similarity limit a local run scores,")
         )
         for index, rule in enumerate(diff.rules)
         if rule.max_levenshtein_distance is not None or rule.min_jaro_winkler_similarity is not None

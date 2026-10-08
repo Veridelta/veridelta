@@ -55,7 +55,7 @@ from veridelta.engine import (
     DEFAULT_MIN_SUPPORT,
     DiffEngine,
 )
-from veridelta.exceptions import ConfigError, VerideltaError
+from veridelta.exceptions import ConfigError, VerideltaError, missing_extra
 from veridelta.models import (
     DatabaseConfig,
     DeltaLakeConfig,
@@ -111,7 +111,7 @@ Hugging Face, lakeFS, and MotherDuck. Any other location counts as a path on
 this machine, so one the readers would open here is never let through
 unchecked."""
 
-_MCP_EXTRA = "MCP extra is not installed. Install it with: uv add 'veridelta[mcp]'"
+_MCP_EXTRA = missing_extra("mcp", "veridelta mcp")
 
 _SHORTEST_MASKED: Final = 4
 """The fewest characters an environment value needs to be masked in a tool's answer.

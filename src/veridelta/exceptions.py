@@ -7,6 +7,26 @@ Each derives from `VerideltaError`, so one `except` clause catches them all.
 """
 
 
+def missing_extra(extra: str, needed_for: str) -> str:
+    """Return the one message for an optional extra that is not installed.
+
+    The error that carries it stays the one its caller raises: a reader's
+    `ConfigError` or a connector's `ConnectorError`.
+
+    Args:
+        extra (str): The extra, such as `snowflake`.
+        needed_for (str): What needs it, as the subject of a sentence, such as
+            `Connecting to Snowflake`.
+
+    Returns:
+        str: What needs the extra, and the command that installs it.
+    """
+    return (
+        f"{needed_for} needs the optional '{extra}' extra, which is not installed. "
+        f"Install it with: uv add 'veridelta[{extra}]'"
+    )
+
+
 class VerideltaError(Exception):
     """Base class for every error Veridelta raises.
 

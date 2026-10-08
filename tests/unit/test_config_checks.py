@@ -237,8 +237,8 @@ class TestConfigChecks:
         findings = _check(_CSV, _PARQUET, rules=rules)
 
         assert [severity for severity, _ in findings] == ["error", "error"]
-        assert findings[0][1].startswith("rules[1] sets a similarity limit")
-        assert findings[1][1].startswith("rules[2] sets a similarity limit")
+        assert findings[0][1].startswith("rules[1], whose similarity limit a local run scores,")
+        assert findings[1][1].startswith("rules[2], whose similarity limit a local run scores,")
         assert "uv add 'veridelta[fuzzy]'" in findings[0][1]
 
     def test_it_needs_no_scorer_where_the_warehouse_computes_edit_distance(

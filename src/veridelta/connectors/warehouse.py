@@ -27,7 +27,7 @@ from veridelta.connectors.base import (
     optional_module,
 )
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConnectorError, missing_extra
 from veridelta.models import BigQueryConfig, DatabricksConfig, SnowflakeConfig
 
 logger = logging.getLogger(__name__)
@@ -38,19 +38,15 @@ snowflake_connector: Any = optional_module("snowflake.connector")
 
 databricks_sql: Any = optional_module("databricks.sql")
 
-_SNOWFLAKE_EXTRA = (
-    "Snowflake extra is not installed. Install it with: uv add 'veridelta[snowflake]'"
-)
-_DATABRICKS_EXTRA = (
-    "Databricks extra is not installed. Install it with: uv add 'veridelta[databricks]'"
-)
+_SNOWFLAKE_EXTRA = missing_extra("snowflake", "Connecting to Snowflake")
+_DATABRICKS_EXTRA = missing_extra("databricks", "Connecting to Databricks")
 bigquery: Any = None
 """`google.cloud.bigquery`, imported by the first BigQuery `connect()` rather than
 here: google-api-core warns at import time on Python versions near their end of
 life, which would fail `import veridelta` wherever warnings are errors. Tests
 patch this attribute."""
 
-_BIGQUERY_EXTRA = "BigQuery extra is not installed. Install it with: uv add 'veridelta[bigquery]'"
+_BIGQUERY_EXTRA = missing_extra("bigquery", "Connecting to BigQuery")
 _NO_ARROW_BATCHES = "BigQuery returned no Arrow batches, so the result has no columns."
 _UNCONNECTED = "Warehouse connector is not connected. Call connect() first."
 _NON_TABULAR = "Warehouse cursor did not return a tabular Arrow result."
