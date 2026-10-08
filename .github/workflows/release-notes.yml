@@ -1,0 +1,75 @@
+name: Release Notes
+
+# Rewrites the notes of existing GitHub Releases from CHANGELOG.md on main, through
+# the script the release workflow uses for a new release. Run it by hand, for the
+# releases made before their notes came from the changelog, or after a section of
+# the changelog is corrected. A version the changelog has no section for keeps its
+# notes.
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Version tags to rewrite, separated by spaces, such as "v0.33.3 v0.33.4", or "all".'
+        required: true
+        default: all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-notes
+
+jobs:
+  notes:
+    name: Rewrite the Release Notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write # edit each release's notes
+
+    steps:
+      - name: Check Out the Changelog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            .github/scripts/release-notes.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Rewrite Each Release's Notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          tags=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
+            | sed 's#^refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)
+          if [ "$TAGS" = all ]; then
+            wanted="$tags"
+          else
+            wanted=$(tr -s ' ' '\n' <<< "$TAGS")
+          fi
+          for tag in $wanted; do
+            if ! grep -qx -- "$tag" <<< "$tags"; then
+              echo "::warning::${tag} is not a version tag, so it is left alone."
+              continue
+            fi
+            if ! gh release view "$tag" > /dev/null 2>&1; then
+              echo "::notice::${tag} has no release to rewrite."
+              continue
+            fi
+            previous=$(grep -x -B 1 -- "$tag" <<< "$tags" | head -n 1)
+            if [ "$previous" = "$tag" ]; then
+              previous=""
+            fi
+            bash .github/scripts/release-notes.sh CHANGELOG.md "$tag" "$previous" "$GH_REPO" > notes.md
+            if [ -s notes.md ]; then
+              gh release edit "$tag" --notes-file notes.md
+              echo "Rewrote the notes of ${tag}."
+            else
+              echo "::notice::CHANGELOG.md has no section for ${tag}, so its notes stay."
+            fi
+          done

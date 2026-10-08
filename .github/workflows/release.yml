@@ -212,26 +212,51 @@ jobs:
       contents: write
 
     steps:
-      - name: Create the Release with Generated Notes
+      # The notes come from the tag's CHANGELOG.md, which the release pull request
+      # wrote, through the script beside it. Nothing else is checked out or run.
+      - name: Check Out the Changelog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            CHANGELOG.md
+            .github/scripts/release-notes.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Create the Release with the Changelog's Notes
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          tags=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
+            | sed 's#^refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)
           # Latest goes to the highest full version tag only, so a rerun on an
           # older tag cannot take it from a newer release.
-          newest=$(gh api "repos/${GH_REPO}/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
-            | sed 's#^refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
           latest=false
-          if [ "$TAG" = "$newest" ]; then
+          if [ "$TAG" = "$(tail -n 1 <<< "$tags")" ]; then
             latest=true
+          fi
+          previous=$(grep -x -B 1 -- "$TAG" <<< "$tags" | head -n 1 || true)
+          if [ "$previous" = "$TAG" ]; then
+            previous=""
+          fi
+          bash .github/scripts/release-notes.sh CHANGELOG.md "$TAG" "$previous" "$GH_REPO" > notes.md
+          # Without a section for the version, the release takes GitHub's generated notes.
+          if [ -s notes.md ]; then
+            notes=(--notes-file notes.md)
+          else
+            notes=(--generate-notes)
           fi
           if gh release view "$TAG" > /dev/null 2>&1; then
             echo "${TAG} already has a release."
+            if [ -s notes.md ]; then
+              gh release edit "$TAG" --notes-file notes.md
+            fi
             if [ "$latest" = true ]; then
               gh release edit "$TAG" --latest
             fi
           else
-            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" --latest="$latest"
+            gh release create "$TAG" --verify-tag "${notes[@]}" --title "$TAG" --latest="$latest"
           fi
