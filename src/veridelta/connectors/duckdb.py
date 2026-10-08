@@ -50,7 +50,7 @@ from veridelta.connectors.sql import (
     compile_duckdb_sandbox,
     compile_duckdb_select,
 )
-from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError, missing_extra
 from veridelta.models import DuckDBConfig
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 # extras installed where it runs.
 duckdb: Any = optional_module("duckdb")
 
-_DUCKDB_EXTRA = "DuckDB extra is not installed. Install it with: uv add 'veridelta[duckdb]'"
+_DUCKDB_EXTRA = missing_extra("duckdb", "Reading a DuckDB file")
 _UNCONNECTED = "DuckDB connector is not connected. Call connect() first."
 _SESSION_UNCONNECTED = "DuckDB pushdown session is not connected. Call connect() first."
 _TOKEN_VARIABLES: Final = ("MOTHERDUCK_TOKEN", "motherduck_token")

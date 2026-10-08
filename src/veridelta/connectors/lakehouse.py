@@ -18,14 +18,14 @@ import logging
 import polars as pl
 
 from veridelta.connectors.base import ReaderConnector, shown_location, without_location
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConnectorError, missing_extra
 from veridelta.models import DeltaLakeConfig, IcebergConfig
 
 logger = logging.getLogger(__name__)
 
 _UNCONNECTED = "Lakehouse connector is not connected. Call connect() first."
-_DELTA_EXTRA = "Delta Lake extra is not installed. Install it with: uv add 'veridelta[delta]'"
-_ICEBERG_EXTRA = "Iceberg extra is not installed. Install it with: uv add 'veridelta[iceberg]'"
+_DELTA_EXTRA = missing_extra("delta", "Reading a Delta Lake table")
+_ICEBERG_EXTRA = missing_extra("iceberg", "Reading an Iceberg table")
 
 
 class DeltaLakeConnector(ReaderConnector):

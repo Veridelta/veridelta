@@ -20,7 +20,7 @@ from pytest_mock import MockerFixture
 from tests.otlp_collector import running_collector
 from veridelta.cli import build_parser, crosswalk, main, mcp, run, validate
 from veridelta.config import config_json_schema
-from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError
+from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
 from veridelta.mcp_server import Settings
 from veridelta.models import DiffConfig, DiffRule, ValueMapEntry, ValueMapProposal
 
@@ -1095,9 +1095,7 @@ class TestMCPCommand:
         monkeypatch.chdir(tmp_path)
         mocker.patch(
             "veridelta.cli.serve",
-            side_effect=VerideltaError(
-                "MCP extra is not installed. Install it with: uv add 'veridelta[mcp]'"
-            ),
+            side_effect=VerideltaError(missing_extra("mcp", "veridelta mcp")),
         )
 
         exit_code = mcp(_serve_args(None))

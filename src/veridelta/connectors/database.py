@@ -49,7 +49,7 @@ from veridelta.connectors.sql import (
     compile_postgres_columns_query,
     compile_postgres_text_select,
 )
-from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError, missing_extra
 from veridelta.models import POSTGRES_SCHEMES, DatabaseConfig
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # extras installed where it runs.
 connectorx: Any = optional_module("connectorx")
 
-_DATABASE_EXTRA = "Database extra is not installed. Install it with: uv add 'veridelta[database]'"
+_DATABASE_EXTRA = missing_extra("database", "Reading a database table")
 _UNCONNECTED = "Database connector is not connected. Call connect() first."
 _SQLITE_PREFIX = "sqlite://"
 _POSTGRES_UNCONNECTED = "Postgres pushdown session is not connected. Call connect() first."
