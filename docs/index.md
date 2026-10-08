@@ -6,6 +6,10 @@ Veridelta compares two datasets on their primary keys and reports every row that
 
 Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, as are two Postgres or DuckDB tables that set `pushdown`. Only counts and keys come back, unless [`pushdown_sample_rows`](pushdown.md#row-samples) asks for a sample of the changed rows.
 
+## Status
+
+Veridelta is in alpha, so a minor version can still change the configuration or the Python API. Its tests run on generated data, including a suite that seeds known drift into two datasets and checks that each run reports exactly that drift, in a local run and in pushdown. Nobody but its maintainer is known to have run it yet. Its pushdown SQL has run in DuckDB and Postgres 16, but not yet in a live cloud warehouse, as [Pushdown](pushdown.md) says.
+
 ## Install
 
 ```bash
