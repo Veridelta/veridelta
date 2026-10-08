@@ -6,7 +6,7 @@ Require veridelta
 Source settings.tape
 Set FontSize 32
 Set Width 700
-Set Height 1040
+Set Height 1080
 
 Type "veridelta run -q"
 Enter
