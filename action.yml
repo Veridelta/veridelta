@@ -16,7 +16,7 @@ inputs:
     description: Comma-separated optional extras to install, such as "snowflake" or "database,fuzzy".
     default: ""
   version:
-    description: "Veridelta version to install from PyPI. Empty installs the version at this action's ref, so `uses: Veridelta/veridelta@v0.33.2` runs 0.33.2."
+    description: "Veridelta version to install from PyPI. Empty installs the version at this action's ref, so `uses: Veridelta/veridelta@v0.33.3` runs 0.33.3."
     default: ""
   python-version:
     description: Python version to run Veridelta with.
