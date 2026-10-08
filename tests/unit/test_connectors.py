@@ -144,15 +144,27 @@ class TestConnectorInterface:
         with pytest.raises(TypeError, match="abstract"):
             VerideltaConnector()  # type: ignore[abstract]
 
-    def test_a_reader_must_hand_out_a_frame(self) -> None:
-        """Ensure a reader that defines no `lazyframe` cannot be built."""
+    def test_a_reader_hands_out_what_connect_kept(self) -> None:
+        """Ensure a reader needs only `connect()`, and refuses a read before it and after `close()`.
+
+        The refusal names the kind of source, from the reader's own message.
+        """
 
         class _Reader(ReaderConnector):
-            def connect(self) -> None:
-                return None
+            _unconnected = "Test reader is not connected. Call connect() first."
 
-        with pytest.raises(TypeError, match="lazyframe"):
-            _Reader()  # type: ignore[abstract]
+            def connect(self) -> None:
+                self._frame = _sample_lazy_frame()
+
+        reader = _Reader()
+        with pytest.raises(ConnectorError, match=r"^Test reader is not connected"):
+            reader.lazyframe()
+        reader.connect()
+        assert reader.lazyframe().collect().height == 2
+        reader.close()
+        reader.close()
+        with pytest.raises(ConnectorError, match=r"^Test reader is not connected"):
+            reader.lazyframe()
 
     def test_a_session_must_run_sql(self) -> None:
         """Ensure a session that defines no `execute_pushdown` cannot be built."""

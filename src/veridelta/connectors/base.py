@@ -6,11 +6,12 @@
 import importlib
 from abc import ABC, abstractmethod
 from types import ModuleType, TracebackType
-from typing import Final, Literal, Self
+from typing import ClassVar, Final, Literal, Self
 
 import polars as pl
 
 from veridelta.connectors.sql import SQLPushdownCompiler
+from veridelta.exceptions import ConnectorError
 from veridelta.models import redacted_location
 
 
@@ -174,13 +175,18 @@ class VerideltaConnector(ABC):
 class ReaderConnector(VerideltaConnector):
     """A connector the local engine reads through `lazyframe()`.
 
-    `connect()` opens a scan or reads the rows, `lazyframe()` hands them to
-    the engine, and the comparison runs in Polars. A reader has no
-    `execute_pushdown`: nothing is pushed into a source that is compared
-    locally.
+    `connect()` opens a scan or reads the rows and keeps them as `_frame`,
+    `lazyframe()` hands them to the engine, and the comparison runs in Polars.
+    `close()` drops them. A reader has no `execute_pushdown`: nothing is pushed
+    into a source that is compared locally.
     """
 
-    @abstractmethod
+    _unconnected: ClassVar[str] = "Connector is not connected. Call connect() first."
+    """What `lazyframe()` raises before `connect()`, naming the kind of source."""
+
+    _frame: pl.LazyFrame | None = None
+    """What `connect()` opened, and None before it and after `close()`."""
+
     def lazyframe(self) -> pl.LazyFrame:
         """Return what `connect()` opened, as an unevaluated LazyFrame.
 
@@ -190,6 +196,13 @@ class ReaderConnector(VerideltaConnector):
         Raises:
             ConnectorError: If `connect()` has not been called.
         """
+        if self._frame is None:
+            raise ConnectorError(self._unconnected)
+        return self._frame
+
+    def close(self) -> None:
+        """Drop what `connect()` opened. Idempotent; `connect()` opens it again."""
+        self._frame = None
 
 
 class PushdownSession(VerideltaConnector):

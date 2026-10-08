@@ -113,6 +113,8 @@ class DuckDBConnector(ReaderConnector):
     runs in Polars, never in DuckDB.
     """
 
+    _unconnected = _UNCONNECTED
+
     def __init__(self, config: DuckDBConfig, *, probe: bool = False) -> None:
         """Initialize the connector with validated DuckDB settings.
 
@@ -123,7 +125,6 @@ class DuckDBConnector(ReaderConnector):
         """
         self._config = config
         self._probe = probe
-        self._frame: pl.LazyFrame | None = None
 
     def connect(self) -> None:
         """Read the configured table or query into memory.
@@ -169,23 +170,6 @@ class DuckDBConnector(ReaderConnector):
             time.perf_counter() - started,
         )
         self._frame = frame.lazy()
-
-    def lazyframe(self) -> pl.LazyFrame:
-        """Return the rows `connect()` read, as a LazyFrame for the local engine.
-
-        Returns:
-            pl.LazyFrame: Lazy wrapper over the materialized rows.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        if self._frame is None:
-            raise ConnectorError(_UNCONNECTED)
-        return self._frame
-
-    def close(self) -> None:
-        """Drop the rows read. Idempotent; `connect()` reads them again."""
-        self._frame = None
 
     def _statement(self) -> str:
         """Return the SQL to read: the compiled table select, or the query as written."""
