@@ -41,7 +41,7 @@ from veridelta.models import (
     WhitespaceMode,
 )
 
-__version__ = "0.29.0"
+__version__ = "0.30.0"
 
 # A library leaves its log output to the program that uses it. Every module's
 # logger sits under this one, so no record reaches Python's last-resort
