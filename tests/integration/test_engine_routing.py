@@ -354,10 +354,41 @@ class TestEngineConnectorRouting:
                 _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
             )
 
-        connector.compiler.compile_query.assert_not_called()
-        connector.compiler.compile_added_query.assert_not_called()
-        connector.compiler.compile_missing_query.assert_not_called()
-        connector.compiler.compile_count_query.assert_not_called()
+        executed = [
+            query.kwargs["query_type"] for query in connector.execute_pushdown.call_args_list
+        ]
+        assert executed == ["schema", "schema", "duplicates", "duplicates"]
+        connector.close.assert_called_once()
+
+    def test_a_statement_that_cannot_compile_fails_before_the_key_check_runs(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure every statement compiles before any runs, so a configuration error wins.
+
+        A local run fails on a rule before it reads a key, and so does pushdown:
+        repeated keys would be reported only once the configuration compiles.
+        """
+        connector = _configure_warehouse_compiler(mocker).return_value
+        connector.compiler.compile_query.side_effect = ConfigError("no such rule here")
+
+        def _duplicated(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
+            if query_type == "duplicates":
+                return pl.DataFrame({COUNT_ALIAS: [3]}).lazy()
+            return _pushdown_by_query_type(statement, query_type)
+
+        connector.execute_pushdown.side_effect = _duplicated
+
+        with pytest.raises(ConfigError, match="no such rule here"):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"]),
+                _snowflake_config(table="ANALYTICS.PUBLIC.SRC"),
+                _snowflake_config(table="ANALYTICS.PUBLIC.TGT"),
+            )
+
+        executed = [
+            query.kwargs["query_type"] for query in connector.execute_pushdown.call_args_list
+        ]
+        assert executed == ["schema", "schema"]
         connector.close.assert_called_once()
 
     @pytest.mark.parametrize(
@@ -1188,7 +1219,7 @@ class TestPushdownRowSamples:
         result = self._run(pushdown_sample_rows=5)
 
         assert result.changed_sample is None
-        connector.compiler.compile_changed_sample_query.assert_not_called()
+        assert "samples" not in self._query_types(connector)
 
     def test_it_writes_the_sample_as_an_artifact_of_its_own(
         self, mocker: MockerFixture, tmp_path: Path
