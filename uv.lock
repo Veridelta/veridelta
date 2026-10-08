@@ -4504,7 +4504,7 @@ wheels = [
 
 [[package]]
 name = "veridelta"
-version = "0.33.3"
+version = "0.33.4"
 source = { editable = "." }
 dependencies = [
     { name = "polars" },

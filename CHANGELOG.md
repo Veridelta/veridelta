@@ -1,3 +1,16 @@
+## v0.33.4 (2026-10-08)
+
+A pushdown run, its check under `validate --schemas`, and its row sample each compiled the
+same statements, with the same long argument lists. They now share one compile step, so
+the check compiles exactly the SQL a run executes. The statements, and the order they run
+in, are the same. One ordering changes: a statement that fails to compile now raises its
+`ConfigError` before the duplicate key queries run, as a local run fails on a rule before it
+reads a key. Before, repeated keys were reported first.
+
+### Refactor
+
+- compile the pushdown statements once (#337)
+
 ## v0.33.3 (2026-10-08)
 
 No behavior changed. `build_parser` added every command's arguments in one function of 270
