@@ -1,0 +1,34 @@
+# The setup every CI job shares, in one place: the pinned uv, one Python, and the
+# locked dependencies with every extra. A job checks the code out first, since this
+# file is part of it.
+name: Set Up CI
+description: Install the pinned uv and a Python, then the locked dependencies.
+
+inputs:
+  python-version:
+    description: The Python version to set up.
+    default: "3.12"
+  group:
+    description: One dependency group to install beside the extras, such as `databases`.
+    default: ""
+  sync:
+    description: Whether to install the dependencies. A job that only builds the package sets "false".
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv and Set up Python
+      uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      with:
+        version: "0.12.23"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Dependencies
+      if: inputs.sync == 'true'
+      shell: bash
+      env:
+        GROUP: ${{ inputs.group }}
+      run: uv sync --locked --all-extras ${GROUP:+--group "$GROUP"}

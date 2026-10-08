@@ -40,6 +40,7 @@ _WORKFLOWS = sorted((_ROOT / ".github" / "workflows").glob("*.yml"))
 _DEPENDABOT = _ROOT / ".github" / "dependabot.yml"
 _DOCS = _ROOT / ".github" / "workflows" / "docs.yml"
 _CI = _ROOT / ".github" / "workflows" / "ci.yml"
+_SETUP = _ROOT / ".github" / "actions" / "setup" / "action.yml"
 _RERUN = _ROOT / ".github" / "workflows" / "rerun-dropped.yml"
 _LIVE = _ROOT / ".github" / "workflows" / "live.yml"
 _EXAMPLES = [_ROOT / "docs" / "ci.md", *sorted((_ROOT / "docs" / "examples").glob("*.ipynb"))]
@@ -317,9 +318,13 @@ class TestDocumentedWorkflows:
 
         The release comment beside each commit pin names the version, so the major an
         example shows is held to it. An action the workflows do not use, such as this
-        repository's own, is not checked.
+        repository's own, is not checked. CI runs uv through the setup its jobs share.
         """
-        majors = dict(_PINNED_ACTION.findall(_CI.read_text(encoding="utf-8")))
+        majors = dict(
+            _PINNED_ACTION.findall(
+                _CI.read_text(encoding="utf-8") + _SETUP.read_text(encoding="utf-8")
+            )
+        )
         stale = [
             f"{page.name}: {action}@v{major}, where ci.yml runs v{majors[action]}"
             for page in _EXAMPLES
@@ -677,8 +682,10 @@ def _workflow(path: Path) -> dict[Any, Any]:
 
 
 def _workflow_steps(path: Path) -> list[dict[str, Any]]:
-    """Return every step of every job in a workflow file."""
+    """Return every step of every job in a workflow file, or of a composite action."""
     loaded: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if "runs" in loaded:
+        return list(loaded["runs"]["steps"])
     return [step for job in loaded["jobs"].values() for step in job.get("steps", [])]
 
 
@@ -707,7 +714,7 @@ class TestWorkflowPins:
                 if "run" in step:
                     assert "${{" not in step["run"], (workflow.name, name, step["name"])
 
-    @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
+    @pytest.mark.parametrize("workflow", [*_WORKFLOWS, _SETUP], ids=lambda path: path.name)
     def test_it_pins_every_action_to_a_commit(self, workflow: Path) -> None:
         """Ensure a moved tag upstream cannot change what CI runs or what a release publishes.
 
@@ -737,7 +744,7 @@ class TestWorkflowPins:
                 kept = step.get("with", {}).get("persist-credentials", True)
                 assert kept is ((workflow.name, name) in pushers), f"{workflow.name}: {name}"
 
-    @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
+    @pytest.mark.parametrize("workflow", [*_WORKFLOWS, _SETUP], ids=lambda path: path.name)
     def test_it_installs_only_what_the_lockfile_pins(self, workflow: Path) -> None:
         """Ensure a lockfile that no longer matches `pyproject.toml` fails the job.
 
@@ -756,7 +763,7 @@ class TestWorkflowPins:
         """
         versions = {
             str(step["with"].get("version"))
-            for workflow in (_CI, _DOCS, _LIVE)
+            for workflow in (_SETUP, _DOCS, _LIVE)
             for step in _workflow_steps(workflow)
             if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
         }
@@ -782,7 +789,9 @@ class TestWorkflowPins:
         for image in images:
             assert re.fullmatch(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", image), image
 
-    @pytest.mark.parametrize("path", [*_WORKFLOWS, _ACTION], ids=lambda path: path.name)
+    @pytest.mark.parametrize(
+        "path", [*_WORKFLOWS, _ACTION, _SETUP], ids=lambda path: path.parent.name + "/" + path.name
+    )
     def test_it_names_the_release_behind_every_pin(self, path: Path) -> None:
         """Ensure each commit pin says which release it is, as Dependabot keeps it."""
         for line in path.read_text(encoding="utf-8").splitlines():
@@ -799,7 +808,10 @@ class TestWorkflowPins:
 
         assert config["version"] == 2
         assert set(updates) == {"github-actions", "uv", "docker"}
-        assert updates["github-actions"]["directory"] == "/"
+        assert updates["github-actions"]["directories"] == [
+            "/",
+            "/" + _SETUP.parent.relative_to(_ROOT).as_posix(),
+        ]
         assert updates["uv"]["directory"] == "/"
         assert updates["docker"]["directory"] == "/.devcontainer"
         assert all(update["schedule"]["interval"] == "weekly" for update in updates.values())
@@ -901,6 +913,27 @@ class TestCIWorkflow:
 
     They also keep the packages CI installs and runs from writing to the repository.
     """
+
+    def test_every_job_that_installs_sets_up_through_the_shared_action(self) -> None:
+        """Ensure the uv pin, the cache, and `uv sync --locked` live in one file, not ten.
+
+        A job checks the code out first, since the shared setup is part of it.
+        The `action` job installs through the Action under test instead.
+        """
+        jobs = _workflow(_CI)["jobs"]
+        setting_up = {
+            name
+            for name, job in jobs.items()
+            if any(step.get("uses") == "./.github/actions/setup" for step in job.get("steps", []))
+        }
+
+        assert setting_up == set(jobs) - {"action", "ci-passed"}
+        for name in setting_up:
+            steps = [step.get("uses", "") for step in jobs[name]["steps"]]
+            assert steps.index("./.github/actions/setup") > 0, name
+            assert steps[0].startswith("actions/checkout@"), name
+        for step in _workflow_steps(_SETUP):
+            assert "${{" not in step.get("run", ""), step["name"]
 
     def test_every_job_gets_a_read_only_token(self) -> None:
         """Ensure a dependency that CI installs and runs cannot push commits or tags.

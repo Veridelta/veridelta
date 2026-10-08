@@ -2,9 +2,12 @@
 # current, with one grouped pull request per ecosystem a week.
 version: 2
 updates:
-  # Covers the workflows and the composite action.yml at the root.
+  # Covers the workflows, the Action's action.yml at the root, and the setup
+  # every CI job shares.
   - package-ecosystem: github-actions
-    directory: /
+    directories:
+      - /
+      - /.github/actions/setup
     schedule:
       interval: weekly
     commit-message:
