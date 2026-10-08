@@ -1,0 +1,23 @@
+> # A script stands in for an agent.
+> python mcp_client.py --brief
+-> validate_config:
+   path: veridelta.yaml
+<- valid: true
+-> run_comparison:
+   path: veridelta.yaml
+<- verdict: drift
+   exit_code: 1
+   added_count: 1
+   removed_count: 1
+   changed_count: 1
+-> read_discrepancies:
+   path: veridelta.yaml
+   kind: changed
+<- rows:
+   - id: 2
+     status_source: closed
+     amount_source: 20.5
+     status_target: shipped
+     amount_target: 20.5
+     status_is_match: false
+     amount_is_match: true
