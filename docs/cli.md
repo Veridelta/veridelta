@@ -118,6 +118,7 @@ With `--schemas`, `validate` also connects and checks the rules against each sid
 - Files and lakehouse tables are opened as a run opens them, then checked with `DiffEngine.validate_rules`. JSON, Excel, and Avro files have no lazy reader, so they are read whole.
 - A database `table` is read as a run reads it, with `WHERE 1 = 0` added, so no row is fetched. SQLite reports a `NUMERIC` column as text in that probe, although a full read returns numbers. A `query` is not run. If either side reads one, the rules are checked against neither side, and a warning names each `query` side.
 - A pair compared in place runs the column probes a run starts with, then compiles every comparison statement without running it. That settles each warning above one way or the other.
+- A name in a rule's `column_names` that neither side has, after `normalize_column_names` when it is on, is a warning. Such a rule does nothing. That is safe, since it only fails to forgive, but a misspelled name would otherwise go unnoticed.
 
 Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, and `warnings`. The verdict goes to stderr.
 
