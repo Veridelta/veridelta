@@ -13,7 +13,7 @@ body:
     attributes:
       label: Veridelta version
       description: The output of `veridelta --version`.
-      placeholder: veridelta 0.28.0
+      placeholder: veridelta 0.29.0
     validations:
       required: true
   - type: input
