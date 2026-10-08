@@ -46,6 +46,7 @@ from veridelta.mcp_server import (
     resolve_path,
     run_configuration,
     serve,
+    suggest,
 )
 from veridelta.models import (
     DatabaseConfig,
@@ -125,6 +126,13 @@ def _coded(root: Path) -> Path:
     (root / "b.csv").write_text(
         "id,gender\n" + "".join(f"{i},{'Male' if i % 2 == 0 else 'Female'}\n" for i in range(10))
     )
+    return _write(root, _VALID)
+
+
+def _near(root: Path) -> Path:
+    """Write two files whose `amount` differs by a little on two of three rows."""
+    (root / "a.csv").write_text("id,amount\n1,10.0\n2,20.0\n3,30.0\n")
+    (root / "b.csv").write_text("id,amount\n1,10.001\n2,20.0\n3,30.002\n")
     return _write(root, _VALID)
 
 
@@ -1081,6 +1089,94 @@ class TestProposeMaps:
         propose.assert_not_called()
 
 
+class TestSuggest:
+    """Validate the suggestions `suggest_rules` returns, without the SDK in the way."""
+
+    def test_it_returns_nothing_without_the_flag(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a server started without --allow-row-values refuses before it reads a row."""
+        _near(tmp_path)
+        suggest_rules = mocker.patch("veridelta.mcp_server.DiffEngine.suggest_rules_from_configs")
+
+        with pytest.raises(ConfigError, match="suggest_rules returns values from the data"):
+            suggest(Settings((tmp_path,)), "veridelta.yaml")
+
+        suggest_rules.assert_not_called()
+
+    def test_it_runs_no_query_unless_the_server_allows_queries(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a suggestion reads no side through a query the server does not allow."""
+        _queried(tmp_path, "SELECT * FROM t")
+        suggest_rules = mocker.patch("veridelta.mcp_server.DiffEngine.suggest_rules_from_configs")
+
+        with pytest.raises(ConfigError, match="The source reads through a query"):
+            suggest(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml")
+
+        suggest_rules.assert_not_called()
+
+    def test_it_returns_what_suggest_prints(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure each suggestion is the object `suggest --json` prints for it."""
+        monkeypatch.chdir(tmp_path)
+        path = _near(tmp_path)
+
+        report = suggest(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml")
+
+        printed = [
+            suggestion.model_dump(mode="json")
+            for suggestion in DiffEngine.suggest_rules_from_configs(*load_config(path))
+        ]
+        assert report == {"suggestions": printed, "total": 1, "truncated": False}
+        assert report["suggestions"][0]["column"] == "amount"
+        assert report["suggestions"][0]["examples"] == [{"id": 1}, {"id": 3}]
+
+    def test_it_passes_the_share_through(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a share no gap fits under leaves nothing to suggest."""
+        monkeypatch.chdir(tmp_path)
+        _near(tmp_path)
+
+        report = suggest(
+            Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", max_share=0.00001
+        )
+
+        assert report == {"suggestions": [], "total": 0, "truncated": False}
+
+    def test_it_leaves_out_a_suggestion_past_the_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a suggestion comes back whole or not at all, within the cap on example keys."""
+        monkeypatch.chdir(tmp_path)
+        _near(tmp_path)
+
+        report = suggest(Settings((tmp_path,), allow_row_values=True, max_rows=1), "veridelta.yaml")
+
+        assert report == {"suggestions": [], "total": 1, "truncated": True}
+
+    def test_it_refuses_data_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure no value is read from a file outside the roots."""
+        outside = tmp_path_factory.mktemp("outside")
+        _write(
+            tmp_path,
+            f"source:\n  path: a.csv\ntarget:\n  path: '{outside / 'b.csv'}'\nprimary_keys: [id]\n",
+        )
+        suggest_rules = mocker.patch("veridelta.mcp_server.DiffEngine.suggest_rules_from_configs")
+
+        with pytest.raises(ConfigError, match="The target path"):
+            suggest(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml")
+
+        suggest_rules.assert_not_called()
+
+
 class TestServer:
     """Validate the server as a host sees it, through the SDK's client."""
 
@@ -1099,6 +1195,7 @@ class TestServer:
             "describe_schema",
             "read_discrepancies",
             "propose_value_maps",
+            "suggest_rules",
         ]
         assert [name for name, tool in tools.items() if tool.output_schema is None] == []
         validate, run = tools["validate_config"], tools["run_comparison"]
@@ -1144,6 +1241,16 @@ class TestServer:
             "total",
             "truncated",
         }
+        suggested = tools["suggest_rules"]
+        assert suggested.input_schema["required"] == ["path"]
+        assert set(suggested.input_schema["properties"]) == {"path", "max_share"}
+        assert suggested.input_schema["properties"]["max_share"]["exclusiveMinimum"] == 0
+        assert suggested.output_schema is not None
+        assert set(suggested.output_schema["properties"]) == {
+            "suggestions",
+            "total",
+            "truncated",
+        }
 
     def test_it_keeps_every_description_within_its_budget(self, tmp_path: Path) -> None:
         """Ensure each description fits the budget and reads the same on every Python.
@@ -1180,7 +1287,7 @@ class TestServer:
         tools = {tool.name: tool for tool in _tools(Settings((tmp_path,)))}
         sample = tools["propose_value_maps"].input_schema["properties"]["sample_fraction"]
 
-        assert "Two tools return row values, only when the server allows them." in INSTRUCTIONS
+        assert "Three tools return row values, only when the server allows them." in INSTRUCTIONS
         assert sample["description"] == "Share of source rows to read, chosen by primary key."
 
     def test_it_returns_what_validate_prints(self, tmp_path: Path) -> None:
@@ -1294,6 +1401,7 @@ class TestServer:
         for tool, arguments in (
             ("read_discrepancies", {"path": "veridelta.yaml", "kind": "added"}),
             ("propose_value_maps", {"path": "veridelta.yaml"}),
+            ("suggest_rules", {"path": "veridelta.yaml"}),
         ):
             result = _call(settings, arguments, tool=tool)
 
@@ -1317,6 +1425,21 @@ class TestServer:
         assert rows.structured_content == read_rows(settings, "veridelta.yaml", "changed")
         assert maps.is_error is False
         assert maps.structured_content == propose_maps(settings, "veridelta.yaml")
+
+    def test_it_returns_suggestions_when_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure an allowed server returns the suggestions, with their example keys."""
+        monkeypatch.chdir(tmp_path)
+        _near(tmp_path)
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        result = _call(settings, {"path": "veridelta.yaml", "max_share": 0.5}, tool="suggest_rules")
+
+        assert result.is_error is False
+        assert result.structured_content == suggest(settings, "veridelta.yaml", max_share=0.5)
+        assert result.structured_content is not None
+        assert result.structured_content["total"] == 1
 
     def test_it_reports_a_broken_file_as_a_finding(self, tmp_path: Path) -> None:
         """Ensure a file that does not load is a result the agent can act on, not a failed call."""
