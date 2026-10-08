@@ -1,3 +1,15 @@
+## v0.29.0 (2026-10-08)
+
+`veridelta validate --schemas` now warns about a rule whose `column_names` holds a name
+that neither side has, after `normalize_column_names` when it is on. Such a rule forgives
+nothing, so a misspelled name used to pass unnoticed. The warning names each such column.
+It works for files, databases, lakehouse tables, and warehouse pairs alike, and the MCP
+server's `validate_config` reports it too. A warning leaves the exit code at 0, as before.
+
+### Feat
+
+- warn when a rule names a column neither side has (#303)
+
 ## v0.28.0 (2026-10-08)
 
 `SQLPushdownCompiler`'s seven `compile_` methods that read both sides no longer take
