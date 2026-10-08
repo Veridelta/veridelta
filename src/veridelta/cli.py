@@ -26,7 +26,7 @@ import yaml
 from polars.exceptions import PanicException
 
 from veridelta import __version__
-from veridelta.config import config_json_schema, load_config
+from veridelta.config import config_json_schema, files_config, load_config
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
     DEFAULT_MIN_CONFIDENCE,
@@ -41,7 +41,7 @@ from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
 
 if TYPE_CHECKING:
-    from veridelta.models import DiffRule, RuleSuggestion, ValueMapProposal
+    from veridelta.models import DiffConfig, DiffRule, RuleSuggestion, SourceRef, ValueMapProposal
 
 EXIT_MATCH = 0
 """Datasets agreed within `threshold`."""
@@ -51,6 +51,12 @@ EXIT_MISMATCH = 1
 
 EXIT_ERROR = 3
 """The command could not finish, such as on a configuration error or an unreachable source."""
+
+EXIT_USAGE = 2
+"""The arguments do not fit together, as argparse exits for the ones it checks itself."""
+
+DEFAULT_CONFIG = "veridelta.yaml"
+"""The configuration file a command reads when `-c` names none."""
 
 _LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
 """How `--verbose` prints a record: its level, the logger that wrote it, and the message."""
@@ -143,21 +149,24 @@ def _directory(text: str) -> Path:
     return path
 
 
-def _report_failure(exc: BaseException, *, as_json: bool) -> int:
+def _report_failure(
+    exc: BaseException, *, as_json: bool, settings: str = "configuration file"
+) -> int:
     """Explain on stderr why a command stopped, and as JSON on stdout under `--json`.
 
     Args:
         exc (BaseException): What stopped the command.
         as_json (bool): Whether stdout carries JSON, so the error goes there as
             one object too: `{"error": {"type": ..., "message": ...}}`.
+        settings (str): What holds the command's settings, which the advice names.
 
     Returns:
         int: `EXIT_ERROR`.
     """
     if isinstance(exc, ConfigError):
         message = (
-            f"\nConfiguration Error\n{exc}\n\nThis is a problem with the configuration "
-            "file, not with the data. Correct the setting above and run again."
+            f"\nConfiguration Error\n{exc}\n\nThis is a problem with the {settings}, "
+            "not with the data. Correct the setting above and run again."
         )
     elif isinstance(exc, VerideltaError):
         message = f"\n{type(exc).__name__}\n{exc}"
@@ -167,7 +176,7 @@ def _report_failure(exc: BaseException, *, as_json: bool) -> int:
         message = (
             f"\nUnexpected System Error\n{type(exc).__name__}: {exc}\n\nThis is a bug or "
             "an unsupported input. Please report it at "
-            "https://github.com/Veridelta/veridelta/issues with the configuration file "
+            f"https://github.com/Veridelta/veridelta/issues with the {settings} "
             "and this message."
         )
     print(message, file=sys.stderr)
@@ -176,24 +185,62 @@ def _report_failure(exc: BaseException, *, as_json: bool) -> int:
     return EXIT_ERROR
 
 
+def _file_arguments_problem(args: argparse.Namespace) -> str | None:
+    """Say what is wrong with how `run`'s FILE arguments, `--key`, and `-c` combine, if anything."""
+    files, keys = args.files, args.key
+    if files and args.config is not None:
+        return "compare two FILE arguments or the configuration file -c names, not both"
+    if keys and not files:
+        return "--key names the key of two FILE arguments; a configuration file sets primary_keys"
+    if files and len(files) != 2:
+        return f"name two files, the source and then the target, not {len(files)}"
+    if files and not keys:
+        return "name the primary key the two files share with --key, such as --key id"
+    return None
+
+
+def _run_configs(
+    args: argparse.Namespace, *, quiet: bool
+) -> "tuple[str | None, DiffConfig, SourceRef, SourceRef]":
+    """Read `run`'s configuration file, or build one from two files and their keys.
+
+    The file's path comes first, and None for two files, since no file names that run.
+    """
+    if args.files:
+        source, target = args.files
+        return (None, *files_config(source, target, args.key))
+    path = str(args.config or DEFAULT_CONFIG)
+    _progress(f"Loading configuration from {path}...", quiet=quiet)
+    return (path, *load_config(path))
+
+
 def run(args: argparse.Namespace) -> int:
-    """Run the comparison a configuration file describes.
+    """Run the comparison a configuration file, or two files and their keys, describe.
 
     Args:
         args (argparse.Namespace): Parsed command-line arguments carrying the
-            config path and the output options.
+            config path, or two files and `--key`, and the output options.
 
     Returns:
         int: `EXIT_MATCH` when the comparison falls within `threshold`,
-            `EXIT_MISMATCH` for drift, and `EXIT_ERROR` when it cannot finish.
+            `EXIT_MISMATCH` for drift, `EXIT_USAGE` when the files, `--key`, and
+            `-c` do not fit together, and `EXIT_ERROR` when it cannot finish.
     """
+    problem = _file_arguments_problem(args)
+    if problem is not None:
+        print(f"veridelta run: error: {problem}", file=sys.stderr)
+        return EXIT_USAGE
+    return _compare(args)
+
+
+def _compare(args: argparse.Namespace) -> int:
+    """Run the comparison once `run`'s arguments fit together, and write what they ask for."""
     # `--json` changes what stdout carries; `--quiet` controls stderr. Keeping
     # them separate means `run --json` can still report where it wrote files.
     quiet = bool(args.quiet)
 
     try:
-        _progress(f"Loading configuration from {args.config}...", quiet=quiet)
-        diff_config, source_config, target_config = load_config(args.config)
+        config_path, diff_config, source_config, target_config = _run_configs(args, quiet=quiet)
 
         baseline = None if args.baseline is None else Baseline.read(args.baseline)
         _progress("Comparing...", quiet=quiet)
@@ -228,7 +275,7 @@ def run(args: argparse.Namespace) -> int:
             metrics_file = write_otlp_metrics(
                 result,
                 args.otel,
-                config_path=args.config,
+                config_path=config_path,
                 source=source_config,
                 target=target_config,
                 time_unix_nano=observed,
@@ -238,7 +285,7 @@ def run(args: argparse.Namespace) -> int:
         if args.otel_send:
             endpoint = send_otlp_metrics(
                 result,
-                config_path=args.config,
+                config_path=config_path,
                 source=source_config,
                 target=target_config,
                 time_unix_nano=observed,
@@ -251,7 +298,8 @@ def run(args: argparse.Namespace) -> int:
         return EXIT_MATCH if summary.is_match else EXIT_MISMATCH
 
     except Exception as exc:
-        return _report_failure(exc, as_json=bool(args.json))
+        settings = "FILE arguments and --key" if args.files else "configuration file"
+        return _report_failure(exc, as_json=bool(args.json), settings=settings)
 
 
 def _merge_advice(rule: "DiffRule", column: str) -> str:
@@ -523,6 +571,18 @@ def validate(args: argparse.Namespace) -> int:
     return EXIT_MISMATCH if errors else EXIT_MATCH
 
 
+def _config_parent(default: str | None) -> argparse.ArgumentParser:
+    """Return a parent parser with `-c`, whose absence reads `veridelta.yaml`."""
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument(
+        "-c",
+        "--config",
+        default=default,
+        help=f"Path to the YAML configuration file (default: {DEFAULT_CONFIG}).",
+    )
+    return parent
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the argument parser.
 
@@ -545,13 +605,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
     # `run`, `crosswalk`, `suggest`, and `validate` read the configuration file named here.
-    config = argparse.ArgumentParser(add_help=False)
-    config.add_argument(
-        "-c",
-        "--config",
-        default="veridelta.yaml",
-        help="Path to the YAML configuration file (default: veridelta.yaml).",
-    )
+    config = _config_parent(DEFAULT_CONFIG)
     # Every command but `schema` reads data, so it can log what it reads.
     verbose = argparse.ArgumentParser(add_help=False)
     verbose.add_argument(
@@ -562,8 +616,24 @@ def build_parser() -> argparse.ArgumentParser:
         "No line holds a credential or SQL.",
     )
 
+    # `run`'s -c defaults to None, so two FILE arguments can tell it was not given.
     run_parser = subparsers.add_parser(
-        "run", parents=[config, verbose], help="Run a Veridelta comparison."
+        "run", parents=[_config_parent(None), verbose], help="Run a Veridelta comparison."
+    )
+    run_parser.add_argument(
+        "files",
+        nargs="*",
+        metavar="FILE",
+        help="Two files to compare on --key, the source and then the target, in place of "
+        "a configuration file. Each file's suffix sets its format.",
+    )
+    run_parser.add_argument(
+        "-k",
+        "--key",
+        action="append",
+        metavar="COLUMN",
+        help="A primary key column of the two FILE arguments. Repeat it for a key of "
+        "several columns.",
     )
     run_parser.add_argument(
         "--json",

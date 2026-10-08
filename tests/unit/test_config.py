@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from veridelta.config import load_config, referenced_variables
+from veridelta.config import files_config, load_config, referenced_variables
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
     DatabaseConfig,
@@ -545,3 +545,33 @@ class TestReferencedVariables:
     def test_it_names_none_in_a_malformed_reference(self) -> None:
         """Ensure `${1}`, a regex capture outside the blocks, is no variable."""
         assert referenced_variables("rules:\n  - regex_replace: {'(a)': '${1}'}\n") == []
+
+
+class TestFilesConfig:
+    """Validate the configuration `veridelta run SOURCE TARGET --key COLUMN` builds."""
+
+    def test_it_holds_what_the_smallest_file_holds(self, tmp_path: Path) -> None:
+        """Ensure two files and their keys load as the file naming only them loads."""
+        path = tmp_path / "veridelta.yaml"
+        path.write_text(
+            "primary_keys: [id, day]\nsource:\n  path: a.csv\ntarget:\n  path: b.parquet\n"
+        )
+
+        assert files_config("a.csv", "b.parquet", ["id", "day"]) == load_config(path)
+
+    def test_it_reads_each_format_from_the_suffix(self) -> None:
+        """Ensure each side's format follows its own file's suffix."""
+        _, source, target = files_config(Path("in.json"), Path("out.ndjson"), ["id"])
+
+        assert (source.format, target.format) == ("json", "ndjson")
+
+    def test_it_leaves_a_variable_reference_in_a_path_as_it_is(self) -> None:
+        """Ensure a `${NAME}` the shell left in a path is a file name, not a variable to read."""
+        _, source, _ = files_config("${UNSET_VD_VARIABLE}.csv", "b.csv", ["id"])
+
+        assert source.path == "${UNSET_VD_VARIABLE}.csv"
+
+    def test_it_refuses_no_keys(self) -> None:
+        """Ensure an empty key list fails as an empty `primary_keys` in a file does."""
+        with pytest.raises(ConfigError, match=r"\[primary_keys\]"):
+            files_config("a.csv", "b.csv", [])

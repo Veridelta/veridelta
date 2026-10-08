@@ -1,6 +1,6 @@
 # Command line
 
-The `veridelta` command runs a comparison, checks a configuration, proposes value maps and other rules, prints the JSON Schemas of its files and its output, and serves its checks and comparisons to an AI agent. `run`, `validate`, `crosswalk`, and `suggest` read `veridelta.yaml` unless `-c` names another file.
+The `veridelta` command runs a comparison, checks a configuration, proposes value maps and other rules, prints the JSON Schemas of its files and its output, and serves its checks and comparisons to an AI agent. `run`, `validate`, `crosswalk`, and `suggest` read `veridelta.yaml` unless `-c` names another file. `run` also takes two files and `--key` in place of a file.
 
 | Command | Description |
 | :--- | :--- |
@@ -19,12 +19,15 @@ The `veridelta` command runs a comparison, checks a configuration, proposes valu
 ```bash
 veridelta run -c veridelta.yaml
 veridelta run -c veridelta.yaml --json
+veridelta run legacy.csv modern.csv --key id
 veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel otel-metrics.json
 ```
 
 | Flag | Description |
 | :--- | :--- |
 | `-c`, `--config PATH` | Configuration file. Default `veridelta.yaml`. |
+| `FILE FILE` | Two files to compare in place of a configuration file, the source and then the target. Needs `--key`, and refuses `-c`. See [Two files without a configuration](#two-files-without-a-configuration). |
+| `-k`, `--key COLUMN` | A primary key column of the two files. Repeat it for a key of several columns, such as `--key id --key day`. |
 | `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 | `--json` | Print the [summary](results.md#summary) as JSON on stdout instead of the text report. |
 | `-q`, `--quiet` | Suppress progress messages on stderr. The report or the JSON still prints. |
@@ -38,6 +41,14 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | `--otel-send` | Also send the metrics to an OTLP/HTTP endpoint. See [Sending to an endpoint](results.md#sending-to-an-endpoint). |
 
 Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one, and so does a Markdown summary that lists values.
+
+### Two files without a configuration
+
+`veridelta run legacy.csv modern.csv --key id` runs what a file holding only `primary_keys: [id]` and the two paths would run, with the same summary and exit codes. Each file's format follows its suffix, as in a configuration. Rules, `threshold`, discrepancy files, and every other setting need a configuration file. The output flags, such as `--html` and `--json`, work the same either way.
+
+An error then names the arguments rather than a configuration file. Two files without `--key`, `--key` without two files, or two files with `-c` exit `2`, as any invalid argument does.
+
+In Python, `files_config(source, target, primary_keys)` from `veridelta.config` returns what `load_config` returns for that file.
 
 ## Exit codes
 

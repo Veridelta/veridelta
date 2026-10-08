@@ -35,6 +35,8 @@ class TestCommandLineInterface:
         """Provide a default argparse namespace for testing the run function."""
         return argparse.Namespace(
             config="dummy.yaml",
+            files=[],
+            key=None,
             json=False,
             quiet=False,
             baseline=None,
@@ -553,6 +555,138 @@ def _proposal(
         entries=evidence,
         governing_rule_index=governing_rule_index,
     )
+
+
+class TestRunOnTwoFiles:
+    """Validate `veridelta run SOURCE TARGET --key COLUMN`, which needs no configuration file."""
+
+    @pytest.fixture
+    def files(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Write a source and two targets, one equal and one drifting, and work beside them."""
+        monkeypatch.chdir(tmp_path)
+        source = pl.DataFrame({"id": [1, 2, 3], "status": ["open", "shipped", "open"]})
+        source.write_csv(tmp_path / "legacy.csv")
+        source.write_parquet(tmp_path / "same.parquet")
+        source.with_columns(pl.lit("open").alias("status")).write_csv(tmp_path / "modern.csv")
+        return tmp_path
+
+    @staticmethod
+    def _main(mocker: MockerFixture, *arguments: str) -> object:
+        """Run `veridelta run` with the arguments given, and return its exit code."""
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "run", *arguments])
+        with pytest.raises(SystemExit) as stopped:
+            main()
+        return stopped.value.code
+
+    def test_it_parses_two_files_and_their_keys(self) -> None:
+        """Ensure the files and every repeated --key reach the command, and -c stays unset."""
+        args = build_parser().parse_args(["run", "a.csv", "b.csv", "-k", "id", "--key", "day"])
+
+        assert args.files == ["a.csv", "b.csv"]
+        assert args.key == ["id", "day"]
+        assert args.config is None
+
+    def test_it_reports_a_match_without_a_configuration_file(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure two equal files exit 0, each read in the format its suffix names."""
+        code = self._main(mocker, "legacy.csv", "same.parquet", "--key", "id")
+        captured = capsys.readouterr()
+
+        assert code == 0
+        assert "PASSED" in captured.out
+        assert "Loading configuration" not in captured.err
+
+    def test_it_reports_drift_as_a_configured_run_does(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure the summary is the one a file with the same keys and paths gives."""
+        (files / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: legacy.csv\ntarget:\n  path: modern.csv\n"
+        )
+        configured = self._main(mocker, "--json")
+        expected = json.loads(capsys.readouterr().out)
+
+        code = self._main(mocker, "legacy.csv", "modern.csv", "--key", "id", "--json")
+
+        assert configured == code == 1
+        assert json.loads(capsys.readouterr().out) == expected
+
+    def test_it_names_no_configuration_file_in_the_metrics(
+        self, files: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure an OTLP export of a run on two files carries no configuration path."""
+        self._main(mocker, "legacy.csv", "modern.csv", "--key", "id", "--otel", "otel.json")
+
+        export = json.loads((files / "otel.json").read_text())
+        attributes = export["resourceMetrics"][0]["resource"]["attributes"]
+
+        assert "veridelta.config.path" not in {attribute["key"] for attribute in attributes}
+
+    def test_it_says_the_arguments_hold_the_mistake(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a key neither file has is blamed on the arguments, not on a configuration file."""
+        code = self._main(mocker, "legacy.csv", "modern.csv", "--key", "order_id")
+        captured = capsys.readouterr()
+
+        assert code == 3
+        assert "'order_id'" in captured.err
+        assert "problem with the FILE arguments and --key" in captured.err
+        assert "configuration file" not in captured.err
+
+    @pytest.mark.parametrize(
+        ("arguments", "problem"),
+        [
+            (
+                ["legacy.csv", "modern.csv"],
+                "name the primary key the two files share with --key, such as --key id",
+            ),
+            (
+                ["--key", "id"],
+                "--key names the key of two FILE arguments; a configuration file sets primary_keys",
+            ),
+            (
+                ["legacy.csv", "--key", "id"],
+                "name two files, the source and then the target, not 1",
+            ),
+            (
+                ["legacy.csv", "modern.csv", "same.parquet", "--key", "id"],
+                "name two files, the source and then the target, not 3",
+            ),
+            (
+                ["legacy.csv", "modern.csv", "--key", "id", "-c", "veridelta.yaml"],
+                "compare two FILE arguments or the configuration file -c names, not both",
+            ),
+        ],
+    )
+    def test_it_refuses_arguments_that_do_not_fit_together(
+        self,
+        files: Path,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+        arguments: list[str],
+        problem: str,
+    ) -> None:
+        """Ensure a wrong mix of files, --key, and -c exits 2, as any invalid argument does."""
+        load = mocker.patch("veridelta.cli.load_config")
+
+        code = self._main(mocker, *arguments)
+
+        assert code == 2
+        assert capsys.readouterr().err == f"veridelta run: error: {problem}\n"
+        load.assert_not_called()
+
+    def test_it_still_reads_the_default_configuration_file(
+        self, files: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure `veridelta run` with neither files nor -c reads veridelta.yaml, as before."""
+        load = mocker.patch("veridelta.cli.load_config", side_effect=ConfigError("stop here"))
+
+        code = self._main(mocker)
+
+        assert code == 3
+        load.assert_called_once_with("veridelta.yaml")
 
 
 class TestCrosswalkCommand:

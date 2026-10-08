@@ -31,6 +31,7 @@ Functions that read and check a YAML file and return configuration models. The m
       members:
         - SCHEMA_URL
         - config_json_schema
+        - files_config
         - load_config
 
 ## Exceptions

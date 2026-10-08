@@ -2,7 +2,7 @@
 name: veridelta
 description: Compares two datasets with the Veridelta command line and reports what differs, keeping row values out of the reply. Use when a task compares two tables or files, checks a data migration or pipeline change, or writes or fixes a veridelta.yaml file.
 metadata:
-  version: "1.16.0"
+  version: "1.17.0"
 ---
 
 # Compare two datasets with Veridelta
@@ -24,6 +24,8 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
     ```bash
     veridelta run -c veridelta.yaml --json
     ```
+
+    Two files that need no rules need no configuration file: `veridelta run legacy.csv modern.csv --key id --json`.
 
 3. Read the exit code before the output. `0` is a match within `threshold`, and `1` is drift: both print the summary on stdout. `3` is a run that could not finish: stdout holds one object, `{"error": {"type": ..., "message": ...}}`, and stderr explains it too. A `ConfigError` means the configuration needs a fix. `2` is an invalid command line.
 

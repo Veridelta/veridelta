@@ -33,6 +33,12 @@ veridelta validate -c veridelta.yaml
 veridelta run -c veridelta.yaml
 ```
 
+Two files that need no rules need no configuration file either. Name them and the key that pairs their rows, and each format still follows its suffix:
+
+```bash
+veridelta run legacy.csv modern.csv --key id
+```
+
 [Configuration](configuration.md) lists every setting, and [Rules](rules.md) say what counts as a match, column by column.
 
 ## Where to start

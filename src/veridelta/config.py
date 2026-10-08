@@ -26,6 +26,7 @@ from veridelta.models import (
     DuckDBConfig,
     IcebergConfig,
     SnowflakeConfig,
+    SourceConfig,
     SourceRef,
 )
 
@@ -40,6 +41,7 @@ __all__ = [
     "SnowflakeConfig",
     "SourceRef",
     "config_json_schema",
+    "files_config",
     "load_config",
     "referenced_variables",
 ]
@@ -324,3 +326,38 @@ def load_config(
     except ValidationError as e:
         raise _validation_failure(e) from e
     return diff_cfg, source_cfg, target_cfg
+
+
+def files_config(
+    source: str | Path, target: str | Path, primary_keys: Sequence[str]
+) -> tuple[DiffConfig, SourceConfig, SourceConfig]:
+    """Build the configuration that compares two files on their primary keys.
+
+    It holds what a file with only `primary_keys` and a `path` for each side holds,
+    and is checked the same way, so each file's format follows its suffix. The
+    paths are read as given: a shell has already expanded its own variables, so a
+    `${NAME}` in one is left as it is.
+
+    Args:
+        source (str | Path): The source file.
+        target (str | Path): The target file.
+        primary_keys (Sequence[str]): The columns that identify a row on both sides.
+
+    Returns:
+        tuple[DiffConfig, SourceConfig, SourceConfig]: The comparison settings, then
+            the source and the target, as `load_config` returns them.
+
+    Raises:
+        ConfigError: If `primary_keys` is empty.
+
+    Examples:
+        >>> diff, source, target = files_config("legacy.csv", "modern.parquet", ["id"])
+        >>> diff.primary_keys, source.path, target.format
+        (['id'], 'legacy.csv', 'parquet')
+    """
+    sides = [SourceConfig.model_validate({"path": str(path)}) for path in (source, target)]
+    try:
+        diff = DiffConfig.model_validate({"primary_keys": list(primary_keys)})
+    except ValidationError as e:
+        raise _validation_failure(e) from e
+    return diff, sides[0], sides[1]
