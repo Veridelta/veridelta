@@ -1054,7 +1054,7 @@ class TestDocsWorkflow:
     """Pin how the documentation site builds and deploys."""
 
     def test_it_deploys_one_commit_at_a_time(self) -> None:
-        """Ensure merges that land together cannot race to push `gh-pages`.
+        """Ensure merges that land together deploy one after another.
 
         Deploys queue instead of cancelling one another, so none stops partway
         and the newest commit on `main` deploys last.
@@ -1076,22 +1076,32 @@ class TestDocsWorkflow:
         assert "permissions" not in build
         assert "push" not in "\n".join(step.get("run", "") for step in build["steps"])
 
-    def test_only_a_job_that_installs_nothing_can_push(self) -> None:
-        """Ensure the write token reaches one shell step, after the build passes.
+    def test_only_a_job_that_installs_nothing_can_deploy(self) -> None:
+        """Ensure the Pages token reaches one step, after the build passes.
 
-        It downloads the built site with the runner's own `gh` and commits it
-        on top of `gh-pages` with `git`, never with a force push.
+        The build uploads the site with GitHub Pages' own action, and the
+        deploy job hands it to Pages with another. That job checks out nothing
+        and runs no script. No job can write to the repository, so none can
+        push to a branch.
         """
-        deploy = _workflow(_DOCS)["jobs"]["deploy"]
+        workflow = _workflow(_DOCS)
+        deploy = workflow["jobs"]["deploy"]
         [step] = deploy["steps"]
+        uploads = [
+            str(step["uses"]).split("@")[0]
+            for step in workflow["jobs"]["build"]["steps"]
+            if str(step.get("uses", "")).startswith("actions/upload")
+        ]
 
         assert deploy["needs"] == "build"
-        assert deploy["permissions"] == {"actions": "read", "contents": "write"}
-        assert "uses" not in step
-        assert not re.search(r"\b(uv|pip|npm)\b", step["run"])
-        assert 'gh run download "$GITHUB_RUN_ID" --name site --dir pages' in step["run"]
-        assert step["run"].rstrip().endswith("git -C pages push --quiet origin gh-pages")
-        assert "--force" not in step["run"]
+        assert deploy["environment"]["name"] == "github-pages"
+        assert deploy["permissions"] == {"pages": "write", "id-token": "write"}
+        assert str(step["uses"]).startswith("actions/deploy-pages@")
+        assert "run" not in step
+        assert uploads == ["actions/upload-pages-artifact"]
+        assert all(
+            "contents" not in job.get("permissions", {}) for job in workflow["jobs"].values()
+        )
 
 
 class TestCIWorkflow:
