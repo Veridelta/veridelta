@@ -157,6 +157,11 @@ accessibility = [
 [project.scripts]
 veridelta = "veridelta.cli:main"
 
+[tool.uv]
+# Every build uv runs, the release's among them, uses this release of the
+# build backend, so a new one reaches PyPI only through a reviewed change.
+build-constraint-dependencies = ["hatchling==1.32.4"]
+
 [tool.hatch.build.targets.sdist]
 # The recordings and screenshots serve the docs site, which builds from the
 # repository. They would make up about half of the source archive.

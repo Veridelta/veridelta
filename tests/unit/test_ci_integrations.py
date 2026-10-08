@@ -608,15 +608,44 @@ class TestReleaseWorkflow:
         """Ensure a push to main never builds or uploads a package."""
         publish = _release_job("publish")
 
-        assert publish["if"] == "startsWith(github.ref, 'refs/tags/v')"
+        assert _release_job("build")["if"] == "startsWith(github.ref, 'refs/tags/v')"
+        assert publish["if"].startswith("startsWith(github.ref, 'refs/tags/v') && ")
+        assert publish["needs"] == "build"
         assert publish["environment"]["name"] == "pypi"
 
     def test_it_refuses_a_tag_that_names_another_version(self) -> None:
-        """Ensure a hand-pushed `v1.2.3` on a commit at another version uploads nothing."""
-        script = _release_script("publish")
+        """Ensure a hand-pushed `v1.2.3` on a commit at another version builds nothing."""
+        script = _release_script("build")
 
         assert '"v${version}" != "$GITHUB_REF_NAME"' in script
-        assert script.index("GITHUB_REF_NAME") < script.index("uv publish")
+        assert script.index("GITHUB_REF_NAME") < script.index("uv build")
+
+    def test_the_job_that_can_publish_runs_no_code_from_the_release(self) -> None:
+        """Ensure the code being released never runs where the PyPI token can be minted.
+
+        The build, its backend, and the release's own code run in a job that
+        cannot publish. The publish job checks out nothing and runs no script:
+        it downloads the built files and hands them to PyPI's own action, which
+        attests each one with the run's identity.
+        """
+        steps = _release_job("publish")["steps"]
+        uses = [str(step["uses"]).split("@")[0] for step in steps]
+        upload = steps[-1]["with"]
+
+        assert uses == ["actions/download-artifact", "pypa/gh-action-pypi-publish"]
+        assert not any("run" in step for step in steps)
+        assert steps[0]["with"]["name"] == "dist"
+        assert upload["attestations"] is True
+        assert upload["skip-existing"] is True
+
+    def test_the_build_backend_is_pinned_for_every_uv_build(self) -> None:
+        """Ensure a new hatchling release reaches PyPI only through a reviewed change."""
+        pyproject = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        constraints = pyproject["tool"]["uv"]["build-constraint-dependencies"]
+
+        assert pyproject["build-system"]["build-backend"] == "hatchling.build"
+        assert len(constraints) == 1
+        assert re.fullmatch(r"hatchling==\d+\.\d+\.\d+", constraints[0])
 
     def test_it_uploads_only_files_pypi_lacks(self) -> None:
         """Ensure a release never fails by uploading a file PyPI already has.
@@ -626,26 +655,42 @@ class TestReleaseWorkflow:
         built files PyPI already lists are left out before uploading, and the
         upload is skipped when none are left.
         """
-        steps = {step["name"]: step for step in _release_job("publish")["steps"]}
+        build = _release_job("build")
+        steps = {step["name"]: step for step in build["steps"]}
         names = list(steps)
         script = steps["Leave Out Files PyPI Already Has"]["run"]
+        kept = steps["Keep the Files to Publish"]
 
         assert names.index("Build Sdist and Wheel") < names.index(
             "Leave Out Files PyPI Already Has"
         )
-        assert names.index("Leave Out Files PyPI Already Has") < names.index("Publish to PyPI")
+        assert names.index("Leave Out Files PyPI Already Has") < names.index(
+            "Keep the Files to Publish"
+        )
         assert '"https://pypi.org/pypi/veridelta/${version}/json"' in script
         assert 'rm "dist/${name}"' in script
         assert 'echo "files=${left}" >> "$GITHUB_OUTPUT"' in script
-        assert steps["Publish to PyPI"]["if"] == "steps.upload.outputs.files != '0'"
-        assert "uv publish --check-url https://pypi.org/simple/" in steps["Publish to PyPI"]["run"]
+        assert build["outputs"] == {"files": "${{ steps.upload.outputs.files }}"}
+        assert kept["if"] == "steps.upload.outputs.files != '0'"
+        assert kept["with"]["name"] == "dist"
+        assert kept["with"]["overwrite"] is True
+        assert _release_job("publish")["if"].endswith(" && needs.build.outputs.files != '0'")
 
     def test_it_creates_the_release_page_after_publishing(self) -> None:
-        """Ensure the GitHub Release appears only once the package is on PyPI."""
+        """Ensure the GitHub Release appears only once the package is on PyPI.
+
+        The publish job is skipped when PyPI already has every file, and the
+        page is still made then, as on a rerun after a release that stopped
+        partway. A failed or cancelled build or publish makes no page.
+        """
         release = _release_job("github-release")
         script = _release_script("github-release")
 
-        assert release["needs"] == "publish"
+        assert release["needs"] == ["build", "publish"]
+        assert " ".join(release["if"].split()) == (
+            "!cancelled() && needs.build.result == 'success' && "
+            "(needs.publish.result == 'success' || needs.publish.result == 'skipped')"
+        )
         assert (
             'gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" '
             '--latest="$latest"'
@@ -670,10 +715,8 @@ class TestReleaseWorkflow:
         """Ensure write access is granted per job, never to the whole workflow."""
         assert _release()["permissions"] == {"contents": "read"}
         assert _release_job("tag")["permissions"] == {"contents": "write", "actions": "write"}
-        assert _release_job("publish")["permissions"] == {
-            "id-token": "write",
-            "contents": "read",
-        }
+        assert _release_job("build")["permissions"] == {"contents": "read"}
+        assert _release_job("publish")["permissions"] == {"id-token": "write"}
         assert _release_job("github-release")["permissions"] == {"contents": "write"}
 
 
@@ -761,11 +804,10 @@ class TestWorkflowPins:
         """Ensure CI runs one uv release, which changes only when a person changes it.
 
         Without a `version`, `setup-uv` installs the newest uv on every run.
-        The release workflow is left as it is until its own change.
         """
         versions = {
             str(step["with"].get("version"))
-            for workflow in (_SETUP, _DOCS, _LIVE)
+            for workflow in (_SETUP, _DOCS, _LIVE, _RELEASE)
             for step in _workflow_steps(workflow)
             if str(step.get("uses", "")).startswith("astral-sh/setup-uv@")
         }
