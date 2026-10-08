@@ -413,6 +413,35 @@ class TestLiveSchemaChecks:
 
         assert _check(source, target, schemas=True) == []
 
+    def test_it_warns_about_a_rule_naming_a_column_neither_side_has(self, tmp_path: Path) -> None:
+        """Ensure a misspelled rule name is reported, since that rule would forgive nothing."""
+        source, target = _parquet_pair(tmp_path)
+        rules = [
+            DiffRule(column_names=["amout", "name"], absolute_tolerance=1),
+            DiffRule(column_names=["nmae"], ignore=True),
+        ]
+
+        assert _check(source, target, schemas=True, rules=rules) == [
+            (
+                "warning",
+                "Neither side has a column named 'amout' and 'nmae', so the rules that name "
+                "them do nothing. Check the spelling.",
+            )
+        ]
+
+    def test_it_reads_rule_names_as_normalize_column_names_does(self, tmp_path: Path) -> None:
+        """Ensure a rule matching a header only once both are normalized draws no warning."""
+        source_frame = pl.DataFrame({" ID ": [1], "Amount": [10]})
+        source_frame.write_parquet(tmp_path / "source.parquet")
+        source_frame.write_parquet(tmp_path / "target.parquet")
+        source = SourceConfig(path=str(tmp_path / "source.parquet"))
+        target = SourceConfig(path=str(tmp_path / "target.parquet"))
+        rules = [DiffRule(column_names=["AMOUNT"], absolute_tolerance=1)]
+
+        findings = _check(source, target, schemas=True, rules=rules, normalize_column_names=True)
+
+        assert findings == []
+
     def test_it_checks_rules_against_the_stored_types(self, tmp_path: Path) -> None:
         """Ensure a rule the stored type cannot honor fails, as it would in a run."""
         source, target = _parquet_pair(tmp_path)
@@ -499,6 +528,25 @@ class TestLiveSchemaChecks:
             )
         ]
         read.assert_not_called()
+
+    def test_it_warns_about_a_rule_naming_a_column_neither_table_has(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a warehouse pair checks rule names against the probed columns too."""
+        _warehouse_session(mocker)
+        rules = [DiffRule(column_names=["NAME", "SEEN"], ignore=True)]
+
+        findings = _check(
+            _snowflake("SRC"), _snowflake("TGT"), schemas=True, primary_keys=["ID"], rules=rules
+        )
+
+        assert findings == [
+            (
+                "warning",
+                "Neither side has a column named 'SEEN', so the rules that name it do nothing. "
+                "Check the spelling.",
+            )
+        ]
 
     @pytest.mark.parametrize(("rows", "compiled"), [(0, 0), (5, 1)])
     def test_it_compiles_an_asked_for_row_sample_without_running_it(

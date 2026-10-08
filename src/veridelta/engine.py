@@ -12,7 +12,7 @@ import math
 import re
 from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
@@ -1362,8 +1362,11 @@ def _plan_pushdown(
 
 def _check_pushdown_plan(
     connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
-) -> None:
-    """Do what a warehouse run does before reading a row, and compile the rest."""
+) -> list[ConfigFinding]:
+    """Do what a warehouse run does before reading a row, and compile the rest.
+
+    Returns the warning for a rule's column name that neither table holds, if any.
+    """
     plan = _plan_pushdown(connector, source_table, target_table, diff)
     compiler = connector.compiler
     keys = diff.primary_keys
@@ -1410,6 +1413,7 @@ def _check_pushdown_plan(
             wide_integers=wide_integers,
             type_drift=type_drift,
         )
+    return _unknown_column_findings(diff, plan.source_schema, plan.target_schema)
 
 
 def _collect_pushdown_summary(
@@ -1757,6 +1761,29 @@ def _regex_findings(diff: DiffConfig, *, pushdown: bool) -> list[ConfigFinding]:
     return findings
 
 
+def _unknown_column_findings(
+    diff: DiffConfig, source_names: Iterable[str], target_names: Iterable[str]
+) -> list[ConfigFinding]:
+    """Warn about a rule's column name that neither side holds.
+
+    Such a rule does nothing. That is safe, since it only fails to forgive, but a
+    misspelled name would otherwise go unnoticed.
+    """
+    stored = {*source_names, *target_names}
+    if diff.normalize_column_names:
+        stored = {normalize_column_name(name) for name in stored}
+    unknown = sorted({name for rule in diff.rules for name in rule.column_names} - stored)
+    if not unknown:
+        return []
+    pronoun = "it" if len(unknown) == 1 else "them"
+    return [
+        _warning(
+            f"Neither side has a column named {_quoted_list(unknown)}, so the rules that "
+            f"name {pronoun} do nothing. Check the spelling."
+        )
+    ]
+
+
 def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
     """Report similarity rules a local run cannot score without the `fuzzy` extra."""
     if rapidfuzz_distance is not None:
@@ -1837,14 +1864,13 @@ def _schema_frame(config: SourceRef) -> pl.LazyFrame:
 def _pushdown_schema_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
     """Probe a warehouse pair and compile its statements without running them."""
     try:
-        pair.with_session(
+        return pair.with_session(
             lambda session, source_table, target_table: _check_pushdown_plan(
                 session, source_table, target_table, diff
             )
         )
     except VerideltaError as exc:
         return [_error(str(exc))]
-    return []
 
 
 DEFAULT_MIN_CONFIDENCE: Final = 0.95
@@ -2502,7 +2528,9 @@ class DiffEngine:
         database `table` is read with a zero-row probe, and a `query` is not
         run at all. A warehouse pair runs the schema probes a run starts with,
         then compiles every comparison statement without executing it, which
-        settles the warnings above one way or the other.
+        settles the warnings above one way or the other. Either way, a name in a
+        rule's `column_names` that neither side has is a warning, since that rule
+        does nothing.
 
         Args:
             diff (DiffConfig): Comparison settings and rules.
@@ -2626,7 +2654,9 @@ class DiffEngine:
             engine._plan()
         except ConfigError as exc:
             return [_error(str(exc))]
-        return []
+        return _unknown_column_findings(
+            diff, source_frame.collect_schema().names(), target_frame.collect_schema().names()
+        )
 
     @classmethod
     def propose_value_maps_from_configs(
