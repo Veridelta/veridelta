@@ -1038,6 +1038,23 @@ class TestCIWorkflow:
         assert "playwright install --with-deps chromium && exit 0" in step["run"]
         assert step["run"].rstrip().endswith("exit 1")
 
+    def test_chromium_is_installed_only_when_its_cache_misses(self) -> None:
+        """Ensure a cached Chromium keeps the Accessibility job off the network.
+
+        The cache key carries Playwright's version, so a new Playwright gets a
+        new browser, as `playwright install` would.
+        """
+        steps = {
+            step["name"]: step for step in _workflow(_CI)["jobs"]["test-accessibility"]["steps"]
+        }
+        restore = steps["Restore Chromium"]
+
+        assert restore["uses"].startswith("actions/cache@")
+        assert restore["with"]["path"] == "~/.cache/ms-playwright"
+        assert "${{ steps.playwright.outputs.version }}" in restore["with"]["key"]
+        assert 'version("playwright")' in steps["Read Playwright's Version"]["run"]
+        assert steps["Install Chromium"]["if"] == "steps.chromium.outputs.cache-hit != 'true'"
+
     def test_a_pull_request_builds_the_package_and_runs_it_installed_alone(self) -> None:
         """Ensure a packaging mistake fails a pull request, not a release.
 
