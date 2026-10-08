@@ -34,8 +34,11 @@ jobs:
       - name: Run Pyright
         run: uv run pyright src/
 
+  # A push to main builds the site in the docs workflow, which deploys it, so this
+  # builds it only for a pull request, and the site is built once per push.
   docs:
     name: Documentation Build
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -420,8 +423,9 @@ jobs:
 
   # Rulesets require this one check rather than each matrix job by name. It
   # needs every job above, runs even after one fails, and passes only when each
-  # one succeeded, so a cancelled or skipped job fails it too. It never takes a
-  # condition that could skip it, since a skipped required check reads as passing.
+  # one succeeded, so a cancelled or skipped job fails it too. The one exception
+  # is the docs job, skipped by design on a push. It never takes a condition
+  # that could skip it, since a skipped required check reads as passing.
   ci-passed:
     name: CI Passed
     if: always()
@@ -431,9 +435,11 @@ jobs:
     steps:
       - name: Require Every Job to Pass
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
         run: |
-          echo "Job results: ${RESULTS}"
-          for result in $RESULTS; do
-            [ "$result" = success ] || exit 1
-          done
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e --arg event "$EVENT" 'to_entries | all(
+            .value.result == "success"
+            or (.key == "docs" and $event == "push" and .value.result == "skipped")
+          )' > /dev/null
