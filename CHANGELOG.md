@@ -1,3 +1,21 @@
+## v0.32.0 (2026-10-08)
+
+`veridelta.config` no longer re-exports the seven source models. Import `BigQueryConfig`,
+`DatabaseConfig`, `DatabricksConfig`, `DeltaLakeConfig`, `DuckDBConfig`, `IcebergConfig`,
+and `SnowflakeConfig` from `veridelta` or `veridelta.models`, which export them too. A new
+[Upgrading](https://veridelta.github.io/veridelta/upgrading/) page says what each breaking
+release since 0.6.0 asks of you. This is the release's one breaking change, so under 0.x it
+bumps the minor version.
+
+### BREAKING CHANGE
+
+- `from veridelta.config import SnowflakeConfig`, and the same import of the six other
+  source models, raises `ImportError`. Import them from `veridelta` or `veridelta.models`.
+
+### Refactor
+
+- stop re-exporting the source models from veridelta.config (#315)
+
 ## v0.31.2 (2026-10-08)
 
 No behavior changed. `ReaderConnector` now holds what `connect()` opened, and gives every
