@@ -31,6 +31,7 @@ from veridelta.engine import (
     _fold_rule_defaults,
     _match_rule,
     _normalized_dtype,
+    _pairable,
     _polars_datetime_format,
     _refuse_mixed_pushdown_types,
     _resolve_pushdown_keys,
@@ -2723,6 +2724,133 @@ class TestTypeDriftColumns:
         rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
 
         assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()
+
+
+_KEY_TYPES: Final = [
+    pl.Int64(),
+    pl.Int32(),
+    pl.UInt64(),
+    pl.Float64(),
+    pl.Float32(),
+    pl.Decimal(10, 2),
+    pl.Decimal(12, 2),
+    pl.String(),
+    pl.Categorical(),
+    pl.Boolean(),
+    pl.Date(),
+    pl.Datetime("us"),
+    pl.Datetime("ns"),
+    pl.Datetime("us", "UTC"),
+]
+"""Key types a source may hold, each paired with every other in the join check below."""
+
+
+def _keys(dtype: pl.DataType, values: Sequence[object]) -> pl.LazyFrame:
+    """Return a frame keyed on `id` of one type, with one compared column."""
+    return pl.LazyFrame({"id": pl.Series(values, dtype=dtype), "v": list(range(len(values)))})
+
+
+class TestMixedKeyTypes:
+    """Validate that a primary key whose two sides cannot pair rows fails with a cause, not a crash."""
+
+    @pytest.mark.parametrize("source_type", _KEY_TYPES, ids=str)
+    @pytest.mark.parametrize("target_type", _KEY_TYPES, ids=str)
+    def test_it_allows_exactly_the_pairs_a_join_pairs(
+        self, source_type: pl.DataType, target_type: pl.DataType
+    ) -> None:
+        """Ensure the check agrees with Polars, so it neither refuses a pair that joins nor lets one crash."""
+        source = pl.LazyFrame(schema={"id": source_type})
+        target = pl.LazyFrame(schema={"id": target_type})
+        try:
+            source.join(target, on="id", how="anti").collect()
+        except pl.exceptions.PolarsError:
+            joins = False
+        else:
+            joins = True
+
+        assert _pairable(source_type, target_type) is joins
+
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(
+                _keys(pl.Int64(), [1, 2]), _keys(pl.String(), ["1", "2"]), id="number-text"
+            ),
+            pytest.param(
+                _keys(pl.Int64(), [1, 2]), _keys(pl.Float64(), [1, 2]), id="integer-float"
+            ),
+            pytest.param(
+                _keys(pl.Decimal(10, 2), [1, 2]),
+                _keys(pl.Decimal(12, 2), [1, 2]),
+                id="two-decimals",
+            ),
+            pytest.param(
+                _keys(pl.Date(), [date(2026, 1, 1)]),
+                _keys(pl.Datetime("us"), [datetime(2026, 1, 1)]),
+                id="date-timestamp",
+            ),
+        ],
+    )
+    def test_a_run_names_the_key_and_both_types(
+        self, source: pl.LazyFrame, target: pl.LazyFrame
+    ) -> None:
+        """Ensure the run fails with a configuration error before any join, naming the remedy."""
+        source_type = source.collect_schema()["id"]
+        target_type = target.collect_schema()["id"]
+
+        with pytest.raises(ConfigError) as caught:
+            DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run()
+
+        message = str(caught.value)
+        assert f"'id' ({source_type} in the source, {target_type} in the target)" in message
+        assert "cast_to" in message
+
+    def test_it_names_only_the_keys_that_cannot_pair(self) -> None:
+        """Ensure one error lists every mixed key, and leaves out a key of two integer types."""
+        source = pl.LazyFrame(
+            {"region": ["n"], "day": [date(2026, 1, 1)], "seq": pl.Series([1], dtype=pl.Int32)}
+        )
+        target = pl.LazyFrame({"region": [1], "day": [datetime(2026, 1, 1)], "seq": [1]})
+        config = DiffConfig(primary_keys=["region", "day", "seq"])
+
+        with pytest.raises(ConfigError) as caught:
+            DiffEngine.validate_rules(config, source, target)
+
+        message = str(caught.value)
+        assert "'region' (String in the source, Int64 in the target), 'day' (Date" in message
+        assert "'seq'" not in message
+
+    def test_two_integer_types_pair_rows(self) -> None:
+        """Ensure keys of two integer widths pair as one, as they always have."""
+        source = _keys(pl.Int32(), [1, 2, 3])
+        target = _keys(pl.Int64(), [2, 3, 4])
+
+        summary = DiffEngine(DiffConfig(primary_keys=["id"]), source, target).run().summary
+
+        assert (summary.added_count, summary.removed_count) == (1, 1)
+
+    def test_a_cast_on_the_key_pairs_the_rows(self) -> None:
+        """Ensure the remedy the error names works: the cast applies before rows are paired."""
+        source = _keys(pl.String(), [" 1", "2 ", "3"])
+        target = _keys(pl.Int64(), [1, 2, 3])
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["id"], whitespace_mode="both", cast_to="Int64")],
+        )
+
+        summary = DiffEngine(config, source, target).run().summary
+
+        assert summary.is_perfect_match
+
+    def test_crosswalk_fails_the_same_way(self) -> None:
+        """Ensure value maps, which pair rows on the keys too, fail with the cause and not a crash."""
+        source = pl.LazyFrame({"id": [1, 2], "code": ["a", "b"]})
+        target = pl.LazyFrame({"id": ["1", "2"], "code": ["A", "B"]})
+
+        with pytest.raises(
+            ConfigError, match=r"'id' \(Int64 in the source, String in the target\)"
+        ):
+            DiffEngine(DiffConfig(primary_keys=["id"]), source, target).propose_value_maps()
 
 
 class TestMixedPushdownTypes:

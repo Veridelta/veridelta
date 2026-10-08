@@ -20,6 +20,8 @@ A source without a `type` is a file, read from `path` in the `format` its suffix
 
 `primary_keys` names the columns that pair each source row with its target row. It must name at least one column, and the keys together must be unique on each side. A key that repeats raises `DataIntegrityError` before any values are compared.
 
+Each key must hold one type on both sides, or two integer types, or two float types. Any other pair, such as text against a number or a date against a timestamp, raises `ConfigError` before rows are paired. Give such a key a rule with `cast_to`, such as `cast_to: Int64`.
+
 Rules on key columns apply before rows are paired: a `case_insensitive` key pairs `ABC` with `abc`. See [Transform order](rules.md#transform-order). Write a renamed key with its target name; see [Renaming columns](rules.md#renaming-columns).
 
 ## Settings
