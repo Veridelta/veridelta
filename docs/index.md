@@ -43,7 +43,7 @@ veridelta run legacy.csv modern.csv --key id
 
 ## Where to start
 
-The tutorials build a comparison step by step:
+The tutorials build a comparison step by step. Each one opens in Google Colab from its first paragraph, where its first cell installs Veridelta:
 
 1. [Core concepts](examples/01_core_concepts.ipynb): the Python API, `DiffResult`, and rules.
 2. [YAML and CLI](examples/02_yaml_and_cli.ipynb): a configuration file, `--json`, and artifacts.
