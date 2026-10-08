@@ -9,7 +9,7 @@ The project uses [uv](https://docs.astral.sh/uv/) and a Makefile:
 | Command | What it does |
 | :--- | :--- |
 | `make install` | Creates the environment with every extra, and installs the Git hooks. |
-| `make all` | Formats, lints, type-checks, tests, and builds the docs, as CI does. Run it before a pull request. |
+| `make all` | Formats, lints, runs the Git hooks on every file, type-checks, tests, and builds the docs, as CI does. Run it before a pull request. |
 | `make notebooks` | Runs the tutorials, after a change to one. |
 | `make schema` | Regenerates the schemas under `docs/schema/`, after a change to a configuration model or to the JSON a command prints. |
 | `make postgres` | Runs the parity suite inside a live Postgres, after a change to the SQL compiler. |

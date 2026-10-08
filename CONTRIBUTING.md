@@ -37,7 +37,7 @@ Work on a short-lived branch, and never commit to `main` directly:
 3. Run the checks CI runs:
 
    ```bash
-   make all  # formatting, linting, strict type checks, tests, and a strict docs build
+   make all  # formatting, linting, the Git hooks on every file, strict type checks, tests, and a strict docs build
    ```
 
 The tests run each tutorial notebook in `docs/examples/` and require every `# Output:` comment to match what its cell prints. After editing a tutorial, `make notebooks` runs only those. After changing a configuration model, or the JSON a command prints, run `make schema` to regenerate the JSON Schemas under `docs/schema/`: the configuration's, which editors read, and one for each output. A test fails while one is stale.

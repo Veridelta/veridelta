@@ -1,4 +1,4 @@
-.PHONY: install format lint test notebooks postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check screenshots
+.PHONY: install format lint hooks test notebooks postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check screenshots
 
 # The modules held to full branch coverage. CI's core-module gate names the same
 # list, which tests/unit/test_ci_integrations.py checks.
@@ -17,6 +17,11 @@ lint:
 	uv run ruff check src/ tests/ hooks/
 	uv run mypy src/ tests/ hooks/
 	uv run pyright src/
+
+# The Git hooks on every file, as CI's lint job runs them. `lint` reads the Python
+# folders only, so a notebook or a demo script needs this too.
+hooks:
+	uv run pre-commit run --all-files
 
 test:
 	uv run pytest tests/
@@ -86,7 +91,7 @@ docs:
 docs-serve:
 	uv run mkdocs serve
 
-all: format lint test docs
+all: format lint hooks test docs
 
 clean:
 	rm -rf .mypy_cache .pytest_cache .ruff_cache

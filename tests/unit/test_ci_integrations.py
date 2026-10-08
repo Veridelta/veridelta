@@ -865,6 +865,22 @@ class TestGitHooks:
             assert hooks[hook]["entry"].startswith(f"uv run --frozen {tool} "), hook
         assert remote == {"https://github.com/Lucas-C/pre-commit-hooks"}
 
+    def test_make_all_runs_the_hooks_on_every_file_as_ci_does(self) -> None:
+        """Ensure a notebook or a demo script that fails CI's lint job fails `make all` first.
+
+        `make lint` reads the Python folders only, while CI's lint job runs every
+        hook on every file.
+        """
+        makefile = (_ROOT / "Makefile").read_text(encoding="utf-8")
+        [all_target] = re.findall(r"^all: (.+)$", makefile, re.MULTILINE)
+        lint_job = _workflow(_CI)["jobs"]["static-analysis"]
+
+        assert "hooks" in all_target.split()
+        assert "\nhooks:\n\tuv run pre-commit run --all-files\n" in makefile
+        assert any(
+            step.get("run") == "uv run pre-commit run --all-files" for step in lint_job["steps"]
+        )
+
 
 class TestDocsWorkflow:
     """Pin how the documentation site builds and deploys."""
