@@ -909,6 +909,15 @@ def _comparable_in_sql(source: pl.DataType, target: pl.DataType) -> bool:
     return source.base_type() == target.base_type()
 
 
+def _pairable(source: pl.DataType, target: pl.DataType) -> bool:
+    """Whether a join pairs rows on keys of these two types: one type, two integers, or two floats."""
+    if source.is_integer() and target.is_integer():
+        return True
+    if source.is_float() and target.is_float():
+        return True
+    return source == target
+
+
 def _refuse_mixed_pushdown_types(
     diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
 ) -> None:
@@ -2543,8 +2552,9 @@ class DiffEngine:
                 target names.
 
         Raises:
-            ConfigError: If primary keys are missing, schema constraints are
-                violated, or a rule cannot apply as configured.
+            ConfigError: If primary keys are missing or hold two types a join
+                cannot pair, schema constraints are violated, or a rule cannot
+                apply as configured.
         """
         return cls(config, source_df, target_df)._plan()[0]
 
@@ -2811,8 +2821,7 @@ class DiffEngine:
         prepared._align_structure()
         prepared._validate_schema()
         stored = prepared.source.collect_schema()
-        prepared.source = prepared._normalize_frame(prepared.source, is_source=True)
-        prepared.target = prepared._normalize_frame(prepared.target, is_source=False)
+        prepared._normalize_sides()
         prepared._check_uniqueness()
 
         columns = prepared._value_map_columns(stored)
@@ -2998,6 +3007,37 @@ class DiffEngine:
             duplicated = keys.is_duplicated()
             if duplicated.any():
                 raise _duplicate_keys_error(pks, side, keys.filter(duplicated).height)
+
+    def _normalize_sides(self) -> None:
+        """Normalize both frames, then check that their primary keys can pair rows."""
+        self.source = self._normalize_frame(self.source, is_source=True)
+        self.target = self._normalize_frame(self.target, is_source=False)
+        self._check_key_types()
+
+    def _check_key_types(self) -> None:
+        """Refuse a primary key whose two sides hold types a join cannot pair.
+
+        A join pairs keys of one type, of two integer types, or of two float
+        types, and fails on any other pair with an error that names no side.
+        A rule with `cast_to` on the key brings both sides to one type before
+        rows are paired.
+
+        Raises:
+            ConfigError: If a key holds two such types after normalization.
+        """
+        source = self.source.collect_schema()
+        target = self.target.collect_schema()
+        mixed = [
+            f"'{key}' ({source[key]} in the source, {target[key]} in the target)"
+            for key in self.config.primary_keys
+            if not _pairable(source[key], target[key])
+        ]
+        if mixed:
+            raise ConfigError(
+                "Rows pair only on keys of one type, or of two integer or two float types, "
+                f"and these primary keys hold two other types: {', '.join(mixed)}. Give each "
+                "a rule with cast_to, such as cast_to: Int64, so both sides hold one type."
+            )
 
     def _normalize_frame(self, frame: pl.LazyFrame, *, is_source: bool) -> pl.LazyFrame:
         """Apply stages 1 through 7 of the canonical transform order to one dataset."""
@@ -3262,9 +3302,9 @@ class DiffEngine:
             DiffResult: Counts, column-level drift, and the differing rows.
 
         Raises:
-            ConfigError: If a primary key is missing, `schema_mode` is violated, a
-                similarity limit needs the missing `fuzzy` extra, or the artifact
-                format has no writer.
+            ConfigError: If a primary key is missing or holds two types a join
+                cannot pair, `schema_mode` is violated, a similarity limit needs
+                the missing `fuzzy` extra, or the artifact format has no writer.
             DataIntegrityError: If either dataset repeats a normalized primary key.
 
         Examples:
@@ -3302,8 +3342,7 @@ class DiffEngine:
         """Align, validate, and normalize both frames, then build the comparisons."""
         self._align_structure()
         self._validate_schema()
-        self.source = self._normalize_frame(self.source, is_source=True)
-        self.target = self._normalize_frame(self.target, is_source=False)
+        self._normalize_sides()
         return self._match_expressions()
 
     def _match_expressions(self) -> tuple[list[str], list[pl.Expr]]:
