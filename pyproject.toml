@@ -59,14 +59,16 @@ snowflake = [
     # credentials (CVE-2024-49750) or skip the TLS hostname check
     # (CVE-2026-15925), among others.
     "snowflake-connector-python>=4.7.3",
-    # 14.0.1 fixes CVE-2023-47248, code execution through a crafted IPC file.
-    "pyarrow>=14.0.1; python_version < '3.14'",
+    # 23.0.1 is the first release with no known advisory: earlier ones run code
+    # from a crafted IPC file (CVE-2023-47248) or free memory in use while
+    # reading one (CVE-2026-25087).
+    "pyarrow>=23.0.1; python_version < '3.14'",
     # The driver warns on any pyarrow outside this range once running on 3.14.
-    "pyarrow>=14.0.1,<24; python_version >= '3.14'",
+    "pyarrow>=23.0.1,<24; python_version >= '3.14'",
 ]
 databricks = [
     "databricks-sql-connector>=3.0.0",
-    "pyarrow>=14.0.1",
+    "pyarrow>=23.0.1",
 ]
 delta = ["deltalake>=0.15.0"]
 iceberg = ["pyiceberg>=0.6.0"]
@@ -78,20 +80,20 @@ database = [
     # wheels. It declares no dependencies, but Polars reads its results
     # through pyarrow, so the extra names pyarrow itself.
     "connectorx>=0.4.5",
-    "pyarrow>=14.0.1",
+    "pyarrow>=23.0.1",
 ]
 # 1.5.0 is the release the parity suite runs on, and DuckDB's Polars export
 # reads its results through pyarrow.
 duckdb = [
     "duckdb>=1.5.0",
-    "pyarrow>=14.0.1",
+    "pyarrow>=23.0.1",
 ]
 bigquery = [
     # 3.11.0 is the first release with every API the connector uses:
     # `RowIterator.to_arrow_iterable`, and `Client(location=...)` through
     # `from_service_account_json`. pyarrow is only an extra of the client.
     "google-cloud-bigquery>=3.11.0",
-    "pyarrow>=14.0.1",
+    "pyarrow>=23.0.1",
 ]
 # The server is written against the SDK's 2.x API, which renamed the server
 # class and moved its transport settings, and is tested on 2.3.0.
