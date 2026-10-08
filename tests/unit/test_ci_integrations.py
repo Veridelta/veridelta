@@ -14,9 +14,11 @@ time limits and a read-only token, and only jobs GitHub never started are re-run
 The live warehouse workflow starts only by hand and waits for a maintainer.
 """
 
+import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -956,13 +958,60 @@ class TestCIWorkflow:
         """
         jobs = _workflow(_CI)["jobs"]
         gate = jobs["ci-passed"]
-        [step] = gate["steps"]
 
         assert gate["name"] == "CI Passed"
         assert gate["if"] == "always()"
         assert set(gate["needs"]) == set(jobs) - {"ci-passed"}
-        assert step["env"] == {"RESULTS": "${{ join(needs.*.result, ' ') }}"}
-        assert 'for result in $RESULTS; do\n  [ "$result" = success ] || exit 1' in step["run"]
+        assert gate["steps"][0]["env"] == {
+            "NEEDS": "${{ toJSON(needs) }}",
+            "EVENT": "${{ github.event_name }}",
+        }
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or shutil.which("jq") is None,
+        reason="The gate runs its bash and jq check on a Linux runner.",
+    )
+    @pytest.mark.parametrize(
+        ("event", "docs", "other", "passes"),
+        [
+            ("pull_request", "success", "success", True),
+            ("pull_request", "skipped", "success", False),
+            ("push", "skipped", "success", True),
+            ("push", "success", "success", True),
+            ("push", "skipped", "skipped", False),
+            ("push", "failure", "success", False),
+            ("pull_request", "success", "cancelled", False),
+        ],
+    )
+    def test_the_gate_lets_only_the_docs_job_skip_and_only_on_a_push(
+        self, event: str, docs: str, other: str, passes: bool
+    ) -> None:
+        """Ensure the docs job, which a push builds in the docs workflow, is the one exception."""
+        jobs = _workflow(_CI)["jobs"]
+        [step] = jobs["ci-passed"]["steps"]
+        needs = {name: {"result": docs if name == "docs" else other} for name in jobs}
+        del needs["ci-passed"]
+
+        ran = subprocess.run(
+            ["bash", "-c", step["run"]],
+            env={**os.environ, "NEEDS": json.dumps(needs), "EVENT": event},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert (ran.returncode == 0) is passes, ran.stdout + ran.stderr
+
+    def test_the_docs_job_builds_the_site_for_a_pull_request_only(self) -> None:
+        """Ensure a push builds the site once, in the docs workflow that deploys it."""
+        jobs = _workflow(_CI)["jobs"]
+        triggers = _workflow(_DOCS)[True]
+
+        assert jobs["docs"]["if"] == "github.event_name == 'pull_request'"
+        assert triggers["push"] == {"branches": ["main"]}
+        assert [
+            step["run"] for step in _workflow_steps(_DOCS) if "mkdocs" in step.get("run", "")
+        ] == ["uv run mkdocs build --strict"]
 
     @pytest.mark.parametrize("workflow", [_CI, _DOCS, _RERUN], ids=lambda path: path.name)
     def test_every_job_has_a_time_limit(self, workflow: Path) -> None:
