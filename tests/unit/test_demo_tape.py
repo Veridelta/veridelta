@@ -262,7 +262,10 @@ class TestAccounts:
     def test_they_are_the_data_the_guide_writes(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure the video and "From drift to rules" show the same accounts, byte for byte."""
+        """Ensure the video and "From drift to rules" show the same accounts, line for line.
+
+        Text, not bytes, since Git on Windows may check the files out with CRLF line endings.
+        """
         guide = _ROOT / "docs" / "how-to" / "from-drift-to-rules.ipynb"
         cells = json.loads(guide.read_text(encoding="utf-8"))["cells"]
         writes = ["".join(cell["source"]) for cell in cells if cell["cell_type"] == "code"]
@@ -274,8 +277,8 @@ class TestAccounts:
             exec(code, {})
 
         for name in ("legacy", "rewrite"):
-            written = (tmp_path / f"{name}.csv").read_bytes()
-            assert written == (_DEMO / f"accounts_{name}.csv").read_bytes()
+            written = (tmp_path / f"{name}.csv").read_text(encoding="utf-8")
+            assert written == (_DEMO / f"accounts_{name}.csv").read_text(encoding="utf-8")
 
 
 class TestAgentKit:
