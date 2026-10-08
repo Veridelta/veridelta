@@ -1,3 +1,15 @@
+## v0.27.1 (2026-10-08)
+
+Every extra that installs pyarrow now asks for 23.0.1 or later, where it allowed 14.0.1.
+pyarrow before 23.0.1 frees memory still in use while reading an Arrow IPC file
+(CVE-2026-25087). A fresh install already got 23.0.1, so this changes an install only
+where another tool pinned an older pyarrow. The Snowflake extra keeps its cap below 24 on
+Python 3.14.
+
+### Fix
+
+- **deps**: raise the pyarrow floor past CVE-2026-25087 (#293)
+
 ## v0.27.0 (2026-10-07)
 
 `veridelta run --save-baseline accepted.json` writes the file `run --baseline` reads:
