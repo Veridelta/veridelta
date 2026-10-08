@@ -902,6 +902,46 @@ def _type_drift_columns(
     return frozenset(drift)
 
 
+def _comparable_in_sql(source: pl.DataType, target: pl.DataType) -> bool:
+    """Whether a database compares the pair as a local run does: one type, or two numbers."""
+    if source.is_numeric() and target.is_numeric():
+        return True
+    return source.base_type() == target.base_type()
+
+
+def _refuse_mixed_pushdown_types(
+    diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
+) -> None:
+    """Refuse a compared column whose two sides hold types a database would convert itself.
+
+    A local run casts the target to the source type, and a database converts
+    one side by its own rules, so text against a number, a date against a
+    timestamp, or text against a timestamp can reach different verdicts.
+    Two numeric types compare by value in both, and `strict_types` fails a
+    pair of types in both.
+
+    Raises:
+        ConfigError: If a compared column holds two such types.
+    """
+    if diff.strict_types:
+        return
+    mixed: list[str] = []
+    for rule in rules:
+        source, target = _compared_dtypes(diff, rule, source_schema, target_schema)
+        if source is not None and target is not None and not _comparable_in_sql(source, target):
+            mixed.append(
+                f"'{rule.rename_to or rule.column_names[0]}' ({source} in the source, "
+                f"{target} in the target)"
+            )
+    if mixed:
+        raise ConfigError(
+            f"Pushdown compares two types only when both are numeric, and these columns "
+            f"hold two other types: {', '.join(mixed)}. A database would convert one side "
+            "by its own rules, where a local run casts the target to the source type. "
+            "Give each a rule with cast_to, or set strict_types: true."
+        )
+
+
 def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
     """Reduce the single-row mismatch tally to positive per-column counts."""
     if frame.height != 1:
@@ -1358,11 +1398,13 @@ def _plan_pushdown(
     source_schema, target_schema = _validate_pushdown_schema(
         connector, source_table, target_table, diff
     )
+    rules = _resolve_pushdown_rules(diff, source_schema, target_schema)
+    _refuse_mixed_pushdown_types(diff, rules, source_schema, target_schema)
     return _PushdownPlan(
         source_schema,
         target_schema,
         _resolve_pushdown_keys(diff, source_schema, target_schema),
-        _resolve_pushdown_rules(diff, source_schema, target_schema),
+        rules,
     )
 
 

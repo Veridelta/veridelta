@@ -68,6 +68,7 @@ The table covers `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, `%z`, and `%%`, separ
 ## Differences from a local run
 
 - **Artifacts hold primary keys only**, since the comparison SQL never selects whole rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only`, so they cannot be mistaken for local artifacts, which hold whole records. A [row sample](#row-samples), when requested, is written as `changed_rows_sample`.
+- **A column of two different types is refused unless both are numeric.** A local run casts the target to the source type. A database converts one side by its own rules, so the text `"007"` against the integer `7`, or a date against a timestamp, could reach another verdict. Pushdown raises `ConfigError` before reading a row, naming each such column. Give it a `cast_to` that brings both sides to one type, or set `strict_types` to fail it; [Upgrading](upgrading.md#0330) shows both. Two numeric types still compare by value.
 - **`strict_types` compares the types the driver reports** for each side, after normalization. It fails every row of a column whose two types differ, as a local run does. These are the driver's types, not the declared ones. Snowflake's `NUMBER(38,0)`, for one, arrives as a decimal, so it meets a `NUMBER(38,0)` column but not a `FLOAT`.
 
 ## BigQuery

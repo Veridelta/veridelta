@@ -521,6 +521,65 @@ class TestStrictTypesParity:
         assert summary.changed_count == expected_changed
 
 
+class TestMixedTypesParity:
+    """Validate that pushdown refuses two types a database would convert by its own rules.
+
+    A local run casts the target to the source type. Before, a database
+    converted one side its own way: text `'007'` met the integer `7` as a
+    match, where a local run reported drift, and DuckDB failed the statement
+    on text a timestamp cast could not read.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(
+                pl.Series("val", ["007", "20"]), pl.Series("val", [7, 20]), id="text-vs-int"
+            ),
+            pytest.param(
+                pl.Series("val", ["19/01/2026 14:27", "20/01/2026 00:00"]),
+                pl.Series("val", [datetime(2026, 1, 19, 14, 27), datetime(2026, 1, 20)]),
+                id="text-vs-timestamp",
+            ),
+            pytest.param(
+                pl.Series("val", [date(2026, 1, 19), date(2026, 1, 20)]),
+                pl.Series("val", [datetime(2026, 1, 19, 12), datetime(2026, 1, 20)]),
+                id="date-vs-timestamp",
+            ),
+        ],
+    )
+    def test_it_refuses_a_pair_a_database_would_convert(
+        self, source: pl.Series, target: pl.Series
+    ) -> None:
+        """Ensure pushdown stops before reading a row, naming the column and both types."""
+        src = pl.DataFrame({"id": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"id": [1, 2]}).with_columns(target)
+
+        with pytest.raises(ConfigError, match=r"'val' \(.* in the source, .* in the target\)"):
+            run_pushdown(DiffConfig(primary_keys=["id"]), src, tgt)
+
+    def test_numbers_of_two_types_still_compare_by_value(self) -> None:
+        """Ensure an integer and a float meet by value on both paths, as before."""
+        src = pl.DataFrame({"id": [1, 2, 3], "val": [10, 20, 30]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "val": [10.0, 20.5, 30.0]})
+
+        summary = assert_parity(DiffConfig(primary_keys=["id"]), src, tgt)
+
+        assert summary.column_mismatches == {"val": 1}
+
+    def test_a_cast_to_one_type_resolves_the_pair(self) -> None:
+        """Ensure `cast_to` gives both sides one type, so the pair compares on both paths."""
+        src = pl.DataFrame({"id": [1, 2, 3], "val": ["007", "20", "31"]})
+        tgt = pl.DataFrame({"id": [1, 2, 3], "val": [7, 20, 30]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["val"], cast_to="Int64")]
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.column_mismatches == {"val": 1}
+
+
 class TestTimezoneParity:
     """Validate stage 6b, where the local conversion is metadata-only."""
 
