@@ -45,7 +45,7 @@ _CI = _ROOT / ".github" / "workflows" / "ci.yml"
 _SETUP = _ROOT / ".github" / "actions" / "setup" / "action.yml"
 _RERUN = _ROOT / ".github" / "workflows" / "rerun-dropped.yml"
 _LIVE = _ROOT / ".github" / "workflows" / "live.yml"
-_EXAMPLES = [_ROOT / "docs" / "ci.md", *sorted((_ROOT / "docs" / "examples").glob("*.ipynb"))]
+_EXAMPLES = [_ROOT / "docs" / "ci.md", *sorted((_ROOT / "docs").glob("*/*.ipynb"))]
 """The pages whose workflow examples a user copies."""
 _PINNED_ACTION = re.compile(r"uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v(\d+)\.")
 """An action our workflows pin by commit, with the release comment beside it."""

@@ -121,8 +121,8 @@ def _resolve(path: str) -> Path | None:
 
 
 def _notebook_markdown() -> Iterator[tuple[str, str]]:
-    """Yield each tutorial's Markdown cells with where they come from."""
-    for notebook in sorted((_DOCS / "examples").glob("*.ipynb")):
+    """Yield the Markdown cells of each tutorial and how-to guide, with where they come from."""
+    for notebook in sorted(_DOCS.glob("*/*.ipynb")):
         cells = json.loads(notebook.read_text(encoding="utf-8"))["cells"]
         for index, cell in enumerate(cells):
             if cell["cell_type"] == "markdown":
