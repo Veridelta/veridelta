@@ -330,10 +330,25 @@ jobs:
         with:
           group: accessibility
 
+      # Playwright's Chromium is cached under its Playwright version, so a run
+      # downloads it only after the lockfile moves Playwright. The runner image
+      # already holds the libraries Chromium needs, the ones Google Chrome needs.
+      - name: Read Playwright's Version
+        id: playwright
+        run: echo "version=$(uv run --group accessibility python -c 'from importlib.metadata import version; print(version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Chromium
+        id: chromium
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+
       # `--with-deps` runs apt-get update, which can stall on the Ubuntu archive
       # until the job's limit cancels it. Each try gets four minutes, and a
       # second one follows a try that stalled or failed.
       - name: Install Chromium
+        if: steps.chromium.outputs.cache-hit != 'true'
         run: |
           for attempt in 1 2; do
             timeout --kill-after=10 240 uv run --group accessibility playwright install --with-deps chromium && exit 0
