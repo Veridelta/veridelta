@@ -100,4 +100,5 @@ nav:
     - CI integrations: ci.md
     - AI agents: agents.md
   - API reference: api.md
+  - Upgrading: upgrading.md
   - Roadmap: roadmap.md
