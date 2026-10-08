@@ -81,7 +81,7 @@ class TestVersionPins:
     ) -> None:
         """Ensure a pattern still selects lines, and each pin that follows a match is this version.
 
-        Commitizen's own patterns are broad: `version` selects `pyarrow>=14.0.1; python_version`
+        Commitizen's own patterns are broad: `version` selects `pyarrow>=23.0.1; python_version`
         too. A version that sits before the match, or no version at all, pins nothing.
         """
         lines = [
