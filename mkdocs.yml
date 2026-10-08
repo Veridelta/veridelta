@@ -97,6 +97,8 @@ nav:
     - 4. HTML reports: examples/04_html_reports.ipynb
     - 5. Validate and CI: examples/05_validate_and_ci.ipynb
     - 6. Model evaluation runs: examples/06_model_evaluation_runs.ipynb
+  - How-to guides:
+    - From drift to rules: how-to/from-drift-to-rules.ipynb
   - User guide:
     - Configuration: configuration.md
     - Sources: sources.md

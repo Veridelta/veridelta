@@ -1,7 +1,7 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Execute the tutorial notebooks and hold them to the output they document."""
+"""Execute the tutorial and how-to notebooks and hold them to the output they document."""
 
 import difflib
 import shutil
@@ -14,7 +14,8 @@ from nbclient import NotebookClient
 pytestmark = [pytest.mark.e2e]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-NOTEBOOKS = sorted((REPO_ROOT / "docs" / "examples").glob("*.ipynb"))
+NOTEBOOKS = sorted((REPO_ROOT / "docs").glob("*/*.ipynb"))
+"""The tutorials under `docs/examples/` and the how-to guides under `docs/how-to/`."""
 OUTPUT_MARKER = "# Output:"
 
 
@@ -47,8 +48,10 @@ def _printed_output(cell: nbformat.NotebookNode) -> list[str]:
 
 @pytest.mark.fast
 def test_it_finds_the_tutorials() -> None:
-    """Ensure a moved or renamed examples folder cannot silently skip every notebook."""
-    assert NOTEBOOKS
+    """Ensure a moved or renamed folder cannot silently skip its notebooks."""
+    folders = {path.parent.name for path in NOTEBOOKS}
+
+    assert {"examples", "how-to"} <= folders
 
 
 @pytest.mark.slow

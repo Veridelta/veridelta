@@ -78,8 +78,8 @@ def _markdown_files() -> list[Path]:
 
 
 def _notebook_cells() -> Iterator[_Text]:
-    """Yield the Markdown cells of every tutorial."""
-    for notebook in sorted((_ROOT / "docs" / "examples").glob("*.ipynb")):
+    """Yield the Markdown cells of every tutorial and how-to guide."""
+    for notebook in sorted((_ROOT / "docs").glob("*/*.ipynb")):
         cells = json.loads(notebook.read_text(encoding="utf-8"))["cells"]
         for index, cell in enumerate(cells):
             if cell["cell_type"] == "markdown":

@@ -52,6 +52,10 @@ The tutorials build a comparison step by step. Each one opens in Google Colab fr
 5. [Validate and CI](examples/05_validate_and_ci.ipynb): a database source, `veridelta validate`, and the GitHub Action.
 6. [Model evaluation runs](examples/06_model_evaluation_runs.ipynb): two runs of a model's evaluation, compared on the example ID, with a tolerance on scores and fuzzy matching on answers.
 
+A how-to guide solves one task from start to end:
+
+- [From drift to rules](how-to/from-drift-to-rules.ipynb): turn a failing first run into rules you review, and accept a change made on purpose.
+
 The user guide is the reference:
 
 - [Configuration](configuration.md): the file, its settings, and environment variables.
