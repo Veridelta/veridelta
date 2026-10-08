@@ -1,0 +1,14 @@
+> veridelta crosswalk -c accounts_suggested.yaml
+Loading configuration from accounts_suggested.yaml...
+Lining up source and target values...
+status: 3 new value_map entries
+  'active' -> 'A': 13 of 13 rows (100.0%)
+  'closed' -> 'C': 13 of 13 rows (100.0%)
+  'paused' -> 'P': 13 of 13 rows (100.0%)
+rules:
+- column_names:
+  - status
+  value_map:
+    active: A
+    closed: C
+    paused: P

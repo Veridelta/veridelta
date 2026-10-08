@@ -1,0 +1,26 @@
+> cat accounts.yaml
+source:
+  path: accounts_legacy.csv
+target:
+  path: accounts_rewrite.csv
+primary_keys: [account_id]
+> veridelta suggest -c accounts.yaml
+Loading configuration from accounts.yaml...
+Comparing, and trying each rule...
+region: case_insensitive true explains 38 of 39 differing rows
+  for example account_id=1; account_id=2; account_id=3
+balance: absolute_tolerance 0.005 explains 13 of 13 differing rows, the largest gap 0.004
+  for example account_id=3; account_id=6; account_id=9
+note: null_values ["N/A"] explains 7 of 7 differing rows
+  for example account_id=5; account_id=10; account_id=15
+rules:
+- column_names:
+  - region
+  case_insensitive: true
+- column_names:
+  - balance
+  absolute_tolerance: 0.005
+- column_names:
+  - note
+  null_values:
+  - N/A

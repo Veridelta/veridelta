@@ -13,6 +13,7 @@ the CI fixtures.
 
 import contextlib
 import io
+import json
 import os
 import re
 import shlex
@@ -119,7 +120,17 @@ def _transcript(tape: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 def test_it_finds_every_tape() -> None:
     """Ensure a moved demo folder cannot silently skip every check, and each tape has a page."""
     assert {tape.stem for tape in _TAPES} == set(_EMBEDDED_IN)
-    assert {tape.stem for tape in _FOR_VIDEO} == {"data", "mcp", "run"}
+    assert {tape.stem for tape in _FOR_VIDEO} == {
+        "accounts-baseline",
+        "accounts-crosswalk",
+        "accounts-data",
+        "accounts-rules",
+        "accounts-run",
+        "accounts-suggest",
+        "data",
+        "mcp",
+        "run",
+    }
 
 
 @pytest.mark.parametrize(
@@ -243,6 +254,31 @@ class TestQuickStart:
 
         assert _gif(_QUICK_START).name == "demo.gif"
         assert f"]({_GIF_URL})" in readme
+
+
+class TestAccounts:
+    """Hold the accounts the `accounts-` tapes for video read to the guide they follow."""
+
+    def test_they_are_the_data_the_guide_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the video and "From drift to rules" show the same accounts, line for line.
+
+        Text, not bytes, since Git on Windows may check the files out with CRLF line endings.
+        """
+        guide = _ROOT / "docs" / "how-to" / "from-drift-to-rules.ipynb"
+        cells = json.loads(guide.read_text(encoding="utf-8"))["cells"]
+        writes = ["".join(cell["source"]) for cell in cells if cell["cell_type"] == "code"]
+        code = next(source for source in writes if ".write_csv(" in source)
+        monkeypatch.chdir(tmp_path)
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            # The guide's own cell, which the notebook test runs too.
+            exec(code, {})
+
+        for name in ("legacy", "rewrite"):
+            written = (tmp_path / f"{name}.csv").read_text(encoding="utf-8")
+            assert written == (_DEMO / f"accounts_{name}.csv").read_text(encoding="utf-8")
 
 
 class TestAgentKit:

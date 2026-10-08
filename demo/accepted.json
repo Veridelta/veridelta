@@ -1,0 +1,12 @@
+{
+  "primary_keys": [
+    "account_id"
+  ],
+  "added": [],
+  "removed": [
+    {
+      "account_id": 40
+    }
+  ],
+  "changed": []
+}

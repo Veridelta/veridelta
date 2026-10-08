@@ -2,7 +2,7 @@
 name: record-demo
 description: Records, re-records, or adds a terminal demo under demo/ with vhs, and renders the report screenshots and the link preview card. Use when a command a tape types, or what it prints, changes; when a feature needs a recording; or when promotional clips are needed. Never for an edited or staged recording.
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
 ---
 
 # Record a demo
@@ -34,11 +34,17 @@ Commit each GIF or PNG with the transcript or the change that it shows.
 
 ## Tapes for video
 
-`demo/promo/` holds tapes made for promotional video alone. They type the quick start's commands, and run the MCP client with `--brief`, in a 32 pixel font, a few lines to a tape, so the text stays legible when a video shrinks to a phone. `--brief` prints each call and answer as YAML, one field to a line, and still prints every row an answer returns. Each writes `video/promo-<name>.mp4` itself, and `make demo-video` renders them after the others. No docs page shows them, but the test holds each to the CLI and to its transcript, `demo/promo/<name>.txt`, as it does every tape.
+`demo/promo/` holds tapes made for promotional video alone, in a 32 pixel font, a few lines to a tape, so the text stays legible when a video shrinks to a phone:
+
+- `data` and `run` type the quick start's commands.
+- `mcp` runs the MCP client with `--brief`, which prints each call and answer as YAML, one field to a line, and still prints every row an answer returns.
+- The `accounts-` tapes follow the "From drift to rules" guide, one step to a tape: the two files, the first run on two files and `--key`, `suggest`, `crosswalk`, the run with four rules, and the run with a baseline. They read `demo/accounts_legacy.csv` and `demo/accounts_rewrite.csv`, the guide's data, with the configurations and the baseline beside them.
+
+Each writes `video/promo-<name>.mp4` itself, and `make demo-video` renders them after the others. It then runs `demo/screenshots.py --promo`, which writes `video/promo-report.png`, the HTML report of the run `accounts-baseline` types. No docs page shows them, but the test holds each tape to the CLI and to its transcript, `demo/promo/<name>.txt`, as it does every tape.
 
 ## Promotional clips
 
-Promotional videos live in their own repository, which renders its clips from a pinned Veridelta release with `make demo-video`, so every terminal frame traces to a tape here.
+Promotional videos live in their own repository, which renders its clips from a pinned Veridelta release with `make demo-video`, so every terminal frame traces to a tape here. To pace a terminal with a voice, it may set a tape's transcript in its own type instead. It then shows the transcript's text unchanged, in the tape's order, and names the tape on screen.
 
 ## The honesty rules
 

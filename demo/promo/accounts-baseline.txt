@@ -1,0 +1,39 @@
+> cat accepted.json
+{
+  "primary_keys": [
+    "account_id"
+  ],
+  "added": [],
+  "removed": [
+    {
+      "account_id": 40
+    }
+  ],
+  "changed": []
+}
+> veridelta run -c accounts_rules.yaml --baseline accepted.json
+Loading configuration from accounts_rules.yaml...
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    97.5%
+Source Rows:   40
+Target Rows:   39
+Volume Shift:  -1 row
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       0
+Changed:       1
+Total Issues:  1
+Accepted:      1
+
+Top Column-Level Drifts:
+---------------------------
+- region: 1 mismatch
+
+> echo "exit code: $?"
+exit code: 1

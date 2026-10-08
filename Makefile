@@ -69,7 +69,7 @@ screenshots:
 # MP4 copies of the recordings for promotional videos, in demo/video/, which git ignores.
 # Each renders from a copy of its tape whose only output is the MP4, so no GIF changes.
 # The tapes in demo/promo/ are made for video alone, in a larger font, and write their
-# MP4 themselves.
+# MP4 themselves. Last comes the HTML report of the accounts run, as an image for video.
 demo-video: vhs-check
 	cd demo && mkdir -p video && for tape in *.tape; do \
 		[ "$$tape" = settings.tape ] && continue; \
@@ -78,6 +78,7 @@ demo-video: vhs-check
 	done && for tape in promo/*.tape; do \
 		uv run vhs "$$tape" || exit 1; \
 	done
+	uv run --group accessibility python demo/screenshots.py --promo
 
 schema:
 	uv run veridelta schema > docs/schema/veridelta.schema.json
