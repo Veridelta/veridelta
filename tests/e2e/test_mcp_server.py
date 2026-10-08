@@ -79,6 +79,7 @@ def test_the_console_script_serves_its_tools(
         "describe_schema",
         "read_discrepancies",
         "propose_value_maps",
+        "suggest_rules",
     ]
     assert valid.structured_content == {
         "config": str((root / "veridelta.yaml").resolve()),

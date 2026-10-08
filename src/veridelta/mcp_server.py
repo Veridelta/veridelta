@@ -49,7 +49,12 @@ from veridelta import __version__
 from veridelta.config import load_config, referenced_variables
 from veridelta.connectors.base import mask_secrets
 from veridelta.connectors.duckdb import sandboxed
-from veridelta.engine import DEFAULT_MIN_CONFIDENCE, DEFAULT_MIN_SUPPORT, DiffEngine
+from veridelta.engine import (
+    DEFAULT_MAX_SHARE,
+    DEFAULT_MIN_CONFIDENCE,
+    DEFAULT_MIN_SUPPORT,
+    DiffEngine,
+)
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.models import (
     DatabaseConfig,
@@ -70,7 +75,7 @@ INSTRUCTIONS: Final = (
     "Check a file with validate_config, and fix each error it reports, before you run it "
     "with run_comparison. Use describe_schema to list a side's columns when a rule must name "
     "one. Report counts and column names, and leave row values out of a reply unless the user "
-    "asks for them. Two tools return row values, only when the server allows them. This "
+    "asks for them. Three tools return row values, only when the server allows them. This "
     "server reads files only from the folders it was started with."
 )
 """What the server tells an agent's host about itself when the host connects."""
@@ -158,11 +163,11 @@ class Settings:
             file from, resolved on creation. A relative path in a tool call is
             read against the first. Every tool reads data on this machine only
             from them too.
-        allow_row_values (bool): Whether `read_discrepancies` and
-            `propose_value_maps` may return values from the data. Defaults to
-            False.
-        max_rows (int): The most rows, or value map entries, one of those calls
-            returns. At least 1. Defaults to 50.
+        allow_row_values (bool): Whether `read_discrepancies`,
+            `propose_value_maps`, and `suggest_rules` may return values from the
+            data. Defaults to False.
+        max_rows (int): The most rows, value map entries, or example keys one of
+            those calls returns. At least 1. Defaults to 50.
         allow_queries (bool): Whether a tool may run a side's `query`, which
             runs as written with the configuration's credentials. A DuckDB file
             still reads other files only from under the roots. Defaults to
@@ -250,6 +255,22 @@ class DiscrepancyReport(TypedDict):
     rows: list[dict[str, Any]]
     truncated: bool
     keys_only: bool
+
+
+class SuggestionReport(TypedDict):
+    """What `suggest_rules` returns: the suggestions, up to the cap.
+
+    Attributes:
+        suggestions: Each suggestion as `veridelta suggest --json` prints it. A
+            suggestion comes back whole or not at all, and the suggestions stop
+            before the one whose example keys would pass the server's cap.
+        total: How many suggestions there are.
+        truncated: Whether `total` is more than `suggestions` holds.
+    """
+
+    suggestions: list[dict[str, Any]]
+    total: int
+    truncated: bool
 
 
 class ProposalReport(TypedDict):
@@ -643,6 +664,48 @@ def propose_maps(
     )
 
 
+def suggest(
+    settings: Settings, path: str, *, max_share: float = DEFAULT_MAX_SHARE
+) -> SuggestionReport:
+    """Suggest rules as `veridelta suggest --json` does, up to the server's cap.
+
+    Args:
+        settings (Settings): The roots, the permission, and the cap.
+        path (str): The configuration file, under a root.
+        max_share (float): Largest gap a tolerance may explain, as a share of
+            the larger of its two values.
+
+    Returns:
+        SuggestionReport: The suggestions, how many there are, and whether
+            some were left out.
+
+    Raises:
+        ConfigError: If the server does not allow row values, the file or its
+            data is outside the roots, a side reads through a `query` the
+            server does not allow, `max_share` is out of range, or the pair is
+            compared where it is stored.
+        ConnectorError: If a source cannot be read.
+        DataIntegrityError: If either dataset repeats a normalized primary key.
+    """
+    _allow_rows(settings, "suggest_rules")
+    diff, source, target = _load(settings, path)
+    _refuse_queries(settings, source, target)
+    with sandboxed(settings.roots):
+        suggestions = DiffEngine.suggest_rules_from_configs(
+            diff, source, target, max_share=max_share
+        )
+    kept: list[dict[str, Any]] = []
+    examples = 0
+    for suggestion in suggestions:
+        examples += len(suggestion.examples)
+        if examples > settings.max_rows:
+            break
+        kept.append(suggestion.model_dump(mode="json"))
+    return SuggestionReport(
+        suggestions=kept, total=len(suggestions), truncated=len(kept) < len(suggestions)
+    )
+
+
 def _failure(exc: BaseException) -> str:
     """Name a failure as `run --json` does: its type, then its message."""
     return f"{type(exc).__name__}: {str(exc).strip()}"
@@ -827,12 +890,35 @@ def build_server(settings: Settings) -> "MCPServer":
             environment_values(settings, path),
         )
 
+    def suggest_rules(
+        path: Annotated[str, Field(description="The configuration file.")],
+        max_share: Annotated[
+            float,
+            Field(
+                gt=0,
+                le=1,
+                description="Largest gap a tolerance may explain, as a share of the larger value.",
+            ),
+        ] = DEFAULT_MAX_SHARE,
+    ) -> SuggestionReport:
+        """Suggest rules that would explain the differences, each with its evidence.
+
+        Returns what veridelta suggest --json prints. Needs a server started with
+        --allow-row-values.
+        """
+        return _answer(
+            loaded.tool_error,
+            lambda: suggest(settings, path, max_share=max_share),
+            environment_values(settings, path),
+        )
+
     for tool in (
         validate_config,
         run_comparison,
         describe_schema,
         read_discrepancies,
         propose_value_maps,
+        suggest_rules,
     ):
         server.tool(description=inspect.getdoc(tool))(tool)
     return server

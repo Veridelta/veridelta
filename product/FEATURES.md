@@ -68,7 +68,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | The schema mapped to `veridelta*.yaml` in VS Code, the YAML extension recommended, and a task that runs `veridelta validate` on the open file with its verdict in the Problems panel | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The AI agents page, `llms.txt`, and the installable agent skill | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
 | The fix loop for an agent: change the pipeline, run the comparison, read the counts, fix the cause, and stop on a match or on drift the user asked for | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
-| `veridelta mcp`, which serves `validate_config`, `run_comparison`, `describe_schema`, `read_discrepancies`, and `propose_value_maps` to an agent's host over stdio, held to the folders it was started with, with row values off unless allowed and then capped | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md), [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |
+| `veridelta mcp`, which serves `validate_config`, `run_comparison`, `describe_schema`, `read_discrepancies`, `propose_value_maps`, and `suggest_rules` to an agent's host over stdio, held to the folders it was started with, with row values off unless allowed and then capped | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md), [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |
 
 ## On the roadmap
 

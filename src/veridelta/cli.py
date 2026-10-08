@@ -759,8 +759,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-row-values",
         action="store_true",
         help=(
-            "Let read_discrepancies and propose_value_maps return values from the data. "
-            "Off by default."
+            "Let read_discrepancies, propose_value_maps, and suggest_rules return values "
+            "from the data. Off by default."
         ),
     )
     mcp_parser.add_argument(

@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-08
+
+- **Update**: [the feature map](FEATURES.md) adds `suggest_rules` to the tools `veridelta mcp` ships. It returns what `veridelta suggest --json` prints, behind `--allow-row-values` like the other tools that return values from the data, since each suggestion's examples hold primary keys, and `--max-rows` caps those keys. Part of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
+
 ## 2026-10-07
 
 - **Update**: [the feature map](FEATURES.md) adds `run --save-baseline`, which writes the drift a run finds as the file `run --baseline` reads, and the roadmap item for accepted drift leaves the roadmap. Part of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
