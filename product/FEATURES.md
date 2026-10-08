@@ -44,6 +44,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | :--- | :--- | :--- | :--- |
 | `DiffEngine` on two `LazyFrame`s, with `DiffConfig`, `DiffRule`, and `DiffResult` | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [API reference](../docs/api.md) | [GR-02](metrics/GR-02.md) |
 | `veridelta run`, with the text summary and exit codes 0, 1, and 3 | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Command line](../docs/cli.md) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
+| `veridelta run SOURCE TARGET --key COLUMN`, two files compared with no configuration file | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Command line](../docs/cli.md) | [NS-01](metrics/NS-01.md) |
 | `veridelta validate`, with `--schemas` and `--allow-missing-env`, before any row is read | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |
 | Pushdown inside Snowflake, Databricks, BigQuery, Postgres, and DuckDB, with only counts and keys coming back | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [Pushdown](../docs/pushdown.md) | [GR-01](metrics/GR-01.md) |
 | `--verbose`, printing connector activity on stderr, never a credential | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |

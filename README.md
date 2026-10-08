@@ -53,6 +53,12 @@ veridelta validate -c veridelta.yaml
 veridelta run -c veridelta.yaml
 ```
 
+Two files that need no rules need no configuration file either. Name them and the key that pairs their rows, and each format still follows its suffix:
+
+```bash
+veridelta run legacy.csv modern.csv --key id
+```
+
 Rules say what counts as a match, column by column. This file forgives one percent on a total and compares phone numbers on their digits alone:
 
 ```yaml

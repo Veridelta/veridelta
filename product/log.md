@@ -4,6 +4,7 @@ What changed in the product bundle and why, newest first. A commit's diff shows 
 
 ## 2026-10-08
 
+- **Update**: [the feature map](FEATURES.md) adds `veridelta run SOURCE TARGET --key COLUMN`, which compares two files with no configuration file, as the smallest file would. [NS-01](metrics/NS-01.md) stays at 5 as defined: a newcomer still names two paths and a key, as flags instead of three keys in a file. The maintainer asked for it on 2026-10-08, for the newcomer with two CSV files.
 - **Update**: [the feature map](FEATURES.md) adds `suggest_rules` to the tools `veridelta mcp` ships. It returns what `veridelta suggest --json` prints, behind `--allow-row-values` like the other tools that return values from the data, since each suggestion's examples hold primary keys, and `--max-rows` caps those keys. Part of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 
 ## 2026-10-07
