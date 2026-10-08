@@ -142,6 +142,10 @@ jobs:
           - { os: macos-latest, python-version: "3.13" }
           - { os: windows-latest, python-version: "3.12" }
           - { os: windows-latest, python-version: "3.13" }
+        # One job measures coverage, gates the core modules on it, and uploads it.
+        # The rest skip the tracing, which slows the suite.
+        include:
+          - { os: ubuntu-latest, python-version: "3.12", coverage: true }
 
     steps:
       - name: Checkout Repository
@@ -155,12 +159,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Execute Core Tests (Unit & Integration)
+        if: matrix.coverage
         run: uv run pytest tests/unit tests/integration
 
+      - name: Execute Core Tests Without Coverage
+        if: ${{ !matrix.coverage }}
+        run: uv run pytest tests/unit tests/integration --no-cov
+
       - name: Gate core-module branch coverage
+        if: matrix.coverage
         run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py' --fail-under=100
 
       - name: Upload Coverage to Codecov
+        if: matrix.coverage
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}

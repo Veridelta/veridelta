@@ -1050,6 +1050,22 @@ class TestCIWorkflow:
             assert {supported[0], supported[-1]} <= {p for o, p in runs if o == os_name}, os_name
         assert len(runs) == 8
 
+    def test_one_core_job_measures_gates_and_uploads_coverage(self) -> None:
+        """Ensure coverage is traced once, on Linux, and every other job skips the tracing."""
+        job = _workflow(_CI)["jobs"]["test-core"]
+        [measured] = [cell for cell in job["strategy"]["matrix"]["include"] if cell.get("coverage")]
+        steps = {step["name"]: step for step in job["steps"]}
+
+        assert measured == {"os": "ubuntu-latest", "python-version": "3.12", "coverage": True}
+        for name in (
+            "Execute Core Tests (Unit & Integration)",
+            "Gate core-module branch coverage",
+            "Upload Coverage to Codecov",
+        ):
+            assert steps[name]["if"] == "matrix.coverage", name
+        assert steps["Execute Core Tests Without Coverage"]["if"] == "${{ !matrix.coverage }}"
+        assert steps["Execute Core Tests Without Coverage"]["run"].endswith(" --no-cov")
+
     def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
         """Ensure the CLI runs as a real command on each OS the core suite runs on."""
         jobs = _workflow(_CI)["jobs"]
