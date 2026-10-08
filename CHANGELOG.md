@@ -1,3 +1,26 @@
+## v0.33.0 (2026-10-08)
+
+Pushdown and a local run could reach different verdicts on a column whose two sides hold
+different types. A local run casts the target to the source type, but a database
+converted one side by its own rules. In DuckDB, the text `"007"` against the integer `7`,
+or ISO text against a timestamp, matched where a local run reported drift. A date against
+a timestamp at noon went the other way, and legacy text against a timestamp failed with a
+raw conversion error. Pushdown now refuses such a column before reading a row, and names
+it with both of its types. Two numeric types still compare by value, and a `cast_to` that
+gives both sides one type resolves the rest. The [Upgrading](https://veridelta.github.io/veridelta/upgrading/)
+page shows how. A new seeded-drift suite found it, and now holds both engines to drift
+whose effect is known.
+
+### BREAKING CHANGE
+
+- A pushdown comparison of a column whose two sides hold different types, other than two
+  numeric types, raises `ConfigError`. Add `cast_to` to the column's rule, or set
+  `strict_types: true`.
+
+### Fix
+
+- refuse a pushdown column of two types a database would convert (#317)
+
 ## v0.32.0 (2026-10-08)
 
 `veridelta.config` no longer re-exports the seven source models. Import `BigQueryConfig`,
