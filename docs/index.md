@@ -55,6 +55,7 @@ The tutorials build a comparison step by step. Each one opens in Google Colab fr
 A how-to guide solves one task from start to end:
 
 - [From drift to rules](how-to/from-drift-to-rules.ipynb): turn a failing first run into rules you review, and accept a change made on purpose.
+- [Troubleshooting](how-to/troubleshooting.md): what a failed or surprising run means, and the change that fixes it.
 
 The user guide is the reference:
 
