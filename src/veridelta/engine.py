@@ -1322,18 +1322,38 @@ def _pushdown_scalar(
         raise ConnectorError(f"{label} returned a non-numeric value.") from exc
 
 
-def _reject_duplicate_pushdown_keys(
-    connector: PushdownSession,
+def _duplicate_key_statements(
+    compiler: SQLPushdownCompiler,
     diff: DiffConfig,
     key_rules: Sequence[DiffRule],
     tables: tuple[str, str],
     schemas: tuple[pl.Schema, pl.Schema],
+) -> tuple[str, str]:
+    """Compile the count of repeated normalized keys for the source, then the target."""
+    source_table, target_table = tables
+    source_types, target_types = schemas
+    return (
+        compiler.compile_duplicate_key_query(
+            source_table, diff.primary_keys, is_source=True, key_rules=key_rules, types=source_types
+        ),
+        compiler.compile_duplicate_key_query(
+            target_table,
+            diff.primary_keys,
+            is_source=False,
+            key_rules=key_rules,
+            types=target_types,
+        ),
+    )
+
+
+def _reject_duplicate_pushdown_keys(
+    connector: PushdownSession,
+    diff: DiffConfig,
+    tables: tuple[str, str],
+    statements: tuple[str, str],
 ) -> None:
     """Fail a pair whose normalized primary keys repeat on either side, as a local run does."""
-    for table, types, side in zip(tables, schemas, ("SOURCE", "TARGET"), strict=True):
-        statement = connector.compiler.compile_duplicate_key_query(
-            table, diff.primary_keys, is_source=side == "SOURCE", key_rules=key_rules, types=types
-        )
+    for table, statement, side in zip(tables, statements, ("SOURCE", "TARGET"), strict=True):
         duplicates = _pushdown_scalar(
             connector, statement, "duplicates", f"Duplicate key query for '{table}'"
         )
@@ -1417,6 +1437,101 @@ def _plan_pushdown(
     )
 
 
+class _PushdownStatements(NamedTuple):
+    """Every statement a pushdown run executes, compiled once from its plan."""
+
+    duplicates: tuple[str, str]
+    """The count of repeated normalized keys in the source, then the target."""
+    counts: tuple[str, str]
+    """The row count of the source, then the target."""
+    changed: str
+    added: str
+    missing: str
+    columns: str | None
+    """The per-column mismatch tally, or None when no column is compared."""
+    sample: SampleQuery | None
+    """The changed rows with values, or None without `pushdown_sample_rows` or a compared column."""
+
+
+def _compile_pushdown(
+    compiler: SQLPushdownCompiler, tables: tuple[str, str], diff: DiffConfig, plan: _PushdownPlan
+) -> _PushdownStatements:
+    """Compile every statement a pushdown run executes, so a check compiles what a run runs.
+
+    Every join reads normalized keys, so a key the rules transform matches across
+    the two relations exactly where a local run would match it.
+    """
+    source_table, target_table = tables
+    keys = diff.primary_keys
+    source_types, target_types, key_rules, rules = plan
+    wide_integers = _wide_integer_columns(diff, rules, source_types, target_types)
+    type_drift = _type_drift_columns(diff, rules, source_types, target_types)
+    sample = (
+        compiler.compile_changed_sample_query(
+            source_table,
+            target_table,
+            keys,
+            rules,
+            limit=diff.pushdown_sample_rows,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
+        if diff.pushdown_sample_rows
+        else None
+    )
+    return _PushdownStatements(
+        duplicates=_duplicate_key_statements(
+            compiler, diff, key_rules, tables, (source_types, target_types)
+        ),
+        counts=(
+            compiler.compile_count_query(source_table),
+            compiler.compile_count_query(target_table),
+        ),
+        changed=compiler.compile_query(
+            source_table,
+            target_table,
+            keys,
+            rules,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        ),
+        added=compiler.compile_added_query(
+            source_table,
+            target_table,
+            keys,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
+        ),
+        missing=compiler.compile_missing_query(
+            source_table,
+            target_table,
+            keys,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
+        ),
+        columns=compiler.compile_column_mismatch_query(
+            source_table,
+            target_table,
+            keys,
+            rules,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        ),
+        sample=sample,
+    )
+
+
 def _check_pushdown_plan(
     connector: PushdownSession, source_table: str, target_table: str, diff: DiffConfig
 ) -> list[ConfigFinding]:
@@ -1425,51 +1540,7 @@ def _check_pushdown_plan(
     Returns the warning for a rule's column name that neither table holds, if any.
     """
     plan = _plan_pushdown(connector, source_table, target_table, diff)
-    compiler = connector.compiler
-    keys = diff.primary_keys
-    for table, schema, is_source in (
-        (source_table, plan.source_schema, True),
-        (target_table, plan.target_schema, False),
-    ):
-        compiler.compile_duplicate_key_query(
-            table, keys, is_source=is_source, key_rules=plan.key_rules, types=schema
-        )
-    wide_integers = _wide_integer_columns(diff, plan.rules, plan.source_schema, plan.target_schema)
-    type_drift = _type_drift_columns(diff, plan.rules, plan.source_schema, plan.target_schema)
-    for compile_rows in (compiler.compile_query, compiler.compile_column_mismatch_query):
-        compile_rows(
-            source_table,
-            target_table,
-            keys,
-            plan.rules,
-            source_types=plan.source_schema,
-            target_types=plan.target_schema,
-            key_rules=plan.key_rules,
-            wide_integers=wide_integers,
-            type_drift=type_drift,
-        )
-    for compile_keys in (compiler.compile_added_query, compiler.compile_missing_query):
-        compile_keys(
-            source_table,
-            target_table,
-            keys,
-            source_types=plan.source_schema,
-            target_types=plan.target_schema,
-            key_rules=plan.key_rules,
-        )
-    if diff.pushdown_sample_rows:
-        compiler.compile_changed_sample_query(
-            source_table,
-            target_table,
-            keys,
-            plan.rules,
-            limit=diff.pushdown_sample_rows,
-            source_types=plan.source_schema,
-            target_types=plan.target_schema,
-            key_rules=plan.key_rules,
-            wide_integers=wide_integers,
-            type_drift=type_drift,
-        )
+    _compile_pushdown(connector.compiler, (source_table, target_table), diff, plan)
     return _unknown_column_findings(diff, plan.source_schema, plan.target_schema)
 
 
@@ -1480,82 +1551,30 @@ def _collect_pushdown_summary(
     diff: DiffConfig,
 ) -> DiffResult:
     """Compile and collect the warehouse key checks, counts, mismatches, and anti-joins."""
+    tables = (source_table, target_table)
     plan = _plan_pushdown(connector, source_table, target_table, diff)
-    source_schema, target_schema, key_rules, rules = plan
-    # As in a local run, a ConfigError from rule resolution wins over repeated
-    # keys, and repeated keys stop the run before any count or join executes.
-    _reject_duplicate_pushdown_keys(
-        connector, diff, key_rules, (source_table, target_table), (source_schema, target_schema)
-    )
+    # As in a local run, a ConfigError from rule resolution or compiling wins
+    # over repeated keys, and repeated keys stop the run before any count or
+    # join executes.
+    statements = _compile_pushdown(connector.compiler, tables, diff, plan)
+    _reject_duplicate_pushdown_keys(connector, diff, tables, statements.duplicates)
 
     source_total, target_total = (
-        _pushdown_scalar(
-            connector,
-            connector.compiler.compile_count_query(table),
-            "count",
-            f"Row count query for '{table}'",
-        )
-        for table in (source_table, target_table)
+        _pushdown_scalar(connector, statement, "count", f"Row count query for '{table}'")
+        for table, statement in zip(tables, statements.counts, strict=True)
     )
-    # Every join reads normalized keys, so a key the rules transform matches
-    # across the two relations exactly where a local run would match it.
-    wide_integers = _wide_integer_columns(diff, rules, source_schema, target_schema)
-    type_drift = _type_drift_columns(diff, rules, source_schema, target_schema)
-    mismatch_sql = connector.compiler.compile_query(
-        source_table,
-        target_table,
-        diff.primary_keys,
-        rules,
-        source_types=source_schema,
-        target_types=target_schema,
-        key_rules=key_rules,
-        wide_integers=wide_integers,
-        type_drift=type_drift,
-    )
-    added_sql = connector.compiler.compile_added_query(
-        source_table,
-        target_table,
-        diff.primary_keys,
-        source_types=source_schema,
-        target_types=target_schema,
-        key_rules=key_rules,
-    )
-    missing_sql = connector.compiler.compile_missing_query(
-        source_table,
-        target_table,
-        diff.primary_keys,
-        source_types=source_schema,
-        target_types=target_schema,
-        key_rules=key_rules,
-    )
-    changed = connector.execute_pushdown(mismatch_sql, query_type="mismatch").collect()
-    added = connector.execute_pushdown(added_sql, query_type="added").collect()
-    removed = connector.execute_pushdown(missing_sql, query_type="missing").collect()
+    changed = connector.execute_pushdown(statements.changed, query_type="mismatch").collect()
+    added = connector.execute_pushdown(statements.added, query_type="added").collect()
+    removed = connector.execute_pushdown(statements.missing, query_type="missing").collect()
 
     column_mismatches: dict[str, int] = {}
-    columns_sql = connector.compiler.compile_column_mismatch_query(
-        source_table,
-        target_table,
-        diff.primary_keys,
-        rules,
-        source_types=source_schema,
-        target_types=target_schema,
-        key_rules=key_rules,
-        wide_integers=wide_integers,
-        type_drift=type_drift,
-    )
-    if columns_sql is not None:
-        tally = connector.execute_pushdown(columns_sql, query_type="columns").collect()
+    if statements.columns is not None:
+        tally = connector.execute_pushdown(statements.columns, query_type="columns").collect()
         column_mismatches = _column_mismatches_from_frame(tally)
-    changed_sample = _collect_changed_sample(
-        connector,
-        source_table,
-        target_table,
-        diff,
-        plan,
-        changed,
-        wide_integers=wide_integers,
-        type_drift=type_drift,
+    changed_sample = (
+        None
+        if statements.sample is None or changed.is_empty()
+        else _collect_changed_sample(connector, statements.sample)
     )
 
     # Pushdown projects primary keys only, never full rows, so the suffix keeps
@@ -1587,42 +1606,14 @@ def _collect_pushdown_summary(
         primary_keys=tuple(diff.primary_keys),
         # Post-rename names, matching what the local path records, so the same
         # column reads the same way whichever engine ran it.
-        compared_columns=tuple(rule.rename_to or rule.column_names[0] for rule in rules),
+        compared_columns=tuple(rule.rename_to or rule.column_names[0] for rule in plan.rules),
         keys_only=True,
         changed_sample=changed_sample,
     )
 
 
-def _collect_changed_sample(
-    connector: PushdownSession,
-    source_table: str,
-    target_table: str,
-    diff: DiffConfig,
-    plan: _PushdownPlan,
-    changed: pl.DataFrame,
-    *,
-    wide_integers: frozenset[str],
-    type_drift: frozenset[str],
-) -> pl.DataFrame | None:
+def _collect_changed_sample(connector: PushdownSession, sample: SampleQuery) -> pl.DataFrame:
     """Fetch up to `pushdown_sample_rows` changed rows with both sides' values."""
-    if diff.pushdown_sample_rows == 0 or changed.is_empty():
-        return None
-    # A changed row means a column was compared, so the compiler returns a query.
-    sample = cast(
-        "SampleQuery",
-        connector.compiler.compile_changed_sample_query(
-            source_table,
-            target_table,
-            diff.primary_keys,
-            plan.rules,
-            limit=diff.pushdown_sample_rows,
-            source_types=plan.source_schema,
-            target_types=plan.target_schema,
-            key_rules=plan.key_rules,
-            wide_integers=wide_integers,
-            type_drift=type_drift,
-        ),
-    )
     frame = connector.execute_pushdown(sample.statement, query_type="samples").collect()
     missing = [alias for alias in sample.renames if alias not in frame.columns]
     if missing:
@@ -2356,8 +2347,14 @@ def _collect_value_map_proposals(
         and isinstance(target_schema[aligned], pl.String)
     ]
     # As locally, repeated keys stop the run even when no column qualifies.
+    tables = (source_table, target_table)
     _reject_duplicate_pushdown_keys(
-        connector, diff, key_rules, (source_table, target_table), (source_schema, target_schema)
+        connector,
+        diff,
+        tables,
+        _duplicate_key_statements(
+            connector.compiler, diff, key_rules, tables, (source_schema, target_schema)
+        ),
     )
     statement = connector.compiler.compile_value_map_query(
         source_table,
