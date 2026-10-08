@@ -1,3 +1,14 @@
+## v0.31.1 (2026-10-08)
+
+Every message for an optional extra that is not installed now reads the same way: what
+needs the extra, which extra it is, and the command that installs it. Twelve places wrote
+their own, in five wordings, and now share `missing_extra` in `veridelta.exceptions`. Each
+still raises the error it raised before, so exit codes do not change.
+
+### Refactor
+
+- write the message for a missing extra in one place (#310)
+
 ## v0.31.0 (2026-10-08)
 
 `veridelta run legacy.csv modern.csv --key id` compares two files with no configuration
