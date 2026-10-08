@@ -49,7 +49,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
 ## MCP server
 
-`veridelta mcp` serves steps 1, 2, and 5 above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. Two more tools list a side's columns and read the rows that differ. It needs the `mcp` extra:
+`veridelta mcp` serves steps 1, 2, 5, and 6 above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. Two more tools list a side's columns and read the rows that differ. It needs the `mcp` extra:
 
 ```bash
 uv add 'veridelta[mcp]'

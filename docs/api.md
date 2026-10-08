@@ -33,6 +33,7 @@ Functions that read and check a YAML file, or build a configuration from two fil
         - config_json_schema
         - files_config
         - load_config
+        - referenced_variables
 
 ## Exceptions
 

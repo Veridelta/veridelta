@@ -10,7 +10,7 @@ The `veridelta` command runs a comparison, checks a configuration, proposes valu
 | `veridelta suggest` | Suggest rules that would explain the differences, each with its evidence. |
 | `veridelta schema` | Print the JSON Schema of the configuration file, or of what a command prints with `--json`. |
 | `veridelta mcp` | Serve checks and comparisons to an AI agent as Model Context Protocol tools, over stdio. |
-| `veridelta --version` | Print the installed version. |
+| `veridelta --version`, `-V` | Print the installed version. |
 
 ## Running a comparison
 
