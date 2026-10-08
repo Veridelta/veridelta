@@ -1,3 +1,23 @@
+## v0.28.0 (2026-10-08)
+
+`SQLPushdownCompiler`'s seven `compile_` methods that read both sides no longer take
+`source_alias` and `target_alias`. No caller passed them: the engine always used the
+defaults. Every statement still names the two relations `src` and `tgt`, byte for byte, so
+a comparison inside a warehouse runs the same SQL as before. This is the one breaking
+change of the release, so under 0.x it bumps the minor version.
+
+### Refactor
+
+- **sql**: remove the unused source_alias and target_alias parameters (#295)
+
+### BREAKING CHANGE
+
+- `compile_column_predicate`, `compile_query`, `compile_changed_sample_query`,
+  `compile_missing_query`, `compile_added_query`, `compile_column_mismatch_query`, and
+  `compile_value_map_query` no longer accept `source_alias` or `target_alias`. A call that
+  passes either raises `TypeError`. Drop the argument, since the aliases were always `src`
+  and `tgt`.
+
 ## v0.27.1 (2026-10-08)
 
 Every extra that installs pyarrow now asks for 23.0.1 or later, where it allowed 14.0.1.
