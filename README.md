@@ -26,6 +26,10 @@ It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelt
 - **Checks before a run.** `veridelta validate` reports what would stop a run without reading any rows, and a JSON Schema gives editors completion for configuration files.
 - **For AI agents.** An agent runs the same checks and comparisons through the command line, or through `veridelta mcp`, a Model Context Protocol server that reads files only from the folders you name. [AI agents](https://veridelta.github.io/veridelta/agents/) gives the steps.
 
+## Status
+
+Veridelta is in alpha, so a minor version can still change the configuration or the Python API. Its tests run on generated data, including a suite that seeds known drift into two datasets and checks that each run reports exactly that drift, in a local run and in pushdown. Nobody but its maintainer is known to have run it yet. Its pushdown SQL has run in DuckDB and Postgres 16, but not yet in a live cloud warehouse, as [Pushdown](https://veridelta.github.io/veridelta/pushdown/) says.
+
 ## Install
 
 ```bash
