@@ -32,11 +32,11 @@ notebooks:
 
 postgres:
 	@test -n "$$VERIDELTA_POSTGRES_URI" || { echo "Set VERIDELTA_POSTGRES_URI to a Postgres server the tests may create tables on."; exit 1; }
-	VERIDELTA_PARITY_BACKEND=postgres uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_parity_fuzz.py tests/integration/test_postgres_pushdown.py --no-cov
+	VERIDELTA_PARITY_BACKEND=postgres uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py tests/integration/test_parity_fuzz.py tests/integration/test_postgres_pushdown.py --no-cov
 
 live:
 	@case "$$VERIDELTA_PARITY_BACKEND" in bigquery|databricks|motherduck|snowflake) ;; *) echo "Set VERIDELTA_PARITY_BACKEND to bigquery, databricks, motherduck, or snowflake; see 'Live warehouse tests' in CONTRIBUTING.md."; exit 1;; esac
-	uv run pytest tests/integration/test_pushdown_parity.py --no-cov -rs
+	uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py --no-cov -rs
 
 databases:
 	@test -n "$$VERIDELTA_MYSQL_URI$$VERIDELTA_MSSQL_URI" || { echo "Set VERIDELTA_MYSQL_URI or VERIDELTA_MSSQL_URI to a server the tests may create tables on."; exit 1; }
