@@ -75,7 +75,7 @@ def _notebook(*markdown_cells: str) -> str:
 
 
 def _sample_pages() -> list[Any]:
-    """Return a home page, a notebook, a guide page, and an API page, in nav order."""
+    """Return a home page, a notebook, a guide page, an API page, and a changelog, in nav order."""
     return [
         _page("index.md", "# Home\n\nVeridelta compares two datasets. More text.", "Home"),
         _page(
@@ -89,6 +89,11 @@ def _sample_pages() -> list[Any]:
             "Command line",
         ),
         _page("api.md", "# API reference\n\nThe public interface.\n\n::: veridelta.models", "API"),
+        _page(
+            "changelog.md",
+            '# Changelog\n\nEvery release, newest first.\n\n--8<-- "CHANGELOG.md"',
+            "Changelog",
+        ),
     ]
 
 
@@ -219,7 +224,7 @@ class TestLlmsTxt:
         assert hook.absolute_links(markdown, "cli.md", _SITE) == markdown
 
     def test_it_lists_prose_under_docs_and_the_rest_as_optional(self) -> None:
-        """Ensure a model short of context can skip notebooks and the API reference."""
+        """Ensure a model short of context can skip notebooks, the API reference, and the changelog."""
         text = hook.render_index("Veridelta", "Compare two datasets.", _SITE, _sample_pages())
         docs, optional = text.split("## Optional")
 
@@ -232,14 +237,21 @@ class TestLlmsTxt:
             "This tutorial covers the basics." in optional
         )
         assert f"- [API]({_SITE}api/): The public interface." in optional
+        assert f"- [Changelog]({_SITE}changelog/): Every release, newest first." in optional
 
     def test_it_copies_only_prose_into_the_full_text(self) -> None:
-        """Ensure `llms-full.txt` holds each guide page whole, and no notebook JSON or directive."""
+        """Ensure `llms-full.txt` holds each guide page whole, and no notebook JSON or directive.
+
+        A page that includes another file is linked, not copied: the hook sees
+        the page before the build replaces its `--8<--` line.
+        """
         text = hook.render_full("Veridelta", "Compare two datasets.", _SITE, _sample_pages())
 
         assert f"Source: {_SITE}cli/\n\n# Command line\n\nThe command runs" in text
         assert f"[results]({_SITE}results/)" in text
         assert "::: veridelta.models" not in text
+        assert "--8<--" not in text
+        assert "# Changelog" not in text
         assert '"cells"' not in text
 
     def test_its_handlers_write_both_files(self, tmp_path: Path) -> None:

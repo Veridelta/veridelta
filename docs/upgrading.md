@@ -2,7 +2,7 @@
 
 Upgrading moves a project to a newer Veridelta release. Most releases ask nothing of you. This page lists each release that does, newest first, and what to change.
 
-Veridelta is below 1.0, so a release that breaks something raises the minor version, such as 0.27.1 to 0.28.0. A patch release, such as 0.31.0 to 0.31.1, needs no change to your configuration or code, though a fix can change a verdict that was wrong. The [changelog](https://github.com/Veridelta/veridelta/blob/main/CHANGELOG.md) lists every change in every release.
+Veridelta is below 1.0, so a release that breaks something raises the minor version, such as 0.27.1 to 0.28.0. A patch release, such as 0.31.0 to 0.31.1, needs no change to your configuration or code, though a fix can change a verdict that was wrong. The [changelog](changelog.md) lists every change in every release.
 
 ## How to upgrade
 

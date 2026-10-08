@@ -82,6 +82,11 @@ markdown_extensions:
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.inlinehilite
+  # The changelog page includes CHANGELOG.md from the repository root. A missing
+  # file fails the build.
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
 
 nav:
   - Home: index.md
@@ -103,4 +108,5 @@ nav:
     - AI agents: agents.md
   - API reference: api.md
   - Upgrading: upgrading.md
+  - Changelog: changelog.md
   - Roadmap: roadmap.md
