@@ -53,7 +53,7 @@ hooks:
   - hooks/llms_txt.py
 
 extra:
-  version: 0.30.0
+  version: 0.31.0
 
 # The logo's colors, then accessibility fixes over the Material theme. Each file
 # says what it changes.
