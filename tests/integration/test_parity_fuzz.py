@@ -92,10 +92,24 @@ class TestFuzzedParity:
     def test_both_engines_reach_the_same_verdict(
         self, case: tuple[DiffConfig, pl.DataFrame, pl.DataFrame]
     ) -> None:
-        """Ensure a local run and a pushdown run of the same case agree."""
+        """Ensure a local run and a pushdown run of the same case agree, and count rows right.
+
+        Agreement alone would pass two engines that are wrong the same way. No
+        drawn rule touches the `id` key, so the rows each side lacks follow
+        from the keys alone, and both engines must count exactly those.
+        """
         config, source, target = case
+        source_keys, target_keys = set(source["id"]), set(target["id"])
+        rows = (
+            source.height,
+            target.height,
+            len(target_keys - source_keys),
+            len(source_keys - target_keys),
+        )
 
         local = _outcome(lambda: run_local(config, source, target))
         pushdown = _outcome(lambda: run_pushdown(config, source, target)[0])
 
-        assert pushdown == local, (config.model_dump(exclude_defaults=True), source, target)
+        context = (config.model_dump(exclude_defaults=True), source, target)
+        assert pushdown == local, context
+        assert local[0] == "error" or local[:4] == rows, context
