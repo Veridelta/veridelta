@@ -1,18 +1,17 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Keep the AI agents page and the `llms.txt` hook in step with the CLI and the site.
+"""Keep the AI agents page, the agent skills, and the `llms.txt` hook in step with the site.
 
-The agents page tells an agent which commands to run, so each command line on
-it must still parse. The hook that writes `llms.txt` and `llms-full.txt` runs
-only inside a docs build, so these tests load it by path, as MkDocs does, and
-check its functions on sample pages.
+`test_docs_coverage.py` checks that each command line on the agents page and
+in the skill still parses. The hook that writes `llms.txt` and `llms-full.txt`
+runs only inside a docs build, so these tests load it by path, as MkDocs does,
+and check its functions on sample pages.
 """
 
 import importlib.util
 import json
 import re
-import shlex
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -20,19 +19,14 @@ from typing import Any
 import pytest
 import yaml
 
-from veridelta.cli import build_parser
-
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _ROOT = Path(__file__).resolve().parents[2]
-_PAGE = _ROOT / "docs" / "agents.md"
 _USER_SKILL = _ROOT / "skills" / "veridelta" / "SKILL.md"
 _SKILLS = [_USER_SKILL, *sorted((_ROOT / ".claude" / "skills").glob("*/SKILL.md"))]
 """The skill users install, then the skills that contributors' agents load."""
 _SKILL_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
 _SITE = "https://example.org/docs/"
-_FENCE = re.compile(r"^\s*(```|~~~)")
-_INLINE_COMMAND = re.compile(r"`(veridelta [^`]+)`")
 
 
 def _load_hook() -> ModuleType:
@@ -46,20 +40,6 @@ def _load_hook() -> ModuleType:
 
 
 hook = _load_hook()
-
-
-def _command_lines(path: Path) -> list[str]:
-    """Return each `veridelta` command line on a page, in code blocks and inline code."""
-    lines: list[str] = []
-    fenced = False
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if _FENCE.match(line):
-            fenced = not fenced
-        elif fenced and line.strip().startswith("veridelta "):
-            lines.append(line.strip())
-        elif not fenced:
-            lines.extend(_INLINE_COMMAND.findall(line))
-    return lines
 
 
 def _page(source: str, text: str, title: str = "Page") -> Any:
@@ -98,21 +78,7 @@ def _sample_pages() -> list[Any]:
 
 
 class TestAgentsPage:
-    """Keep the commands the AI agents page gives an agent valid."""
-
-    @pytest.mark.parametrize("path", [_PAGE, _USER_SKILL], ids=["page", "skill"])
-    def test_its_command_lines_parse_with_the_cli(self, path: Path) -> None:
-        """Ensure a renamed command or flag fails here, in the page and the skill alike."""
-        lines = _command_lines(path)
-        refused = []
-        for line in lines:
-            try:
-                build_parser().parse_args(shlex.split(line)[1:])
-            except SystemExit:
-                refused.append(line)
-
-        assert len(lines) >= 3, lines
-        assert not refused, "The CLI refuses these command lines:\n" + "\n".join(refused)
+    """Keep the AI agents page in the nav. `test_docs_coverage.py` checks its command lines."""
 
     def test_the_site_lists_it_and_runs_the_hook(self) -> None:
         """Ensure the page is in the user guide's nav, and the build writes `llms.txt`.
