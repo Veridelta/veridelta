@@ -1,0 +1,14 @@
+> head -n 6 accounts_legacy.csv
+account_id,region,status,balance,note
+1,south,paused,112.5,renewal 2027
+2,east,closed,125.0,renewal 2028
+3,west,active,137.5,renewal 2026
+4,north,paused,150.0,renewal 2027
+5,south,closed,162.5,
+> head -n 6 accounts_rewrite.csv
+account_id,region,status,balance,note
+1,SOUTH,P,112.5,renewal 2027
+2,EAST,C,125.0,renewal 2028
+3,WEST,A,137.504,renewal 2026
+4,NORTH,P,150.0,renewal 2027
+5,SOUTH,C,162.5,N/A

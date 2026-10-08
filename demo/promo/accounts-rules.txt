@@ -1,0 +1,41 @@
+> cat accounts_rules.yaml
+source:
+  path: accounts_legacy.csv
+target:
+  path: accounts_rewrite.csv
+primary_keys: [account_id]
+rules:
+  - column_names: [region]
+    case_insensitive: true
+  - column_names: [balance]
+    absolute_tolerance: 0.005
+  - column_names: [note]
+    null_values: ["N/A"]
+  - column_names: [status]
+    value_map:
+      active: A
+      closed: C
+      paused: P
+> veridelta run -c accounts_rules.yaml
+Loading configuration from accounts_rules.yaml...
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    95.0%
+Source Rows:   40
+Target Rows:   39
+Volume Shift:  -1 row
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       1
+Changed:       1
+Total Issues:  2
+
+Top Column-Level Drifts:
+---------------------------
+- region: 1 mismatch
+

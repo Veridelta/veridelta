@@ -1,0 +1,41 @@
+account_id,region,status,balance,note
+1,south,paused,112.5,renewal 2027
+2,east,closed,125.0,renewal 2028
+3,west,active,137.5,renewal 2026
+4,north,paused,150.0,renewal 2027
+5,south,closed,162.5,
+6,east,active,175.0,renewal 2026
+7,west,paused,187.5,renewal 2027
+8,north,closed,200.0,renewal 2028
+9,south,active,212.5,renewal 2026
+10,east,paused,225.0,
+11,west,closed,237.5,renewal 2028
+12,north,active,250.0,renewal 2026
+13,south,paused,262.5,renewal 2027
+14,east,closed,275.0,renewal 2028
+15,west,active,287.5,
+16,north,paused,300.0,renewal 2027
+17,south,closed,312.5,renewal 2028
+18,east,active,325.0,renewal 2026
+19,west,paused,337.5,renewal 2027
+20,north,closed,350.0,
+21,south,active,362.5,renewal 2026
+22,east,paused,375.0,renewal 2027
+23,west,closed,387.5,renewal 2028
+24,north,active,400.0,renewal 2026
+25,south,paused,412.5,
+26,east,closed,425.0,renewal 2028
+27,west,active,437.5,renewal 2026
+28,north,paused,450.0,renewal 2027
+29,south,closed,462.5,renewal 2028
+30,east,active,475.0,
+31,west,paused,487.5,renewal 2027
+32,north,closed,500.0,renewal 2028
+33,south,active,512.5,renewal 2026
+34,east,paused,525.0,renewal 2027
+35,west,closed,537.5,
+36,north,active,550.0,renewal 2026
+37,south,paused,562.5,renewal 2027
+38,east,closed,575.0,renewal 2028
+39,west,active,587.5,renewal 2026
+40,north,paused,600.0,

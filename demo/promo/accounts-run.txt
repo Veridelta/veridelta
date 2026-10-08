@@ -1,0 +1,27 @@
+> veridelta run accounts_legacy.csv accounts_rewrite.csv --key account_id
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    0.0%
+Source Rows:   40
+Target Rows:   39
+Volume Shift:  -1 row
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       1
+Changed:       39
+Total Issues:  40
+
+Top Column-Level Drifts:
+---------------------------
+- region: 39 mismatches
+- status: 39 mismatches
+- balance: 13 mismatches
+- note: 7 mismatches
+
+> echo "exit code: $?"
+exit code: 1

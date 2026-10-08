@@ -1,0 +1,5 @@
+source:
+  path: accounts_legacy.csv
+target:
+  path: accounts_rewrite.csv
+primary_keys: [account_id]
