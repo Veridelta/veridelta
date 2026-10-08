@@ -21,6 +21,20 @@ veridelta validate -c veridelta.yaml
 
 Then run a comparison whose verdict you already know, and confirm the new release agrees. In CI, move the GitHub Action's `@v` ref, and the tag in the GitLab template's `remote` URL, to the new release, as [CI integrations](ci.md) shows.
 
+## 0.33.0
+
+Pushdown refuses a compared column whose two sides hold different types, unless both are numeric. It raises `ConfigError` before reading a row, and names each such column with both of its types. Before, a database converted one side by its own rules, so pushdown could reach another verdict than a local run. The text `"007"` against the integer `7` matched in DuckDB, where a local run reports drift.
+
+Give each named column a rule with `cast_to`, so both sides hold one type:
+
+```yaml
+rules:
+  - column_names: ["code"]
+    cast_to: "Int64"
+```
+
+Or set `strict_types: true` to fail every row of such a column instead. A local run compares as before.
+
 ## 0.32.0
 
 `veridelta.config` no longer re-exports the seven source models. Importing `BigQueryConfig`, `DatabaseConfig`, `DatabricksConfig`, `DeltaLakeConfig`, `DuckDBConfig`, `IcebergConfig`, or `SnowflakeConfig` from it raises `ImportError`. Import them from the package root, or from `veridelta.models`:

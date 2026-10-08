@@ -32,6 +32,7 @@ from veridelta.engine import (
     _match_rule,
     _normalized_dtype,
     _polars_datetime_format,
+    _refuse_mixed_pushdown_types,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
     _score_differing_pairs,
@@ -2722,6 +2723,91 @@ class TestTypeDriftColumns:
         rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
 
         assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()
+
+
+class TestMixedPushdownTypes:
+    """Validate which pairs of types pushdown refuses, where a database would convert one side."""
+
+    @staticmethod
+    def _refuse(config: DiffConfig, source: pl.Schema, target: pl.Schema) -> None:
+        _refuse_mixed_pushdown_types(
+            config, _resolve_pushdown_rules(config, source, target), source, target
+        )
+
+    @pytest.mark.parametrize(
+        ("source_type", "target_type"),
+        [
+            pytest.param(pl.String(), pl.Int64(), id="text-number"),
+            pytest.param(pl.String(), pl.Datetime("us"), id="text-timestamp"),
+            pytest.param(pl.Date(), pl.Datetime("us"), id="date-timestamp"),
+            pytest.param(pl.Int64(), pl.Boolean(), id="number-boolean"),
+        ],
+    )
+    def test_it_refuses_two_types_a_database_converts_itself(
+        self, source_type: pl.DataType, target_type: pl.DataType
+    ) -> None:
+        """Ensure the error names the column and both types, and how to resolve them."""
+        source = pl.Schema({"id": pl.Int64(), "value": source_type})
+        target = pl.Schema({"id": pl.Int64(), "value": target_type})
+
+        with pytest.raises(ConfigError) as caught:
+            self._refuse(DiffConfig(primary_keys=["id"]), source, target)
+
+        message = str(caught.value)
+        assert f"'value' ({source_type} in the source, {target_type} in the target)" in message
+        assert "cast_to" in message
+        assert "strict_types: true" in message
+
+    def test_it_names_every_refused_column_under_its_target_name(self) -> None:
+        """Ensure one error lists each column, renamed ones by the name they are compared as."""
+        source = pl.Schema({"id": pl.Int64(), "code": pl.String(), "legacy_day": pl.Date()})
+        target = pl.Schema({"id": pl.Int64(), "code": pl.Int64(), "day": pl.Datetime("us")})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["legacy_day"], rename_to="day")],
+        )
+
+        with pytest.raises(ConfigError, match=r"'code' \(String.*'day' \(Date"):
+            self._refuse(config, source, target)
+
+    @pytest.mark.parametrize(
+        ("source_type", "target_type"),
+        [
+            pytest.param(pl.Int64(), pl.Float64(), id="two-numbers"),
+            pytest.param(pl.Decimal(10, 2), pl.Float32(), id="decimal-and-float"),
+            pytest.param(pl.Datetime("us"), pl.Datetime("ns"), id="two-timestamp-units"),
+            pytest.param(pl.String(), pl.String(), id="one-type"),
+        ],
+    )
+    def test_it_lets_through_pairs_a_database_compares_as_a_local_run_does(
+        self, source_type: pl.DataType, target_type: pl.DataType
+    ) -> None:
+        """Ensure numbers compare by value and one kind of type compares as it is."""
+        source = pl.Schema({"id": pl.Int64(), "value": source_type})
+        target = pl.Schema({"id": pl.Int64(), "value": target_type})
+
+        self._refuse(DiffConfig(primary_keys=["id"]), source, target)
+
+    def test_a_rule_that_gives_both_sides_one_type_resolves_the_pair(self) -> None:
+        """Ensure the types are read after `cast_to` and `datetime_format`, as a local run reads them."""
+        source = pl.Schema({"id": pl.Int64(), "code": pl.String(), "seen": pl.String()})
+        target = pl.Schema({"id": pl.Int64(), "code": pl.Int64(), "seen": pl.Datetime("us")})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[
+                DiffRule(column_names=["code"], cast_to="Int64"),
+                DiffRule(column_names=["seen"], datetime_format="%Y-%m-%d"),
+            ],
+        )
+
+        self._refuse(config, source, target)
+
+    def test_strict_types_leaves_the_pair_to_fail_as_type_drift(self) -> None:
+        """Ensure `strict_types` fails the column instead, as a local run does."""
+        source = pl.Schema({"id": pl.Int64(), "value": pl.String()})
+        target = pl.Schema({"id": pl.Int64(), "value": pl.Int64()})
+
+        self._refuse(DiffConfig(primary_keys=["id"], strict_types=True), source, target)
 
 
 class TestRuleDryRun:

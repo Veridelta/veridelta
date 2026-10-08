@@ -79,6 +79,8 @@ With `strict_types: false`, a column stored as different types on the two sides 
 - Two numeric types compare by value. An integer `10` and a float `10.7` differ, and a `Float32` `0.1` differs slightly from a `Float64` `0.1`. Add a tolerance to forgive precision gaps.
 - Any other pair casts the target to the source type: the text `"10"` matches the integer `10`.
 
+Pushdown compares two different types only when both are numeric, and refuses any other pair; see [Differences from a local run](pushdown.md#differences-from-a-local-run).
+
 With `strict_types: true`, a column whose two sides hold different types after normalization fails every row. A `cast_to` or `datetime_format` that brings both sides to one type keeps such a column comparable. Under `treat_null_as_equal`, two NULLs still match.
 
 ### Column names
