@@ -2,7 +2,7 @@
 name: record-demo
 description: Records, re-records, or adds a terminal demo under demo/ with vhs, and renders the report screenshots and the link preview card. Use when a command a tape types, or what it prints, changes; when a feature needs a recording; or when promotional clips are needed. Never for an edited or staged recording.
 metadata:
-  version: "1.0.0"
+  version: "1.1.0"
 ---
 
 # Record a demo
@@ -31,6 +31,10 @@ Each recording is a tape in `demo/`, typed at real speed by vhs into a GIF under
 - `make screenshots` captures the HTML report in light and dark and renders the link preview card, with the `accessibility` group's Playwright.
 
 Commit each GIF or PNG with the transcript or the change that it shows.
+
+## Tapes for video
+
+`demo/promo/` holds tapes made for promotional video alone. They type the quick start's commands in a 32 pixel font, a few lines to a tape, so the text stays legible when a video shrinks to a phone. Each writes `video/promo-<name>.mp4` itself, and `make demo-video` renders them after the others. No docs page shows them, but the test holds each to the CLI and to its transcript, `demo/promo/<name>.txt`, as it does every tape.
 
 ## Promotional clips
 

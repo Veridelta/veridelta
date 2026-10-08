@@ -1,0 +1,23 @@
+> veridelta run -q
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    0.0%
+Source Rows:   3
+Target Rows:   3
+Volume Shift:  +0 rows
+
+Row-Level Discrepancies:
+---------------------------
+Added:         1
+Removed:       1
+Changed:       1
+Total Issues:  3
+
+Top Column-Level Drifts:
+---------------------------
+- status: 1 mismatch
+
+> echo "exit code: $?"
+exit code: 1
