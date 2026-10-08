@@ -206,5 +206,6 @@ Link to the page that owns a topic instead of repeating it:
 - The GitHub Action and the GitLab template: `docs/ci.md`, where macros are off so `${{ }}` renders as written.
 - How an agent runs Veridelta: `docs/agents.md`. The build writes `llms.txt` and `llms-full.txt` from every page through `hooks/llms_txt.py`.
 - The public Python surface: `docs/api.md`, generated from docstrings and never hand-copied.
+- What to change when a release breaks something, newest first: `docs/upgrading.md`.
 - Work that is not built: `docs/roadmap.md`.
 - Tutorials: the notebooks under `docs/examples/`.

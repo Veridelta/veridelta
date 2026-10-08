@@ -99,6 +99,7 @@ if not result.summary.is_match:
 - [User guide](https://veridelta.github.io/veridelta/configuration/): configuration, sources, rules, pushdown, results, the command line, and AI agents.
 - [CI integrations](https://veridelta.github.io/veridelta/ci/): the GitHub Action and the GitLab CI template.
 - [API reference](https://veridelta.github.io/veridelta/api/): the public Python interface.
+- [Upgrading](https://veridelta.github.io/veridelta/upgrading/): what to change when a release breaks something.
 - [Roadmap](https://veridelta.github.io/veridelta/roadmap/): work that is not built yet.
 
 ## Accessibility
