@@ -63,11 +63,15 @@ screenshots:
 
 # MP4 copies of the recordings for promotional videos, in demo/video/, which git ignores.
 # Each renders from a copy of its tape whose only output is the MP4, so no GIF changes.
+# The tapes in demo/promo/ are made for video alone, in a larger font, and write their
+# MP4 themselves.
 demo-video: vhs-check
 	cd demo && mkdir -p video && for tape in *.tape; do \
 		[ "$$tape" = settings.tape ] && continue; \
 		sed "s|^Output .*|Output video/$${tape%.tape}.mp4|" "$$tape" > "video/$$tape" && \
 		uv run vhs "video/$$tape" || exit 1; \
+	done && for tape in promo/*.tape; do \
+		uv run vhs "$$tape" || exit 1; \
 	done
 
 schema:

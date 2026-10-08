@@ -31,6 +31,8 @@ _ROOT = Path(__file__).resolve().parents[2]
 _DEMO = _ROOT / "demo"
 _SETTINGS = _DEMO / "settings.tape"
 _TAPES = sorted(path for path in _DEMO.glob("*.tape") if path != _SETTINGS)
+_FOR_VIDEO = sorted((_DEMO / "promo").glob("*.tape"))
+"""Tapes made for promotional video alone, in a larger font, which no docs page shows."""
 _QUICK_START = _DEMO / "veridelta.tape"
 _GIF_URL = "https://veridelta.github.io/veridelta/assets/demo.gif"
 _PROMPT = "> "
@@ -117,11 +119,16 @@ def _transcript(tape: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 def test_it_finds_every_tape() -> None:
     """Ensure a moved demo folder cannot silently skip every check, and each tape has a page."""
     assert {tape.stem for tape in _TAPES} == set(_EMBEDDED_IN)
+    assert {tape.stem for tape in _FOR_VIDEO} == {"data", "run"}
 
 
-@pytest.mark.parametrize("tape", _TAPES, ids=[tape.stem for tape in _TAPES])
+@pytest.mark.parametrize(
+    "tape",
+    [*_TAPES, *_FOR_VIDEO],
+    ids=[tape.relative_to(_DEMO).with_suffix("").as_posix() for tape in [*_TAPES, *_FOR_VIDEO]],
+)
 class TestEveryTape:
-    """Hold each tape, its output, and the page that shows it together."""
+    """Hold each tape to the CLI, and its transcript to what the commands print."""
 
     def test_it_requires_veridelta_and_shares_the_settings(self, tape: Path) -> None:
         """Ensure the tape stops without `veridelta`, and draws as every other tape does."""
@@ -152,16 +159,27 @@ class TestEveryTape:
 
         assert transcript.read_text(encoding="utf-8") == _transcript(tape, monkeypatch)
 
-    def test_its_gif_is_on_its_page(self, tape: Path) -> None:
-        """Ensure the tape writes a GIF under `docs/assets/` that its docs page embeds."""
-        gif = _gif(tape)
-        page = _ROOT / _EMBEDDED_IN[tape.stem]
-        if _IN_SDIST and not gif.exists():
-            pytest.skip("The sdist leaves out the GIFs; the repository holds them.")
 
-        assert gif.parent == _ROOT / "docs" / "assets"
-        assert gif.read_bytes()[:6] in (b"GIF89a", b"GIF87a")
-        assert f"](assets/{gif.name})" in page.read_text(encoding="utf-8")
+@pytest.mark.parametrize("tape", _TAPES, ids=[tape.stem for tape in _TAPES])
+def test_its_gif_is_on_its_page(tape: Path) -> None:
+    """Ensure the tape writes a GIF under `docs/assets/` that its docs page embeds."""
+    gif = _gif(tape)
+    page = _ROOT / _EMBEDDED_IN[tape.stem]
+    if _IN_SDIST and not gif.exists():
+        pytest.skip("The sdist leaves out the GIFs; the repository holds them.")
+
+    assert gif.parent == _ROOT / "docs" / "assets"
+    assert gif.read_bytes()[:6] in (b"GIF89a", b"GIF87a")
+    assert f"](assets/{gif.name})" in page.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("tape", _FOR_VIDEO, ids=[tape.stem for tape in _FOR_VIDEO])
+def test_a_tape_for_video_writes_only_an_mp4_that_make_demo_video_renders(tape: Path) -> None:
+    """Ensure a tape made for video writes an MP4 beside the others, and `make demo-video` runs it."""
+    makefile = (_ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert _OUTPUT.findall(tape.read_text(encoding="utf-8")) == [f"video/promo-{tape.stem}.mp4"]
+    assert "for tape in promo/*.tape; do" in makefile
 
 
 @pytest.mark.parametrize(

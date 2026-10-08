@@ -1,0 +1,16 @@
+> cat veridelta.yaml
+primary_keys: [id]
+source:
+  path: legacy.csv
+target:
+  path: modern.csv
+> cat legacy.csv
+id,status,amount
+1,open,10.0
+2,closed,20.5
+3,open,7.25
+> cat modern.csv
+id,status,amount
+1,open,10.0
+2,shipped,20.5
+4,open,7.25
