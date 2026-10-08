@@ -1,3 +1,17 @@
+## v0.31.0 (2026-10-08)
+
+`veridelta run legacy.csv modern.csv --key id` compares two files with no configuration
+file. It runs what a file holding only `primary_keys` and the two paths would run, with the
+same summary and exit codes, and each file's format still follows its suffix. Repeat
+`--key` for a key of several columns. Two files without `--key`, `--key` without two
+files, or two files with `-c` exit 2. In Python, `files_config` in `veridelta.config`
+builds the same configuration. Each tutorial also opens in Google Colab now, where its
+first cell installs this release.
+
+### Feat
+
+- compare two files with run and --key, no configuration file (#307)
+
 ## v0.30.0 (2026-10-08)
 
 `veridelta mcp` serves a sixth tool, `suggest_rules`. It returns what
