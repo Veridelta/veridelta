@@ -287,7 +287,7 @@ veridelta schema run > run.schema.json
 | `validate` | The report `veridelta validate --json` prints: whether the file is valid, its errors, and its warnings. |
 | `crosswalk` | The list of value maps `veridelta crosswalk --json` proposes. |
 | `suggest` | The list of rules `veridelta suggest --json` suggests, with their evidence. |
-| `baseline` | The file `veridelta run --baseline` reads: the drift a run accepts. See [Accepting drift](#accepting-drift). |
+| `baseline` | The file that `run` reads with `--baseline`: the drift a run accepts. See [Accepting drift](#accepting-drift). |
 | `error` | The one object `run`, `validate`, `crosswalk`, or `suggest` prints with `--json` in place of its usual output when it [exits 3](#exit-codes). |
 
 The docs site serves each one too, at the URL its `$id` names, such as [`schema/run.schema.json`](schema/run.schema.json). A schema changes with the release that changes its output, and [the changelog](changelog.md) says so.
