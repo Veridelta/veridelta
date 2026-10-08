@@ -119,7 +119,7 @@ def _transcript(tape: Path, monkeypatch: pytest.MonkeyPatch) -> str:
 def test_it_finds_every_tape() -> None:
     """Ensure a moved demo folder cannot silently skip every check, and each tape has a page."""
     assert {tape.stem for tape in _TAPES} == set(_EMBEDDED_IN)
-    assert {tape.stem for tape in _FOR_VIDEO} == {"data", "run"}
+    assert {tape.stem for tape in _FOR_VIDEO} == {"data", "mcp", "run"}
 
 
 @pytest.mark.parametrize(
