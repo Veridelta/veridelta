@@ -83,6 +83,8 @@ class DatabaseConnector(ReaderConnector):
     database.
     """
 
+    _unconnected = _UNCONNECTED
+
     def __init__(self, config: DatabaseConfig, *, probe: bool = False) -> None:
         """Initialize the connector with validated database settings.
 
@@ -93,7 +95,6 @@ class DatabaseConnector(ReaderConnector):
         """
         self._config = config
         self._probe = probe
-        self._frame: pl.LazyFrame | None = None
 
     def connect(self) -> None:
         """Read the configured table or query into memory.
@@ -146,23 +147,6 @@ class DatabaseConnector(ReaderConnector):
             time.perf_counter() - started,
         )
         self._frame = _with_declared_scale(frame, declared, self._subject).lazy()
-
-    def lazyframe(self) -> pl.LazyFrame:
-        """Return the rows `connect()` read, as a LazyFrame for the local engine.
-
-        Returns:
-            pl.LazyFrame: Lazy wrapper over the materialized rows.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        if self._frame is None:
-            raise ConnectorError(_UNCONNECTED)
-        return self._frame
-
-    def close(self) -> None:
-        """Drop the rows read. Idempotent; `connect()` reads them again."""
-        self._frame = None
 
     def _statement(self, scheme: str) -> str:
         """Return the SQL to read: the compiled table select, or the query as written."""

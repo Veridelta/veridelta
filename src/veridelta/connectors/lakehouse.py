@@ -37,6 +37,8 @@ class DeltaLakeConnector(ReaderConnector):
     `delta` extra (`uv add 'veridelta[delta]'`).
     """
 
+    _unconnected = _UNCONNECTED
+
     def __init__(self, config: DeltaLakeConfig) -> None:
         """Initialize the connector with validated Delta Lake settings.
 
@@ -44,7 +46,6 @@ class DeltaLakeConnector(ReaderConnector):
             config (DeltaLakeConfig): Frozen table URI and optional version.
         """
         self._config = config
-        self._frame: pl.LazyFrame | None = None
 
     def connect(self) -> None:
         """Open a lazy `pl.scan_delta` of the configured table and read its log.
@@ -79,23 +80,6 @@ class DeltaLakeConnector(ReaderConnector):
             "latest" if self._config.version is None else self._config.version,
         )
 
-    def lazyframe(self) -> pl.LazyFrame:
-        """Return the unevaluated Delta scan established by `connect()`.
-
-        Returns:
-            pl.LazyFrame: Lazy table scan.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        if self._frame is None:
-            raise ConnectorError(_UNCONNECTED)
-        return self._frame
-
-    def close(self) -> None:
-        """Drop the scan handle. Idempotent; `connect()` reopens it."""
-        self._frame = None
-
 
 class IcebergConnector(ReaderConnector):
     """Apache Iceberg scanner backed by `pl.scan_iceberg`.
@@ -106,6 +90,8 @@ class IcebergConnector(ReaderConnector):
     the `iceberg` extra (`uv add 'veridelta[iceberg]'`).
     """
 
+    _unconnected = _UNCONNECTED
+
     def __init__(self, config: IcebergConfig) -> None:
         """Initialize the connector with validated Iceberg settings.
 
@@ -113,7 +99,6 @@ class IcebergConnector(ReaderConnector):
             config (IcebergConfig): Frozen table URI and storage options.
         """
         self._config = config
-        self._frame: pl.LazyFrame | None = None
 
     def connect(self) -> None:
         """Open a lazy `pl.scan_iceberg` of the configured table and read its metadata.
@@ -150,20 +135,3 @@ class IcebergConnector(ReaderConnector):
             shown_location(self._config.table_uri),
             "latest" if self._config.snapshot_id is None else self._config.snapshot_id,
         )
-
-    def lazyframe(self) -> pl.LazyFrame:
-        """Return the unevaluated Iceberg scan established by `connect()`.
-
-        Returns:
-            pl.LazyFrame: Lazy table scan.
-
-        Raises:
-            ConnectorError: If `connect()` has not been called.
-        """
-        if self._frame is None:
-            raise ConnectorError(_UNCONNECTED)
-        return self._frame
-
-    def close(self) -> None:
-        """Drop the scan handle. Idempotent; `connect()` reopens it."""
-        self._frame = None
