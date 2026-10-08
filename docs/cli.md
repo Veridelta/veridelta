@@ -290,7 +290,7 @@ veridelta schema run > run.schema.json
 | `baseline` | The file `veridelta run --baseline` reads: the drift a run accepts. See [Accepting drift](#accepting-drift). |
 | `error` | The one object `run`, `validate`, `crosswalk`, or `suggest` prints with `--json` in place of its usual output when it [exits 3](#exit-codes). |
 
-The docs site serves each one too, at the URL its `$id` names, such as [`schema/run.schema.json`](schema/run.schema.json). A schema changes with the release that changes its output, and the changelog says so.
+The docs site serves each one too, at the URL its `$id` names, such as [`schema/run.schema.json`](schema/run.schema.json). A schema changes with the release that changes its output, and [the changelog](changelog.md) says so.
 
 ## Serving tools to an agent
 

@@ -6,8 +6,9 @@
 `llms.txt` follows https://llmstxt.org/: the site's name and description, a
 short guide, then a link to every page in navigation order, each noted with
 the page's opening sentence. `llms-full.txt` holds every page of prose in one
-file, with its links made absolute. Notebooks and the API reference are linked
-but not copied, since their sources are notebook JSON and `:::` directives.
+file, with its links made absolute. Notebooks, the API reference, and the
+changelog are linked but not copied, since their sources are notebook JSON,
+`:::` directives, and a `--8<--` line that includes another file.
 
 MkDocs runs a hook's handlers after those of the plugins in `mkdocs.yml`, so
 each page arrives here with its macros rendered.
@@ -36,7 +37,8 @@ _BLANK_LINE = re.compile(r"\n\s*\n")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 _LIST_ITEM = re.compile(r"([-*+]|\d+\.)\s")
 _NOT_PARAGRAPH = ("#", "|", "```", "~~~", "!!!", ":::", "<", ">")
-_DIRECTIVE = re.compile(r"^:::", re.MULTILINE)
+_DIRECTIVE = re.compile(r"^(:::|--8<--)", re.MULTILINE)
+"""A line the build replaces: an API directive, or a file the page includes."""
 _LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
 _CODE = re.compile(r"`+[^`]*`+")
 _SENTENCE_END = re.compile(r"[.!?](?=\s|$)|:$")
@@ -65,7 +67,8 @@ def is_prose(page: SitePage) -> bool:
         page (SitePage): A built page.
 
     Returns:
-        bool: False for a notebook, or a page of `:::` API directives.
+        bool: False for a notebook, a page of `:::` API directives, or a page
+            that includes another file with `--8<--`.
     """
     return page.source.endswith(".md") and not _DIRECTIVE.search(page.text)
 
