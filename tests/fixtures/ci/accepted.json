@@ -1,0 +1,25 @@
+{
+  "primary_keys": [
+    "id"
+  ],
+  "added": [
+    {
+      "id": 4
+    }
+  ],
+  "removed": [
+    {
+      "id": 3
+    }
+  ],
+  "changed": [
+    {
+      "key": {
+        "id": 2
+      },
+      "columns": [
+        "status"
+      ]
+    }
+  ]
+}

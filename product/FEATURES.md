@@ -64,7 +64,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
-| The GitHub Action, with one comment per configuration on the pull request | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md), [DR-03](metrics/DR-03.md) |
+| The GitHub Action, with one comment per configuration on the pull request, and a `baseline` input that accepts the drift a file lists | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md), [DR-03](metrics/DR-03.md) |
 | The JSON Schema for configuration files, for completion and checking in an editor | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The schema mapped to `veridelta*.yaml` in VS Code, the YAML extension recommended, and a task that runs `veridelta validate` on the open file with its verdict in the Problems panel | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The AI agents page, `llms.txt`, and the installable agent skill | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |

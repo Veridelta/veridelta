@@ -436,6 +436,29 @@ jobs:
           test "$BROKEN_EXIT_CODE" = 3
           test -z "$BROKEN_OTEL"
 
+      # Every run writes its reports to the same folder, so this one runs after
+      # the checks above read theirs.
+      - name: Accept the drift with a baseline
+        id: accepted
+        uses: ./
+        with:
+          config: tests/fixtures/ci/drift.yaml
+          baseline: tests/fixtures/ci/accepted.json
+          comment: "false"
+          artifact-name: veridelta-accepted-${{ matrix.os }}
+
+      - name: Check the baseline run's outputs
+        shell: bash
+        env:
+          ACCEPTED_STATUS: ${{ steps.accepted.outputs.status }}
+          ACCEPTED_EXIT_CODE: ${{ steps.accepted.outputs.exit-code }}
+          ACCEPTED_SUMMARY: ${{ steps.accepted.outputs.summary-markdown }}
+        run: |
+          set -x
+          test "$ACCEPTED_STATUS" = match
+          test "$ACCEPTED_EXIT_CODE" = 0
+          grep -q "| Accepted by the baseline | 3 |" "$ACCEPTED_SUMMARY"
+
   # Rulesets require this one check rather than each matrix job by name. It
   # needs every job above, runs even after one fails, and passes only when each
   # one succeeded, so a cancelled or skipped job fails it too. The one exception

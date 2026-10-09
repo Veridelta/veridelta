@@ -78,18 +78,21 @@ _OTEL_SEND_SWITCH = 'if [ "$VERIDELTA_OTEL_SEND" = "true" ]; then send="--otel-s
 """The line that sets `$send`, which the run command expands unquoted."""
 
 
-def _cli_arguments(script: str, send: str = "") -> list[str]:
+def _cli_arguments(script: str, send: str = "", baseline: str = "") -> list[str]:
     """Extract the `veridelta run` arguments from a script, with variables filled in.
 
     Args:
         script (str): Shell script containing one `veridelta run` invocation.
         send (str): What the unquoted `$send` expands to: nothing, or `--otel-send`.
+        baseline (str): What the `baseline` array expands to: nothing, or
+            `--baseline` and a quoted path.
 
     Returns:
         list[str]: The arguments after `veridelta`, as the CLI parser sees them.
     """
     line = next(line for line in script.splitlines() if "veridelta run" in line)
     command = line[line.index("veridelta run") :].split(">", 1)[0].replace(" $send ", f" {send} ")
+    command = command.replace(' "${baseline[@]}"', f" {baseline}")
     # Row caps must be numbers for the parser; every other value is a path or name.
     filled = re.sub(
         r"\$\{?[A-Z_]*MAX_ROWS\}?|\$\[\[\s*inputs\.html-max-rows\s*\]\]", "1000", command
@@ -115,7 +118,12 @@ def _run_step(tmp_path: Path, **inputs: str) -> tuple[subprocess.CompletedProces
     stubs.mkdir()
     for tool in ("uv", "uvx"):
         stub = stubs / tool
-        stub.write_text(f"#!/bin/sh\ntouch '{tmp_path / 'called'}'\n", encoding="utf-8")
+        # Each stub records its arguments, one to a line, in a file named after it.
+        stub.write_text(
+            f"#!/bin/sh\ntouch '{tmp_path / 'called'}'\n"
+            f"printf '%s\\n' \"$@\" > '{tmp_path / tool}.args'\n",
+            encoding="utf-8",
+        )
         stub.chmod(0o755)
     output = tmp_path / "output"
     env = {
@@ -125,6 +133,7 @@ def _run_step(tmp_path: Path, **inputs: str) -> tuple[subprocess.CompletedProces
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
         "VERIDELTA_ACTION_PATH": str(_ROOT),
         "VERIDELTA_ARTIFACT_NAME": "",
+        "VERIDELTA_BASELINE": "",
         "VERIDELTA_CONFIG": "veridelta.yaml",
         "VERIDELTA_EXTRAS": "",
         "VERIDELTA_HTML_MAX_ROWS": "1000",
@@ -159,6 +168,33 @@ class TestGitHubActionInputs:
         assert finished.returncode == 0, finished.stderr
         assert (tmp_path / "called").exists()
         assert "artifact-name=veridelta-compare-veridelta.yaml" in outputs
+
+    @pytest.mark.parametrize(
+        ("baseline", "expected"),
+        [
+            pytest.param("", [], id="empty"),
+            pytest.param(
+                "checks/accepted rows.json",
+                ["--baseline", "checks/accepted rows.json"],
+                id="a path with a space",
+            ),
+            pytest.param(
+                "$(touch injected).json",
+                ["--baseline", "$(touch injected).json"],
+                id="shell syntax",
+            ),
+        ],
+    )
+    def test_it_passes_the_baseline_as_one_argument(
+        self, tmp_path: Path, baseline: str, expected: list[str]
+    ) -> None:
+        """Ensure an empty `baseline` adds nothing, and a path reaches the run whole, as text."""
+        finished, _ = _run_step(tmp_path, VERIDELTA_BASELINE=baseline)
+
+        assert finished.returncode == 0, finished.stderr
+        arguments = (tmp_path / "uvx.args").read_text(encoding="utf-8").splitlines()
+        assert arguments[arguments.index("--otel") + 2 :] == expected
+        assert not (tmp_path / "injected").exists()
 
     @pytest.mark.parametrize(
         ("variable", "value", "message"),
@@ -249,6 +285,7 @@ class TestGitHubAction:
         assert parsed.markdown_max_rows == 1000
         assert parsed.otel == "placeholder/otel-metrics.json"
         assert parsed.otel_send is False
+        assert parsed.baseline is None
 
     def test_it_sends_the_metrics_only_when_asked(self) -> None:
         """Ensure `otel-send` defaults off, and when true adds the flag the CLI parses."""
@@ -261,6 +298,17 @@ class TestGitHubAction:
         assert script.index(_OTEL_SEND_SWITCH) < script.index("veridelta run")
         parsed = build_parser().parse_args(_cli_arguments(script, "--otel-send"))
         assert parsed.otel_send is True
+
+    def test_it_passes_a_baseline_only_when_given(self) -> None:
+        """Ensure `baseline` defaults to empty, and a path given adds a flag the CLI parses."""
+        inputs = _action()["inputs"]
+        step = next(step for step in _steps() if step.get("id") == "run")
+
+        assert inputs["baseline"]["default"] == ""
+        assert step["env"]["VERIDELTA_BASELINE"] == "${{ inputs.baseline }}"
+        arguments = _cli_arguments(_run_script(), baseline="--baseline 'checks/accepted rows.json'")
+        parsed = build_parser().parse_args(arguments)
+        assert parsed.baseline == "checks/accepted rows.json"
 
     def test_it_exposes_the_metrics_file_only_for_a_finished_run(self) -> None:
         """Ensure `otel-metrics` names the export after a match or drift, and is empty on error."""
@@ -301,8 +349,9 @@ def _as_action_default(value: object) -> str:
 _GITLAB_EXEMPT = {
     "github-token": "The merge request note reads the masked VERIDELTA_GITLAB_TOKEN variable.",
     "artifact-name": "GitLab keeps each job's artifacts apart, so no name can collide.",
+    "baseline": "The template is frozen, as decisions/gitlab-template-is-frozen.md records.",
 }
-"""Action inputs the GitLab template lacks, and why it needs none."""
+"""Action inputs the GitLab template lacks, and why."""
 
 _GITLAB_PLACEMENT = {"stage", "job-name", "image"}
 """GitLab inputs that place the job in a pipeline, which a workflow does itself."""
