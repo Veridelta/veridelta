@@ -85,7 +85,7 @@ def drivers(mocker: MockerFixture) -> None:
     mocker.patch("veridelta.connectors.warehouse.snowflake_connector", object())
     mocker.patch("veridelta.connectors.warehouse.databricks_sql", object())
     mocker.patch("veridelta.connectors.database.connectorx", object())
-    mocker.patch("veridelta.engine.fastexcel", object())
+    mocker.patch("veridelta._reading.fastexcel", object())
     mocker.patch("veridelta._matching.rapidfuzz_distance", object())
     mocker.patch("veridelta.engine.find_spec", return_value=object())
 
@@ -121,7 +121,7 @@ class TestConfigChecks:
         [
             pytest.param(
                 SourceConfig(path="a.xlsx", format="excel"),
-                "veridelta.engine.fastexcel",
+                "veridelta._reading.fastexcel",
                 "excel",
                 id="excel",
             ),
