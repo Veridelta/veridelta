@@ -9,9 +9,7 @@ the two sides with Polars.
 
 import logging
 import math
-import re
 from abc import ABC, abstractmethod
-from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,7 +23,6 @@ from typing import (
     Final,
     NamedTuple,
     TypeAlias,
-    TypedDict,
     TypeGuard,
     TypeVar,
     cast,
@@ -34,6 +31,24 @@ from urllib.parse import urlsplit
 
 import polars as pl
 
+from veridelta._resolution import (
+    CAST_TARGETS,
+    UNCASTABLE,
+    EffectiveRule,
+    alignment_maps,
+    duplicate_keys_error,
+    fold_rule_defaults,
+    is_real_number,
+    match_rule,
+    normalize_header_names,
+    normalized_dtype,
+    parsed_dtype,
+    polars_datetime_format,
+    quoted_list,
+    reject_unzoned_timezone,
+    rename_pairs,
+    unusable_sentinel_error,
+)
 from veridelta.config import load_config
 from veridelta.connectors import database as database_connectors
 from veridelta.connectors import duckdb as duckdb_connectors
@@ -69,7 +84,6 @@ from veridelta.connectors.warehouse import (
 from veridelta.exceptions import (
     ConfigError,
     ConnectorError,
-    DataIntegrityError,
     VerideltaError,
     missing_extra,
 )
@@ -78,7 +92,6 @@ from veridelta.models import (
     ArtifactFormat,
     Baseline,
     BigQueryConfig,
-    CastTarget,
     ConfigFinding,
     DatabaseConfig,
     DatabricksConfig,
@@ -97,11 +110,27 @@ from veridelta.models import (
     SuggestedSetting,
     ValueMapEntry,
     ValueMapProposal,
-    WhitespaceMode,
     mismatch_ratio_of,
     normalize_column_name,
 )
 from veridelta.sentinels import usable_sentinels
+
+__all__ = [
+    "DEFAULT_MAX_SHARE",
+    "DEFAULT_MIN_CONFIDENCE",
+    "DEFAULT_MIN_SUPPORT",
+    "ArrowLoader",
+    "AvroLoader",
+    "BaseLoader",
+    "CSVLoader",
+    "DiffEngine",
+    "EffectiveRule",
+    "ExcelLoader",
+    "JSONLoader",
+    "LoaderFactory",
+    "NDJSONLoader",
+    "ParquetLoader",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -113,63 +142,6 @@ at call time, so checking here turns a bare ImportError into an install hint."""
 rapidfuzz_distance = optional_module("rapidfuzz.distance")
 """Presence probe for the `fuzzy` extra, whose scorers evaluate
 `max_levenshtein_distance` and `min_jaro_winkler_similarity` locally."""
-
-
-class EffectiveRule(TypedDict):
-    """Per-column settings after specific, pattern, and global rules are merged."""
-
-    abs_tol: float
-    rel_tol: float
-    treat_null: bool
-    whitespace: WhitespaceMode
-    null_values: list[SentinelValue]
-    null_values_explicit: bool
-    case_insensitive: bool
-    regex_replace: dict[str, str] | None
-    value_map: dict[str, str] | None
-    pad_zeros: int | None
-    datetime_format: str | None
-    timezone: str | None
-    cast_to: CastTarget | None
-    ignore: bool
-    max_levenshtein_distance: int | None
-    min_jaro_winkler_similarity: float | None
-
-
-def _unusable_sentinel_error(
-    column: str, dtype: pl.DataType, sentinels: Sequence[SentinelValue]
-) -> ConfigError:
-    """Build the error for an explicit rule whose sentinels can never match."""
-    return ConfigError(
-        f"Column '{column}' has type {dtype}, which cannot hold any of the "
-        f"null_values {list(sentinels)!r} configured for it. Quote text sentinels "
-        "and leave numbers unquoted so each one matches its column type."
-    )
-
-
-def _duplicate_keys_error(keys: list[str], side: str, count: int) -> DataIntegrityError:
-    """Build the error for primary keys that repeat within one dataset."""
-    return DataIntegrityError(
-        f"Primary keys {keys} are not unique in {side} dataset. "
-        f"Found {count} duplicate rows. Clean your data before diffing."
-    )
-
-
-def _reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None:
-    """Raise unless a column can take a `timezone` rule: a timestamp that carries its zone."""
-    if not isinstance(dtype, pl.Datetime):
-        raise ConfigError(
-            f"Column '{column}' sets timezone='{zone}' but holds {dtype}, not a "
-            "timestamp. Parse it with datetime_format first."
-        )
-    if dtype.time_zone is None:
-        raise ConfigError(
-            f"Column '{column}' sets timezone='{zone}' but its timestamps are "
-            "timezone-naive. Veridelta will not assume an origin zone, because "
-            "guessing wrong shifts every value silently. Store the column with a "
-            "timezone, or parse it with a datetime_format carrying an offset such as "
-            "'%z', or compare it without a timezone rule."
-        )
 
 
 class BaseLoader(ABC):
@@ -372,14 +344,6 @@ def _describe_sides(source: SourceRef, target: SourceRef) -> dict[str, str]:
     return {"source": _describe_source(source), "target": _describe_source(target)}
 
 
-def _quoted_list(names: Sequence[str]) -> str:
-    """Join names as `'a'`, `'a' and 'b'`, or `'a', 'b', and 'c'`."""
-    quoted = [repr(name) for name in names]
-    if len(quoted) < 3:
-        return " and ".join(quoted)
-    return f"{', '.join(quoted[:-1])}, and {quoted[-1]}"
-
-
 _READERS: Final[dict[type[object], Callable[[Any], ReaderConnector]]] = {
     # The lambdas look the connector class up when a source is read, as the
     # warehouse table below does, so a test that patches one still intercepts it.
@@ -549,120 +513,6 @@ def _is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
     return type(config) in _WAREHOUSES
 
 
-def _rename_pairs(rules: Sequence[DiffRule]) -> dict[str, str]:
-    """Map each renamed source column to its target spelling."""
-    pairs: dict[str, str] = {}
-    for rule in rules:
-        # An `ignore` rule counts too: its pair tells the target side which column to drop.
-        if rule.rename_to and len(rule.column_names) == 1:
-            pairs.setdefault(rule.column_names[0], rule.rename_to)
-    return pairs
-
-
-def _rule_spellings(pairs: Mapping[str, str], column: str) -> tuple[str, ...]:
-    """List the names a rule may use for a column, in order of precedence."""
-    source = next((src for src, tgt in pairs.items() if tgt == column), column)
-    if source == column:
-        return (column,)
-    # In a swap or chain, a rule naming `column` governs the source column renamed away from it.
-    if pairs.get(column, column) != column:
-        return (source,)
-    return (column, source)
-
-
-def _match_rule(rules: Sequence[DiffRule], column: str) -> DiffRule | None:
-    """Resolve the single rule governing a column, exact names before patterns."""
-    for name in _rule_spellings(_rename_pairs(rules), column):
-        for rule in rules:
-            if name in rule.column_names:
-                return rule
-    for rule in rules:
-        if rule.pattern and re.match(rule.pattern, column):
-            return rule
-    return None
-
-
-def _alignment_maps(
-    rules: list[DiffRule], columns: Sequence[str], *, rename: bool
-) -> tuple[dict[str, str], set[str]]:
-    """Derive the `rename_to` map and `ignore` drop set for one frame's columns."""
-    pairs = _rename_pairs(rules)
-    rename_map: dict[str, str] = {}
-    to_drop: set[str] = set()
-    for column in columns:
-        aligned = pairs.get(column, column) if rename else column
-        rule = _match_rule(rules, aligned)
-        if rule is not None and rule.ignore:
-            to_drop.add(column)
-        elif aligned != column:
-            rename_map[column] = aligned
-    return rename_map, to_drop
-
-
-def _normalize_header_names(frame: pl.LazyFrame) -> pl.LazyFrame:
-    """Strip and lowercase every column name, as `normalize_column_names` asks."""
-    names = frame.collect_schema().names()
-    normalized = [normalize_column_name(name) for name in names]
-    collisions = sorted(name for name, count in Counter(normalized).items() if count > 1)
-    if collisions:
-        raise ConfigError(
-            f"normalize_column_names maps more than one header onto {collisions}. "
-            "Rename the duplicates at the source, or disable normalize_column_names."
-        )
-    return frame.rename(dict(zip(names, normalized, strict=True)))
-
-
-def _fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRule:
-    """Layer one matched rule over the configuration's `default_*` settings."""
-    effective: EffectiveRule = {
-        "abs_tol": diff.default_absolute_tolerance,
-        "rel_tol": diff.default_relative_tolerance,
-        "treat_null": diff.default_treat_null_as_equal,
-        "whitespace": diff.default_whitespace_mode,
-        "null_values": diff.default_null_values,
-        "null_values_explicit": False,
-        "case_insensitive": False,
-        "regex_replace": None,
-        "value_map": None,
-        "pad_zeros": None,
-        "datetime_format": None,
-        "timezone": None,
-        "cast_to": None,
-        "ignore": False,
-        # No `default_*` counterpart: loosening every text column at once would
-        # also forgive identifiers and codes that must match exactly.
-        "max_levenshtein_distance": None,
-        "min_jaro_winkler_similarity": None,
-    }
-    if rule is None:
-        return effective
-
-    if rule.absolute_tolerance is not None:
-        effective["abs_tol"] = rule.absolute_tolerance
-    if rule.relative_tolerance is not None:
-        effective["rel_tol"] = rule.relative_tolerance
-    if rule.treat_null_as_equal is not None:
-        effective["treat_null"] = rule.treat_null_as_equal
-    if rule.whitespace_mode is not None:
-        effective["whitespace"] = rule.whitespace_mode
-    if rule.null_values is not None:
-        effective["null_values"] = rule.null_values
-        effective["null_values_explicit"] = True
-    if rule.case_insensitive is not None:
-        effective["case_insensitive"] = rule.case_insensitive
-
-    effective["regex_replace"] = rule.regex_replace
-    effective["value_map"] = rule.value_map
-    effective["pad_zeros"] = rule.pad_zeros
-    effective["datetime_format"] = rule.datetime_format
-    effective["timezone"] = rule.timezone
-    effective["cast_to"] = rule.cast_to
-    effective["ignore"] = rule.ignore
-    effective["max_levenshtein_distance"] = rule.max_levenshtein_distance
-    effective["min_jaro_winkler_similarity"] = rule.min_jaro_winkler_similarity
-    return effective
-
-
 def _enforce_pushdown_preconditions(
     effective: EffectiveRule, sides: tuple[tuple[str, pl.Schema], ...]
 ) -> None:
@@ -671,54 +521,15 @@ def _enforce_pushdown_preconditions(
         for name, schema in sides:
             dtype = schema.get(name)
             if dtype is not None and not usable_sentinels(effective["null_values"], dtype):
-                raise _unusable_sentinel_error(name, dtype, effective["null_values"])
+                raise unusable_sentinel_error(name, dtype, effective["null_values"])
     if effective["timezone"]:
         for name, schema in sides:
             # The zone rule reads the column after padding and parsing, as locally.
-            dtype = _parsed_dtype(effective, schema.get(name))
+            dtype = parsed_dtype(effective, schema.get(name))
             # Stage 6b emits no SQL: a zone label cannot change a verdict. Its precondition
             # still holds, so pushdown never compares columns a local run refuses.
             if dtype is not None:
-                _reject_unzoned_timezone(name, dtype, effective["timezone"])
-
-
-_OFFSET_DIRECTIVE: Final = re.compile(r"%%|%[:#]*z")
-"""A literal `%%`, or a `%z` offset directive in any of its chrono spellings."""
-
-
-def _normalized_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
-    """Predict a column's dtype after stages 1 through 7, from its stored dtype."""
-    if effective["cast_to"] is not None:
-        return _CAST_TARGETS[effective["cast_to"]]
-    dtype = _parsed_dtype(effective, dtype)
-    if effective["timezone"] and isinstance(dtype, pl.Datetime):
-        dtype = pl.Datetime(dtype.time_unit, effective["timezone"])
-    return dtype
-
-
-def _parsed_dtype(effective: EffectiveRule, dtype: pl.DataType | None) -> pl.DataType | None:
-    """Predict a column's dtype after stages 1 through 6a, before timezone and cast."""
-    if effective["pad_zeros"] is not None:
-        dtype = pl.String()
-    fmt = effective["datetime_format"]
-    if fmt and isinstance(dtype, pl.String):
-        # A `%z` outside a `%%` escape reads a UTC offset, so the result is aware.
-        aware = any(token != "%%" for token in _OFFSET_DIRECTIVE.findall(fmt))
-        dtype = pl.Datetime("us", "UTC" if aware else None)
-    return dtype
-
-
-_FRACTION_SPELLINGS: Final[dict[str, str]] = {"%%": "%%", ".%f": "%.f", "%f": "%6f"}
-"""Polars spellings of Python's fraction directive, plus the escape that hides one."""
-
-_FRACTION_DIRECTIVE: Final = re.compile(r"%%|\.%f|%f")
-"""A literal `%%`, which may precede an `f`, or `%f` with or without its dot."""
-
-
-def _polars_datetime_format(fmt: str) -> str:
-    """Spell a Python `strptime` format the way Polars reads it."""
-    # Polars' `%f` counts nanoseconds, so a Python fraction such as `.5` would read as 5 ns.
-    return _FRACTION_DIRECTIVE.sub(lambda match: _FRACTION_SPELLINGS[match[0]], fmt)
+                reject_unzoned_timezone(name, dtype, effective["timezone"])
 
 
 def _tolerance_match(
@@ -784,7 +595,7 @@ def _resolve_pushdown_keys(
 ) -> list[DiffRule]:
     """Expand configuration into the normalization each primary key receives."""
     source_names = set(source_schema.names())
-    pairs = _rename_pairs(diff.rules)
+    pairs = rename_pairs(diff.rules)
 
     resolved: list[DiffRule] = []
     for key in diff.primary_keys:
@@ -793,8 +604,8 @@ def _resolve_pushdown_keys(
         stored = next(
             (src for src, tgt in pairs.items() if tgt == key and src in source_names), key
         )
-        rule = _match_rule(diff.rules, key)
-        effective = _fold_rule_defaults(rule, diff)
+        rule = match_rule(diff.rules, key)
+        effective = fold_rule_defaults(rule, diff)
         _enforce_pushdown_preconditions(effective, ((stored, source_schema), (key, target_schema)))
         resolved.append(_pushdown_rule(stored, key, rule, effective))
     return resolved
@@ -806,15 +617,15 @@ def _pushdown_columns(
     """Walk the probed source columns a warehouse statement compares."""
     target_lookup = set(target_schema.names())
     keys = set(diff.primary_keys)
-    pairs = _rename_pairs(diff.rules)
+    pairs = rename_pairs(diff.rules)
     for column in source_schema.names():
         aligned = pairs.get(column, column)
         if aligned in keys or aligned not in target_lookup:
             continue
-        rule = _match_rule(diff.rules, aligned)
+        rule = match_rule(diff.rules, aligned)
         if rule is not None and rule.ignore:
             continue
-        effective = _fold_rule_defaults(rule, diff)
+        effective = fold_rule_defaults(rule, diff)
         _enforce_pushdown_preconditions(
             effective, ((column, source_schema), (aligned, target_schema))
         )
@@ -830,7 +641,7 @@ def _resolve_pushdown_rules(
         # As in `_build_match_expr`, a tolerance loosens only a column compared as
         # a number, and a similarity limit only one compared as text. An unknown
         # type keeps both, unless `datetime_format` would parse the text.
-        normalized = _normalized_dtype(effective, source_schema.get(column))
+        normalized = normalized_dtype(effective, source_schema.get(column))
         numeric = normalized is None or normalized.is_numeric()
         if normalized is None:
             text = not effective["datetime_format"]
@@ -865,11 +676,11 @@ def _compared_dtypes(
     diff: DiffConfig, rule: DiffRule, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> tuple[pl.DataType | None, pl.DataType | None]:
     """Predict the dtypes a local run would compare one pushdown column as."""
-    effective = _fold_rule_defaults(rule, diff)
+    effective = fold_rule_defaults(rule, diff)
     stored = rule.column_names[0]
     return (
-        _normalized_dtype(effective, source_schema.get(stored)),
-        _normalized_dtype(effective, target_schema.get(rule.rename_to or stored)),
+        normalized_dtype(effective, source_schema.get(stored)),
+        normalized_dtype(effective, target_schema.get(rule.rename_to or stored)),
     )
 
 
@@ -978,36 +789,6 @@ def _local_column_mismatches(changed: pl.DataFrame, compared_columns: list[str])
         [(~pl.col(f"{col}_is_match")).sum().alias(col) for col in compared_columns]
     ).row(0, named=True)
     return {column: count for column, count in tally.items() if count > 0}
-
-
-_CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
-    "Int64": pl.Int64(),
-    "Float64": pl.Float64(),
-    "String": pl.String(),
-    "Boolean": pl.Boolean(),
-    "Date": pl.Date(),
-    "Datetime": pl.Datetime(),
-}
-"""`cast_to` name to the dtype it resolves to."""
-
-_UNCASTABLE: Final[dict[type[pl.DataType], frozenset[CastTarget]]] = {
-    pl.Binary: frozenset({"Int64", "Float64", "Boolean", "Date", "Datetime"}),
-    pl.String: frozenset({"Boolean"}),
-    pl.Categorical: frozenset({"Float64", "Boolean", "Date", "Datetime"}),
-    pl.Decimal: frozenset({"Date", "Datetime"}),
-    pl.Date: frozenset({"Boolean"}),
-    pl.Datetime: frozenset({"Boolean"}),
-    pl.Time: frozenset({"Boolean", "Date", "Datetime"}),
-    pl.Duration: frozenset({"String", "Boolean", "Date", "Datetime"}),
-    pl.List: frozenset(_CAST_TARGETS),
-}
-"""`cast_to` targets Polars refuses for each column type, whatever its values.
-
-Polars refuses them only once a value reaches the cast, which in a run is
-mid-comparison. Checking the type first turns that into a `ConfigError` before
-any row is read, in a run and in `validate --schemas` alike. A test holds the
-table to what Polars does.
-"""
 
 
 def _fuzzy_measures() -> ModuleType:
@@ -1358,7 +1139,7 @@ def _reject_duplicate_pushdown_keys(
             connector, statement, "duplicates", f"Duplicate key query for '{table}'"
         )
         if duplicates:
-            raise _duplicate_keys_error(diff.primary_keys, side, duplicates)
+            raise duplicate_keys_error(diff.primary_keys, side, duplicates)
 
 
 def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema) -> None:
@@ -1823,7 +1604,7 @@ def _unknown_column_findings(
     pronoun = "it" if len(unknown) == 1 else "them"
     return [
         _warning(
-            f"Neither side has a column named {_quoted_list(unknown)}, so the rules that "
+            f"Neither side has a column named {quoted_list(unknown)}, so the rules that "
             f"name {pronoun} do nothing. Check the spelling."
         )
     ]
@@ -1925,20 +1706,15 @@ DEFAULT_MIN_SUPPORT: Final = 5
 """Agreeing rows a proposal needs, so a one-off coincidence is never offered."""
 
 
-def _is_real_number(value: object) -> TypeGuard[int | float]:
-    """Return whether a value is an `int` or `float`, and not a `bool`."""
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
 def _check_value_map_thresholds(
     min_confidence: object, min_support: object, sample_fraction: object
 ) -> None:
     """Reject proposal thresholds that cannot produce a meaningful answer."""
-    if not _is_real_number(min_confidence):
+    if not is_real_number(min_confidence):
         raise ConfigError(f"min_confidence must be a number, got {min_confidence!r}.")
-    if not _is_real_number(sample_fraction):
+    if not is_real_number(sample_fraction):
         raise ConfigError(f"sample_fraction must be a number, got {sample_fraction!r}.")
-    if not _is_real_number(min_support) or not isinstance(min_support, int):
+    if not is_real_number(min_support) or not isinstance(min_support, int):
         raise ConfigError(f"min_support must be a whole number, got {min_support!r}.")
     if not 0.5 < min_confidence <= 1:
         raise ConfigError(
@@ -2004,7 +1780,7 @@ def _value_map_proposal(
     if frame.is_empty():
         return None
     entries = tuple(ValueMapEntry(**row) for row in frame.iter_rows(named=True))
-    governing = _match_rule(config.rules, column)
+    governing = match_rule(config.rules, column)
     existing = governing.value_map if governing is not None and governing.value_map else {}
     return ValueMapProposal(
         column=column,
@@ -2024,7 +1800,7 @@ _SUGGESTED_EXAMPLES: Final = 3
 
 def _check_max_share(max_share: object) -> None:
     """Reject a share that cannot bound a tolerance."""
-    if not _is_real_number(max_share):
+    if not is_real_number(max_share):
         raise ConfigError(f"max_share must be a number, got {max_share!r}.")
     if not 0 < max_share <= 1:
         raise ConfigError(f"max_share must be above 0 and at most 1, got {max_share}.")
@@ -2214,7 +1990,7 @@ def _format_proposal(changed: pl.DataFrame, column: str) -> _Proposal | None:
         changed.filter(pl.col(f"{column}_is_match").eq(False))
         .select(
             (
-                text.str.strptime(pl.Datetime, format=_polars_datetime_format(fmt), strict=False)
+                text.str.strptime(pl.Datetime, format=polars_datetime_format(fmt), strict=False)
                 == other
             )
             .sum()
@@ -2923,7 +2699,7 @@ class DiffEngine:
             proposal = _proposal(result.changed, column, max_share)
             if proposal is None:
                 continue
-            governing = _match_rule(self.config.rules, column)
+            governing = match_rule(self.config.rules, column)
             rule = _suggested_rule(
                 governing, column, proposal.settings, self.config.default_null_values
             )
@@ -2994,7 +2770,7 @@ class DiffEngine:
 
     def _get_effective_rule(self, col_name: str) -> EffectiveRule:
         """Resolve all rules (Specific > Pattern > Global) into a unified dictionary."""
-        return _fold_rule_defaults(_match_rule(self.config.rules, col_name), self.config)
+        return fold_rule_defaults(match_rule(self.config.rules, col_name), self.config)
 
     def _check_uniqueness(self) -> None:
         """Verify that primary keys are unique in both datasets."""
@@ -3003,7 +2779,7 @@ class DiffEngine:
             keys = frame.select(pks).collect()
             duplicated = keys.is_duplicated()
             if duplicated.any():
-                raise _duplicate_keys_error(pks, side, keys.filter(duplicated).height)
+                raise duplicate_keys_error(pks, side, keys.filter(duplicated).height)
 
     def _normalize_sides(self) -> None:
         """Normalize both frames, then check that their primary keys can pair rows."""
@@ -3083,7 +2859,7 @@ class DiffEngine:
             applied = True
         # Only an explicit rule raises: a global default is expected to span a mixed schema.
         elif rule["null_values"] and rule["null_values_explicit"]:
-            raise _unusable_sentinel_error(column, dtype, rule["null_values"])
+            raise unusable_sentinel_error(column, dtype, rule["null_values"])
 
         if is_text:
             expr, text_applied = self._normalize_text_expr(expr, rule, is_source=is_source)
@@ -3098,7 +2874,7 @@ class DiffEngine:
         if rule["datetime_format"] and is_text:
             expr = expr.str.strptime(
                 pl.Datetime,
-                format=_polars_datetime_format(rule["datetime_format"]),
+                format=polars_datetime_format(rule["datetime_format"]),
                 strict=False,
             )
             applied = True
@@ -3146,13 +2922,13 @@ class DiffEngine:
             expr = self._convert_time_zone(column, expr, dtype, rule["timezone"])
         if rule["cast_to"]:
             target = rule["cast_to"]
-            if target in _UNCASTABLE.get(type(dtype), frozenset()):
+            if target in UNCASTABLE.get(type(dtype), frozenset()):
                 raise ConfigError(
                     f"Column '{column}' sets cast_to='{target}', but holds {dtype}, which "
                     f"cannot be cast to {target}. Convert it where it is read, such as in "
                     "a database query."
                 )
-            expr = expr.cast(_CAST_TARGETS[target])
+            expr = expr.cast(CAST_TARGETS[target])
         return expr.alias(column)
 
     def _convert_time_zone(
@@ -3160,7 +2936,7 @@ class DiffEngine:
     ) -> pl.Expr:
         """Convert a timezone-aware column to `zone`, refusing to guess for naive data."""
         # `convert_time_zone` treats a naive timestamp as UTC instead of refusing it.
-        _reject_unzoned_timezone(column, dtype, zone)
+        reject_unzoned_timezone(column, dtype, zone)
         try:
             return expr.dt.convert_time_zone(zone)
         except pl.exceptions.ComputeError as exc:
@@ -3196,16 +2972,16 @@ class DiffEngine:
     def _align_structure(self) -> None:
         """Perform structural normalization to reconcile asymmetrical schemas."""
         if self.config.normalize_column_names:
-            self.source = _normalize_header_names(self.source)
-            self.target = _normalize_header_names(self.target)
+            self.source = normalize_header_names(self.source)
+            self.target = normalize_header_names(self.target)
 
         src_cols = self.source.collect_schema().names()
         tgt_cols = self.target.collect_schema().names()
 
-        src_rename, src_drop = _alignment_maps(self.config.rules, src_cols, rename=True)
+        src_rename, src_drop = alignment_maps(self.config.rules, src_cols, rename=True)
         # The target already carries the post-rename spellings, which the
         # resolver matches under either name.
-        _, tgt_drop = _alignment_maps(self.config.rules, tgt_cols, rename=False)
+        _, tgt_drop = alignment_maps(self.config.rules, tgt_cols, rename=False)
 
         self.source = self.source.drop(list(src_drop)).rename(src_rename)
         self.target = self.target.drop(list(tgt_drop))
@@ -3227,7 +3003,7 @@ class DiffEngine:
         where = f"the {side}"
         if self._sides is not None:
             where += f", {self._sides[side]}"
-        keys = _quoted_list(missing)
+        keys = quoted_list(missing)
         noun, verb = ("key", "is") if len(missing) == 1 else ("keys", "are")
         if not columns:
             return f"The primary {noun} {keys} {verb} not among the columns of {where}. No column was read."
@@ -3257,15 +3033,15 @@ class DiffEngine:
         if mode == "exact" and (only_source or only_target):
             parts: list[str] = []
             if only_source:
-                parts.append(f"only the source has {_quoted_list(only_source)}")
+                parts.append(f"only the source has {quoted_list(only_source)}")
             if only_target:
-                parts.append(f"only the target has {_quoted_list(only_target)}")
+                parts.append(f"only the target has {quoted_list(only_target)}")
             message = f"EXACT schema match failed: {'; '.join(parts)}."
         elif mode == "allow_additions" and only_source:
-            message = f"Target is missing required source columns: {_quoted_list(only_source)}."
+            message = f"Target is missing required source columns: {quoted_list(only_source)}."
         elif mode == "allow_removals" and only_target:
             message = (
-                f"Target contains unauthorized additional columns: {_quoted_list(only_target)}."
+                f"Target contains unauthorized additional columns: {quoted_list(only_target)}."
             )
         else:
             return

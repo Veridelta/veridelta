@@ -18,21 +18,23 @@ import pytest
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
+from veridelta._resolution import (
+    CAST_TARGETS,
+    UNCASTABLE,
+    alignment_maps,
+    fold_rule_defaults,
+    match_rule,
+    normalized_dtype,
+    polars_datetime_format,
+)
 from veridelta.connectors.base import optional_module
 from veridelta.engine import (
     _ARTIFACT_WRITERS,
-    _CAST_TARGETS,
-    _UNCASTABLE,
     DiffEngine,
     LoaderFactory,
-    _alignment_maps,
     _column_mismatches_from_frame,
     _describe_source,
-    _fold_rule_defaults,
-    _match_rule,
-    _normalized_dtype,
     _pairable,
-    _polars_datetime_format,
     _refuse_mixed_pushdown_types,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
@@ -698,8 +700,8 @@ class TestSemanticNormalization:
             DiffRule(column_names=["n"], cast_to="Int128")  # type: ignore[arg-type]
 
     def test_it_maps_every_cast_target_to_a_polars_dtype(self) -> None:
-        """Ensure `_CAST_TARGETS` cannot drift from the closed `CastTarget` set."""
-        assert set(get_args(CastTarget)) == set(_CAST_TARGETS)
+        """Ensure `CAST_TARGETS` cannot drift from the closed `CastTarget` set."""
+        assert set(get_args(CastTarget)) == set(CAST_TARGETS)
 
     def test_it_evaluates_numeric_differences_using_relative_tolerance_percentage(self) -> None:
         """Ensure proportional differences within a calculated relative tolerance pass validation."""
@@ -1577,11 +1579,11 @@ class TestFuzzyTextMatching:
         """Ensure each limit is compared in its own direction: at most, or at least."""
         config = DiffConfig(primary_keys=["id"], rules=[rule])
 
-        test = _similarity_test(_fold_rule_defaults(rule, config))
+        test = _similarity_test(fold_rule_defaults(rule, config))
 
         assert test is not None
         assert [test("Jon", "John"), test("MARTHA", "MARHTA")] == matches
-        assert _similarity_test(_fold_rule_defaults(None, config)) is None
+        assert _similarity_test(fold_rule_defaults(None, config)) is None
 
     def test_it_folds_similarity_limits_without_a_global_default(self) -> None:
         """Ensure only a rule sets a limit, so no column is loosened by default."""
@@ -1590,8 +1592,8 @@ class TestFuzzyTextMatching:
             rules=[DiffRule(column_names=["name"], min_jaro_winkler_similarity=0.9)],
         )
 
-        unruled = _fold_rule_defaults(None, config)
-        ruled = _fold_rule_defaults(config.rules[0], config)
+        unruled = fold_rule_defaults(None, config)
+        ruled = fold_rule_defaults(config.rules[0], config)
 
         assert unruled["max_levenshtein_distance"] is None
         assert unruled["min_jaro_winkler_similarity"] is None
@@ -1782,11 +1784,11 @@ class TestPushdownRuleHelpers:
         """Ensure the one dtype prediction matches what the local normalizer produces."""
         config = DiffConfig(primary_keys=["id"], rules=[rule])
         frame = pl.DataFrame({"id": [1], "val": pl.Series(values, dtype=dtype)})
-        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+        effective = fold_rule_defaults(match_rule(config.rules, "val"), config)
 
         compared = _normalized(config, frame).schema["val"]
 
-        assert _normalized_dtype(effective, frame.schema["val"]) == compared
+        assert normalized_dtype(effective, frame.schema["val"]) == compared
 
     @pytest.mark.parametrize(
         ("rule", "expected"),
@@ -1804,9 +1806,9 @@ class TestPushdownRuleHelpers:
     ) -> None:
         """Ensure an unknown dtype stays unknown unless a stage fixes the result."""
         config = DiffConfig(primary_keys=["id"], rules=[rule])
-        effective = _fold_rule_defaults(_match_rule(config.rules, "val"), config)
+        effective = fold_rule_defaults(match_rule(config.rules, "val"), config)
 
-        assert _normalized_dtype(effective, None) == expected
+        assert normalized_dtype(effective, None) == expected
 
     def test_it_refuses_a_jaro_winkler_floor_on_a_text_column(self) -> None:
         """Ensure a limit no warehouse can reproduce fails before any query runs."""
@@ -1986,8 +1988,8 @@ class TestSharedRuleAndAlignmentHelpers:
         )
         engine = DiffEngine(config, pl.LazyFrame(), pl.LazyFrame())
 
-        unruled = _fold_rule_defaults(None, config)
-        ruled = _fold_rule_defaults(config.rules[0], config)
+        unruled = fold_rule_defaults(None, config)
+        ruled = fold_rule_defaults(config.rules[0], config)
 
         assert unruled == engine._get_effective_rule("other")  # pyright: ignore[reportPrivateUsage]
         assert ruled == engine._get_effective_rule("amount")  # pyright: ignore[reportPrivateUsage]
@@ -2010,7 +2012,7 @@ class TestSharedRuleAndAlignmentHelpers:
         schema = pl.Schema({"id": pl.Int64, "amount": pl.Float64})
 
         (rule,) = _resolve_pushdown_rules(config, schema, schema)
-        local = _fold_rule_defaults(config.rules[0], config)
+        local = fold_rule_defaults(config.rules[0], config)
 
         assert rule.absolute_tolerance == local["abs_tol"] == 0.25
         assert rule.treat_null_as_equal is local["treat_null"] is False
@@ -2026,8 +2028,8 @@ class TestSharedRuleAndAlignmentHelpers:
         ]
         columns = ["legacy_id", "tmp_1", "tmp_2", "a", "b", "val"]
 
-        source_renames, source_drops = _alignment_maps(rules, columns, rename=True)
-        target_renames, target_drops = _alignment_maps(rules, columns, rename=False)
+        source_renames, source_drops = alignment_maps(rules, columns, rename=True)
+        target_renames, target_drops = alignment_maps(rules, columns, rename=False)
 
         assert source_renames == {"legacy_id": "user_id"}
         assert source_drops == target_drops == {"tmp_1", "tmp_2"}
@@ -2044,8 +2046,8 @@ class TestSharedRuleAndAlignmentHelpers:
         ]
         columns = ["tmp_drop", "tmp_keep", "val"]
 
-        source_renames, source_drops = _alignment_maps(rules, columns, rename=True)
-        _target_renames, target_drops = _alignment_maps(rules, columns, rename=False)
+        source_renames, source_drops = alignment_maps(rules, columns, rename=True)
+        _target_renames, target_drops = alignment_maps(rules, columns, rename=False)
 
         assert source_renames == {}
         assert source_drops == target_drops == {"tmp_drop"}
@@ -2058,7 +2060,7 @@ class TestSharedRuleAndAlignmentHelpers:
             DiffRule(column_names=["s"], rename_to="d"),
         ]
 
-        renames, drops = _alignment_maps(rules, ["id", "s"], rename=True)
+        renames, drops = alignment_maps(rules, ["id", "s"], rename=True)
         (rule,) = _resolve_pushdown_rules(
             DiffConfig(primary_keys=["id"], rules=rules),
             pl.Schema({"id": pl.Int64, "s": pl.Float64}),
@@ -2614,7 +2616,7 @@ class TestFractionalSeconds:
     )
     def test_it_spells_the_fraction_for_polars(self, python: str, polars: str) -> None:
         """Ensure only a `%f` directive is rewritten, never an escaped `%%f`."""
-        assert _polars_datetime_format(python) == polars
+        assert polars_datetime_format(python) == polars
 
     def test_it_parses_one_to_six_digits_as_a_fraction(self) -> None:
         """Ensure `.5` is half a second, not five nanoseconds."""
@@ -3137,10 +3139,10 @@ class TestCastRefusal:
         shows a refusal. It words one as "not supported" or "cannot cast". A
         value it cannot convert is not a refusal: the type can take the cast.
         """
-        refused = target in _UNCASTABLE.get(type(sample.dtype), frozenset())
+        refused = target in UNCASTABLE.get(type(sample.dtype), frozenset())
 
         try:
-            sample.cast(_CAST_TARGETS[target])
+            sample.cast(CAST_TARGETS[target])
             outcome = "cast"
         except (pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError) as exc:
             words = str(exc)

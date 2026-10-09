@@ -1435,7 +1435,7 @@ class SQLPushdownCompiler:
                 expr = self._apply_value_map(expr, rule)
         expr = self._apply_pad_zeros(expr, rule)
         expr = self._apply_datetime_format(expr, rule, dtype)
-        # Stage 6b, `timezone`, emits no SQL; see `_reject_unzoned_timezone` in the engine.
+        # Stage 6b, `timezone`, emits no SQL; see `reject_unzoned_timezone` in `_resolution.py`.
         return self._apply_cast(expr, rule, dtype)
 
     def _key_columns(
