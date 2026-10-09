@@ -86,7 +86,7 @@ def drivers(mocker: MockerFixture) -> None:
     mocker.patch("veridelta.connectors.warehouse.databricks_sql", object())
     mocker.patch("veridelta.connectors.database.connectorx", object())
     mocker.patch("veridelta.engine.fastexcel", object())
-    mocker.patch("veridelta.engine.rapidfuzz_distance", object())
+    mocker.patch("veridelta._matching.rapidfuzz_distance", object())
     mocker.patch("veridelta.engine.find_spec", return_value=object())
 
 
@@ -227,7 +227,7 @@ class TestConfigChecks:
         self, mocker: MockerFixture
     ) -> None:
         """Ensure a local run's scorer is checked for each rule that needs it."""
-        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        mocker.patch("veridelta._matching.rapidfuzz_distance", None)
         rules = [
             DiffRule(column_names=["amount"], absolute_tolerance=0.1),
             DiffRule(column_names=["name"], max_levenshtein_distance=1),
@@ -245,7 +245,7 @@ class TestConfigChecks:
         self, mocker: MockerFixture
     ) -> None:
         """Ensure a pushdown run's Levenshtein limit, which compiles to SQL, needs no extra."""
-        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        mocker.patch("veridelta._matching.rapidfuzz_distance", None)
         rules = [DiffRule(column_names=["NAME"], max_levenshtein_distance=1)]
 
         assert _check(_snowflake("SRC"), _snowflake("TGT"), rules=rules) == []
