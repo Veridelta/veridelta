@@ -1,0 +1,25 @@
+> veridelta run stations_idl.csv stations_python.csv --key station --key obs_date
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    0.0%
+Source Rows:   124
+Target Rows:   124
+Volume Shift:  +0 rows
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       0
+Changed:       124
+Total Issues:  124
+
+Top Column-Level Drifts:
+---------------------------
+- humidity: 124 mismatches
+- pressure_hpa: 31 mismatches
+
+> echo "exit code: $?"
+exit code: 1

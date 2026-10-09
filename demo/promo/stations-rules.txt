@@ -1,0 +1,38 @@
+> cat stations_rules.yaml
+source:
+  path: stations_idl.csv
+target:
+  path: stations_python.csv
+primary_keys: [station, obs_date]
+rules:
+  - column_names: [temp]
+    rename_to: temperature_c
+  - column_names: [humidity]
+    relative_tolerance: 5.0e-08
+    null_values: [-999.0]
+> veridelta run -c stations_rules.yaml
+Loading configuration from stations_rules.yaml...
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    71.77%
+Source Rows:   124
+Target Rows:   124
+Volume Shift:  +0 rows
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       0
+Changed:       35
+Total Issues:  35
+
+Top Column-Level Drifts:
+---------------------------
+- pressure_hpa: 31 mismatches
+- temperature_c: 4 mismatches
+
+> echo "exit code: $?"
+exit code: 1

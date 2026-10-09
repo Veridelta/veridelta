@@ -1,0 +1,289 @@
+{
+  "primary_keys": [
+    "station",
+    "obs_date"
+  ],
+  "added": [],
+  "removed": [],
+  "changed": [
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-01"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-02"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-03"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-04"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-05"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-06"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-07"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-08"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-09"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-10"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-11"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-12"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-13"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-14"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-15"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-16"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-17"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-18"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-19"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-20"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-21"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-22"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-23"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-24"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-25"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-26"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-27"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-28"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-29"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-30"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    },
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-31"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+    }
+  ]
+}

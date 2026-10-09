@@ -1,0 +1,20 @@
+> cat stations.yaml
+source:
+  path: stations_idl.csv
+target:
+  path: stations_python.csv
+primary_keys: [station, obs_date]
+rules:
+  - column_names: [temp]
+    rename_to: temperature_c
+> veridelta suggest -c stations.yaml
+Loading configuration from stations.yaml...
+Comparing, and trying each rule...
+humidity: relative_tolerance 5e-08, null_values [-999.0] explains 124 of 124 differing rows, the largest gap 3e-06
+  for example station='S1', obs_date='2025-01-01'; station='S1', obs_date='2025-01-02'; station='S1', obs_date='2025-01-03'
+rules:
+- column_names:
+  - humidity
+  relative_tolerance: 5.0e-08
+  null_values:
+  - -999.0

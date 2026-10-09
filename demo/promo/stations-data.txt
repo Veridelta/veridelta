@@ -1,0 +1,12 @@
+> head -n 5 stations_idl.csv
+station,obs_date,temp,pressure_hpa,humidity
+S1,2025-01-01,-3.5,1020.0,91.900002
+S1,2025-01-02,-5.0,1021.2,-999.000000
+S1,2025-01-03,-5.9,1022.3,88.599998
+S1,2025-01-04,-6.0,1023.2,85.900002
+> head -n 5 stations_python.csv
+station,obs_date,temperature_c,pressure_hpa,humidity
+S1,2025-01-01,3.5,1020.0,91.9
+S1,2025-01-02,5.0,1021.2,
+S1,2025-01-03,5.9,1022.3,88.6
+S1,2025-01-04,6.0,1023.2,85.9
