@@ -4,16 +4,16 @@ title: Security rules for warehouse SQL and the execution boundary
 description: How every warehouse statement is assembled in connectors/sql.py from allowlisted identifiers, dialect quoting, and strict types, and what never reaches SQL.
 status: stable
 generated: { by: claude-code, at: 2026-10-07T01:07:07Z }
-applies_to: [src/veridelta/connectors/, src/veridelta/models.py, src/veridelta/engine.py]
+applies_to: [src/veridelta/connectors/, src/veridelta/models.py, src/veridelta/engine.py, src/veridelta/_warehouses.py]
 ---
 
 # Security rules for warehouse SQL and the execution boundary
 
-These rules apply to every change under `src/veridelta/connectors/`, and to `models.py` and `engine.py`, on top of the root [AGENTS.md](../AGENTS.md). They matter most in `connectors/sql.py`, where every warehouse statement is assembled.
+These rules apply to every change under `src/veridelta/connectors/`, and to `models.py`, `engine.py`, and the private modules beside it that route or compile pushdown, as `applies_to` lists, on top of the root [AGENTS.md](../AGENTS.md). They matter most in `connectors/sql.py`, where every warehouse statement is assembled.
 
 ## Warehouse SQL assembly
 
-- Assemble warehouse SQL only in `connectors/sql.py`. Do not f-string or concatenate YAML/user strings in `warehouse.py` or `engine.py`.
+- Assemble warehouse SQL only in `connectors/sql.py`. Do not f-string or concatenate YAML/user strings in `warehouse.py`, `engine.py`, or the private modules beside it.
 - `execute_pushdown` runs compiler-produced `statement` only. Do not concatenate config fields into a second SQL string.
 - Identifiers: allowlist each segment (`SQL_IDENTIFIER_SEGMENT` / `SQL_RELATION_PATTERN` in `models.py`) then dialect-quote (Snowflake `"`, Databricks and BigQuery backticks). Fail closed with `ConnectorError` on disallowed characters.
 - Database sources read a `table` through `compile_database_select`, which allowlists each segment and quotes it from `_DATABASE_IDENTIFIER_QUOTES`. That table is keyed by URI scheme, not `SQLDialect`, because a read needs nothing but its quote characters. A Postgres pair that sets `pushdown` compiles through `SQLDialect.POSTGRES` instead. A scheme missing from it raises `ConfigError`; never fall back to another scheme's quotes.

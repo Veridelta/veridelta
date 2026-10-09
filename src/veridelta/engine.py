@@ -8,19 +8,13 @@ Polars. Its helpers live in private modules beside it, and `__all__` lists the
 public names, the file loaders from `_reading.py` among them.
 """
 
-from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from importlib.util import find_spec
 from pathlib import Path
 from typing import (
     Any,
     Final,
     NamedTuple,
-    TypeAlias,
-    TypeGuard,
-    TypeVar,
-    cast,
 )
 from urllib.parse import urlsplit
 
@@ -73,6 +67,13 @@ from veridelta._suggest import (
     differing_only_in,
     suggested_rule,
 )
+from veridelta._warehouses import (
+    WarehousePair,
+    check_backend_pairing,
+    is_warehouse,
+    table_name,
+    warehouse_session,
+)
 from veridelta.config import load_config
 from veridelta.connectors import database as database_connectors
 from veridelta.connectors import duckdb as duckdb_connectors
@@ -81,8 +82,6 @@ from veridelta.connectors.base import (
     PushdownQueryType,
     PushdownSession,
 )
-from veridelta.connectors.database import PostgresPushdownSession
-from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.connectors.sql import (
     SAMPLE_BUCKETS,
     VALUE_MAP_AGREEING_ALIAS,
@@ -91,14 +90,8 @@ from veridelta.connectors.sql import (
     VALUE_MAP_SOURCE_ALIAS,
     VALUE_MAP_TARGET_ALIAS,
     SampleQuery,
-    SQLDialect,
     SQLPushdownCompiler,
     compile_database_select,
-)
-from veridelta.connectors.warehouse import (
-    BigQueryConnector,
-    DatabricksConnector,
-    SnowflakeConnector,
 )
 from veridelta.exceptions import (
     ConfigError,
@@ -148,64 +141,6 @@ __all__ = [
     "NDJSONLoader",
     "ParquetLoader",
 ]
-
-
-_T = TypeVar("_T")
-
-_WarehouseConfig: TypeAlias = (
-    SnowflakeConfig | DatabricksConfig | BigQueryConfig | DatabaseConfig | DuckDBConfig
-)
-"""Connection configs whose comparisons compile to SQL and run in place."""
-
-
-@dataclass(frozen=True)
-class _Warehouse:
-    """How the engine identifies and opens one warehouse backend."""
-
-    name: str
-    dialect: SQLDialect
-    session: Callable[[Any], PushdownSession]
-
-
-_WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
-    # The lambdas look the connector class up when a session opens, so a test
-    # that patches `veridelta.engine.SnowflakeConnector` still intercepts it.
-    SnowflakeConfig: _Warehouse(
-        "Snowflake",
-        SQLDialect.SNOWFLAKE,
-        lambda config: SnowflakeConnector(config),
-    ),
-    DatabricksConfig: _Warehouse(
-        "Databricks",
-        SQLDialect.DATABRICKS,
-        lambda config: DatabricksConnector(config),
-    ),
-    BigQueryConfig: _Warehouse(
-        "BigQuery",
-        SQLDialect.BIGQUERY,
-        lambda config: BigQueryConnector(config),
-    ),
-    # Only a database or DuckDB source that sets `pushdown` is routed here; the
-    # database model allows that on a Postgres table alone.
-    DatabaseConfig: _Warehouse(
-        "Postgres",
-        SQLDialect.POSTGRES,
-        lambda config: PostgresPushdownSession(config),
-    ),
-    DuckDBConfig: _Warehouse(
-        "DuckDB",
-        SQLDialect.DUCKDB,
-        lambda config: DuckDBPushdownSession(config),
-    ),
-}
-"""Every warehouse the engine pushes comparisons down to, keyed by config type."""
-
-
-def _is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
-    """Return whether a source reference is a warehouse connection."""
-    if isinstance(config, (DatabaseConfig, DuckDBConfig)):
-        return config.pushdown
-    return type(config) in _WAREHOUSES
 
 
 def _enforce_pushdown_preconditions(
@@ -1009,80 +944,6 @@ def _collect_changed_sample(connector: PushdownSession, sample: SampleQuery) -> 
     return frame.select(list(sample.renames)).rename(sample.renames)
 
 
-_MIXED_BACKENDS: Final = "Mixed file/lakehouse/database and warehouse backends are unsupported."
-
-_HALF_PUSHDOWN: Final = (
-    "Set pushdown on both sides to compare the tables where they are stored, "
-    "or on neither to read them and compare locally."
-)
-
-
-def _table_name(config: _WarehouseConfig) -> str:
-    """Return the table a pushdown side names."""
-    # `DatabaseConfig` and `DuckDBConfig` require a `table` whenever they set `pushdown`.
-    return cast("str", config.table)
-
-
-@dataclass(frozen=True)
-class _WarehousePair:
-    """Two warehouse tables cleared to share one pushdown session."""
-
-    warehouse: _Warehouse
-    source: _WarehouseConfig
-    target: _WarehouseConfig
-
-    def with_session(self, work: Callable[[PushdownSession, str, str], _T]) -> _T:
-        """Open one session, run `work` on it, and close it whatever happens."""
-        with _warehouse_session(self.source) as session:
-            return work(session, _table_name(self.source), _table_name(self.target))
-
-
-@contextmanager
-def _warehouse_session(config: SourceRef) -> Generator[PushdownSession]:
-    """Connect to the warehouse one side names, and close the session whatever happens."""
-    session = _WAREHOUSES[type(config)].session(config)
-    session.connect()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-def _check_backend_pairing(source: SourceRef, target: SourceRef) -> _WarehousePair | None:
-    """Refuse a pair no engine can compare, without connecting to anything."""
-    # Two sides of one kind disagree only when a database or DuckDB pair half sets `pushdown`.
-    if type(source) is type(target) and _is_warehouse(source) != _is_warehouse(target):
-        raise ConfigError(_HALF_PUSHDOWN)
-    if not _is_warehouse(source):
-        if _is_warehouse(target):
-            raise ConnectorError(_MIXED_BACKENDS)
-        return None
-    if not _is_warehouse(target):
-        raise ConnectorError(_MIXED_BACKENDS)
-    warehouse = _WAREHOUSES[type(source)]
-    target_warehouse = _WAREHOUSES[type(target)]
-    if target_warehouse is not warehouse:
-        raise ConnectorError(
-            "Cross-dialect warehouse pushdown is unsupported: the source is "
-            f"{warehouse.name} and the target is {target_warehouse.name}. Source and "
-            "target must use the same warehouse connection."
-        )
-    # Compared only for equality: the dumps hold passwords and tokens.
-    if source.model_dump(exclude={"table"}) != target.model_dump(exclude={"table"}):
-        raise ConnectorError(
-            "Cross-account warehouse pushdown is unsupported. "
-            f"Source and target {warehouse.name} connections must match."
-        )
-    # One connection by now, so one name is one table, and it would always match.
-    if source.table == target.table:
-        raise ConfigError(
-            f"Source and target both name the same table '{source.table}' on one "
-            "connection, so the comparison could only ever match. Point one side "
-            "at the table it should be compared with."
-        )
-    return _WarehousePair(warehouse, source, target)
-
-
 _EXTRA_PROBES: Final[dict[type[object], tuple[str, Callable[[], bool]]]] = {
     # Each probe reads its module attribute when called, so tests can patch it,
     # and a lakehouse reader is looked up by name rather than imported.
@@ -1230,7 +1091,7 @@ def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
     ]
 
 
-def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
+def _pushdown_findings(diff: DiffConfig, pair: WarehousePair) -> list[ConfigFinding]:
     """Report settings a warehouse run refuses for some stored names or types."""
     name = pair.warehouse.name
     compiler = SQLPushdownCompiler(pair.warehouse.dialect)
@@ -1279,7 +1140,7 @@ def _pushdown_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFin
     return findings
 
 
-def _pushdown_schema_findings(diff: DiffConfig, pair: _WarehousePair) -> list[ConfigFinding]:
+def _pushdown_schema_findings(diff: DiffConfig, pair: WarehousePair) -> list[ConfigFinding]:
     """Probe a warehouse pair and compile its statements without running them."""
     try:
         return pair.with_session(
@@ -1584,7 +1445,7 @@ class DiffEngine:
             >>> target = SourceConfig(path="modern/orders.parquet", format="parquet")
             >>> result = DiffEngine.run_from_configs(diff, source, target)  # doctest: +SKIP
         """
-        pair = _check_backend_pairing(source, target)
+        pair = check_backend_pairing(source, target)
         if pair is not None:
             if baseline is not None:
                 raise ConfigError(
@@ -1691,9 +1552,9 @@ class DiffEngine:
                 wrong. A configuration with no errors is expected to start.
         """
         findings: list[ConfigFinding] = []
-        pair: _WarehousePair | None = None
+        pair: WarehousePair | None = None
         try:
-            pair = _check_backend_pairing(source, target)
+            pair = check_backend_pairing(source, target)
         except (ConfigError, ConnectorError) as exc:
             findings.append(_error(str(exc)))
         findings += _missing_extra_findings(source, target)
@@ -1771,10 +1632,10 @@ class DiffEngine:
                 probe would have to run in full.
             ConnectorError: If the side cannot be reached or read.
         """
-        if not _is_warehouse(config):
+        if not is_warehouse(config):
             return schema_frame(config).collect_schema()
-        with _warehouse_session(config) as session:
-            return _probe_relation(session, _table_name(config))[1]
+        with warehouse_session(config) as session:
+            return _probe_relation(session, table_name(config))[1]
 
     @classmethod
     def _local_schema_findings(
@@ -1845,7 +1706,7 @@ class DiffEngine:
         """
         # Bad thresholds fail before a session opens or a file is read.
         _check_value_map_thresholds(min_confidence, min_support, sample_fraction)
-        pair = _check_backend_pairing(source, target)
+        pair = check_backend_pairing(source, target)
         if pair is not None:
             return pair.with_session(
                 lambda session, source_table, target_table: _collect_value_map_proposals(
@@ -1967,7 +1828,7 @@ class DiffEngine:
             DataIntegrityError: If either dataset repeats a normalized primary key.
         """
         check_max_share(max_share)
-        if _check_backend_pairing(source, target) is not None:
+        if check_backend_pairing(source, target) is not None:
             raise ConfigError(
                 "veridelta suggest reads both sides locally, and this pair is compared "
                 "where it is stored. Suggest rules on files exported from it, or on a "

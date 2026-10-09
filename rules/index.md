@@ -5,5 +5,5 @@ The rules a coding agent reads before it changes a file, one concept per file. E
 ## Rule
 
 - [Engine rules](engine.md): data manipulation, models and configuration, and loaders, under `src/veridelta/`.
-- [Security rules](security.md): warehouse SQL assembly and the execution boundary, in `src/veridelta/connectors/`, `models.py`, and `engine.py`.
+- [Security rules](security.md): warehouse SQL assembly and the execution boundary, in `src/veridelta/connectors/`, `models.py`, `engine.py`, and the private modules beside it that route or compile pushdown.
 - [Testing rules](testing.md): the layout of `tests/`, fixtures, markers, the parity suite, and the coverage gate.

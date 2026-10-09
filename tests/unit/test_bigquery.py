@@ -413,7 +413,7 @@ class TestBigQueryRouting:
 
     def test_it_pushes_a_pair_down_to_bigquery(self, mocker: MockerFixture) -> None:
         """Ensure two tables on one connection open one BigQuery session and close it."""
-        connector = mocker.patch("veridelta.engine.BigQueryConnector")
+        connector = mocker.patch("veridelta._warehouses.BigQueryConnector")
         connector.return_value.execute_pushdown.side_effect = ConnectorError("stop here")
         source, target = _pair()
 
@@ -437,7 +437,7 @@ class TestBigQueryRouting:
         self, mocker: MockerFixture, overrides: dict[str, Any]
     ) -> None:
         """Ensure every connection setting, but not the table, is part of the fingerprint."""
-        connector = mocker.patch("veridelta.engine.BigQueryConnector")
+        connector = mocker.patch("veridelta._warehouses.BigQueryConnector")
         source, target = _pair(**overrides)
 
         with pytest.raises(ConnectorError, match="BigQuery connections must match"):

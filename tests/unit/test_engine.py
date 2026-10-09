@@ -2494,7 +2494,7 @@ class TestValueMapProposals:
         self, mocker: MockerFixture
     ) -> None:
         """Ensure a warehouse table cannot be crosswalked against a file, nor a session opened."""
-        connector = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector = mocker.patch("veridelta._warehouses.SnowflakeConnector")
         warehouse = SnowflakeConfig(
             table="ANALYTICS.PUBLIC.EVENTS",
             account="xy12345",
