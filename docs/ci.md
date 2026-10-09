@@ -37,6 +37,11 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
 ```
 
+The comment looks like this one, from an [example pull request](https://github.com/Veridelta/veridelta-media/pull/13) that compares the demo's 40 accounts with a [baseline](#accepting-drift):
+
+![A pull request comment by github-actions titled "Veridelta: FAILED": a match rate of 97.5%, 40 source and 39 target rows, 1 changed, 1 accepted by the baseline, drift in region, and the changed value, account 17's region from south to east.](assets/action-comment-light.png#only-light)
+![A pull request comment by github-actions titled "Veridelta: FAILED": a match rate of 97.5%, 40 source and 39 target rows, 1 changed, 1 accepted by the baseline, drift in region, and the changed value, account 17's region from south to east.](assets/action-comment-dark.png#only-dark)
+
 **Version.** Pin the action to a release tag such as `v0.35.0`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
 
 **Credentials.** Pass credentials as step environment variables, as above, and reference them from the configuration as `${SNOWFLAKE_PASSWORD}`. See [Environment variables](configuration.md#environment-variables).
