@@ -53,7 +53,8 @@ from veridelta._resolution import (
     CAST_TARGETS,
     UNCASTABLE,
     EffectiveRule,
-    alignment_maps,
+    check_schema,
+    drop_and_rename,
     duplicate_keys_error,
     fold_rule_defaults,
     is_real_number,
@@ -63,6 +64,7 @@ from veridelta._resolution import (
     quoted_list,
     reject_unzoned_timezone,
     unusable_sentinel_error,
+    validate_probe_schemas,
 )
 from veridelta._results import (
     accept_baseline,
@@ -243,7 +245,7 @@ def _reject_warehouse_header_normalization(diff: DiffConfig, *schemas: pl.Schema
 def _probe_relation(connector: PushdownSession, table: str) -> tuple[pl.LazyFrame, pl.Schema]:
     """Read a relation's columns with a zero-row probe, as a warehouse run starts.
 
-    Returns the probe, which `validate_schemas` reads, and the columns with the
+    Returns the probe, which `validate_probe_schemas` reads, and the columns with the
     types the warehouse declares.
     """
     probe = connector.execute_pushdown(
@@ -266,7 +268,7 @@ def _validate_pushdown_schema(
     source_probe, source_schema = _probe_relation(connector, source_table)
     target_probe, target_schema = _probe_relation(connector, target_table)
     _reject_warehouse_header_normalization(diff, source_schema, target_schema)
-    DiffEngine.validate_schemas(diff, source_probe, target_probe)
+    validate_probe_schemas(diff, source_probe, target_probe)
     return source_schema, target_schema
 
 
@@ -1695,80 +1697,11 @@ class DiffEngine:
         if self.config.normalize_column_names:
             self.source = normalize_header_names(self.source)
             self.target = normalize_header_names(self.target)
-
-        src_cols = self.source.collect_schema().names()
-        tgt_cols = self.target.collect_schema().names()
-
-        src_rename, src_drop = alignment_maps(self.config.rules, src_cols, rename=True)
-        # The target already carries the post-rename spellings, which the
-        # resolver matches under either name.
-        _, tgt_drop = alignment_maps(self.config.rules, tgt_cols, rename=False)
-
-        self.source = self.source.drop(list(src_drop)).rename(src_rename)
-        self.target = self.target.drop(list(tgt_drop))
-
-    def _missing_keys(self, side: str, columns: list[str]) -> str | None:
-        """Say which primary keys a side lacks, and what it holds instead.
-
-        Args:
-            side (str): `source` or `target`.
-            columns (list[str]): The side's columns after alignment.
-
-        Returns:
-            str | None: The message, or `None` when every key is present.
-        """
-        present = set(columns)
-        missing = [key for key in self.config.primary_keys if key not in present]
-        if not missing:
-            return None
-        where = f"the {side}"
-        if self._sides is not None:
-            where += f", {self._sides[side]}"
-        keys = quoted_list(missing)
-        noun, verb = ("key", "is") if len(missing) == 1 else ("keys", "are")
-        if not columns:
-            return f"The primary {noun} {keys} {verb} not among the columns of {where}. No column was read."
-        shown = ", ".join(repr(column)[:60] for column in columns[:10])
-        if len(columns) > 10:
-            shown += f", and {len(columns) - 10} more"
-        return (
-            f"The primary {noun} {keys} {verb} not among the columns of {where}. "
-            f"The columns read are: {shown}."
-        )
+        self.source, self.target = drop_and_rename(self.config.rules, self.source, self.target)
 
     def _validate_schema(self) -> None:
         """Enforce the configured `SchemaMode` before comparison."""
-        source_names = self.source.collect_schema().names()
-        target_names = self.target.collect_schema().names()
-        source_cols, target_cols = set(source_names), set(target_names)
-
-        for side, names in (("source", source_names), ("target", target_names)):
-            message = self._missing_keys(side, names)
-            if message is not None:
-                raise ConfigError(message)
-
-        # Sorted, since a set prints in an order that changes from run to run.
-        only_source = sorted(source_cols - target_cols)
-        only_target = sorted(target_cols - source_cols)
-        mode = self.config.schema_mode
-        if mode == "exact" and (only_source or only_target):
-            parts: list[str] = []
-            if only_source:
-                parts.append(f"only the source has {quoted_list(only_source)}")
-            if only_target:
-                parts.append(f"only the target has {quoted_list(only_target)}")
-            message = f"EXACT schema match failed: {'; '.join(parts)}."
-        elif mode == "allow_additions" and only_source:
-            message = f"Target is missing required source columns: {quoted_list(only_source)}."
-        elif mode == "allow_removals" and only_target:
-            message = (
-                f"Target contains unauthorized additional columns: {quoted_list(only_target)}."
-            )
-        else:
-            return
-        if self._sides is not None:
-            message += f" The source is {self._sides['source']}, and the target is {self._sides['target']}."
-        raise ConfigError(message)
+        check_schema(self.config, self.source, self.target, self._sides)
 
     def run(self, *, baseline: Baseline | None = None) -> DiffResult:
         """Compare the two datasets and return the result.

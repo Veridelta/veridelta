@@ -278,3 +278,99 @@ def polars_datetime_format(fmt: str) -> str:
 def is_real_number(value: object) -> TypeGuard[int | float]:
     """Return whether a value is an `int` or `float`, and not a `bool`."""
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def drop_and_rename(
+    rules: list[DiffRule], source: pl.LazyFrame, target: pl.LazyFrame
+) -> tuple[pl.LazyFrame, pl.LazyFrame]:
+    """Drop each side's ignored columns, and give the source's renamed ones their target names."""
+    src_cols = source.collect_schema().names()
+    tgt_cols = target.collect_schema().names()
+
+    src_rename, src_drop = alignment_maps(rules, src_cols, rename=True)
+    # The target already carries the post-rename spellings, which the
+    # resolver matches under either name.
+    _, tgt_drop = alignment_maps(rules, tgt_cols, rename=False)
+
+    return source.drop(list(src_drop)).rename(src_rename), target.drop(list(tgt_drop))
+
+
+def missing_keys(
+    primary_keys: Sequence[str], sides: Mapping[str, str] | None, side: str, columns: list[str]
+) -> str | None:
+    """Say which primary keys a side lacks, and what it holds instead.
+
+    Args:
+        primary_keys (Sequence[str]): The configuration's primary keys.
+        sides (Mapping[str, str] | None): How each side was read, when known.
+        side (str): `source` or `target`.
+        columns (list[str]): The side's columns after alignment.
+
+    Returns:
+        str | None: The message, or `None` when every key is present.
+    """
+    present = set(columns)
+    missing = [key for key in primary_keys if key not in present]
+    if not missing:
+        return None
+    where = f"the {side}"
+    if sides is not None:
+        where += f", {sides[side]}"
+    keys = quoted_list(missing)
+    noun, verb = ("key", "is") if len(missing) == 1 else ("keys", "are")
+    if not columns:
+        return f"The primary {noun} {keys} {verb} not among the columns of {where}. No column was read."
+    shown = ", ".join(repr(column)[:60] for column in columns[:10])
+    if len(columns) > 10:
+        shown += f", and {len(columns) - 10} more"
+    return (
+        f"The primary {noun} {keys} {verb} not among the columns of {where}. "
+        f"The columns read are: {shown}."
+    )
+
+
+def check_schema(
+    config: DiffConfig,
+    source: pl.LazyFrame,
+    target: pl.LazyFrame,
+    sides: Mapping[str, str] | None,
+) -> None:
+    """Enforce the primary keys and the configured `SchemaMode` on two aligned sides."""
+    source_names = source.collect_schema().names()
+    target_names = target.collect_schema().names()
+    source_cols, target_cols = set(source_names), set(target_names)
+
+    for side, names in (("source", source_names), ("target", target_names)):
+        message = missing_keys(config.primary_keys, sides, side, names)
+        if message is not None:
+            raise ConfigError(message)
+
+    # Sorted, since a set prints in an order that changes from run to run.
+    only_source = sorted(source_cols - target_cols)
+    only_target = sorted(target_cols - source_cols)
+    mode = config.schema_mode
+    if mode == "exact" and (only_source or only_target):
+        parts: list[str] = []
+        if only_source:
+            parts.append(f"only the source has {quoted_list(only_source)}")
+        if only_target:
+            parts.append(f"only the target has {quoted_list(only_target)}")
+        message = f"EXACT schema match failed: {'; '.join(parts)}."
+    elif mode == "allow_additions" and only_source:
+        message = f"Target is missing required source columns: {quoted_list(only_source)}."
+    elif mode == "allow_removals" and only_target:
+        message = f"Target contains unauthorized additional columns: {quoted_list(only_target)}."
+    else:
+        return
+    if sides is not None:
+        message += f" The source is {sides['source']}, and the target is {sides['target']}."
+    raise ConfigError(message)
+
+
+def validate_probe_schemas(config: DiffConfig, source: pl.LazyFrame, target: pl.LazyFrame) -> None:
+    """Align two column probes and enforce `schema_mode`, as `DiffEngine.validate_schemas` does."""
+    if config.normalize_column_names:
+        source = normalize_header_names(source)
+        target = normalize_header_names(target)
+    source, target = drop_and_rename(config.rules, source, target)
+    check_schema(config, source, target, None)
