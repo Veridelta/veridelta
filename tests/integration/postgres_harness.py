@@ -35,8 +35,9 @@ import psycopg
 from psycopg import sql
 
 from veridelta._pushdown import collect_pushdown_summary
+from veridelta._value_maps import collect_value_map_proposals
 from veridelta.connectors.database import PostgresPushdownSession
-from veridelta.engine import DiffEngine, _collect_value_map_proposals
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DatabaseConfig
 
@@ -156,7 +157,7 @@ def run_value_map_pushdown(
         session = RecordingPostgresSession(database_source(source_table, pushdown=True))
         with session:
             session.connect()
-            proposals = _collect_value_map_proposals(
+            proposals = collect_value_map_proposals(
                 session,
                 source_table,
                 target_table,
