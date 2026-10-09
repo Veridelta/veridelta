@@ -12,8 +12,9 @@ import polars as pl
 import pytest
 import yaml
 
+from veridelta._suggest import _round_up
 from veridelta.cli import main
-from veridelta.engine import DiffEngine, _round_up
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, DiffRule, DuckDBConfig, RuleSuggestion
 
