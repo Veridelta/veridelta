@@ -29,9 +29,9 @@ from veridelta._resolution import (
     normalized_dtype,
     polars_datetime_format,
 )
+from veridelta._results import _ARTIFACT_WRITERS
 from veridelta.connectors.base import optional_module
 from veridelta.engine import (
-    _ARTIFACT_WRITERS,
     DiffEngine,
     LoaderFactory,
     _column_mismatches_from_frame,
