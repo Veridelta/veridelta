@@ -1,3 +1,19 @@
+## v0.35.0 (2026-10-09)
+
+The GitHub Action takes a `baseline` input: a baseline file, relative to
+`working-directory`, whose drift the run accepts, so a pull request that changes data on
+purpose fails only on drift the file does not list. Write the file once with
+`veridelta run --save-baseline accepted.json`, commit it next to the configuration, and
+pass `baseline: accepted.json`. The path reaches `veridelta run --baseline` as one
+argument, whatever it holds.
+[Accepting drift](https://veridelta.github.io/veridelta/ci/#accepting-drift) in the CI
+guide shows the step. The GitLab template does not take the input, since it stays as it
+is unless a GitLab user asks.
+
+### Feat
+
+- a baseline input on the GitHub Action (#360)
+
 ## v0.34.0 (2026-10-09)
 
 `Baseline` and `AcceptedChange` now import from `veridelta`, as the other models a user
