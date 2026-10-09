@@ -1,3 +1,17 @@
+## v0.35.1 (2026-10-09)
+
+Each run of the GitHub Action writes its reports to a folder of its own, so a job that
+runs the action twice keeps both runs' reports. Before, the second run overwrote the
+first's `summary.json`, `summary.md`, `report.html`, and `otel-metrics.json`, while the
+first step's outputs still named those paths. Each artifact now holds only its own run's
+files, and a run that ends before it writes a summary no longer copies the previous run's
+summary into the job summary. The CI guide also shows the comment the action posts on a
+pull request, and the rules page says what rules cannot do.
+
+### Fix
+
+- give each GitHub Action run its own reports folder (#363)
+
 ## v0.35.0 (2026-10-09)
 
 The GitHub Action takes a `baseline` input: a baseline file, relative to
