@@ -2,7 +2,7 @@
 
 # The modules held to full branch coverage. CI's core-module gate names the same
 # list, which tests/unit/test_ci_integrations.py checks.
-CORE_MODULES := src/veridelta/engine.py,src/veridelta/_resolution.py,src/veridelta/_suggest.py,src/veridelta/_matching.py,src/veridelta/_reading.py,src/veridelta/_warehouses.py,src/veridelta/_results.py,src/veridelta/_pushdown.py,src/veridelta/_checks.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py
+CORE_MODULES := src/veridelta/engine.py,src/veridelta/_resolution.py,src/veridelta/_suggest.py,src/veridelta/_matching.py,src/veridelta/_reading.py,src/veridelta/_warehouses.py,src/veridelta/_results.py,src/veridelta/_pushdown.py,src/veridelta/_checks.py,src/veridelta/_value_maps.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py
 
 install:
 	uv sync --all-extras

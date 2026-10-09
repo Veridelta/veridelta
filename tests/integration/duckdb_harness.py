@@ -43,8 +43,9 @@ import duckdb
 
 from tests.integration import postgres_harness, warehouse_harness
 from veridelta._pushdown import collect_pushdown_summary
+from veridelta._value_maps import collect_value_map_proposals
 from veridelta.connectors.duckdb import DuckDBPushdownSession
-from veridelta.engine import DiffEngine, _collect_value_map_proposals
+from veridelta.engine import DiffEngine
 from veridelta.models import DuckDBConfig
 
 if TYPE_CHECKING:
@@ -153,7 +154,7 @@ def _duckdb_value_map_pushdown(
 ) -> tuple[list[ValueMapProposal], list[str]]:
     """Propose value maps from the frames inside a temporary DuckDB file."""
     with _duckdb_session(source, target) as session:
-        proposals = _collect_value_map_proposals(
+        proposals = collect_value_map_proposals(
             session,
             SOURCE_TABLE,
             TARGET_TABLE,

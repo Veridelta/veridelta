@@ -4,7 +4,7 @@ title: Security rules for warehouse SQL and the execution boundary
 description: How every warehouse statement is assembled in connectors/sql.py from allowlisted identifiers, dialect quoting, and strict types, and what never reaches SQL.
 status: stable
 generated: { by: claude-code, at: 2026-10-07T01:07:07Z }
-applies_to: [src/veridelta/connectors/, src/veridelta/models.py, src/veridelta/engine.py, src/veridelta/_warehouses.py, src/veridelta/_pushdown.py, src/veridelta/_checks.py]
+applies_to: [src/veridelta/connectors/, src/veridelta/models.py, src/veridelta/engine.py, src/veridelta/_warehouses.py, src/veridelta/_pushdown.py, src/veridelta/_checks.py, src/veridelta/_value_maps.py]
 ---
 
 # Security rules for warehouse SQL and the execution boundary
