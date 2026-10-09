@@ -1,3 +1,12 @@
+## v0.33.5 (2026-10-09)
+
+No behavior changed. PyPI shows the README of the newest release, so this release brings
+two README changes to the project page there. A Status section says where the project
+stands: it is in alpha, its tests run on generated data, nobody but its maintainer is known
+to have run it, and its pushdown SQL has not yet run in a live cloud warehouse. The version
+badge now comes from shields.io, which reads PyPI directly. The old one, from badge.fury.io,
+still showed 0.14.0. GitHub Releases also take their notes from this changelog now.
+
 ## v0.33.4 (2026-10-08)
 
 A pushdown run, its check under `validate --schemas`, and its row sample each compiled the
