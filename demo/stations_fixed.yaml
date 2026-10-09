@@ -1,0 +1,11 @@
+source:
+  path: stations_idl.csv
+target:
+  path: stations_python_fixed.csv
+primary_keys: [station, obs_date]
+rules:
+  - column_names: [temp]
+    rename_to: temperature_c
+  - column_names: [humidity]
+    relative_tolerance: 5.0e-08
+    null_values: [-999.0]

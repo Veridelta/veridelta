@@ -1,0 +1,43 @@
+> head -n 16 stations_accepted.json
+{
+  "primary_keys": [
+    "station",
+    "obs_date"
+  ],
+  "added": [],
+  "removed": [],
+  "changed": [
+    {
+      "key": {
+        "station": "S3",
+        "obs_date": "2025-01-01"
+      },
+      "columns": [
+        "pressure_hpa"
+      ]
+> veridelta run -c stations_rules.yaml --baseline stations_accepted.json
+Loading configuration from stations_rules.yaml...
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        FAILED
+Match Rate:    96.77%
+Source Rows:   124
+Target Rows:   124
+Volume Shift:  +0 rows
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       0
+Changed:       4
+Total Issues:  4
+Accepted:      31
+
+Top Column-Level Drifts:
+---------------------------
+- temperature_c: 4 mismatches
+
+> echo "exit code: $?"
+exit code: 1

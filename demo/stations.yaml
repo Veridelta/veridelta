@@ -1,0 +1,8 @@
+source:
+  path: stations_idl.csv
+target:
+  path: stations_python.csv
+primary_keys: [station, obs_date]
+rules:
+  - column_names: [temp]
+    rename_to: temperature_c

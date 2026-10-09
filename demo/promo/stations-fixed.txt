@@ -1,0 +1,22 @@
+> veridelta run -c stations_fixed.yaml --baseline stations_accepted.json
+Loading configuration from stations_fixed.yaml...
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        PASSED (Perfect Match)
+Match Rate:    100.0%
+Source Rows:   124
+Target Rows:   124
+Volume Shift:  +0 rows
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       0
+Changed:       0
+Total Issues:  0
+Accepted:      31
+
+> echo "exit code: $?"
+exit code: 0

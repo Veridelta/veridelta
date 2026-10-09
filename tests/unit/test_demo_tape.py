@@ -12,6 +12,7 @@ the CI fixtures.
 """
 
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -131,6 +132,12 @@ def test_it_finds_every_tape() -> None:
         "data",
         "mcp",
         "run",
+        "stations-baseline",
+        "stations-data",
+        "stations-fixed",
+        "stations-rules",
+        "stations-run",
+        "stations-suggest",
     }
 
 
@@ -255,6 +262,65 @@ class TestQuickStart:
 
         assert _gif(_QUICK_START).name == "demo.gif"
         assert f"]({_GIF_URL})" in readme
+
+
+class TestStations:
+    """Hold the weather station files the `stations-` tapes for video read to their generator."""
+
+    def test_they_are_what_the_generator_writes(self, tmp_path: Path) -> None:
+        """Ensure the committed files are `demo/stations.py`'s, so the data can be made again.
+
+        Text, not bytes, since Git on Windows may check the files out with CRLF line endings.
+        """
+        spec = importlib.util.spec_from_file_location("stations", _DEMO / "stations.py")
+        assert spec is not None
+        assert spec.loader is not None
+        stations = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(stations)
+
+        stations.main(tmp_path)
+
+        for name in ("stations_idl.csv", "stations_python.csv", "stations_python_fixed.csv"):
+            written = (tmp_path / name).read_text(encoding="utf-8")
+            assert written == (_DEMO / name).read_text(encoding="utf-8"), name
+
+    def test_the_fixed_port_restores_only_the_lost_signs(self) -> None:
+        """Ensure the port the video ends on fixes its own bug, four minus signs, alone."""
+        port = (_DEMO / "stations_python.csv").read_text(encoding="utf-8").splitlines()
+        fixed = (_DEMO / "stations_python_fixed.csv").read_text(encoding="utf-8").splitlines()
+
+        changed = [(old, new) for old, new in zip(port, fixed, strict=True) if old != new]
+
+        assert len(changed) == 4
+        for old, new in changed:
+            station, day, temperature, *rest = new.split(",")
+            assert temperature.startswith("-")
+            assert old == ",".join([station, day, temperature[1:], *rest])
+
+    def test_the_baseline_accepts_only_the_pressure_fix(self) -> None:
+        """Ensure the baseline accepts station S3's pressure, the fix made on purpose, and no more."""
+        accepted = json.loads((_DEMO / "stations_accepted.json").read_text(encoding="utf-8"))
+
+        assert accepted["added"] == []
+        assert accepted["removed"] == []
+        assert len(accepted["changed"]) == 31
+        assert {row["key"]["station"] for row in accepted["changed"]} == {"S3"}
+        assert all(row["columns"] == ["pressure_hpa"] for row in accepted["changed"])
+
+    def test_the_configurations_differ_only_as_the_story_needs(self) -> None:
+        """Ensure the rules add only suggest's rule to the rename, and the fix changes the target."""
+        renamed = (_DEMO / "stations.yaml").read_text(encoding="utf-8")
+        rules = (_DEMO / "stations_rules.yaml").read_text(encoding="utf-8")
+        fixed = (_DEMO / "stations_fixed.yaml").read_text(encoding="utf-8")
+
+        assert rules == renamed + (
+            "  - column_names: [humidity]\n"
+            "    relative_tolerance: 5.0e-08\n"
+            "    null_values: [-999.0]\n"
+        )
+        assert fixed == rules.replace(
+            "path: stations_python.csv", "path: stations_python_fixed.csv"
+        )
 
 
 class TestAccounts:
