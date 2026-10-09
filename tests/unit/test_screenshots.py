@@ -6,7 +6,8 @@
 `make screenshots` writes the images with a browser, so these tests read only
 what it wrote: the card says what PyPI says, every image has the size its use
 takes, and the docs site and the results page point at them. The docs site
-shows the logo the card shows, in the same colors.
+shows the logo the card shows, in the same colors. The CI guide shows the
+Action's pull request comment, which GitHub rendered.
 """
 
 import re
@@ -119,3 +120,16 @@ def test_the_results_page_shows_the_report_in_each_scheme(scheme: str) -> None:
 
     assert f"](assets/report-{scheme}.png#only-{scheme})" in page
     assert _size(_ASSETS / f"report-{scheme}.png") == (1280, 800)
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_ci_guide_shows_the_action_comment_in_each_scheme(scheme: str) -> None:
+    """Ensure the CI guide shows the Action's comment in the reader's color scheme.
+
+    GitHub renders the comment, so no make target writes it: it was captured once
+    from the example pull request the guide links to.
+    """
+    page = (_ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+
+    assert f"](assets/action-comment-{scheme}.png#only-{scheme})" in page
+    assert _size(_ASSETS / f"action-comment-{scheme}.png") == (1632, 1380)
