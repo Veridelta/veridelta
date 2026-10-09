@@ -42,8 +42,9 @@ from typing import TYPE_CHECKING, Final, NamedTuple, Protocol
 import duckdb
 
 from tests.integration import postgres_harness, warehouse_harness
+from veridelta._pushdown import collect_pushdown_summary
 from veridelta.connectors.duckdb import DuckDBPushdownSession
-from veridelta.engine import DiffEngine, _collect_pushdown_summary, _collect_value_map_proposals
+from veridelta.engine import DiffEngine, _collect_value_map_proposals
 from veridelta.models import DuckDBConfig
 
 if TYPE_CHECKING:
@@ -137,7 +138,7 @@ def _duckdb_pushdown(
 ) -> tuple[DiffResult, list[str]]:
     """Compare the frames inside a temporary DuckDB file."""
     with _duckdb_session(source, target) as session:
-        result = _collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
+        result = collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
         return result, list(session.statements)
 
 
