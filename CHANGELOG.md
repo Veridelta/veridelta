@@ -1,3 +1,16 @@
+## v0.34.0 (2026-10-09)
+
+`Baseline` and `AcceptedChange` now import from `veridelta`, as the other models a user
+builds do, so a baseline built in Python no longer needs `from veridelta.models import
+Baseline`. `veridelta.models` still exports both. [Accepting
+drift](https://veridelta.github.io/veridelta/cli/#accepting-drift) gains a Python example:
+build the file from a result with `Baseline.of`, write it, read it back, and pass it to
+`run_from_configs` as `baseline`.
+
+### Feat
+
+- import Baseline and AcceptedChange from veridelta (#358)
+
 ## v0.33.6 (2026-10-09)
 
 No behavior changed. `engine.py` held 3,421 lines, most of them helpers around one class.
