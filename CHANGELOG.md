@@ -1,3 +1,31 @@
+## v0.33.6 (2026-10-09)
+
+No behavior changed. `engine.py` held 3,421 lines, most of them helpers around one class.
+It now holds `DiffEngine` and the names it exports, in 1,102 lines. The helpers live in
+nine private modules beside it, each with one job: rule resolution, `suggest`, local
+matching, reading, warehouse routing, results, pushdown, config checks, and value maps.
+[A decision record](https://github.com/Veridelta/veridelta/blob/main/decisions/engine-helpers-in-private-modules.md)
+says why. Every name `veridelta.engine` exports is the same, and the test suites compile
+the same SQL and make the same engine calls, in the same order, as 0.33.5 did. Three
+attributes left `veridelta.engine`, since the code that reads them moved: the `fastexcel`
+and `rapidfuzz_distance` probes, which the API page showed, and `logger`. The logger keeps
+its name, so `logging.getLogger("veridelta.engine")` returns the same logger, and
+`--verbose` prints the same lines.
+
+### Refactor
+
+- move crosswalk's proposals out of engine.py into _value_maps.py (#355)
+- move the config checks out of engine.py into _checks.py (#354)
+- move pushdown planning and collecting into _pushdown.py (#353)
+- check a pushdown's probes without going through DiffEngine (#352)
+- move pushdown rule resolution out of engine.py into _pushdown.py (#351)
+- move artifacts and baselines out of engine.py into _results.py (#350)
+- move warehouse routing out of engine.py into _warehouses.py (#349)
+- move the loaders out of engine.py into _reading.py (#348)
+- move local matching out of engine.py into _matching.py (#347)
+- move suggest's proposals out of engine.py into _suggest.py (#346)
+- move rule resolution out of engine.py into _resolution.py (#345)
+
 ## v0.33.5 (2026-10-09)
 
 No behavior changed. PyPI shows the README of the newest release, so this release brings
