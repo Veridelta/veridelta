@@ -19,6 +19,13 @@ from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
 from veridelta._matching import _score_differing_pairs, pairable, similarity_test
+from veridelta._pushdown import (
+    refuse_mixed_pushdown_types,
+    resolve_pushdown_keys,
+    resolve_pushdown_rules,
+    type_drift_columns,
+    wide_integer_columns,
+)
 from veridelta._reading import _describe_source
 from veridelta._resolution import (
     CAST_TARGETS,
@@ -35,11 +42,6 @@ from veridelta.engine import (
     DiffEngine,
     LoaderFactory,
     _column_mismatches_from_frame,
-    _refuse_mixed_pushdown_types,
-    _resolve_pushdown_keys,
-    _resolve_pushdown_rules,
-    _type_drift_columns,
-    _wide_integer_columns,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
@@ -1683,7 +1685,7 @@ class TestPushdownRuleHelpers:
         """Ensure a source-only name is compared against its target alias."""
         source = pl.Schema({"id": pl.Int64, "legacy_amt": pl.Float64})
         target = pl.Schema({"id": pl.Int64, "amount": pl.Float64})
-        rules = _resolve_pushdown_rules(
+        rules = resolve_pushdown_rules(
             DiffConfig(
                 primary_keys=["id"],
                 rules=[DiffRule(column_names=["legacy_amt"], rename_to="amount")],
@@ -1700,7 +1702,7 @@ class TestPushdownRuleHelpers:
         """Ensure a source-only measure does not become a dangling predicate."""
         source = pl.Schema({"id": pl.Int64, "extra": pl.Int64})
         target = pl.Schema({"id": pl.Int64})
-        rules = _resolve_pushdown_rules(DiffConfig(primary_keys=["id"]), source, target)
+        rules = resolve_pushdown_rules(DiffConfig(primary_keys=["id"]), source, target)
 
         assert rules == []
 
@@ -1717,7 +1719,7 @@ class TestPushdownRuleHelpers:
                 return pl.Int64()
 
         schema = _PartialSchema()
-        rules = _resolve_pushdown_rules(
+        rules = resolve_pushdown_rules(
             DiffConfig(
                 primary_keys=["id"],
                 rules=[DiffRule(column_names=["ts"], timezone="UTC")],
@@ -1762,7 +1764,7 @@ class TestPushdownRuleHelpers:
 
         tolerances = {
             rule.column_names[0]: (rule.absolute_tolerance, rule.relative_tolerance)
-            for rule in _resolve_pushdown_rules(config, schema, schema)
+            for rule in resolve_pushdown_rules(config, schema, schema)
         }
 
         assert tolerances == {
@@ -1817,7 +1819,7 @@ class TestPushdownRuleHelpers:
         )
 
         with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
-            _resolve_pushdown_rules(config, schema, schema)
+            resolve_pushdown_rules(config, schema, schema)
 
     def test_it_forwards_an_edit_distance_only_to_columns_compared_as_text(self) -> None:
         """Ensure the warehouse loosens exactly the columns a local run measures as text."""
@@ -1847,7 +1849,7 @@ class TestPushdownRuleHelpers:
 
         limits = {
             rule.column_names[0]: rule.max_levenshtein_distance
-            for rule in _resolve_pushdown_rules(config, schema, schema)
+            for rule in resolve_pushdown_rules(config, schema, schema)
         }
 
         assert limits == {"name": 2, "code": None, "padded": 2, "parsed": None, "counted": None}
@@ -1866,7 +1868,7 @@ class TestPushdownRuleHelpers:
             rules=[DiffRule.model_validate({"column_names": ["code"], field: value})],
         )
 
-        (rule,) = _resolve_pushdown_rules(config, schema, schema)
+        (rule,) = resolve_pushdown_rules(config, schema, schema)
 
         assert rule.max_levenshtein_distance is None
         assert rule.min_jaro_winkler_similarity is None
@@ -1886,7 +1888,7 @@ class TestPushdownRuleHelpers:
         )
         schema = pl.Schema({"id": pl.String, "val": pl.Int64})
 
-        (key_rule,) = _resolve_pushdown_keys(config, schema, schema)
+        (key_rule,) = resolve_pushdown_keys(config, schema, schema)
 
         assert key_rule.column_names == ["id"]
         assert key_rule.rename_to is None
@@ -1903,7 +1905,7 @@ class TestPushdownRuleHelpers:
             rules=[DiffRule(column_names=["legacy_id"], rename_to="user_id", pad_zeros=3)],
         )
 
-        (key_rule,) = _resolve_pushdown_keys(
+        (key_rule,) = resolve_pushdown_keys(
             config,
             pl.Schema({"legacy_id": pl.Int64, "val": pl.Int64}),
             pl.Schema({"user_id": pl.String, "val": pl.Int64}),
@@ -1928,7 +1930,7 @@ class TestPushdownRuleHelpers:
         )
         schema = pl.Schema({"a": pl.String, "b": pl.String})
 
-        (key_rule,) = _resolve_pushdown_keys(config, schema, schema)
+        (key_rule,) = resolve_pushdown_keys(config, schema, schema)
 
         assert key_rule.column_names == ["b"]
         assert key_rule.rename_to == "a"
@@ -1943,7 +1945,7 @@ class TestPushdownRuleHelpers:
         )
         schema = pl.Schema({"user_id": pl.Int64, "val": pl.Int64})
 
-        (key_rule,) = _resolve_pushdown_keys(config, schema, schema)
+        (key_rule,) = resolve_pushdown_keys(config, schema, schema)
 
         assert key_rule.column_names == ["user_id"]
         assert key_rule.rename_to is None
@@ -1960,9 +1962,9 @@ class TestPushdownRuleHelpers:
         naive = pl.Schema({"ts": pl.Datetime()})
 
         with pytest.raises(ConfigError, match="cannot hold"):
-            _resolve_pushdown_keys(sentinels, text, text)
+            resolve_pushdown_keys(sentinels, text, text)
         with pytest.raises(ConfigError, match="timezone-naive"):
-            _resolve_pushdown_keys(zoned, naive, naive)
+            resolve_pushdown_keys(zoned, naive, naive)
 
     def test_it_drops_null_mismatch_counts_and_rejects_non_numeric_ones(self) -> None:
         """Ensure an empty join and a garbled tally are both handled."""
@@ -2009,7 +2011,7 @@ class TestSharedRuleAndAlignmentHelpers:
         )
         schema = pl.Schema({"id": pl.Int64, "amount": pl.Float64})
 
-        (rule,) = _resolve_pushdown_rules(config, schema, schema)
+        (rule,) = resolve_pushdown_rules(config, schema, schema)
         local = fold_rule_defaults(config.rules[0], config)
 
         assert rule.absolute_tolerance == local["abs_tol"] == 0.25
@@ -2059,7 +2061,7 @@ class TestSharedRuleAndAlignmentHelpers:
         ]
 
         renames, drops = alignment_maps(rules, ["id", "s"], rename=True)
-        (rule,) = _resolve_pushdown_rules(
+        (rule,) = resolve_pushdown_rules(
             DiffConfig(primary_keys=["id"], rules=rules),
             pl.Schema({"id": pl.Int64, "s": pl.Float64}),
             pl.Schema({"id": pl.Int64, "c": pl.Float64}),
@@ -2124,7 +2126,7 @@ class TestSharedRuleAndAlignmentHelpers:
 
         pushdown = {
             rule.column_names[0]: (rule.rename_to, rule.absolute_tolerance)
-            for rule in _resolve_pushdown_rules(config, schema, schema)
+            for rule in resolve_pushdown_rules(config, schema, schema)
         }
 
         assert engine._get_effective_rule("b")["abs_tol"] == 1.0  # pyright: ignore[reportPrivateUsage]
@@ -2675,9 +2677,9 @@ class TestWideIntegerColumns:
                 DiffRule(column_names=["padded"], pad_zeros=5),
             ],
         )
-        rules = _resolve_pushdown_rules(config, source, target)
+        rules = resolve_pushdown_rules(config, source, target)
 
-        assert _wide_integer_columns(config, rules, source, target) == {"qty", "units", "code"}
+        assert wide_integer_columns(config, rules, source, target) == {"qty", "units", "code"}
 
 
 class TestTypeDriftColumns:
@@ -2711,9 +2713,9 @@ class TestTypeDriftColumns:
     def test_it_names_columns_whose_normalized_types_differ(self) -> None:
         """Ensure types are compared after normalization, as a local run compares them."""
         config = DiffConfig(primary_keys=["id"], strict_types=True, rules=list(self._RULES))
-        rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
+        rules = resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
 
-        assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == {
+        assert type_drift_columns(config, rules, self._SOURCE, self._TARGET) == {
             "ratio",
             "price",
         }
@@ -2721,9 +2723,9 @@ class TestTypeDriftColumns:
     def test_it_names_nothing_unless_strict(self) -> None:
         """Ensure the default comparison by value is left alone."""
         config = DiffConfig(primary_keys=["id"], rules=list(self._RULES))
-        rules = _resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
+        rules = resolve_pushdown_rules(config, self._SOURCE, self._TARGET)
 
-        assert _type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()
+        assert type_drift_columns(config, rules, self._SOURCE, self._TARGET) == frozenset()
 
 
 _KEY_TYPES: Final = [
@@ -2858,8 +2860,8 @@ class TestMixedPushdownTypes:
 
     @staticmethod
     def _refuse(config: DiffConfig, source: pl.Schema, target: pl.Schema) -> None:
-        _refuse_mixed_pushdown_types(
-            config, _resolve_pushdown_rules(config, source, target), source, target
+        refuse_mixed_pushdown_types(
+            config, resolve_pushdown_rules(config, source, target), source, target
         )
 
     @pytest.mark.parametrize(
