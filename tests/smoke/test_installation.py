@@ -57,11 +57,12 @@ class TestInstallationAndBoot:
     def test_it_exports_the_public_surface_users_are_told_to_import(self) -> None:
         """Ensure the documented entry points resolve from the package root.
 
-        The docs tell users to catch `VerideltaError` and to build warehouse
-        configs directly, both of which previously required reaching into
-        submodules.
+        The docs tell users to catch `VerideltaError`, to build warehouse
+        configs directly, and to build a `Baseline` from a result, all of which
+        once required reaching into submodules.
         """
         from veridelta import (  # noqa: F401
+            Baseline,
             ConfigError,
             DiffResult,
             SnowflakeConfig,

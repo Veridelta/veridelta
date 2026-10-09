@@ -4,7 +4,7 @@ The public Python interface, generated from its docstrings.
 
 ## Configuration models
 
-Pydantic models for a comparison and its sources. Build them in Python, or read them from YAML with `load_config`.
+Pydantic models for a comparison and its sources. Build them in Python, or read them from YAML with `load_config`. `Baseline` and `AcceptedChange` hold the drift a run accepts; see [Accepting drift](cli.md#accepting-drift).
 
 ::: veridelta.models
     options:
