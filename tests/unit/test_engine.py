@@ -18,6 +18,7 @@ import pytest
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
+from veridelta._matching import _score_differing_pairs, pairable, similarity_test
 from veridelta._resolution import (
     CAST_TARGETS,
     UNCASTABLE,
@@ -34,12 +35,9 @@ from veridelta.engine import (
     LoaderFactory,
     _column_mismatches_from_frame,
     _describe_source,
-    _pairable,
     _refuse_mixed_pushdown_types,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
-    _score_differing_pairs,
-    _similarity_test,
     _type_drift_columns,
     _wide_integer_columns,
 )
@@ -1481,7 +1479,7 @@ class TestFuzzyTextMatching:
 
     def test_it_scores_only_pairs_that_still_differ(self, mocker: MockerFixture) -> None:
         """Ensure equal and missing values never leave Polars to be scored."""
-        measures = mocker.patch("veridelta.engine.rapidfuzz_distance")
+        measures = mocker.patch("veridelta._matching.rapidfuzz_distance")
         measures.Levenshtein.distance.return_value = 0
         src = pl.DataFrame({"id": [1, 2, 3, 4], "name": ["Jon", "same", None, None]})
         tgt = pl.DataFrame({"id": [1, 2, 3, 4], "name": ["John", "same", "x", None]})
@@ -1497,7 +1495,7 @@ class TestFuzzyTextMatching:
 
     def test_it_names_the_extra_when_rapidfuzz_is_missing(self, mocker: MockerFixture) -> None:
         """Ensure a missing scorer reads as an install hint rather than an ImportError."""
-        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        mocker.patch("veridelta._matching.rapidfuzz_distance", None)
         frame = pl.DataFrame({"id": [1], "name": ["Jon"]})
         config = DiffConfig(
             primary_keys=["id"],
@@ -1509,7 +1507,7 @@ class TestFuzzyTextMatching:
 
     def test_it_reports_the_missing_extra_before_checking_keys(self, mocker: MockerFixture) -> None:
         """Ensure a configuration problem surfaces before any rows are collected."""
-        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        mocker.patch("veridelta._matching.rapidfuzz_distance", None)
         frame = pl.DataFrame({"id": [1, 1], "name": ["Jon", "Ann"]})
         config = DiffConfig(
             primary_keys=["id"],
@@ -1523,7 +1521,7 @@ class TestFuzzyTextMatching:
         self, mocker: MockerFixture
     ) -> None:
         """Ensure a limit on a numeric column neither loosens it nor needs rapidfuzz."""
-        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        mocker.patch("veridelta._matching.rapidfuzz_distance", None)
         src = pl.DataFrame({"id": [1], "val": [12]})
         tgt = pl.DataFrame({"id": [1], "val": [13]})
         config = DiffConfig(
@@ -1579,11 +1577,11 @@ class TestFuzzyTextMatching:
         """Ensure each limit is compared in its own direction: at most, or at least."""
         config = DiffConfig(primary_keys=["id"], rules=[rule])
 
-        test = _similarity_test(fold_rule_defaults(rule, config))
+        test = similarity_test(fold_rule_defaults(rule, config))
 
         assert test is not None
         assert [test("Jon", "John"), test("MARTHA", "MARHTA")] == matches
-        assert _similarity_test(fold_rule_defaults(None, config)) is None
+        assert similarity_test(fold_rule_defaults(None, config)) is None
 
     def test_it_folds_similarity_limits_without_a_global_default(self) -> None:
         """Ensure only a rule sets a limit, so no column is loosened by default."""
@@ -2770,7 +2768,7 @@ class TestMixedKeyTypes:
         else:
             joins = True
 
-        assert _pairable(source_type, target_type) is joins
+        assert pairable(source_type, target_type) is joins
 
     @pytest.mark.parametrize(
         ("source", "target"),
@@ -2981,7 +2979,7 @@ class TestRuleDryRun:
 
     def test_it_needs_the_fuzzy_extra_for_a_similarity_rule(self, mocker: MockerFixture) -> None:
         """Ensure a similarity limit without its extra fails before any data moves."""
-        mocker.patch("veridelta.engine.rapidfuzz_distance", None)
+        mocker.patch("veridelta._matching.rapidfuzz_distance", None)
         frame = pl.DataFrame(schema={"id": pl.Int64, "name": pl.String}).lazy()
         config = DiffConfig(
             primary_keys=["id"],

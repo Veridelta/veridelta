@@ -12,10 +12,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from functools import partial
 from importlib.util import find_spec
 from pathlib import Path
-from types import ModuleType
 from typing import (
     Any,
     ClassVar,
@@ -30,6 +28,14 @@ from urllib.parse import urlsplit
 
 import polars as pl
 
+from veridelta import _matching
+from veridelta._matching import (
+    null_equality,
+    pairable,
+    similarity_expr,
+    similarity_test,
+    tolerance_match,
+)
 from veridelta._resolution import (
     CAST_TARGETS,
     UNCASTABLE,
@@ -143,10 +149,6 @@ logger = logging.getLogger(__name__)
 fastexcel = optional_module("fastexcel")
 """Presence probe for the `excel` extra. Polars imports this itself, but only
 at call time, so checking here turns a bare ImportError into an install hint."""
-
-rapidfuzz_distance = optional_module("rapidfuzz.distance")
-"""Presence probe for the `fuzzy` extra, whose scorers evaluate
-`max_levenshtein_distance` and `min_jaro_winkler_similarity` locally."""
 
 
 class BaseLoader(ABC):
@@ -537,30 +539,6 @@ def _enforce_pushdown_preconditions(
                 reject_unzoned_timezone(name, dtype, effective["timezone"])
 
 
-def _tolerance_match(
-    src: pl.Expr,
-    tgt: pl.Expr,
-    rule: EffectiveRule,
-    dtype: pl.DataType,
-    tgt_dtype: pl.DataType | None,
-) -> pl.Expr:
-    """Match two numeric values within a rule's absolute and relative tolerance."""
-    if dtype.is_integer() and tgt_dtype is not None and tgt_dtype.is_integer():
-        src = src.cast(pl.Int128)
-        tgt = tgt.cast(pl.Int128)
-    # Subtract the smaller value from the larger: `tgt - src` on unsigned
-    # columns wraps below zero instead of going negative.
-    abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
-    threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
-    within = abs_diff <= threshold
-    if dtype.is_float():
-        # `0 * inf` is NaN, and Polars sorts NaN above every number, so a
-        # non-finite source must never reach the allowance.
-        within = within & src.is_finite()
-    # Equality matches outright, so NaN meets NaN and an infinity meets itself.
-    return (src == tgt) | within
-
-
 def _pushdown_rule(
     stored: str,
     aligned: str,
@@ -725,15 +703,6 @@ def _comparable_in_sql(source: pl.DataType, target: pl.DataType) -> bool:
     return source.base_type() == target.base_type()
 
 
-def _pairable(source: pl.DataType, target: pl.DataType) -> bool:
-    """Whether a join pairs rows on keys of these two types: one type, two integers, or two floats."""
-    if source.is_integer() and target.is_integer():
-        return True
-    if source.is_float() and target.is_float():
-        return True
-    return source == target
-
-
 def _refuse_mixed_pushdown_types(
     diff: DiffConfig, rules: Sequence[DiffRule], source_schema: pl.Schema, target_schema: pl.Schema
 ) -> None:
@@ -794,61 +763,6 @@ def _local_column_mismatches(changed: pl.DataFrame, compared_columns: list[str])
         [(~pl.col(f"{col}_is_match")).sum().alias(col) for col in compared_columns]
     ).row(0, named=True)
     return {column: count for column, count in tally.items() if count > 0}
-
-
-def _fuzzy_measures() -> ModuleType:
-    """Return rapidfuzz's distance module, or explain how to install it."""
-    if rapidfuzz_distance is None:
-        raise ConfigError(
-            missing_extra(
-                "fuzzy",
-                "Comparing text locally under max_levenshtein_distance or "
-                "min_jaro_winkler_similarity",
-            )
-        )
-    return rapidfuzz_distance
-
-
-def _similarity_test(rule: EffectiveRule) -> Callable[[str, str], bool] | None:
-    """Build the test a differing text pair must pass to match at stage 8."""
-    limit = rule["max_levenshtein_distance"]
-    if limit is not None:
-        distance = _fuzzy_measures().Levenshtein.distance
-        # Past `score_cutoff` rapidfuzz stops counting and reports limit + 1.
-        return lambda left, right: bool(distance(left, right, score_cutoff=limit) <= limit)
-    floor = rule["min_jaro_winkler_similarity"]
-    if floor is not None:
-        similarity = _fuzzy_measures().JaroWinkler.similarity
-        # Below `score_cutoff` rapidfuzz reports a similarity of 0.
-        return lambda left, right: bool(similarity(left, right, score_cutoff=floor) >= floor)
-    return None
-
-
-def _null_equality(match: pl.Expr, src: pl.Expr, tgt: pl.Expr, rule: EffectiveRule) -> pl.Expr:
-    """Apply stage 9: two nulls match under `treat_null`, and any other null does not."""
-    if rule["treat_null"]:
-        return (match | (src.is_null() & tgt.is_null())).fill_null(False)
-    return match.fill_null(False)
-
-
-def _score_differing_pairs(pairs: pl.Series, *, test: Callable[[str, str], bool]) -> pl.Series:
-    """Mark the pairs that still differ after normalization but pass `test`."""
-    differing = (
-        pairs.struct.unnest()
-        .with_row_index("row")
-        .filter((pl.col("source") != pl.col("target")).fill_null(False))
-    )
-    hits = [row for row, source, target in differing.iter_rows() if test(source, target)]
-    return pl.repeat(False, len(pairs), dtype=pl.Boolean, eager=True).scatter(hits, True)
-
-
-def _similarity_expr(src: pl.Expr, tgt: pl.Expr, test: Callable[[str, str], bool]) -> pl.Expr:
-    """Evaluate a similarity test over two aligned text columns, lazily."""
-    return pl.struct(src.alias("source"), tgt.alias("target")).map_batches(
-        partial(_score_differing_pairs, test=test),
-        return_dtype=pl.Boolean,
-        is_elementwise=True,
-    )
 
 
 _ARTIFACT_WRITERS: Final[dict[ArtifactFormat, Callable[[pl.DataFrame, Path], None]]] = {
@@ -1617,7 +1531,7 @@ def _unknown_column_findings(
 
 def _fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
     """Report similarity rules a local run cannot score without the `fuzzy` extra."""
-    if rapidfuzz_distance is not None:
+    if _matching.rapidfuzz_distance is not None:
         return []
     return [
         _error(
@@ -2535,7 +2449,7 @@ class DiffEngine:
         mixed = [
             f"'{key}' ({source[key]} in the source, {target[key]} in the target)"
             for key in self.config.primary_keys
-            if not _pairable(source[key], target[key])
+            if not pairable(source[key], target[key])
         ]
         if mixed:
             raise ConfigError(
@@ -2685,21 +2599,21 @@ class DiffEngine:
 
         if dtype != tgt_dtype:
             if self.config.strict_types:
-                return _null_equality(pl.lit(False), src, tgt, rule)
+                return null_equality(pl.lit(False), src, tgt, rule)
             # Numbers skip the cast, which would truncate a Float64 `10.7` to an Int64 `10`.
             elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
                 tgt = tgt.cast(dtype, strict=False)
                 compared_tgt_dtype = dtype
 
-        similar = _similarity_test(rule) if isinstance(dtype, pl.String) else None
+        similar = similarity_test(rule) if isinstance(dtype, pl.String) else None
         if dtype.is_numeric() and (rule["abs_tol"] != 0.0 or rule["rel_tol"] != 0.0):
-            val_match = _tolerance_match(src, tgt, rule, dtype, compared_tgt_dtype)
+            val_match = tolerance_match(src, tgt, rule, dtype, compared_tgt_dtype)
         elif similar is not None:
             # Equal text matches outright, so only a differing pair is scored.
-            val_match = (src == tgt) | _similarity_expr(src, tgt, similar)
+            val_match = (src == tgt) | similarity_expr(src, tgt, similar)
         else:
             val_match = src == tgt
-        return _null_equality(val_match, src, tgt, rule)
+        return null_equality(val_match, src, tgt, rule)
 
     def _align_structure(self) -> None:
         """Perform structural normalization to reconcile asymmetrical schemas."""
