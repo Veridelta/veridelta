@@ -267,6 +267,19 @@ Accepted drift is left out of the counts, the verdict, the artifacts, and the re
 
 `veridelta run --save-baseline accepted.json` writes the file from a run, so a change made on purpose is accepted in one step: every row of drift the run finds, in key order, with each changed row's differing columns. Read the file before you commit it, since it accepts all of that drift. With `--baseline` too, the new file keeps what the old one accepted, and leaves out entries for rows that no longer drift. The run's verdict and exit code are the same as without the flag.
 
+In Python, `Baseline` and its `AcceptedChange` entries import from `veridelta`. `Baseline.of(result)` builds the file's contents from a run, `write` saves them, `Baseline.read` loads a file, and `run_from_configs` and `run` take it as `baseline`:
+
+```python
+from veridelta import Baseline, DiffEngine, load_config
+
+diff, source, target = load_config("veridelta.yaml")
+result = DiffEngine.run_from_configs(diff, source, target)
+Baseline.of(result).write("accepted.json")
+
+accepted = Baseline.read("accepted.json")
+result = DiffEngine.run_from_configs(diff, source, target, baseline=accepted)
+```
+
 ## Printing the schema
 
 `veridelta schema` prints the configuration file's JSON Schema, which editors use to complete and check a file; see [Editor support](configuration.md#editor-support):

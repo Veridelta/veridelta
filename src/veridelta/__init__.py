@@ -16,7 +16,9 @@ from veridelta.exceptions import (
     VerideltaError,
 )
 from veridelta.models import (
+    AcceptedChange,
     ArtifactFormat,
+    Baseline,
     BigQueryConfig,
     CastTarget,
     ConfigFinding,
@@ -49,7 +51,9 @@ __version__ = "0.33.6"
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
+    "AcceptedChange",
     "ArtifactFormat",
+    "Baseline",
     "BigQueryConfig",
     "CastTarget",
     "ConfigError",
