@@ -99,10 +99,13 @@ runs:
         VERIDELTA_ACTION_PATH: ${{ github.action_path }}
         VERIDELTA_OUT: ${{ runner.temp }}/veridelta
       run: |
+        # Each run writes to a folder of its own, so a later run in the job cannot
+        # overwrite the reports an earlier step's outputs name. This comes before
+        # `set +e`, so a failure stops the step instead of leaving `out` empty.
+        mkdir -p "$VERIDELTA_OUT"
+        out=$(mktemp -d "$VERIDELTA_OUT/run-XXXXXX")
         # GitHub runs bash with -e; a drift exit must be recorded, not abort the step.
         set +e
-        out="$VERIDELTA_OUT"
-        mkdir -p "$out"
         extras="${VERIDELTA_EXTRAS// /}"
         artifact="$VERIDELTA_ARTIFACT_NAME"
         if [ -z "$artifact" ]; then
@@ -168,6 +171,7 @@ runs:
           if [ "$status" = match ]; then echo "is-match=true"; else echo "is-match=false"; fi
           echo "exit-code=$code"
           echo "artifact-name=$artifact"
+          echo "reports=$out"
           if [ "$status" = error ]; then
             echo "summary-json="
             echo "summary-markdown="
@@ -186,7 +190,7 @@ runs:
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: ${{ steps.run.outputs.artifact-name }}
-        path: ${{ runner.temp }}/veridelta/
+        path: ${{ steps.run.outputs.reports }}
         if-no-files-found: ignore
 
     - name: Comment on the pull request

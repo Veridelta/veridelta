@@ -196,6 +196,28 @@ class TestGitHubActionInputs:
         assert arguments[arguments.index("--otel") + 2 :] == expected
         assert not (tmp_path / "injected").exists()
 
+    def test_each_run_writes_its_reports_to_a_folder_of_its_own(self, tmp_path: Path) -> None:
+        """Ensure a second run in one job leaves alone the reports an earlier run's outputs name.
+
+        Both runs share one parent folder, as two steps of a job share `runner.temp`.
+        """
+        parent = tmp_path / "veridelta"
+        runs: list[dict[str, str]] = []
+        for name in ("first", "second"):
+            (tmp_path / name).mkdir()
+            finished, lines = _run_step(tmp_path / name, VERIDELTA_OUT=str(parent))
+            assert finished.returncode == 0, finished.stderr
+            outputs = {key: value for key, _, value in (line.partition("=") for line in lines)}
+            arguments = (tmp_path / name / "uvx.args").read_text(encoding="utf-8").splitlines()
+            assert arguments[arguments.index("--html") + 1] == outputs["report-html"]
+            runs.append(outputs)
+
+        first, second = runs
+        for output in ("summary-json", "summary-markdown", "report-html", "otel-metrics"):
+            assert first[output] != second[output], output
+        assert Path(first["reports"]).parent == Path(second["reports"]).parent == parent
+        assert Path(first["summary-json"]).is_file()
+
     @pytest.mark.parametrize(
         ("variable", "value", "message"),
         [
