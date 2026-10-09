@@ -56,6 +56,7 @@ jobs:
 | Input | Default | Meaning |
 | :--- | :--- | :--- |
 | `config` | `veridelta.yaml` | Configuration file, relative to `working-directory`. |
+| `baseline` | empty | Baseline file of drift the run accepts, relative to `working-directory`. See [Accepting drift](#accepting-drift). |
 | `working-directory` | `.` | Directory the comparison runs in. |
 | `extras` | empty | Optional extras to install, comma-separated, such as `database,fuzzy`. |
 | `version` | empty | Install this version from PyPI instead of the action's own ref. |
@@ -84,6 +85,19 @@ jobs:
 To act on drift in a later step instead of failing, set `fail-on-mismatch: false` and read `status`.
 
 The pull request comment ends with the run's counts as JSON, in an HTML comment that readers never see, so an agent that reads the pull request through the API can parse the result; see [Markdown summary](results.md#markdown-summary).
+
+### Accepting drift
+
+A change made on purpose, such as an account closed for good, fails every pull request until a baseline accepts it. Write the file once with [`veridelta run --save-baseline accepted.json`](cli.md#accepting-drift), read it, commit it next to the configuration, and pass it to the action:
+
+```yaml
+      - uses: Veridelta/veridelta@v0.34.0
+        with:
+          config: veridelta.yaml
+          baseline: accepted.json
+```
+
+The run then fails only on drift the file does not list, and the summary counts the rows it accepted. A missing or invalid file ends the run with `status` set to `error`, as does a pair compared where it is stored, which refuses a baseline.
 
 ### Values in the summary
 
@@ -134,7 +148,7 @@ The template defines one job, named `veridelta` by default, which:
 - `python-version` is empty by default, which runs the image's Python. Set it, such as to `"3.13"`, and uv downloads that version when the image lacks it.
 - `stage`, `job-name`, and `image` place the job in your pipeline.
 
-There is no `github-token` input, since the note reads the masked `VERIDELTA_GITLAB_TOKEN` variable. There is no `artifact-name` either, since GitLab keeps each job's artifacts apart.
+There is no `github-token` input, since the note reads the masked `VERIDELTA_GITLAB_TOKEN` variable. There is no `artifact-name` either, since GitLab keeps each job's artifacts apart. The template has no `baseline` input: it stays as it is unless a GitLab user asks for more, so open an issue to ask for one.
 
 With `upload-artifact` set to `false`, the reports go to a temporary directory instead. GitLab then logs that no files match the artifact path, which does not change the job's result.
 

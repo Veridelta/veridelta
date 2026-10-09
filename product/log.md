@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-09
+
+- **Update**: [the feature map](FEATURES.md) adds the GitHub Action's `baseline` input, which passes a baseline file to `run --baseline`, so a pull request fails only on drift the file does not list. The GitLab template does not get it, as the decision to freeze the template records. The maintainer chose it on 2026-10-09, from the decisions in [issue 290](https://github.com/Veridelta/veridelta/issues/290).
+
 ## 2026-10-08
 
 - **Update**: [the feature map](FEATURES.md) adds `veridelta run SOURCE TARGET --key COLUMN`, which compares two files with no configuration file, as the smallest file would. [NS-01](metrics/NS-01.md) stays at 5 as defined: a newcomer still names two paths and a key, as flags instead of three keys in a file. The maintainer asked for it on 2026-10-08, for the newcomer with two CSV files.

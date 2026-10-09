@@ -395,6 +395,15 @@ jobs:
           markdown-max-rows: "5"
           artifact-name: veridelta-drift-${{ matrix.os }}
 
+      - name: Accept the drift with a baseline
+        id: accepted
+        uses: ./
+        with:
+          config: tests/fixtures/ci/drift.yaml
+          baseline: tests/fixtures/ci/accepted.json
+          comment: "false"
+          artifact-name: veridelta-accepted-${{ matrix.os }}
+
       - name: Run a configuration that cannot finish
         id: broken
         uses: ./
@@ -415,6 +424,9 @@ jobs:
           DRIFT_EXIT_CODE: ${{ steps.drift.outputs.exit-code }}
           DRIFT_SUMMARY: ${{ steps.drift.outputs.summary-markdown }}
           DRIFT_OTEL: ${{ steps.drift.outputs.otel-metrics }}
+          ACCEPTED_STATUS: ${{ steps.accepted.outputs.status }}
+          ACCEPTED_EXIT_CODE: ${{ steps.accepted.outputs.exit-code }}
+          ACCEPTED_SUMMARY: ${{ steps.accepted.outputs.summary-markdown }}
           BROKEN_OUTCOME: ${{ steps.broken.outcome }}
           BROKEN_STATUS: ${{ steps.broken.outputs.status }}
           BROKEN_EXIT_CODE: ${{ steps.broken.outputs.exit-code }}
@@ -431,6 +443,9 @@ jobs:
           grep -q "| \`2\` | \`status\` | \`'closed'\` | \`'shipped'\` |" "$DRIFT_SUMMARY"
           grep -q '"name":"veridelta.diff.match"' "$DRIFT_OTEL"
           test "$(wc -l < "$DRIFT_OTEL")" -eq 1
+          test "$ACCEPTED_STATUS" = match
+          test "$ACCEPTED_EXIT_CODE" = 0
+          grep -q "| Accepted by the baseline | 3 |" "$ACCEPTED_SUMMARY"
           test "$BROKEN_OUTCOME" = failure
           test "$BROKEN_STATUS" = error
           test "$BROKEN_EXIT_CODE" = 3

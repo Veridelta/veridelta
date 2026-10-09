@@ -9,6 +9,9 @@ inputs:
   config:
     description: Path to the Veridelta YAML configuration, relative to working-directory.
     default: veridelta.yaml
+  baseline:
+    description: Path to a baseline JSON file, relative to working-directory. The run accepts the drift it lists and fails only on drift it does not. `veridelta run --save-baseline` writes one. Empty accepts none.
+    default: ""
   working-directory:
     description: Directory the comparison runs in. Relative paths in the configuration resolve from here.
     default: .
@@ -86,6 +89,7 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         VERIDELTA_CONFIG: ${{ inputs.config }}
+        VERIDELTA_BASELINE: ${{ inputs.baseline }}
         VERIDELTA_EXTRAS: ${{ inputs.extras }}
         VERIDELTA_VERSION: ${{ inputs.version }}
         VERIDELTA_HTML_MAX_ROWS: ${{ inputs.html-max-rows }}
@@ -135,7 +139,11 @@ runs:
           # Left unquoted in the command, so an empty value adds no argument.
           send=""
           if [ "$VERIDELTA_OTEL_SEND" = "true" ]; then send="--otel-send"; fi
-          uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel "$out/otel-metrics.json" $send > "$out/summary.json"
+          # A baseline path may hold spaces, so it stays one quoted argument in an
+          # array, which adds nothing to the command when the input is empty.
+          baseline=()
+          if [ -n "$VERIDELTA_BASELINE" ]; then baseline=(--baseline "$VERIDELTA_BASELINE"); fi
+          uvx --from "$spec" veridelta run -c "$VERIDELTA_CONFIG" --json --html "$out/report.html" --html-max-rows "$VERIDELTA_HTML_MAX_ROWS" --markdown "$out/summary.md" --markdown-max-rows "$VERIDELTA_MARKDOWN_MAX_ROWS" --otel "$out/otel-metrics.json" $send "${baseline[@]}" > "$out/summary.json"
           code=$?
         fi
 
