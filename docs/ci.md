@@ -10,7 +10,7 @@ The GitHub Action and the GitLab CI template run `veridelta run` in a pipeline, 
 - they keep the JSON summary, the HTML report, and the OpenTelemetry metrics as artifacts;
 - they fail the job on drift or on an error.
 
-The examples pin `v0.35.0`.
+The examples pin `v0.35.1`.
 
 ## GitHub Actions
 
@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: Veridelta/veridelta@v0.35.0
+      - uses: Veridelta/veridelta@v0.35.1
         with:
           config: veridelta.yaml
           extras: snowflake
@@ -42,7 +42,7 @@ The comment looks like this one, from an [example pull request](https://github.c
 ![A pull request comment by github-actions titled "Veridelta: FAILED": a match rate of 97.5%, 40 source and 39 target rows, 1 changed, 1 accepted by the baseline, drift in region, and the changed value, account 17's region from south to east.](assets/action-comment-light.png#only-light)
 ![A pull request comment by github-actions titled "Veridelta: FAILED": a match rate of 97.5%, 40 source and 39 target rows, 1 changed, 1 accepted by the baseline, drift in region, and the changed value, account 17's region from south to east.](assets/action-comment-dark.png#only-dark)
 
-**Version.** Pin the action to a release tag such as `v0.35.0`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
+**Version.** Pin the action to a release tag such as `v0.35.1`, or to a commit SHA. The action installs Veridelta from its own ref, so the tag you pin is the version that runs. To keep the action at one ref and install a different version from PyPI, set `version`.
 
 **Credentials.** Pass credentials as step environment variables, as above, and reference them from the configuration as `${SNOWFLAKE_PASSWORD}`. See [Environment variables](configuration.md#environment-variables).
 
@@ -96,7 +96,7 @@ The pull request comment ends with the run's counts as JSON, in an HTML comment 
 A change made on purpose, such as an account closed for good, fails every pull request until a baseline accepts it. Write the file once with [`veridelta run --save-baseline accepted.json`](cli.md#accepting-drift), read it, commit it next to the configuration, and pass it to the action:
 
 ```yaml
-      - uses: Veridelta/veridelta@v0.35.0
+      - uses: Veridelta/veridelta@v0.35.1
         with:
           config: veridelta.yaml
           baseline: accepted.json
@@ -113,7 +113,7 @@ The summary lists counts and column names, never values, unless `markdown-max-ro
 The action writes the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics) on every run. Set `otel-send: true` to also send them to an OTLP/HTTP endpoint, such as a Collector or a vendor's OTLP intake. The step's `env` names the endpoint, and any header your backend requires, from secrets:
 
 ```yaml
-      - uses: Veridelta/veridelta@v0.35.0
+      - uses: Veridelta/veridelta@v0.35.1
         env:
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTLP_ENDPOINT }}
           OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTLP_HEADERS }}
@@ -131,7 +131,7 @@ Include the template from a release tag, with its inputs:
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.35.0/ci/gitlab/veridelta.yml
+  - remote: https://raw.githubusercontent.com/Veridelta/veridelta/v0.35.1/ci/gitlab/veridelta.yml
     inputs:
       config: veridelta.yaml
       extras: snowflake
@@ -165,10 +165,10 @@ With `upload-artifact` set to `false`, the reports go to a temporary directory i
 
 ```yaml
 - uses: astral-sh/setup-uv@v10
-- run: uvx veridelta@0.35.0 validate -c veridelta.yaml --allow-missing-env
+- run: uvx veridelta@0.35.1 validate -c veridelta.yaml --allow-missing-env
 ```
 
-`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.35.0' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](cli.md#checking-a-configuration).
+`--allow-missing-env` reads each unset `${NAME}` as the text `NAME`, with a warning, so the job needs no secrets. The job exits `1` on an error, and a warning never fails it. Install the same extras the comparison uses, such as `uvx --from 'veridelta[snowflake]==0.35.1' veridelta validate ...`: `validate` checks the environment it runs in. See [Checking a configuration](cli.md#checking-a-configuration).
 
 ## Exit codes and statuses
 
