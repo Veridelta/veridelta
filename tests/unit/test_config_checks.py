@@ -100,7 +100,7 @@ class TestConfigChecks:
 
     def test_it_reports_a_pair_no_engine_can_compare(self, mocker: MockerFixture) -> None:
         """Ensure pairing errors surface as findings, before any connector is built."""
-        connector = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector = mocker.patch("veridelta._warehouses.SnowflakeConnector")
 
         findings = _check(_snowflake("SRC"), _CSV)
 
@@ -396,7 +396,7 @@ _WAREHOUSE_SCHEMA = {"ID": pl.Int64(), "NAME": pl.String(), "SEEN_AT": pl.String
 
 def _warehouse_session(mocker: MockerFixture) -> MagicMock:
     """Patch the Snowflake connector with a session that answers schema probes only."""
-    connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+    connector_cls = mocker.patch("veridelta._warehouses.SnowflakeConnector")
     session: MagicMock = connector_cls.return_value
     session.compiler = SQLPushdownCompiler(SQLDialect.SNOWFLAKE)
     session.execute_pushdown.return_value = pl.LazyFrame(schema=_WAREHOUSE_SCHEMA)
@@ -488,7 +488,7 @@ class TestLiveSchemaChecks:
 
     def test_it_skips_the_live_check_after_an_offline_error(self, mocker: MockerFixture) -> None:
         """Ensure nothing is opened for a configuration that cannot run anyway."""
-        connector = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector = mocker.patch("veridelta._warehouses.SnowflakeConnector")
 
         findings = _check(_snowflake("SRC"), SourceConfig(path="missing.csv"), schemas=True)
 

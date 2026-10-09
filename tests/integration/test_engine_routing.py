@@ -10,16 +10,15 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
+from veridelta._warehouses import _WAREHOUSES, _WarehouseConfig
 from veridelta.config import load_config
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import COUNT_ALIAS, SampleQuery
 from veridelta.engine import (
-    _WAREHOUSES,
     DiffEngine,
     LoaderFactory,
     _validate_pushdown_schema,
-    _WarehouseConfig,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
@@ -145,8 +144,8 @@ def _synthesized_id_key_rule() -> DiffRule:
 
 
 def _configure_warehouse_compiler(mocker: MockerFixture, name: str = "SnowflakeConnector") -> Any:
-    """Patch a `veridelta.engine` class, stub its instance's SQL, and return the class mock."""
-    connector_cls = mocker.patch(f"veridelta.engine.{name}")
+    """Patch a `veridelta._warehouses` class, stub its instance's SQL, and return the class mock."""
+    connector_cls = mocker.patch(f"veridelta._warehouses.{name}")
     connector = connector_cls.return_value
     connector.compiler.compile_query.return_value = "SELECT mismatch"
     connector.compiler.compile_added_query.return_value = "SELECT added"
@@ -704,7 +703,7 @@ class TestEngineConnectorRouting:
         self, mocker: MockerFixture, source_kwargs: dict[str, str], target_kwargs: dict[str, str]
     ) -> None:
         """Ensure two sides that differ only in password or role never share one session."""
-        connector_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector_cls = mocker.patch("veridelta._warehouses.SnowflakeConnector")
         source = _snowflake_config(table="ANALYTICS.PUBLIC.SRC", **source_kwargs)
         target = _snowflake_config(table="ANALYTICS.PUBLIC.TGT", **target_kwargs)
 
@@ -721,8 +720,8 @@ class TestEngineConnectorRouting:
         A relation compared with itself always matches, so the run would pass
         whatever the data held. It is refused before any session opens.
         """
-        snowflake_cls = mocker.patch("veridelta.engine.SnowflakeConnector")
-        databricks_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        snowflake_cls = mocker.patch("veridelta._warehouses.SnowflakeConnector")
+        databricks_cls = mocker.patch("veridelta._warehouses.DatabricksConnector")
         diff = DiffConfig(primary_keys=["id"])
 
         with pytest.raises(ConfigError, match="same table"):
@@ -745,7 +744,7 @@ class TestEngineConnectorRouting:
         self, mocker: MockerFixture
     ) -> None:
         """Ensure a token mismatch on an otherwise identical workspace is refused."""
-        connector_cls = mocker.patch("veridelta.engine.DatabricksConnector")
+        connector_cls = mocker.patch("veridelta._warehouses.DatabricksConnector")
         source = _databricks_config(table="main.default.src", access_token="dapi-a")
         target = _databricks_config(table="main.default.tgt", access_token="dapi-b")
 
@@ -975,7 +974,7 @@ class TestPostgresPushdownRouting:
     @pytest.mark.parametrize("opted_in", ["source", "target"])
     def test_it_asks_for_pushdown_on_both_sides(self, mocker: MockerFixture, opted_in: str) -> None:
         """Ensure a pair that half opts in names the fix instead of reading one side."""
-        session_cls = mocker.patch("veridelta.engine.PostgresPushdownSession")
+        session_cls = mocker.patch("veridelta._warehouses.PostgresPushdownSession")
         source = _postgres_config(table="src", pushdown=opted_in == "source")
         target = _postgres_config(table="tgt", pushdown=opted_in == "target")
 
@@ -1083,7 +1082,7 @@ class TestDuckDBPushdownRouting:
 
     def test_it_reads_two_tables_locally_unless_both_opt_in(self, mocker: MockerFixture) -> None:
         """Ensure DuckDB tables without `pushdown` keep comparing in Polars."""
-        session_cls = mocker.patch("veridelta.engine.DuckDBPushdownSession")
+        session_cls = mocker.patch("veridelta._warehouses.DuckDBPushdownSession")
         load = mocker.patch.object(
             LoaderFactory, "load", return_value=pl.LazyFrame({"id": [1], "amount": [1.0]})
         )
@@ -1099,7 +1098,7 @@ class TestDuckDBPushdownRouting:
     @pytest.mark.parametrize("opted_in", ["source", "target"])
     def test_it_asks_for_pushdown_on_both_sides(self, mocker: MockerFixture, opted_in: str) -> None:
         """Ensure a pair that half opts in names the fix instead of reading one side."""
-        session_cls = mocker.patch("veridelta.engine.DuckDBPushdownSession")
+        session_cls = mocker.patch("veridelta._warehouses.DuckDBPushdownSession")
         source = _duckdb_config(table="src", pushdown=opted_in == "source")
         target = _duckdb_config(table="tgt", pushdown=opted_in == "target")
 

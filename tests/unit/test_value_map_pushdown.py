@@ -101,7 +101,7 @@ def _snowflake(table: str) -> SnowflakeConfig:
 
 def _session(mocker: MockerFixture, evidence: pl.DataFrame) -> MagicMock:
     """Patch the Snowflake connector with a session that answers each round trip."""
-    session: MagicMock = mocker.patch("veridelta.engine.SnowflakeConnector").return_value
+    session: MagicMock = mocker.patch("veridelta._warehouses.SnowflakeConnector").return_value
     session.compiler = SQLPushdownCompiler(SQLDialect.SNOWFLAKE)
 
     def answer(statement: str, query_type: str = "mismatch") -> pl.LazyFrame:
@@ -216,7 +216,7 @@ class TestWarehouseValueMapRouting:
 
     def test_it_checks_thresholds_before_connecting(self, mocker: MockerFixture) -> None:
         """Ensure a bad threshold fails before a warehouse is reached."""
-        connector = mocker.patch("veridelta.engine.SnowflakeConnector")
+        connector = mocker.patch("veridelta._warehouses.SnowflakeConnector")
 
         with pytest.raises(ConfigError, match="min_support must be a whole number"):
             _propose(min_support=True)
