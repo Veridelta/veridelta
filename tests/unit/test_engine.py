@@ -19,6 +19,7 @@ from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
 from veridelta._matching import _score_differing_pairs, pairable, similarity_test
+from veridelta._reading import _describe_source
 from veridelta._resolution import (
     CAST_TARGETS,
     UNCASTABLE,
@@ -34,7 +35,6 @@ from veridelta.engine import (
     DiffEngine,
     LoaderFactory,
     _column_mismatches_from_frame,
-    _describe_source,
     _refuse_mixed_pushdown_types,
     _resolve_pushdown_keys,
     _resolve_pushdown_rules,
@@ -193,7 +193,7 @@ class TestLoaders:
 
     def test_it_explains_a_missing_excel_extra(self, mocker: MockerFixture, tmp_path: Path) -> None:
         """Ensure a missing optional dependency reads as an install hint."""
-        mocker.patch("veridelta.engine.fastexcel", None)
+        mocker.patch("veridelta._reading.fastexcel", None)
 
         with pytest.raises(ConfigError, match=r"veridelta\[excel\]"):
             LoaderFactory.load(SourceConfig(path=str(tmp_path / "x.xlsx"), format="excel"))
@@ -206,7 +206,7 @@ class TestLoaders:
         `pl.read_excel` returns a mapping when the options select more than one
         worksheet, which is not something the comparison pipeline can consume.
         """
-        mocker.patch("veridelta.engine.pl.read_excel", return_value={"a": pl.DataFrame()})
+        mocker.patch("veridelta._reading.pl.read_excel", return_value={"a": pl.DataFrame()})
 
         with pytest.raises(ConfigError, match="multiple worksheets"):
             LoaderFactory.load(SourceConfig(path=str(tmp_path / "x.xlsx"), format="excel"))
