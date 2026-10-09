@@ -19,7 +19,7 @@ It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelt
 
 ## Features
 
-- **Declared rules.** Tolerances, null sentinels, regular expressions, value maps, date parsing, casts, and fuzzy text matching apply in nine fixed stages. Nothing is forgiven unless a rule says so, and `strict_types` fails a column whose type drifts.
+- **Declared rules.** Tolerances, null sentinels, regular expressions, value maps, date parsing, casts, and fuzzy text matching apply in nine fixed stages. Nothing is forgiven unless a rule says so, and `strict_types` fails a column whose type drifts. [What rules cannot do](https://veridelta.github.io/veridelta/rules/#what-rules-cannot-do) lists the checks they leave out, such as arithmetic and comparing two columns.
 - **Comparison inside the warehouse.** Two tables in Snowflake, Databricks, or BigQuery are compared where they are stored, as are two Postgres or DuckDB tables that set `pushdown`. The rules compile to SQL, and only counts and keys come back. [Pushdown](https://veridelta.github.io/veridelta/pushdown/) lists the exceptions and the services the SQL has run in.
 - **Many sources.** CSV, Parquet, JSON, NDJSON, Arrow, Avro, and Excel files, Delta Lake and Iceberg tables, DuckDB files and MotherDuck databases, and Postgres, MySQL, SQL Server, Oracle, SQLite, and other databases. Files and tables are scanned lazily where Polars can.
 - **Built for CI.** Exit codes, a JSON summary, a standalone HTML report, a Markdown summary for pull requests, OpenTelemetry metrics, and files of the rows that differ. A GitHub Action posts the summary on each pull request, and a GitLab CI template on each merge request when it has a token.

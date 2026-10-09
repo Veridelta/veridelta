@@ -94,6 +94,17 @@ Stages 1 to 7 normalize each side on its own, before rows are paired. They apply
 
 Stages 2, 3, and 4 apply to text columns and skip every other type: a global `default_whitespace_mode` is safe on a mixed schema. Stage 1 checks each sentinel against each column's type; see [Null sentinels](#null-sentinels).
 
+## What rules cannot do
+
+A rule says how one column on each side becomes comparable. That leaves some checks outside the rules:
+
+- **No arithmetic.** A rule cannot compute a value, such as rounding up to the nearest multiple of 7 or turning cents into dollars. A [tolerance](#numeric-tolerances) says how far apart two numbers may be and still match, which covers most rounding: `absolute_tolerance: 0.005` forgives up to half a cent.
+- **One column at a time.** Each stage works on one column, so no rule compares two columns, such as a total with the sum of its parts.
+- **Rows pair by their primary key.** Two rows with no key in common are one added and one removed, never matched by their other values. The cleaning stages apply to keys too, so a rule can pair keys that differ only in case or padding.
+- **Patterns are those of Polars.** `regex_replace` has no look-around and no backreferences; see [Regular expressions](#regular-expressions).
+
+A difference that no rule and no default covers is reported. To check something a rule cannot express, change the data before Veridelta reads it, such as in a SQL view or a step of the pipeline, then compare the result.
+
 ## Null sentinels
 
 `null_values` lists the placeholder values a system writes in place of NULL. A list can mix text, numbers, and booleans:
