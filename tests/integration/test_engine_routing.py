@@ -10,16 +10,13 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
+from veridelta._pushdown import validate_pushdown_schema
 from veridelta._warehouses import _WAREHOUSES, _WarehouseConfig
 from veridelta.config import load_config
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import COUNT_ALIAS, SampleQuery
-from veridelta.engine import (
-    DiffEngine,
-    LoaderFactory,
-    _validate_pushdown_schema,
-)
+from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
@@ -1045,7 +1042,7 @@ class TestPostgresPushdownRouting:
         session = PostgresPushdownSession(_postgres_config(table="src"))
         session.connect()
 
-        source, target = _validate_pushdown_schema(
+        source, target = validate_pushdown_schema(
             session, "src", "tgt", DiffConfig(primary_keys=["id"])
         )
 

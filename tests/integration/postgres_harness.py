@@ -34,8 +34,9 @@ import polars as pl
 import psycopg
 from psycopg import sql
 
+from veridelta._pushdown import collect_pushdown_summary
 from veridelta.connectors.database import PostgresPushdownSession
-from veridelta.engine import DiffEngine, _collect_pushdown_summary, _collect_value_map_proposals
+from veridelta.engine import DiffEngine, _collect_value_map_proposals
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DatabaseConfig
 
@@ -124,7 +125,7 @@ def run_pushdown(
         session = RecordingPostgresSession(database_source(source_table, pushdown=True))
         with session:
             session.connect()
-            result = _collect_pushdown_summary(session, source_table, target_table, config)
+            result = collect_pushdown_summary(session, source_table, target_table, config)
         return result, session.statements
 
 

@@ -20,6 +20,7 @@ from pytest_mock import MockerFixture
 
 from veridelta._matching import _score_differing_pairs, pairable, similarity_test
 from veridelta._pushdown import (
+    _column_mismatches_from_frame,
     refuse_mixed_pushdown_types,
     resolve_pushdown_keys,
     resolve_pushdown_rules,
@@ -38,11 +39,7 @@ from veridelta._resolution import (
 )
 from veridelta._results import _ARTIFACT_WRITERS
 from veridelta.connectors.base import optional_module
-from veridelta.engine import (
-    DiffEngine,
-    LoaderFactory,
-    _column_mismatches_from_frame,
-)
+from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
     ArtifactFormat,
