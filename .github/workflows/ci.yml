@@ -171,7 +171,7 @@ jobs:
 
       - name: Gate core-module branch coverage
         if: matrix.coverage
-        run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/_resolution.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py' --fail-under=100
+        run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/_resolution.py,src/veridelta/_suggest.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py' --fail-under=100
 
       - name: Upload Coverage to Codecov
         if: matrix.coverage
