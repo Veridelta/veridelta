@@ -6,13 +6,15 @@ on:
   workflow_dispatch:
 
 # The build installs every package the docs need and runs it, so it gets a
-# read-only token. Only the deploy job, which runs no action and installs
-# nothing, may push.
+# read-only token. Only the deploy job, which checks out nothing and installs
+# nothing, may publish the site. It hands the built site to GitHub Pages, so no
+# job can write to the repository. Pages must be set to deploy from GitHub
+# Actions, under Settings, Pages, Source.
 permissions:
   contents: read
 
-# One deploy at a time: merges that land together queue instead of racing to
-# push gh-pages, and the newest commit on main deploys last.
+# One deploy at a time: merges that land together queue instead of cancelling
+# one another, and the newest commit on main deploys last.
 concurrency:
   group: docs-deploy
   cancel-in-progress: false
@@ -45,40 +47,25 @@ jobs:
         run: uv run mkdocs build --strict
 
       - name: Upload the Site
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          name: site
           path: site/
-          if-no-files-found: error
-          retention-days: 1
 
   deploy:
-    name: Push the Site to gh-pages
+    name: Deploy the Site to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
 
     permissions:
-      actions: read # download the site the build uploaded
-      contents: write # push gh-pages
+      pages: write # publish the site
+      id-token: write # prove to Pages that this run built it
 
     steps:
-      - name: Commit the Site on Top of gh-pages
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          gh auth setup-git
-          git clone --quiet --depth 1 --branch gh-pages "https://github.com/${GH_REPO}.git" pages
-          # The new commit holds this build and nothing else.
-          git -C pages rm --quiet -r .
-          gh run download "$GITHUB_RUN_ID" --name site --dir pages
-          # GitHub Pages serves the files as they are, without Jekyll.
-          touch pages/.nojekyll
-          git -C pages add --all
-          # A build identical to the last one still records which commit it came from.
-          git -C pages -c user.name="github-actions[bot]" \
-            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit --quiet --allow-empty --message "Deployed ${GITHUB_SHA::7}"
-          git -C pages push --quiet origin gh-pages
+      - name: Deploy the Uploaded Site
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
