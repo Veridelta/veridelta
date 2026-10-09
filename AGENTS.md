@@ -44,7 +44,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 | Rule | Applies to |
 | :--- | :--- |
 | [Engine](rules/engine.md): data manipulation, models and configuration, loaders | `src/veridelta/` |
-| [Security](rules/security.md): warehouse SQL assembly, the execution boundary | `src/veridelta/connectors/`, `src/veridelta/models.py`, `src/veridelta/engine.py`, `src/veridelta/_warehouses.py` |
+| [Security](rules/security.md): warehouse SQL assembly, the execution boundary | `src/veridelta/connectors/`, `src/veridelta/models.py`, `src/veridelta/engine.py`, `src/veridelta/_warehouses.py`, `src/veridelta/_pushdown.py` |
 | [Testing](rules/testing.md): layout, fixtures, markers, the parity suite | `tests/` |
 
 `tests/unit/test_rules.py` fails on any of these:
