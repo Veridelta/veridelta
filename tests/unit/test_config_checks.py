@@ -15,12 +15,13 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
+from veridelta._checks import _EXTRA_PROBES
 from veridelta.connectors.sql import (
     SQLDialect,
     SQLPushdownCompiler,
     compile_postgres_columns_query,
 )
-from veridelta.engine import _EXTRA_PROBES, DiffEngine
+from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
     ConfigFinding,
@@ -87,7 +88,7 @@ def drivers(mocker: MockerFixture) -> None:
     mocker.patch("veridelta.connectors.database.connectorx", object())
     mocker.patch("veridelta._reading.fastexcel", object())
     mocker.patch("veridelta._matching.rapidfuzz_distance", object())
-    mocker.patch("veridelta.engine.find_spec", return_value=object())
+    mocker.patch("veridelta._checks.find_spec", return_value=object())
 
 
 @pytest.mark.usefixtures("drivers")
@@ -177,7 +178,7 @@ class TestConfigChecks:
         self, mocker: MockerFixture, source: SourceRef, module: str, extra: str
     ) -> None:
         """Ensure a lakehouse reader is found by name, so checking never imports it."""
-        find_spec = mocker.patch("veridelta.engine.find_spec", return_value=None)
+        find_spec = mocker.patch("veridelta._checks.find_spec", return_value=None)
 
         [(severity, message)] = _check(source, _CSV)
 

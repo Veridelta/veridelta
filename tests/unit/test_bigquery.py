@@ -470,7 +470,7 @@ class TestBigQueryRouting:
 
     def test_validate_reports_a_missing_bigquery_extra(self, mocker: MockerFixture) -> None:
         """Ensure `veridelta validate` finds the client by name, without importing it."""
-        find_spec = mocker.patch("veridelta.engine.find_spec", side_effect=ModuleNotFoundError)
+        find_spec = mocker.patch("veridelta._checks.find_spec", side_effect=ModuleNotFoundError)
         source, target = _pair()
 
         [finding] = DiffEngine.check_configs(DiffConfig(primary_keys=["id"]), source, target)
@@ -482,7 +482,7 @@ class TestBigQueryRouting:
 
     def test_validate_accepts_an_installed_bigquery_extra(self, mocker: MockerFixture) -> None:
         """Ensure a findable client is enough for the offline check."""
-        mocker.patch("veridelta.engine.find_spec", return_value=object())
+        mocker.patch("veridelta._checks.find_spec", return_value=object())
         source, target = _pair()
 
         assert DiffEngine.check_configs(DiffConfig(primary_keys=["id"]), source, target) == []
