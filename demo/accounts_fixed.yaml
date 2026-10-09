@@ -1,0 +1,17 @@
+source:
+  path: accounts_legacy.csv
+target:
+  path: accounts_fixed.csv
+primary_keys: [account_id]
+rules:
+  - column_names: [region]
+    case_insensitive: true
+  - column_names: [balance]
+    absolute_tolerance: 0.005
+  - column_names: [note]
+    null_values: ["N/A"]
+  - column_names: [status]
+    value_map:
+      active: A
+      closed: C
+      paused: P

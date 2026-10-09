@@ -124,6 +124,7 @@ def test_it_finds_every_tape() -> None:
         "accounts-baseline",
         "accounts-crosswalk",
         "accounts-data",
+        "accounts-fixed",
         "accounts-rules",
         "accounts-run",
         "accounts-suggest",
@@ -279,6 +280,23 @@ class TestAccounts:
         for name in ("legacy", "rewrite"):
             written = (tmp_path / f"{name}.csv").read_text(encoding="utf-8")
             assert written == (_DEMO / f"accounts_{name}.csv").read_text(encoding="utf-8")
+
+    def test_the_fixed_export_corrects_only_account_17(self) -> None:
+        """Ensure the export the video ends on fixes the one defect, account 17's region, alone."""
+        rewrite = (_DEMO / "accounts_rewrite.csv").read_text(encoding="utf-8").splitlines()
+        fixed = (_DEMO / "accounts_fixed.csv").read_text(encoding="utf-8").splitlines()
+
+        changed = [(old, new) for old, new in zip(rewrite, fixed, strict=True) if old != new]
+
+        assert changed == [("17,EAST,C,312.5,renewal 2028", "17,SOUTH,C,312.5,renewal 2028")]
+
+    def test_the_fixed_configuration_differs_only_in_its_target(self) -> None:
+        """Ensure the fixed export is checked by the same rules, so only the data changed."""
+        rules = (_DEMO / "accounts_rules.yaml").read_text(encoding="utf-8")
+        fixed = (_DEMO / "accounts_fixed.yaml").read_text(encoding="utf-8")
+
+        assert fixed == rules.replace("path: accounts_rewrite.csv", "path: accounts_fixed.csv")
+        assert fixed != rules
 
 
 class TestAgentKit:

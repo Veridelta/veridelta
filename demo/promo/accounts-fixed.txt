@@ -1,0 +1,22 @@
+> veridelta run -c accounts_fixed.yaml --baseline accepted.json
+Loading configuration from accounts_fixed.yaml...
+Comparing...
+
+Veridelta Execution Summary
+===========================
+Status:        PASSED (Perfect Match)
+Match Rate:    100.0%
+Source Rows:   40
+Target Rows:   39
+Volume Shift:  -1 row
+
+Row-Level Discrepancies:
+---------------------------
+Added:         0
+Removed:       0
+Changed:       0
+Total Issues:  0
+Accepted:      1
+
+> echo "exit code: $?"
+exit code: 0

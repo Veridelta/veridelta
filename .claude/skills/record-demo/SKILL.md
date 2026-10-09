@@ -38,7 +38,7 @@ Commit each GIF or PNG with the transcript or the change that it shows.
 
 - `data` and `run` type the quick start's commands.
 - `mcp` runs the MCP client with `--brief`, which prints each call and answer as YAML, one field to a line, and still prints every row an answer returns.
-- The `accounts-` tapes follow the "From drift to rules" guide, one step to a tape: the two files, the first run on two files and `--key`, `suggest`, `crosswalk`, the run with four rules, and the run with a baseline. They read `demo/accounts_legacy.csv` and `demo/accounts_rewrite.csv`, the guide's data, with the configurations and the baseline beside them.
+- The `accounts-` tapes follow the "From drift to rules" guide, one step to a tape: the two files, the first run on two files and `--key`, `suggest`, `crosswalk`, the run with four rules, the run with a baseline, and the same run on the fixed export. They read `demo/accounts_legacy.csv` and `demo/accounts_rewrite.csv`, the guide's data, with the configurations and the baseline beside them. `demo/accounts_fixed.csv` is the rewrite with account 17's region corrected, the one defect the guide finds, and `demo/accounts_fixed.yaml` checks it by the same rules.
 
 Each writes `video/promo-<name>.mp4` itself, and `make demo-video` renders them after the others. It then runs `demo/screenshots.py --promo`, which writes `video/promo-report.png`, the HTML report of the run `accounts-baseline` types. No docs page shows them, but the test holds each tape to the CLI and to its transcript, `demo/promo/<name>.txt`, as it does every tape.
 
