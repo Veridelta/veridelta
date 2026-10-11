@@ -1041,6 +1041,21 @@ class TestDiffSummaryCalculations:
         assert summary.match_rate_percentage == 80.0  # (1 - 0.2) * 100
         assert summary.volume_shift == 10  # 110 - 100
 
+    def test_the_match_rate_stays_at_zero_when_mismatches_outnumber_source_rows(self) -> None:
+        """Ensure keys that never meet read 0%, not -100%, while the ratio keeps its value."""
+        summary = DiffSummary(
+            total_rows_source=2,
+            total_rows_target=2,
+            added_count=2,
+            removed_count=2,
+            changed_count=0,
+            is_match=False,
+        )
+
+        assert summary.mismatch_ratio == 2.0
+        assert summary.match_rate_percentage == 0.0
+        assert "Match Rate:    0.0%" in summary.report_summary
+
     def test_it_generates_a_valid_markdown_report_summary(self) -> None:
         """Ensure the report_summary property produces the expected formatted string."""
         summary = DiffSummary(
