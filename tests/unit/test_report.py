@@ -68,6 +68,41 @@ class _Tables(HTMLParser):
             self._cell.append(data)
 
 
+class _Tags(HTMLParser):
+    """Read every tag as a browser does, for the checks a content security policy makes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[tuple[str, list[tuple[str, str | None]]]] = []
+        self.hazards: list[str] = []
+        self.style = ""
+        self._in_style = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Keep each tag with its attributes, and note what a strict policy would block."""
+        self.found.append((tag, attrs))
+        self._in_style = tag == "style"
+        for name, value in attrs:
+            if name.startswith("on") or name == "style":
+                self.hazards.append(f"<{tag} {name}>")
+            if value is not None and value.strip().lower().startswith("javascript:"):
+                self.hazards.append(f"<{tag} {name}={value}>")
+
+    def handle_endtag(self, tag: str) -> None:
+        """Leave the style sheet."""
+        if tag == "style":
+            self._in_style = False
+
+    def handle_data(self, data: str) -> None:
+        """Collect the style sheet's text."""
+        if self._in_style:
+            self.style += data
+
+    def named(self, name: str) -> list[list[tuple[str, str | None]]]:
+        """Return the attributes of each tag with this name, in document order."""
+        return [attrs for tag, attrs in self.found if tag == name]
+
+
 def _rendered_rows(document: str) -> dict[str, list[list[str]]]:
     """Read the body rows of each table in a report, keyed by its heading's id.
 
@@ -121,6 +156,34 @@ class TestHTMLReport:
         assert "https://github.com/Veridelta" in document or "https://" not in document
         assert not re.search(r"<link[^>]+href", document)
         assert not re.search(r"<script[^>]+src=", document)
+
+    def test_it_is_one_inline_document_for_a_strict_content_security_policy(self) -> None:
+        """Ensure an editor can show the report under a policy that allows one style and one script.
+
+        The VS Code extension puts the report in a webview whose policy names
+        one `<style>` and one `<script>` by nonce. So the document holds
+        exactly one of each, bare of attributes, no tag carries an inline
+        handler or a `style` attribute, no attribute value is a `javascript:`
+        URL, the style sheet fetches nothing with `url(` or `@import`, and
+        the charset meta the policy is inserted after appears once. Hostile
+        data cannot change that, since it reaches the page as text.
+        """
+        hostile = DiffEngine(
+            DiffConfig(primary_keys=["id"]),
+            pl.DataFrame({"id": [1], "<script>x</script>": ["</script><img onerror=x>"]}).lazy(),
+            pl.DataFrame({"id": [1], "<script>x</script>": ["<style>*{}</style>"]}).lazy(),
+        ).run()
+
+        for result in (_result(), hostile):
+            tags = _Tags()
+            tags.feed(render_html(result))
+
+            assert tags.named("style") == [[]]
+            assert tags.named("script") == [[]]
+            assert tags.named("meta")[0] == [("charset", "utf-8")]
+            assert tags.hazards == []
+            assert "url(" not in tags.style.lower()
+            assert "@import" not in tags.style
 
     def test_it_reports_the_verdict_and_headline_metrics(self) -> None:
         """Ensure a reader sees the outcome without scrolling to a table."""
