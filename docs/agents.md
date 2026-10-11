@@ -74,6 +74,21 @@ A host that reads its servers from a file takes the same command as an entry. Cl
 }
 ```
 
+In VS Code, [the extension](configuration.md#the-vs-code-extension) registers the server with agent mode: one `--root` per workspace folder, run in the first, with the settings `veridelta.mcp.allowRowValues`, `veridelta.mcp.allowQueries`, and `veridelta.mcp.maxRows` as its flags. Without the extension, `.vscode/mcp.json` takes the same command, with the workspace folder as the root:
+
+```json
+{
+  "servers": {
+    "veridelta": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "veridelta", "mcp", "--root", "${workspaceFolder}"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
+```
+
 Where Veridelta is installed without uv, the command is `veridelta mcp` itself. To let the agent read rows, add `--allow-row-values` to the command. The server has six tools, and each takes `path`, the configuration file, which a relative path reads against the first root:
 
 | Tool | Returns | Reads |

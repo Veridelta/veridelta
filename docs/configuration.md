@@ -222,6 +222,8 @@ Then open a configuration and run **Veridelta: Validate configuration**. The ext
 
 The command runs in the configuration file's folder, so `uv run` finds the project and relative paths resolve as they do on the command line. Veridelta 0.36.0 or later places each problem on its line; an older Veridelta shows every problem on the first line.
 
+The extension's second command, **Veridelta: Run comparison**, runs the comparison behind a progress notification and ends in the verdict, with buttons that open the HTML report in an editor tab and the discrepancy files the configuration's `output_path` names. The extension also registers `veridelta mcp` with agent mode, as [AI agents](agents.md#mcp-server) describes.
+
 ### Validate from a task
 
 The schema flags a wrong key or value as you type. `veridelta validate` also checks what the schema cannot, such as a missing extra or a pattern Polars rejects; see [Checking a configuration](cli.md#checking-a-configuration). This VS Code task runs it on the file in the editor and lists the verdict in the Problems panel. Save it as `.vscode/tasks.json`, then run it from the Terminal menu with Run Task:
