@@ -1218,8 +1218,67 @@ class TestValidateCommand:
             "valid": False,
             "errors": ["Mixed file/lakehouse/database and warehouse backends are unsupported."],
             "warnings": [],
+            "findings": [
+                {
+                    "severity": "error",
+                    "message": (
+                        "Mixed file/lakehouse/database and warehouse backends are unsupported."
+                    ),
+                    "locations": [],
+                }
+            ],
         }
         assert captured.err == ""
+
+    @pytest.mark.parametrize(
+        ("text", "locations"),
+        [
+            pytest.param(
+                "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
+                "rules:\n  - column_names: [amount]\n    absolute_tolerence: 0.1\n",
+                [
+                    {
+                        "path": ["rules", 0, "absolute_tolerence"],
+                        "message": "Extra inputs are not permitted",
+                    }
+                ],
+                id="a-typo-by-path",
+            ),
+            pytest.param(
+                "source:\n  path: [a.csv,\n",
+                [{"line": 3, "column": 1}],
+                id="a-parse-error-by-line",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\n",
+                [],
+                id="a-missing-block-nowhere",
+            ),
+        ],
+    )
+    def test_it_places_a_load_failure_in_the_file(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        text: str,
+        locations: list[dict[str, object]],
+    ) -> None:
+        """Ensure `--json` says where in the file a failure is, as an editor needs it.
+
+        A typo is placed by its path of keys, a parse error by the parser's mark
+        counted from 1, and a missing block nowhere, since no text of the file is
+        wrong.
+        """
+        path = self._write(tmp_path, text)
+
+        exit_code = validate(self._args(path, json=True, quiet=True))
+        printed = json.loads(capsys.readouterr().out)
+
+        assert exit_code == 1
+        [finding] = printed["findings"]
+        assert finding["severity"] == "error"
+        assert finding["message"] == printed["errors"][0]
+        assert finding["locations"] == locations
 
     def test_it_passes_with_warnings(
         self, tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]

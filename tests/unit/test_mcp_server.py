@@ -59,6 +59,7 @@ from veridelta.models import (
     SourceConfig,
     SourceRef,
 )
+from veridelta.outputs import FindingDetail
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -301,6 +302,7 @@ class TestCheckConfiguration:
             "valid": True,
             "errors": [],
             "warnings": [],
+            "findings": [],
         }
 
     def test_it_reports_a_file_that_does_not_load_as_an_error(self, tmp_path: Path) -> None:
@@ -312,6 +314,9 @@ class TestCheckConfiguration:
         assert report["valid"] is False
         assert len(report["errors"]) == 1
         assert report["errors"][0].startswith("Configuration must contain both")
+        assert report["findings"] == [
+            FindingDetail(severity="error", message=report["errors"][0], locations=[])
+        ]
 
     def test_it_reports_a_missing_file_as_an_error(self, tmp_path: Path) -> None:
         """Ensure a path under a root that holds no file is a finding, not a crash."""
@@ -1208,6 +1213,7 @@ class TestServer:
             "valid",
             "errors",
             "warnings",
+            "findings",
         }
         assert run.input_schema["required"] == ["path"]
         assert set(run.input_schema["properties"]) == {"path"}

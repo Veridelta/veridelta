@@ -16,7 +16,7 @@ from typing import Any, cast
 import yaml
 from pydantic import ConfigDict, TypeAdapter, ValidationError
 
-from veridelta.exceptions import ConfigError
+from veridelta.exceptions import ConfigError, ConfigLocation
 from veridelta.models import DiffConfig, SourceConfig, SourceRef
 
 __all__ = [
@@ -45,7 +45,21 @@ _ENV_REFERENCE = re.compile(
 """An escaped `$${`, a `${NAME}` or `${NAME:-default}` reference, or any other `${`."""
 
 
-def _substitute(match: re.Match[str], location: str, unset: list[str] | None) -> str:
+_Path = tuple[str | int, ...]
+"""The keys and indexes from the file's root to a setting, as a location names them."""
+
+
+def _location(path: _Path) -> str:
+    """Write a path as the messages name it, such as `source -> path`."""
+    return " -> ".join(str(part) for part in path)
+
+
+def _step(key: object) -> str | int:
+    """Return a YAML key as a path step: itself when it is text or a number, else its text."""
+    return key if isinstance(key, str | int) else str(key)
+
+
+def _substitute(match: re.Match[str], path: _Path, unset: list[str] | None) -> str:
     """Resolve one `_ENV_REFERENCE` match."""
     # Errors never quote the surrounding text, which may be a literal credential.
     if match["escape"]:
@@ -53,8 +67,9 @@ def _substitute(match: re.Match[str], location: str, unset: list[str] | None) ->
     name = match["name"]
     if name is None:
         raise ConfigError(
-            f"Malformed environment reference in {location}. "
-            "Write ${NAME} or ${NAME:-default}, and $${ for a literal ${."
+            f"Malformed environment reference in {_location(path)}. "
+            "Write ${NAME} or ${NAME:-default}, and $${ for a literal ${.",
+            locations=(ConfigLocation(path=path),),
         )
     value = os.environ.get(name)
     default = match["default"]
@@ -66,38 +81,37 @@ def _substitute(match: re.Match[str], location: str, unset: list[str] | None) ->
         return name
     if value is None:
         raise ConfigError(
-            f"Environment variable '{name}' is not set, but {location} references it. "
-            "Set it, or write ${NAME:-default} to give a fallback."
+            f"Environment variable '{name}' is not set, but {_location(path)} references it. "
+            "Set it, or write ${NAME:-default} to give a fallback.",
+            locations=(ConfigLocation(path=path),),
         )
     return value
 
 
 def _expand_env(
-    value: Any, location: str, parents: tuple[int, ...] = (), unset: list[str] | None = None
+    value: Any, path: _Path, parents: tuple[int, ...] = (), unset: list[str] | None = None
 ) -> Any:
     """Expand environment references in the strings of a `source` or `target` block."""
     if id(value) in parents:
         raise ConfigError(
-            f"The YAML alias at {location} refers to a mapping or list that contains it."
+            f"The YAML alias at {_location(path)} refers to a mapping or list that contains it.",
+            locations=(ConfigLocation(path=path),),
         )
     # A YAML anchor can share one mapping between both blocks, so an in-place edit reaches both.
     if isinstance(value, dict):
         mapping = cast("dict[object, object]", value)
         inner = (*parents, id(mapping))
         return {
-            key: _expand_env(item, f"{location} -> {key}", inner, unset)
+            key: _expand_env(item, (*path, _step(key)), inner, unset)
             for key, item in mapping.items()
         }
     if isinstance(value, list):
         items = cast("list[object]", value)
         inner = (*parents, id(items))
-        return [
-            _expand_env(item, f"{location} -> {index}", inner, unset)
-            for index, item in enumerate(items)
-        ]
+        return [_expand_env(item, (*path, index), inner, unset) for index, item in enumerate(items)]
     if isinstance(value, str):
         # `sub` never rescans substituted text, so a secret holding `${` arrives intact.
-        return _ENV_REFERENCE.sub(lambda match: _substitute(match, location, unset), value)
+        return _ENV_REFERENCE.sub(lambda match: _substitute(match, path, unset), value)
     return value
 
 
@@ -208,27 +222,38 @@ def _validation_failure(
             the chosen model, and not at all when no model matches it.
     """
     message = "Configuration Validation Failed:\n"
+    locations: list[ConfigLocation] = []
     for validation_error in error.errors():
         parts = list(validation_error["loc"])
         if block is not None:
             parts = [block, *(parts[1:] if parts and parts[0] == tag else parts)]
-        location = " -> ".join(str(part) for part in parts)
-        message += f"  - [{location}]: {validation_error['msg']}\n"
+        message += f"  - [{_location(tuple(parts))}]: {validation_error['msg']}\n"
+        locations.append(ConfigLocation(path=tuple(parts), message=validation_error["msg"]))
     if unset:
         message += (
             "  Values in this block came from unset environment variables: "
             f"{', '.join(unset)}. Each was read as its own name, which may be what "
             "failed; set them to check the block as it will run.\n"
         )
-    return ConfigError(message)
+    return ConfigError(message, locations=locations)
+
+
+def _yaml_locations(error: yaml.YAMLError) -> tuple[ConfigLocation, ...]:
+    """Place a parse error at its mark, counted from 1, when the parser left one."""
+    mark = error.problem_mark if isinstance(error, yaml.MarkedYAMLError) else None
+    if mark is None:
+        return ()
+    return (ConfigLocation(line=mark.line + 1, column=mark.column + 1),)
 
 
 def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -> SourceRef:
     """Validate a YAML source/target block as a discriminated `SourceRef`."""
     if not isinstance(raw, dict):
-        raise ConfigError(f"The '{label}' block must be a mapping.")
+        raise ConfigError(
+            f"The '{label}' block must be a mapping.", locations=(ConfigLocation(path=(label,)),)
+        )
     guessed: list[str] | None = None if unset is None else []
-    payload: dict[str, Any] = _expand_env(raw, label, unset=guessed)
+    payload: dict[str, Any] = _expand_env(raw, (label,), unset=guessed)
     if unset is not None and guessed:
         unset.extend(name for name in guessed if name not in unset)
     payload.setdefault("type", "file")
@@ -292,7 +317,9 @@ def load_config(
         with file_path.open("r", encoding="utf-8") as f:
             parsed_yaml: Any = yaml.safe_load(f)
     except yaml.YAMLError as yaml_err:
-        raise ConfigError(f"Failed to parse YAML file:\n{yaml_err}") from yaml_err
+        raise ConfigError(
+            f"Failed to parse YAML file:\n{yaml_err}", locations=_yaml_locations(yaml_err)
+        ) from yaml_err
 
     if not isinstance(parsed_yaml, dict):
         raise ConfigError("Invalid YAML structure: Root element must be a dictionary.")

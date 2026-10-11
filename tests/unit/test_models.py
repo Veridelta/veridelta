@@ -14,6 +14,7 @@ from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import (  # pyright: ignore[reportPrivateUsage]
     _SUFFIX_FORMATS,
+    ConfigFinding,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -22,6 +23,7 @@ from veridelta.models import (  # pyright: ignore[reportPrivateUsage]
     DiffRule,
     DiffSummary,
     DuckDBConfig,
+    FindingLocation,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -375,6 +377,40 @@ class TestSourceFormatInference:
         """Ensure the suffix table and `SourceType` cannot drift apart."""
         assert set(_SUFFIX_FORMATS.values()) == set(get_args(SourceType))
         assert all(key == key.lower() and key.startswith(".") for key in _SUFFIX_FORMATS)
+
+
+class TestConfigFinding:
+    """Validate the finding `veridelta validate` reports, and where it points."""
+
+    def test_a_finding_points_nowhere_unless_told(self) -> None:
+        """Ensure a finding built from a message alone has no location, and dumps as before."""
+        finding = ConfigFinding(severity="error", message="m")
+
+        assert finding.locations == []
+        assert finding.model_dump() == {"severity": "error", "message": "m", "locations": []}
+
+    def test_a_location_counts_lines_and_columns_from_one(self) -> None:
+        """Ensure a line or column of 0 is refused, since editors and people count from 1."""
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            FindingLocation(line=0)
+        with pytest.raises(ValidationError, match="greater than or equal to 1"):
+            FindingLocation(line=1, column=0)
+
+    def test_a_location_refuses_an_unknown_field(self) -> None:
+        """Ensure a location holds only a path, a line, a column, and a message."""
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            FindingLocation(where="rules")  # type: ignore[call-arg]
+
+    def test_a_location_dumps_only_what_is_set(self) -> None:
+        """Ensure the JSON of a location holds a path or a line, never a null for the other."""
+        by_path = FindingLocation(path=["rules", 0, "regex_replace"], message="m")
+        by_line = FindingLocation(line=3, column=1)
+
+        assert by_path.model_dump(mode="json", exclude_none=True) == {
+            "path": ["rules", 0, "regex_replace"],
+            "message": "m",
+        }
+        assert by_line.model_dump(mode="json", exclude_none=True) == {"line": 3, "column": 1}
 
 
 class TestModelStrictness:

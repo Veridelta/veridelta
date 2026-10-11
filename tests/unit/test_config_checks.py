@@ -366,6 +366,55 @@ class TestConfigChecks:
         assert message.startswith("source: 'table' needs a URI scheme")
         assert "'exasol'" in message
 
+    def test_it_places_each_finding_at_its_setting(self, mocker: MockerFixture) -> None:
+        """Ensure a finding about one setting names its path, and one about the pair names none."""
+        mocker.patch("veridelta._matching.rapidfuzz_distance", None)
+        rules = [
+            DiffRule(column_names=["name"], regex_replace={"(?<=Mr)\\.": ""}),
+            DiffRule(column_names=["name"], max_levenshtein_distance=1),
+        ]
+        local = DiffEngine.check_configs(
+            DiffConfig(primary_keys=["id"], rules=rules), _CSV, _PARQUET
+        )
+        database = DiffEngine.check_configs(
+            DiffConfig(primary_keys=["id"]),
+            DatabaseConfig(uri="exasol://analyst@db.internal/sales", table="orders"),
+            _CSV,
+        )
+        warehouse = DiffEngine.check_configs(
+            DiffConfig(
+                primary_keys=["ID"],
+                normalize_column_names=True,
+                rules=[
+                    DiffRule(column_names=["NAME"], min_jaro_winkler_similarity=0.9),
+                    DiffRule(column_names=["SEEN_AT"], datetime_format="%d %b %Y"),
+                ],
+            ),
+            _snowflake("SRC"),
+            _snowflake("TGT"),
+        )
+        mixed = DiffEngine.check_configs(DiffConfig(primary_keys=["id"]), _snowflake("SRC"), _CSV)
+
+        assert [[place.path for place in finding.locations] for finding in local] == [
+            [["rules", 0, "regex_replace"]],
+            [["rules", 1]],
+        ]
+        assert [[place.path for place in finding.locations] for finding in database] == [
+            [["source", "table"]]
+        ]
+        assert [[place.path for place in finding.locations] for finding in warehouse] == [
+            [["normalize_column_names"]],
+            [["rules", 0, "min_jaro_winkler_similarity"]],
+            [["rules", 1, "datetime_format"]],
+        ]
+        assert [finding.locations for finding in mixed] == [[]]
+        assert all(
+            place.line is None and place.column is None and place.message is None
+            for findings in (local, database, warehouse)
+            for finding in findings
+            for place in finding.locations
+        )
+
     def test_it_returns_findings_as_models(self) -> None:
         """Ensure the Python API hands back the public model, ready to serialize."""
         [finding] = DiffEngine.check_configs(
@@ -376,6 +425,7 @@ class TestConfigChecks:
         assert finding.model_dump() == {
             "severity": "error",
             "message": "Mixed file/lakehouse/database and warehouse backends are unsupported.",
+            "locations": [],
         }
 
 

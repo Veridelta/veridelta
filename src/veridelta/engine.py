@@ -15,6 +15,7 @@ import polars as pl
 from veridelta._checks import (
     database_findings,
     error_finding,
+    error_from_exception,
     fuzzy_extra_findings,
     missing_extra_findings,
     pushdown_findings,
@@ -345,7 +346,7 @@ class DiffEngine:
         try:
             pair = check_backend_pairing(source, target)
         except (ConfigError, ConnectorError) as exc:
-            findings.append(error_finding(str(exc)))
+            findings.append(error_from_exception(exc))
         findings += missing_extra_findings(source, target)
         findings += database_findings(source, target)
         findings += regex_findings(diff, pushdown=pair is not None)
@@ -391,7 +392,7 @@ class DiffEngine:
             diff, source, target = load_config(path, unset_env=unset)
             findings = DiffEngine.check_configs(diff, source, target, schemas=schemas)
         except ConfigError as exc:
-            findings = [error_finding(str(exc).strip())]
+            findings = [error_from_exception(exc)]
         unset_findings = [
             warning_finding(
                 f"Environment variable '{name}' is not set, so its references were checked "
@@ -453,7 +454,7 @@ class DiffEngine:
         try:
             engine._plan()
         except ConfigError as exc:
-            return [error_finding(str(exc))]
+            return [error_from_exception(exc)]
         return unknown_column_findings(
             diff, source_frame.collect_schema().names(), target_frame.collect_schema().names()
         )

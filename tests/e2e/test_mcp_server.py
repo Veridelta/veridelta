@@ -86,6 +86,7 @@ def test_the_console_script_serves_its_tools(
         "valid": True,
         "errors": [],
         "warnings": [],
+        "findings": [],
     }
     assert broken.structured_content is not None
     assert broken.structured_content["valid"] is False

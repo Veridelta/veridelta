@@ -10,7 +10,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
     veridelta validate -c veridelta.yaml --json
     ```
 
-    The JSON holds the `config` it checked, `valid`, `errors`, and `warnings`, and the command exits `1` when there is an error. Fix each error before a run. A check that cannot finish exits `3` and prints an `error` object instead. `--allow-missing-env` checks a file whose secrets are not set, such as in a pull request job.
+    The JSON holds the `config` it checked, `valid`, `errors`, `warnings`, and `findings`, which place each error and warning in the file by `path`, or by `line` and `column` counted from 1. The command exits `1` when there is an error. Fix each error before a run. A check that cannot finish exits `3` and prints an `error` object instead. `--allow-missing-env` checks a file whose secrets are not set, such as in a pull request job.
 
 2. Run the comparison with `--json`, so stdout carries only the [summary](results.md#summary):
 
@@ -78,7 +78,7 @@ Where Veridelta is installed without uv, the command is `veridelta mcp` itself. 
 
 | Tool | Returns | Reads |
 | :--- | :--- | :--- |
-| `validate_config` | What `veridelta validate --json` prints: `config`, `valid`, `errors`, and `warnings`. Its `schemas` and `allow_missing_env` arguments work as the command's flags do. | No rows. With `schemas`, each side's columns. |
+| `validate_config` | What `veridelta validate --json` prints: `config`, `valid`, `errors`, `warnings`, and `findings`, which place each one in the file. Its `schemas` and `allow_missing_env` arguments work as the command's flags do. | No rows. With `schemas`, each side's columns. |
 | `run_comparison` | What `veridelta run --json` prints, the [summary](results.md#summary), with `verdict`, `match` or `drift`, the `exit_code` the command gives, 0 or 1, and `artifacts_written`. | Both sides. |
 | `describe_schema` | One side's `columns`, each name as stored mapped to its type as Polars names it, such as `Int64`, and the `side`. Its `side` argument is `source` or `target`. | That side's columns, and no rows. A side that reads a `query` is refused, since only running it would name its columns. |
 | `read_discrepancies` | The rows of one `kind`, `added`, `removed`, or `changed`, up to `limit`, 20 by default: `kind`, `total`, `rows`, `truncated`, and `keys_only`, which says the pair was compared in place, so each row holds its primary key alone. | Both sides, since each call runs the comparison. Only on a server started with `--allow-row-values`. |

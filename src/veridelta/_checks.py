@@ -8,7 +8,7 @@ problem at once: a missing extra, a database driver, a pattern Polars cannot rea
 a rule that names no column, or a pushdown the warehouse cannot run.
 """
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from importlib.util import find_spec
 from typing import Final
 from urllib.parse import urlsplit
@@ -34,6 +34,7 @@ from veridelta.models import (
     DiffConfig,
     DiffRule,
     DuckDBConfig,
+    FindingLocation,
     IcebergConfig,
     SnowflakeConfig,
     SourceConfig,
@@ -74,14 +75,37 @@ def _required_extra(config: SourceRef) -> tuple[str, Callable[[], bool]] | None:
     return _EXTRA_PROBES[type(config)]
 
 
-def error_finding(message: str) -> ConfigFinding:
-    """Build a finding that would stop a run."""
-    return ConfigFinding(severity="error", message=message)
+def _at(path: Sequence[str | int] | None) -> list[FindingLocation]:
+    """Return the one location a path names, or none."""
+    return [] if path is None else [FindingLocation(path=list(path))]
 
 
-def warning_finding(message: str) -> ConfigFinding:
+def error_finding(message: str, *, path: Sequence[str | int] | None = None) -> ConfigFinding:
+    """Build a finding that would stop a run, placed at `path` when the setting is known."""
+    return ConfigFinding(severity="error", message=message, locations=_at(path))
+
+
+def warning_finding(message: str, *, path: Sequence[str | int] | None = None) -> ConfigFinding:
     """Build a finding that stops a run only for some stored names or types."""
-    return ConfigFinding(severity="warning", message=message)
+    return ConfigFinding(severity="warning", message=message, locations=_at(path))
+
+
+def error_from_exception(exc: VerideltaError) -> ConfigFinding:
+    """Build the one error finding for a failure, keeping where a `ConfigError` points."""
+    locations = exc.locations if isinstance(exc, ConfigError) else ()
+    return ConfigFinding(
+        severity="error",
+        message=str(exc).strip(),
+        locations=[
+            FindingLocation(
+                path=None if location.path is None else list(location.path),
+                line=location.line,
+                column=location.column,
+                message=location.message,
+            )
+            for location in locations
+        ],
+    )
 
 
 def missing_extra_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
@@ -105,7 +129,7 @@ def database_findings(source: SourceRef, target: SourceRef) -> list[ConfigFindin
             try:
                 compile_database_select(urlsplit(config.uri).scheme.lower(), config.table)
             except (ConfigError, ConnectorError) as exc:
-                findings.append(error_finding(f"{label}: {exc}"))
+                findings.append(error_finding(f"{label}: {exc}", path=(label, "table")))
     return findings
 
 
@@ -140,15 +164,17 @@ def regex_findings(diff: DiffConfig, *, pushdown: bool) -> list[ConfigFinding]:
                 f"rules[{index}] regex_replace pattern {pattern!r} does not compile in "
                 f"Polars ({reason})."
             )
+            path = ("rules", index, "regex_replace")
             if pushdown:
                 findings.append(
                     warning_finding(
                         f"{message} A warehouse run hands it to the warehouse's own regular "
-                        "expression engine, which may accept it, but a local run would fail."
+                        "expression engine, which may accept it, but a local run would fail.",
+                        path=path,
                     )
                 )
             else:
-                findings.append(error_finding(message))
+                findings.append(error_finding(message, path=path))
     return findings
 
 
@@ -181,7 +207,8 @@ def fuzzy_extra_findings(diff: DiffConfig) -> list[ConfigFinding]:
         return []
     return [
         error_finding(
-            missing_extra("fuzzy", f"rules[{index}], whose similarity limit a local run scores,")
+            missing_extra("fuzzy", f"rules[{index}], whose similarity limit a local run scores,"),
+            path=("rules", index),
         )
         for index, rule in enumerate(diff.rules)
         if rule.max_levenshtein_distance is not None or rule.min_jaro_winkler_similarity is not None
@@ -210,7 +237,8 @@ def pushdown_findings(diff: DiffConfig, pair: WarehousePair) -> list[ConfigFindi
             warning_finding(
                 f"normalize_column_names is on. A {name} run refuses it if any stored column "
                 "name has uppercase letters or surrounding spaces, because pushdown quotes "
-                "names exactly as they are stored."
+                "names exactly as they are stored.",
+                path=("normalize_column_names",),
             )
         )
     for index, rule in enumerate(diff.rules):
@@ -219,7 +247,8 @@ def pushdown_findings(diff: DiffConfig, pair: WarehousePair) -> list[ConfigFindi
                 warning_finding(
                     f"rules[{index}] sets min_jaro_winkler_similarity, which a {name} run "
                     "refuses on any column it compares as text. Use max_levenshtein_distance, "
-                    "which compiles to SQL, or compare local copies of the tables."
+                    "which compiles to SQL, or compare local copies of the tables.",
+                    path=("rules", index, "min_jaro_winkler_similarity"),
                 )
             )
         for setting, probe in (
@@ -243,7 +272,8 @@ def pushdown_findings(diff: DiffConfig, pair: WarehousePair) -> list[ConfigFindi
                 findings.append(
                     warning_finding(
                         f"rules[{index}] {setting} has no {name} spelling, so a run "
-                        f"refuses it on any column stored as text: {exc}"
+                        f"refuses it on any column stored as text: {exc}",
+                        path=("rules", index, setting),
                     )
                 )
     return findings
@@ -258,4 +288,4 @@ def pushdown_schema_findings(diff: DiffConfig, pair: WarehousePair) -> list[Conf
             )
         )
     except VerideltaError as exc:
-        return [error_finding(str(exc))]
+        return [error_from_exception(exc)]

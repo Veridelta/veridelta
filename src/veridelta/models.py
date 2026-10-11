@@ -1302,6 +1302,33 @@ FindingSeverity = Literal["error", "warning"]
 stops it only if the tables hold what the setting cannot handle."""
 
 
+class FindingLocation(BaseModel):
+    """Where in the configuration file a finding points.
+
+    A finding that bundles several problems, such as a validation failure with
+    two typos, carries one location each, with that place's own message.
+
+    Attributes:
+        path (list[str | int] | None): The keys and indexes from the file's
+            root to the setting, such as `["rules", 0, "regex_replace"]`.
+        line (int | None): The line, counted from 1, when the file does not parse.
+        column (int | None): The column on that line, counted from 1.
+        message (str | None): What is wrong at this place, when the finding's
+            message bundles several.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: list[str | int] | None = Field(
+        default=None, description="The keys and indexes from the file's root to the setting."
+    )
+    line: int | None = Field(default=None, ge=1, description="The line, counted from 1.")
+    column: int | None = Field(
+        default=None, ge=1, description="The column on that line, counted from 1."
+    )
+    message: str | None = Field(default=None, description="What is wrong at this place.")
+
+
 class ConfigFinding(BaseModel):
     """One problem found by checking a configuration without running it.
 
@@ -1309,12 +1336,19 @@ class ConfigFinding(BaseModel):
         severity (FindingSeverity): `error` when the run would fail, `warning`
             when it depends on stored column names or types.
         message (str): What is wrong and what to do about it.
+        locations (list[FindingLocation]): Where in the file the finding points,
+            when the check knows. Empty for a problem the file's text does not
+            place, such as a missing block or an extra that is not installed.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     severity: FindingSeverity = Field(..., description="error or warning.")
     message: str = Field(..., description="What is wrong and what to do about it.")
+    locations: list[FindingLocation] = Field(
+        default_factory=list[FindingLocation],
+        description="Where in the file the finding points, when known.",
+    )
 
 
 class SnowflakeConfig(BaseModel):
