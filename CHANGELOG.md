@@ -1,3 +1,22 @@
+## v0.40.0 (2026-10-11)
+
+Pushdown and a local run could treat a primary key of two types differently. A local run
+has refused a key whose two sides hold types its join cannot pair since 0.33.2. A database
+converted one side and paired the rows, so the text `"007"` met the integer `7`, and an
+integer key met a float key. Pushdown now refuses such a key before reading a row, with the
+local run's message, on every path: a run, `validate --schemas`, and value map proposals.
+A `cast_to` on the key gives both sides one type. The
+[Upgrading](https://veridelta.github.io/veridelta/upgrading/) page shows how.
+
+### BREAKING CHANGE
+
+- A pushdown comparison whose primary key holds two types, other than one type, two integer
+  types, or two float types, raises `ConfigError`. Add `cast_to` to the key's rule.
+
+### Fix
+
+- **pushdown**: refuse a primary key of two types (#389)
+
 ## v0.39.0 (2026-10-11)
 
 Two Redshift tables on one connection are compared inside Redshift when both set
