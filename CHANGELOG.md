@@ -1,3 +1,27 @@
+## v0.38.0 (2026-10-11)
+
+Two SQL Server tables on one connection are compared inside SQL Server when both set
+`pushdown`, as two Postgres tables are. One T-SQL dialect serves SQL Server 2022 and later,
+Azure SQL, and Synapse dedicated SQL pools, since an `mssql://` URI cannot tell them apart.
+Only counts and keys come back. Text is compared character by character, with trailing
+spaces counted, since the default collation ignores case and accents. Before the first
+statement, the session checks that the server reads the SQL as written, and raises
+`ConnectorError` if not. `regex_replace`, `datetime_format`, and `max_levenshtein_distance`
+raise `ConfigError`, as do `pad_zeros` and `cast_to: String` on a float column, and
+`veridelta validate` warns about each. The parity suite now runs inside SQL Server 2022 on
+every pull request. The SQL has not run in Azure SQL or Synapse yet.
+[SQL Server, Azure SQL, and Synapse](https://veridelta.github.io/veridelta/pushdown/#sql-server-azure-sql-and-synapse)
+on the pushdown page lists every difference from a local run.
+
+### Feat
+
+- compare two SQL Server tables inside SQL Server (#383)
+- **sql**: compile pushdown statements in T-SQL (#382)
+
+### Refactor
+
+- route database pushdown by URI scheme and read results by position (#381)
+
 ## v0.37.0 (2026-10-11)
 
 `veridelta run --baseline accepted.json` works on a pair compared where it is stored, as it
