@@ -46,8 +46,8 @@ _SKIPPED = frozenset({".git", ".venv", "site", "node_modules", ".cache", "__pyca
 """Folders no tool reads instructions from, left out of the walk."""
 _SHADOWING = frozenset({"claude.md", "claude.local.md"})
 """The names, lowercased, of the files that stop Claude Code from reading `AGENTS.md`."""
-_TOOL_FILE = re.compile(r"claude.*\.md|\.cursorignore|\.mcp\.json", re.IGNORECASE)
-"""A file that one agent tool reads and the other supported tool does not."""
+_TOOL_FILE = re.compile(r"claude.*\.md|\.cursorignore|\.?mcp\.json", re.IGNORECASE)
+"""A file that one agent tool reads and the others do not, such as `.mcp.json` or `.vscode/mcp.json`."""
 
 
 def _files_under(root: Path) -> Iterator[Path]:

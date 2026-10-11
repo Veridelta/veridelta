@@ -68,6 +68,8 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | The JSON Schema for configuration files, for completion and checking in an editor | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The schema mapped to `veridelta*.yaml` in VS Code, the YAML extension recommended, and a task that runs `veridelta validate` on the open file with its verdict in the Problems panel | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The VS Code extension's validate command, released from its own repository, which runs `veridelta validate --json` on the open file and puts each finding in the Problems panel on the line it points to | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
+| The extension's run command, which runs the comparison behind a progress notification, opens the HTML report in an editor tab, and opens the discrepancy files the configuration names | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
+| The extension's registration of `veridelta mcp` with agent mode, one root per workspace folder, with its settings as the server's flags | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
 | The AI agents page, `llms.txt`, and the installable agent skill | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
 | The fix loop for an agent: change the pipeline, run the comparison, read the counts, fix the cause, and stop on a match or on drift the user asked for | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md) | [DR-02](metrics/DR-02.md) |
 | `veridelta mcp`, which serves `validate_config`, `run_comparison`, `describe_schema`, `read_discrepancies`, `propose_value_maps`, and `suggest_rules` to an agent's host over stdio, held to the folders it was started with, with row values off unless allowed and then capped | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [AI agents](../docs/agents.md), [Command line](../docs/cli.md) | [DR-02](metrics/DR-02.md) |
@@ -77,7 +79,6 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Item | Use case | Metric it would move |
 | :--- | :--- | :--- |
 | Pushdown for more SQL dialects, such as Redshift and Synapse | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [GR-01](metrics/GR-01.md) |
-| The VS Code extension's run command and its MCP registration | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [NS-01](metrics/NS-01.md), [DR-02](metrics/DR-02.md) |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
 
 ## Served by no use case, and why they stay
