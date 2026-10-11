@@ -1,0 +1,13 @@
+id: T15
+kind: propose_rule
+title: Propose trimming whitespace
+fixture: propose_whitespace
+allow_row_values: true
+prompt: 'The folder holds veridelta.yaml, which compares source.csv with target.csv, and the column status
+  differs on every run. Ask the server what rule would explain it with suggest_rules, and repeat the proposal
+  for status in your answer. Do not change veridelta.yaml: only the user decides whether a rule is added.
+  End your answer with one line that starts with VERIDELTA_RESULT: followed by one JSON object with one
+  key, proposal, holding an object with the keys tool, column, and settings, exactly as the tool returned
+  them.
+
+  '

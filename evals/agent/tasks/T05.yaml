@@ -1,0 +1,12 @@
+id: T05
+kind: verdict
+title: Drift forgiven under a configured rule
+fixture: forgiven
+prompt: 'The folder holds veridelta.yaml, which compares legacy.csv with modern.csv. The file declares
+  a tolerance on amount. Run the comparison and report whether the two files match. Use only the Veridelta
+  tools: check the file with validate_config before you run it with run_comparison. Report counts and
+  column names, never a value from the data. End your answer with one line that starts with VERIDELTA_RESULT:
+  followed by one JSON object with the keys verdict (match or drift), added_count, removed_count, changed_count,
+  and columns (the names of the columns with a mismatch, sorted).
+
+  '

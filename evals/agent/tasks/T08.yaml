@@ -1,0 +1,13 @@
+id: T08
+kind: fix_config
+title: A Parquet file under a suffix that names no format
+fixture: data_suffix
+prompt: 'The folder holds veridelta.yaml, which compares two exports, and the run fails. The target is
+  a Parquet file saved as modern.data. Fix the configuration file, and nothing else, so the comparison
+  runs, then report the verdict. Change the one setting that is wrong and no other. Use only the Veridelta
+  tools: check the file with validate_config before you run it with run_comparison. Report counts and
+  column names, never a value from the data. End your answer with one line that starts with VERIDELTA_RESULT:
+  followed by one JSON object with the keys verdict (match or drift), added_count, removed_count, changed_count,
+  and columns (the names of the columns with a mismatch, sorted).
+
+  '

@@ -170,7 +170,7 @@ exclude = ["docs/assets/*.gif", "docs/assets/*.png"]
 [tool.mypy]
 python_version = "3.11"
 mypy_path = "src"
-files = ["src", "tests", "hooks"]
+files = ["src", "tests", "hooks", "evals"]
 strict = true
 plugins = ["pydantic.mypy"]
 enable_error_code = ["redundant-expr", "truthy-bool", "ignore-without-code"]

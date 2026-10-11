@@ -42,6 +42,12 @@ Work on a short-lived branch, and never commit to `main` directly:
 
 The tests run each tutorial notebook in `docs/examples/` and require every `# Output:` comment to match what its cell prints. After editing a tutorial, `make notebooks` runs only those. After changing a configuration model, or the JSON a command prints, run `make schema` to regenerate the JSON Schemas under `docs/schema/`: the configuration's, which editors read, and one for each output. A test fails while one is stale.
 
+### Agent eval
+
+`evals/agent/` grades an agent that drives `veridelta mcp` through twenty fixed tasks under `evals/agent/tasks/`: a verdict to report, a configuration to fix or to write, a rule to propose and never apply, rows whose values must not be repeated, and files the server must refuse. Fixed checks grade every attempt from the agent's tool calls, its final answer, and the files it left behind, against what each task's fixture knows by construction. No model grades. The metric [DR-04](product/metrics/DR-04.md) records the score.
+
+Two controls need no model and no key, and `make eval-agent` runs both: the scripted control performs every task as the docs ask and must pass each one, and the wrong control makes each kind's characteristic mistake and must pass none. `tests/integration/test_agent_eval.py` holds them to that, so a change to the server, the skill, or the graders that lets a wrong performance through fails the suite. `python -m evals.agent --help` lists the options, such as `--tasks T07,T10` to run a few.
+
 ### Pushdown parity
 
 Pushdown must reach the same verdict as a local run. A differential harness runs both engines over the same frames and compares the results. It writes each case to a DuckDB file and runs the compiled SQL through `DuckDBPushdownSession`, the session DuckDB pushdown ships. That catches semantic errors such as NULL propagation, three-valued logic, and operator precedence, but not differences between vendors. Snowflake, Databricks, and BigQuery spellings are pinned by assertions on the emitted SQL. DuckDB's `levenshtein` counts bytes, not characters, so DuckDB pushdown refuses edit distance. The edit distance tests restore it on ASCII text, where the two agree, to check the predicate the other warehouses run. A property test also draws random configurations and data, from integers at the edges of their types to NULLs, NaN, and text timestamps, and requires both engines to reach the same counts on each, and the added and removed counts its keys imply. It never draws a rule the backend under test refuses.

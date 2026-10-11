@@ -38,3 +38,6 @@ site/
 
 # MP4 copies of the recordings, which `make demo-video` writes for promotional videos.
 demo/video/
+
+# The reports `make eval-agent` and `python -m evals.agent` write.
+.evals/
