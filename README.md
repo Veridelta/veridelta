@@ -15,6 +15,8 @@ Veridelta compares two datasets on their primary keys and reports every row that
 
 ![A terminal prints a five-line veridelta.yaml and two three-row CSV files, validates the configuration, runs the comparison, shows one added, one removed, and one changed row, and prints the exit code for CI, 1, beside what 0, 1, and 3 mean.](https://veridelta.github.io/veridelta/assets/demo.gif)
 
+[Watch the 60-second demo](https://github.com/Veridelta/veridelta-media/releases/latest): a port from IDL to Python must match one to one, every row differs, and only the real bug fails CI.
+
 It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelta.github.io/veridelta/).
 
 ## Features
