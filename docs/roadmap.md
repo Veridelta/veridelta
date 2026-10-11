@@ -8,7 +8,7 @@ This page lists work that is not built yet. The current release is v{{ config.ex
 
 ## Warehouses
 
-- Pushdown for more SQL dialects, such as Redshift and Synapse. Serves [UC-05](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-05-compare-two-tables-where-they-are-stored).
+- Pushdown for more SQL dialects, such as Redshift and Synapse, tracked in [issue 379](https://github.com/Veridelta/veridelta/issues/379). Serves [UC-05](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-05-compare-two-tables-where-they-are-stored).
 
 ## AI workflows
 
