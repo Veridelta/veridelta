@@ -23,6 +23,7 @@ These rules apply to every change under `src/veridelta/`, on top of the root [AG
 - Raise `veridelta.exceptions.VerideltaError` subclasses (`ConfigError`, `DataIntegrityError`). Do not raise generic runtime exceptions for domain failures.
 - Keep the module split: schema parsing in `config.py`, execution in `engine.py`, representations in `models.py`. Do not invent new packages.
 - `engine.py` holds `DiffEngine` and re-exports the public engine names through `__all__`. Its helpers live in private modules beside it, `src/veridelta/_*.py`, one job each, as [the decision record](../decisions/engine-helpers-in-private-modules.md) says. A private module never imports `veridelta.engine`, so imports point one way. A name another module imports drops its underscore, as in `veridelta.connectors.base`, and a name used only where it is defined keeps it. A name a test patches lives in the module that reads it.
+- No module under `src/veridelta/` imports or calls a language model, and no tool of `veridelta mcp` writes a file or applies a rule, as [the decision record](../decisions/no-model-inside-the-verdict.md) says. A proposal, from `suggest`, `crosswalk`, or a tool, is printed or returned for the user to copy into the configuration.
 
 ## Loaders
 
