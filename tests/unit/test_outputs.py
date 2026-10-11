@@ -11,7 +11,8 @@ import jsonschema
 import pytest
 
 from veridelta.cli import main
-from veridelta.outputs import OUTPUTS, output_json_schema
+from veridelta.models import ConfigFinding, FindingLocation
+from veridelta.outputs import OUTPUTS, output_json_schema, validation_report
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -130,7 +131,33 @@ class TestOutputsMatchTheirSchemas:
 
         assert code == (0 if valid else 1)
         assert printed["valid"] is valid
+        assert len(printed["findings"]) == len(printed["errors"]) + len(printed["warnings"])
+        if not valid:
+            assert printed["findings"][0]["locations"][0]["path"] == ["target", "format"]
         _check("validate", printed)
+
+    def test_the_validate_report_lists_errors_before_warnings_with_their_places(self) -> None:
+        """Ensure `findings` follows the order of `errors` then `warnings`, each placed as dumped."""
+        warning = ConfigFinding(severity="warning", message="w")
+        error = ConfigFinding(
+            severity="error",
+            message="e",
+            locations=[FindingLocation(path=["rules", 0], message="x"), FindingLocation(line=2)],
+        )
+
+        report = validation_report("c.yaml", [warning, error])
+
+        assert report["errors"] == ["e"]
+        assert report["warnings"] == ["w"]
+        assert report["findings"] == [
+            {
+                "severity": "error",
+                "message": "e",
+                "locations": [{"path": ["rules", 0], "message": "x"}, {"line": 2}],
+            },
+            {"severity": "warning", "message": "w", "locations": []},
+        ]
+        _check("validate", report)
 
     def test_crosswalk(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

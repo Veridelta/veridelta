@@ -4,6 +4,7 @@ What changed in the product bundle and why, newest first. A commit's diff shows 
 
 ## 2026-10-11
 
+- **Update**: [the feature map](FEATURES.md) records that `veridelta validate --json` and the `validate_config` tool place each finding in the file: `findings` lists every error and warning with its `locations`, a path of keys and indexes such as `rules -> 0 -> regex_replace`, or the line and column of a parse error counted from 1. The text output and the `errors` and `warnings` lists stay as they were. Slice E1b of [issue 127](https://github.com/Veridelta/veridelta/issues/127), which the VS Code extension needs to put a diagnostic on the right line, and which an agent reads through the MCP server for [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison).
 - **Update**: [who Veridelta serves](USERS.md) links [AP-02](USERS.md#ap-02-the-user-wanting-a-model-to-decide-what-counts-as-drift) to the decision record that settles it: no model decides a verdict, no tool of `veridelta mcp` writes a file or applies a rule, and a guard test holds the package to both. Slice F3 of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
 
 ## 2026-10-09

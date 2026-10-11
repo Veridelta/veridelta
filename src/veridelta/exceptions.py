@@ -6,6 +6,27 @@
 Each derives from `VerideltaError`, so one `except` clause catches them all.
 """
 
+from collections.abc import Sequence
+from typing import NamedTuple
+
+
+class ConfigLocation(NamedTuple):
+    """Where in a configuration file a `ConfigError` points.
+
+    Attributes:
+        path (tuple[str | int, ...] | None): The keys and indexes from the file's
+            root to the setting, such as `("rules", 0, "regex_replace")`.
+        line (int | None): The line, counted from 1, when the file does not parse.
+        column (int | None): The column on that line, counted from 1.
+        message (str | None): What is wrong at this place, when the error
+            bundles several.
+    """
+
+    path: tuple[str | int, ...] | None = None
+    line: int | None = None
+    column: int | None = None
+    message: str | None = None
+
 
 def missing_extra(extra: str, needed_for: str) -> str:
     """Return the one message for an optional extra that is not installed.
@@ -40,7 +61,22 @@ class ConfigError(VerideltaError):
 
     Such failures include a primary key missing from a dataset, a rule the
     column types cannot satisfy, and a column that `schema_mode` forbids.
+
+    Attributes:
+        locations (tuple[ConfigLocation, ...]): Where in the file each problem
+            is, when the loader knows. Empty for a failure the file's text does
+            not place, such as a missing block or a key missing from the data.
     """
+
+    def __init__(self, message: str = "", *, locations: Sequence[ConfigLocation] = ()) -> None:
+        """Carry the message, and where in the file each problem is.
+
+        Args:
+            message (str): What is wrong and what to do about it.
+            locations (Sequence[ConfigLocation]): Where in the file, when known.
+        """
+        super().__init__(message)
+        self.locations = tuple(locations)
 
 
 class DataIntegrityError(VerideltaError):

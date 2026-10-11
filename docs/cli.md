@@ -131,7 +131,7 @@ With `--schemas`, `validate` also connects and checks the rules against each sid
 - A pair compared in place runs the column probes a run starts with, then compiles every comparison statement without running it. That settles each warning above one way or the other.
 - A name in a rule's `column_names` that neither side has, after `normalize_column_names` when it is on, is a warning. Such a rule does nothing. That is safe, since it only fails to forgive, but a misspelled name would otherwise go unnoticed.
 
-Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, and `warnings`. The verdict goes to stderr.
+Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, `warnings`, and `findings`. Each finding carries its `severity`, its `message`, and its `locations` in the file: a `path` of keys and indexes from the root, such as `["rules", 0, "regex_replace"]`, or the `line` and `column` of a parse error, both counted from 1, with the message for that place. A problem the text does not place, such as a missing block, has no location. The verdict goes to stderr.
 
 <details markdown>
 <summary>Watch <code>validate --schemas</code> catch a wrong primary key</summary>

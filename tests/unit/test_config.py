@@ -6,9 +6,10 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from veridelta.config import files_config, load_config, referenced_variables
-from veridelta.exceptions import ConfigError
+from veridelta.exceptions import ConfigError, ConfigLocation
 from veridelta.models import (
     DatabaseConfig,
     DatabricksConfig,
@@ -208,6 +209,122 @@ _SNOWFLAKE_BLOCK = (
     "  warehouse: COMPUTE_WH\n  database: ANALYTICS\n  schema_name: PUBLIC\n"
 )
 """Required Snowflake fields, indented as a `source` or `target` block."""
+
+
+class TestErrorLocations:
+    """Validate that a loader failure says where in the file it is, for an editor."""
+
+    def test_a_validation_failure_places_each_problem_by_its_path(self, tmp_path: Path) -> None:
+        """Ensure each Pydantic error becomes one location with its path and its own message."""
+        with pytest.raises(ConfigError) as exc_info:
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
+                "unsupported_field: true\n"
+                "rules:\n  - column_names: [amount]\n    case_insensitve: true\n",
+            )
+
+        locations = exc_info.value.locations
+        assert {location.path for location in locations} == {
+            ("unsupported_field",),
+            ("rules", 0, "case_insensitve"),
+        }
+        assert {location.message for location in locations} == {"Extra inputs are not permitted"}
+        assert all(location.line is None and location.column is None for location in locations)
+        assert str(exc_info.value).count("Extra inputs are not permitted") == 2
+
+    def test_a_block_failure_starts_its_path_with_the_block(self, tmp_path: Path) -> None:
+        """Ensure a failure inside `source` or `target` is placed under that key, not the tag."""
+        with pytest.raises(ConfigError) as exc_info:
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: a.csv\n  format: xlsx\ntarget:\n  path: b.csv\n"
+                "primary_keys: [id]\n",
+            )
+
+        [location] = exc_info.value.locations
+        assert location.path == ("source", "format")
+        assert location.message is not None
+        assert location.message.startswith("Input should be")
+
+    def test_a_block_that_is_not_a_mapping_is_placed_at_the_block(self, tmp_path: Path) -> None:
+        """Ensure a list where a block should be points at the block's key."""
+        with pytest.raises(ConfigError, match="must be a mapping") as exc_info:
+            _load_yaml(tmp_path, "source: [a.csv]\ntarget:\n  path: b.csv\nprimary_keys: [id]\n")
+
+        assert exc_info.value.locations == (ConfigLocation(path=("source",)),)
+
+    def test_a_parse_error_is_placed_at_the_mark_counted_from_one(self, tmp_path: Path) -> None:
+        """Ensure a file that does not parse is placed where the parser stopped, from line 1."""
+        text = "source:\n  path: [a.csv,\n"
+        with pytest.raises(yaml.MarkedYAMLError) as parsed:
+            yaml.safe_load(text)
+        mark = parsed.value.problem_mark
+        assert mark is not None
+
+        with pytest.raises(ConfigError, match="Failed to parse YAML file") as exc_info:
+            _load_yaml(tmp_path, text)
+
+        assert exc_info.value.locations == (
+            ConfigLocation(line=mark.line + 1, column=mark.column + 1),
+        )
+        assert exc_info.value.locations[0].line == 3
+
+    def test_a_parse_error_without_a_mark_is_placed_nowhere(self, tmp_path: Path) -> None:
+        """Ensure a reader error, which carries no mark, still loads as a plain failure."""
+        path = tmp_path / "control.yaml"
+        path.write_bytes(b"source:\n  path: a\x00.csv\n")
+
+        with pytest.raises(ConfigError, match="Failed to parse YAML file") as exc_info:
+            load_config(path)
+
+        assert exc_info.value.locations == ()
+
+    def test_a_missing_block_is_placed_nowhere(self, tmp_path: Path) -> None:
+        """Ensure a failure no text of the file causes has no location."""
+        with pytest.raises(ConfigError, match="must contain both") as exc_info:
+            _load_yaml(tmp_path, "source:\n  path: a.csv\nprimary_keys: [id]\n")
+
+        assert exc_info.value.locations == ()
+
+    def test_an_environment_failure_is_placed_at_the_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure an unset variable, a malformed reference, and a self-referring alias name the field."""
+        monkeypatch.delenv("VD_LOCATION_UNSET", raising=False)
+        cases = {
+            "source:\n  path: ${VD_LOCATION_UNSET}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n": (
+                "source",
+                "path",
+            ),
+            "source:\n  path: a.csv\ntarget:\n  path: b.csv\n  storage_options:\n    key: ${\n"
+            "primary_keys: [id]\n": ("target", "storage_options", "key"),
+            "source: &self\n  path: a.csv\n  nested: *self\ntarget:\n  path: b.csv\n"
+            "primary_keys: [id]\n": ("source", "nested"),
+        }
+
+        for text, path in cases.items():
+            with pytest.raises(ConfigError) as exc_info:
+                _load_yaml(tmp_path, text)
+
+            assert exc_info.value.locations == (ConfigLocation(path=path),), text
+            assert " -> ".join(str(step) for step in path) in str(exc_info.value)
+
+    def test_a_key_that_is_not_text_still_names_a_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a numeric or null YAML key under a block becomes a step of the path."""
+        monkeypatch.delenv("VD_LOCATION_UNSET", raising=False)
+        with pytest.raises(ConfigError) as exc_info:
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: a.csv\n  storage_options:\n    7: x\n    null: ${VD_LOCATION_UNSET}\n"
+                "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            )
+
+        assert exc_info.value.locations == (
+            ConfigLocation(path=("source", "storage_options", "None")),
+        )
 
 
 class TestEnvironmentExpansion:

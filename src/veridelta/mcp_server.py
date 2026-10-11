@@ -797,7 +797,8 @@ def build_server(settings: Settings) -> "MCPServer":
     ) -> ValidationReport:
         """Check a Veridelta configuration file for what would stop a run.
 
-        Reads no rows. Returns what `veridelta validate --json` prints: its errors and warnings.
+        Reads no rows. Returns what `veridelta validate --json` prints: its errors and
+        warnings, each placed in the file where the check can.
         """
         return _answer(
             loaded.tool_error,

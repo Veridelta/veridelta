@@ -11,7 +11,7 @@ writes each under `docs/schema/`, where the docs site serves it at the URL its
 """
 
 from collections.abc import Callable, Iterable
-from typing import Any, Final
+from typing import Any, Final, NotRequired, cast
 
 from pydantic import TypeAdapter
 
@@ -23,6 +23,7 @@ from veridelta.models import (
     Baseline,
     ConfigFinding,
     DiffSummary,
+    FindingSeverity,
     RuleSuggestion,
     ValueMapProposal,
 )
@@ -31,6 +32,8 @@ __all__ = [
     "OUTPUTS",
     "ErrorDetail",
     "ErrorReport",
+    "FindingDetail",
+    "LocationDetail",
     "ValidationReport",
     "error_report",
     "output_json_schema",
@@ -42,6 +45,39 @@ _SCHEMA_FOLDER: Final = SCHEMA_URL.rsplit("/", 1)[0]
 """Where the docs site serves each published schema, beside the configuration's."""
 
 
+class LocationDetail(TypedDict):
+    """Where in the configuration file a finding points.
+
+    Attributes:
+        path: The keys and indexes from the file's root to the setting, such as
+            `["rules", 0, "regex_replace"]`. Left out when the finding is placed
+            by line.
+        line: The line, counted from 1, for a file that does not parse.
+        column: The column on that line, counted from 1.
+        message: What is wrong at this place, when the finding bundles several.
+    """
+
+    path: NotRequired[list[str | int]]
+    line: NotRequired[int]
+    column: NotRequired[int]
+    message: NotRequired[str]
+
+
+class FindingDetail(TypedDict):
+    """One finding with where it points, for an editor or an agent.
+
+    Attributes:
+        severity: `error` or `warning`.
+        message: The entry in `errors` or `warnings`.
+        locations: Where in the file, when known. Empty for a problem the
+            file's text does not place.
+    """
+
+    severity: FindingSeverity
+    message: str
+    locations: list[LocationDetail]
+
+
 class ValidationReport(TypedDict):
     """What `validate_config` returns, the object `veridelta validate --json` prints.
 
@@ -50,12 +86,27 @@ class ValidationReport(TypedDict):
         valid: Whether no finding is an error.
         errors: What would stop a run.
         warnings: What a run may still trip on, such as an unset variable.
+        findings: Each error, then each warning, with its severity and where
+            in the file it points.
     """
 
     config: str
     valid: bool
     errors: list[str]
     warnings: list[str]
+    findings: list[FindingDetail]
+
+
+def _detail(finding: ConfigFinding) -> FindingDetail:
+    """Write a finding as the report prints it, each location without its unset fields."""
+    return FindingDetail(
+        severity=finding.severity,
+        message=finding.message,
+        locations=[
+            cast("LocationDetail", location.model_dump(mode="json", exclude_none=True))
+            for location in finding.locations
+        ],
+    )
 
 
 def validation_report(config: str, findings: Iterable[ConfigFinding]) -> ValidationReport:
@@ -66,12 +117,19 @@ def validation_report(config: str, findings: Iterable[ConfigFinding]) -> Validat
         findings (Iterable[ConfigFinding]): What the check found, in order.
 
     Returns:
-        ValidationReport: The errors and the warnings, each in the order found.
+        ValidationReport: The errors and the warnings, each in the order found,
+            then every finding with where it points, errors first.
     """
     found = list(findings)
-    errors = [finding.message for finding in found if finding.severity == "error"]
-    warnings = [finding.message for finding in found if finding.severity == "warning"]
-    return ValidationReport(config=config, valid=not errors, errors=errors, warnings=warnings)
+    errors = [finding for finding in found if finding.severity == "error"]
+    warnings = [finding for finding in found if finding.severity == "warning"]
+    return ValidationReport(
+        config=config,
+        valid=not errors,
+        errors=[finding.message for finding in errors],
+        warnings=[finding.message for finding in warnings],
+        findings=[_detail(finding) for finding in [*errors, *warnings]],
+    )
 
 
 class ErrorDetail(TypedDict):
@@ -116,7 +174,8 @@ _OUTPUTS: Final[dict[str, tuple[str, str, Callable[[], dict[str, Any]]]]] = {
     ),
     "validate": (
         "veridelta validate --json",
-        "The findings of a check: whether the file is valid, its errors, and its warnings.",
+        "The findings of a check: whether the file is valid, its errors, its warnings, and "
+        "where in the file each points.",
         lambda: TypeAdapter(ValidationReport).json_schema(),
     ),
     "crosswalk": (

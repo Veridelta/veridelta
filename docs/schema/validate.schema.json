@@ -1,7 +1,73 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://veridelta.github.io/veridelta/schema/validate.schema.json",
-  "description": "The findings of a check: whether the file is valid, its errors, and its warnings.",
+  "$defs": {
+    "FindingDetail": {
+      "description": "One finding with where it points, for an editor or an agent.\n\nAttributes:\n    severity: `error` or `warning`.\n    message: The entry in `errors` or `warnings`.\n    locations: Where in the file, when known. Empty for a problem the\n        file's text does not place.",
+      "properties": {
+        "severity": {
+          "enum": [
+            "error",
+            "warning"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "locations": {
+          "items": {
+            "$ref": "#/$defs/LocationDetail"
+          },
+          "title": "Locations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "severity",
+        "message",
+        "locations"
+      ],
+      "title": "FindingDetail",
+      "type": "object"
+    },
+    "LocationDetail": {
+      "description": "Where in the configuration file a finding points.\n\nAttributes:\n    path: The keys and indexes from the file's root to the setting, such as\n        `[\"rules\", 0, \"regex_replace\"]`. Left out when the finding is placed\n        by line.\n    line: The line, counted from 1, for a file that does not parse.\n    column: The column on that line, counted from 1.\n    message: What is wrong at this place, when the finding bundles several.",
+      "properties": {
+        "path": {
+          "items": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ]
+          },
+          "title": "Path",
+          "type": "array"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "column": {
+          "title": "Column",
+          "type": "integer"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        }
+      },
+      "title": "LocationDetail",
+      "type": "object"
+    }
+  },
+  "description": "The findings of a check: whether the file is valid, its errors, its warnings, and where in the file each points.",
   "properties": {
     "config": {
       "title": "Config",
@@ -24,13 +90,21 @@
       },
       "title": "Warnings",
       "type": "array"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/FindingDetail"
+      },
+      "title": "Findings",
+      "type": "array"
     }
   },
   "required": [
     "config",
     "valid",
     "errors",
-    "warnings"
+    "warnings",
+    "findings"
   ],
   "title": "veridelta validate --json",
   "type": "object"
