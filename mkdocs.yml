@@ -101,13 +101,13 @@ nav:
     - From drift to rules: how-to/from-drift-to-rules.ipynb
     - Troubleshooting: how-to/troubleshooting.md
   - User guide:
-    - Configuration: configuration.md
-    - Sources: sources.md
-    - Rules: rules.md
-    - Pushdown: pushdown.md
-    - Results: results.md
     - Command line: cli.md
+    - Configuration: configuration.md
+    - Rules: rules.md
+    - Results: results.md
+    - Sources: sources.md
     - CI integrations: ci.md
+    - Pushdown: pushdown.md
     - AI agents: agents.md
   - API reference: api.md
   - Upgrading: upgrading.md

@@ -219,13 +219,13 @@ The [Polars documentation](https://docs.pola.rs/) is the model: short declarativ
 Link to the page that owns a topic instead of repeating it:
 
 - Install, the extras, and the quick start: `README.md`.
-- The configuration file, its settings, environment variables, and editor support: `docs/configuration.md`.
-- Files, lakehouse tables, databases, warehouses, their extras, connection fields, and logging: `docs/sources.md`.
-- Rule fields, the transform order, and each transform: `docs/rules.md`.
-- Comparing inside a warehouse, Postgres, or DuckDB, and how that differs from a local run: `docs/pushdown.md`.
-- `DiffResult`, reports, OpenTelemetry metrics, and artifacts: `docs/results.md`.
 - Commands, flags, exit codes, and `validate`: `docs/cli.md`.
+- The configuration file, its settings, environment variables, and editor support: `docs/configuration.md`.
+- Rule fields, the transform order, and each transform: `docs/rules.md`.
+- `DiffResult`, reports, OpenTelemetry metrics, and artifacts: `docs/results.md`.
+- Files, lakehouse tables, databases, warehouses, their extras, connection fields, and logging: `docs/sources.md`.
 - The GitHub Action and the GitLab template: `docs/ci.md`, where macros are off so `${{ }}` renders as written.
+- Comparing inside a warehouse, Postgres, or DuckDB, and how that differs from a local run: `docs/pushdown.md`.
 - How an agent runs Veridelta: `docs/agents.md`. The build writes `llms.txt` and `llms-full.txt` from every page through `hooks/llms_txt.py`.
 - The public Python surface: `docs/api.md`, generated from docstrings and never hand-copied.
 - What to change when a release breaks something, newest first: `docs/upgrading.md`.

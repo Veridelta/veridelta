@@ -65,13 +65,13 @@ A how-to guide solves one task from start to end:
 
 The user guide is the reference:
 
-- [Configuration](configuration.md): the file, its settings, and environment variables.
-- [Sources](sources.md): files, lakehouse tables, databases, DuckDB, and warehouses.
-- [Rules](rules.md): what counts as a match, column by column.
-- [Pushdown](pushdown.md): comparing two tables inside the warehouse that stores them.
-- [Results](results.md): the summary, reports, metrics, and files a run produces.
 - [Command line](cli.md): commands, flags, and exit codes.
+- [Configuration](configuration.md): the file, its settings, and environment variables.
+- [Rules](rules.md): what counts as a match, column by column.
+- [Results](results.md): the summary, reports, metrics, and files a run produces.
+- [Sources](sources.md): files, lakehouse tables, databases, DuckDB, and warehouses.
 - [CI integrations](ci.md): the GitHub Action and the GitLab CI template.
+- [Pushdown](pushdown.md): comparing two tables inside the warehouse that stores them.
 - [AI agents](agents.md): running Veridelta from an agent, through the command line or the MCP server.
 
 ## How it works
