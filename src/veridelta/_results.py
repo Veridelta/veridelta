@@ -216,6 +216,24 @@ def _listed(
     )
 
 
+def check_baseline_keys(baseline: Baseline, names: list[str]) -> None:
+    """Refuse a baseline that lists rows by other primary keys than the run compares on.
+
+    Args:
+        baseline (Baseline): The drift to accept.
+        names (list[str]): The run's key columns.
+
+    Raises:
+        ConfigError: If the two differ.
+    """
+    if baseline.primary_keys != names:
+        raise ConfigError(
+            f"The baseline lists rows by the primary keys {baseline.primary_keys}, and "
+            f"this configuration compares on {names}. Save the baseline again from a run "
+            "of this configuration."
+        )
+
+
 class _Acceptance(NamedTuple):
     """The drift a baseline left in a run, and what it accepted."""
 
@@ -241,12 +259,7 @@ def accept_baseline(
     Raises:
         ConfigError: If the baseline names other primary keys than the run.
     """
-    if baseline.primary_keys != names:
-        raise ConfigError(
-            f"The baseline lists rows by the primary keys {baseline.primary_keys}, and "
-            f"this configuration compares on {names}. Save the baseline again from a run "
-            "of this configuration."
-        )
+    check_baseline_keys(baseline, names)
     added, removed, changed = frames
     kept = (
         _unaccepted_rows(added, baseline.added, names),
@@ -272,3 +285,90 @@ def accept_baseline(
         for side in (frames, kept)
     )
     return _Acceptance(*kept, rows, before.without(after))
+
+
+class _PushdownAcceptance(NamedTuple):
+    """The drift a baseline left in a pushdown run, what it accepted, and the tally it changed."""
+
+    added: pl.DataFrame
+    removed: pl.DataFrame
+    changed: pl.DataFrame
+    rows: int
+    accepted: Baseline
+    column_mismatches: dict[str, int]
+
+
+def accept_pushdown_baseline(
+    baseline: Baseline,
+    names: list[str],
+    frames: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
+    compared_columns: list[str],
+    flags: pl.DataFrame,
+    column_mismatches: Mapping[str, int],
+) -> _PushdownAcceptance:
+    """Leave the drift a baseline lists out of a pushdown run's keys and counts.
+
+    A pushdown run holds keys alone. `flags` carries, for the changed rows the
+    baseline names, the match flag of every compared column, which one more
+    statement fetched. Added and removed keys leave as in a local run. A changed
+    row leaves `changed` when the baseline accepts every column that differs on
+    it, and each accepted column that differed comes off that column's mismatch
+    count, as a local run's tally leaves it out.
+
+    Args:
+        baseline (Baseline): The drift to accept.
+        names (list[str]): The run's key columns.
+        frames (tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]): The added,
+            removed, and changed keys the run read back.
+        compared_columns (list[str]): The columns the run compared.
+        flags (pl.DataFrame): The keys of the changed rows the baseline names,
+            with a `{column}_is_match` flag per compared column.
+        column_mismatches (Mapping[str, int]): The warehouse's tally per column.
+
+    Returns:
+        _PushdownAcceptance: The keys left, how many rows the baseline accepted,
+            what it accepted, and the tally without the accepted columns.
+
+    Raises:
+        ConfigError: If the baseline names other primary keys than the run.
+    """
+    check_baseline_keys(baseline, names)
+    added, removed, changed = frames
+    kept_flags = _unaccepted_changes(flags, baseline.changed, names, compared_columns)
+    settled = flags.join(kept_flags.select(names), on=names, how="anti", nulls_equal=True)
+    kept = (
+        _unaccepted_rows(added, baseline.added, names),
+        _unaccepted_rows(removed, baseline.removed, names),
+        changed.join(settled.select(names), on=names, how="anti", nulls_equal=True),
+    )
+    rows = sum(before.height - after.height for before, after in zip(frames, kept, strict=True))
+    changed_keys = [entry.key for entry in baseline.changed]
+    before = Baseline.of_rows(
+        names,
+        (
+            _listed(added, baseline.added, names),
+            _listed(removed, baseline.removed, names),
+            _listed(flags, changed_keys, names),
+        ),
+        compared_columns,
+    )
+    after = Baseline.of_rows(
+        names,
+        (
+            _listed(kept[0], baseline.added, names),
+            _listed(kept[1], baseline.removed, names),
+            _listed(kept_flags, changed_keys, names),
+        ),
+        compared_columns,
+    )
+    accepted = before.without(after)
+    return _PushdownAcceptance(*kept, rows, accepted, _adjusted_tally(column_mismatches, accepted))
+
+
+def _adjusted_tally(column_mismatches: Mapping[str, int], accepted: Baseline) -> dict[str, int]:
+    """Take each accepted column that differed off its count, and drop a column left at zero."""
+    counts = dict(column_mismatches)
+    for entry in accepted.changed:
+        for column in entry.columns:
+            counts[column] = counts.get(column, 0) - 1
+    return {column: count for column, count in counts.items() if count > 0}

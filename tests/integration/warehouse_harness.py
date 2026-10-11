@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from veridelta.connectors.base import PushdownQueryType
-    from veridelta.models import DiffConfig, DiffResult, SourceRef, ValueMapProposal
+    from veridelta.models import Baseline, DiffConfig, DiffResult, SourceRef, ValueMapProposal
 
 SCHEMA: Final = "veridelta_live"
 """The BigQuery dataset, Databricks schema, and MotherDuck database the tables go in."""
@@ -638,7 +638,12 @@ class WarehouseBackend:
                 self.service.close(connection)
 
     def run_pushdown(
-        self, config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
+        self,
+        config: DiffConfig,
+        source: pl.DataFrame,
+        target: pl.DataFrame,
+        *,
+        baseline: Baseline | None = None,
     ) -> tuple[DiffResult, list[str]]:
         """Load the frames and compare them inside the warehouse.
 
@@ -646,6 +651,7 @@ class WarehouseBackend:
             config (DiffConfig): Comparison rules and keys.
             source (pl.DataFrame): Source rows.
             target (pl.DataFrame): Target rows.
+            baseline (Baseline | None): Drift the run accepts.
 
         Returns:
             tuple[DiffResult, list[str]]: The pushdown result and the SQL that
@@ -656,7 +662,10 @@ class WarehouseBackend:
             _recorded(self.service.connector) as statements,
         ):
             result = DiffEngine.run_from_configs(
-                config, self.service.source(source_table), self.service.source(target_table)
+                config,
+                self.service.source(source_table),
+                self.service.source(target_table),
+                baseline=baseline,
             )
         return result, statements
 
@@ -699,7 +708,12 @@ class WarehouseBackend:
         return proposals, statements
 
     def run_local(
-        self, config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
+        self,
+        config: DiffConfig,
+        source: pl.DataFrame,
+        target: pl.DataFrame,
+        *,
+        baseline: Baseline | None = None,
     ) -> DiffResult:
         """Load the frames, read them back, and compare them locally.
 
@@ -707,6 +721,7 @@ class WarehouseBackend:
             config (DiffConfig): Comparison rules and keys.
             source (pl.DataFrame): Source rows.
             target (pl.DataFrame): Target rows.
+            baseline (Baseline | None): Drift the run accepts.
 
         Returns:
             DiffResult: The local engine's verdict on the tables as the warehouse stores them.
@@ -714,7 +729,7 @@ class WarehouseBackend:
         with self.loaded_tables(source, target) as (source_table, target_table):
             stored_source = self._read(source_table)
             stored_target = self._read(target_table)
-        return DiffEngine(config, stored_source.lazy(), stored_target.lazy()).run()
+        return DiffEngine(config, stored_source.lazy(), stored_target.lazy()).run(baseline=baseline)
 
     def _read(self, table: str) -> pl.DataFrame:
         """Read a whole table through the shipped connector."""

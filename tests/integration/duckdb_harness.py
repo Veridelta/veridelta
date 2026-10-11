@@ -46,7 +46,7 @@ from veridelta._pushdown import collect_pushdown_summary
 from veridelta._value_maps import collect_value_map_proposals
 from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.engine import DiffEngine
-from veridelta.models import DuckDBConfig
+from veridelta.models import Baseline, DuckDBConfig
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -82,19 +82,47 @@ class _ValueMapRun(Protocol):
         """Return the proposals and the SQL that produced them."""
 
 
+class _PushdownRun(Protocol):
+    """Compares two frames inside a database."""
+
+    def __call__(
+        self,
+        config: DiffConfig,
+        source: pl.DataFrame,
+        target: pl.DataFrame,
+        *,
+        baseline: Baseline | None = None,
+    ) -> tuple[DiffResult, list[str]]:
+        """Return the result and the SQL that produced it."""
+
+
+class _LocalRun(Protocol):
+    """Compares two frames through the local engine, as a database stores them."""
+
+    def __call__(
+        self,
+        config: DiffConfig,
+        source: pl.DataFrame,
+        target: pl.DataFrame,
+        *,
+        baseline: Baseline | None = None,
+    ) -> DiffResult:
+        """Return the local engine's result."""
+
+
 class Backend(NamedTuple):
     """The functions that run the parity cases in one database."""
 
     refused_rules: frozenset[str]
     """Rule fields its pushdown refuses before running any query."""
 
-    run_pushdown: Callable[[DiffConfig, pl.DataFrame, pl.DataFrame], tuple[DiffResult, list[str]]]
+    run_pushdown: _PushdownRun
     """Compares two frames inside the database, returning the result and its SQL."""
 
     run_value_map_pushdown: _ValueMapRun
     """Proposes value maps from two frames inside the database."""
 
-    run_local: Callable[[DiffConfig, pl.DataFrame, pl.DataFrame], DiffResult]
+    run_local: _LocalRun
     """Compares two frames through the local engine, as the database stores them."""
 
 
@@ -135,11 +163,17 @@ def _duckdb_session(source: pl.DataFrame, target: pl.DataFrame) -> Iterator[_Rec
 
 
 def _duckdb_pushdown(
-    config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    baseline: Baseline | None = None,
 ) -> tuple[DiffResult, list[str]]:
     """Compare the frames inside a temporary DuckDB file."""
     with _duckdb_session(source, target) as session:
-        result = collect_pushdown_summary(session, SOURCE_TABLE, TARGET_TABLE, config)
+        result = collect_pushdown_summary(
+            session, SOURCE_TABLE, TARGET_TABLE, config, baseline=baseline
+        )
         return result, list(session.statements)
 
 
@@ -166,9 +200,15 @@ def _duckdb_value_map_pushdown(
         return proposals, list(session.statements)
 
 
-def _duckdb_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:
+def _duckdb_local(
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    baseline: Baseline | None = None,
+) -> DiffResult:
     """Compare the frames through the local engine, as written."""
-    return DiffEngine(config, source.lazy(), target.lazy()).run()
+    return DiffEngine(config, source.lazy(), target.lazy()).run(baseline=baseline)
 
 
 def _warehouse(name: str) -> Callable[[], Backend]:
@@ -213,7 +253,11 @@ REFUSED_RULES = _BACKEND.refused_rules
 
 
 def run_pushdown(
-    config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    baseline: Baseline | None = None,
 ) -> tuple[DiffResult, list[str]]:
     """Compile the comparison and execute every statement in the selected backend.
 
@@ -221,12 +265,13 @@ def run_pushdown(
         config (DiffConfig): Comparison rules and keys.
         source (pl.DataFrame): Source rows.
         target (pl.DataFrame): Target rows.
+        baseline (Baseline | None): Drift the run accepts.
 
     Returns:
         tuple[DiffResult, list[str]]: The pushdown result and the SQL that
             produced it, in execution order.
     """
-    return _BACKEND.run_pushdown(config, source, target)
+    return _BACKEND.run_pushdown(config, source, target, baseline=baseline)
 
 
 def run_value_map_pushdown(
@@ -262,7 +307,13 @@ def run_value_map_pushdown(
     )
 
 
-def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:
+def run_local(
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    baseline: Baseline | None = None,
+) -> DiffResult:
     """Execute the same comparison through the local Polars engine.
 
     Against a live database, the frames are loaded and read back first, so the
@@ -272,11 +323,12 @@ def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) ->
         config (DiffConfig): Comparison rules and keys.
         source (pl.DataFrame): Source rows.
         target (pl.DataFrame): Target rows.
+        baseline (Baseline | None): Drift the run accepts.
 
     Returns:
         DiffResult: The local engine's verdict and discrepancy rows.
     """
-    return _BACKEND.run_local(config, source, target)
+    return _BACKEND.run_local(config, source, target, baseline=baseline)
 
 
 def assert_parity(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffSummary:

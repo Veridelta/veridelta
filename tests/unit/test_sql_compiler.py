@@ -4,12 +4,15 @@
 """Unit tests for dialect-specific SQL pushdown compilation."""
 
 import inspect
+from datetime import date, datetime
+from decimal import Decimal
 
 import polars as pl
 import pytest
 
 from veridelta.connectors import SQLDialect, SQLPushdownCompiler
 from veridelta.connectors.sql import (
+    _CAST_KEYWORDS,
     _DATABASE_IDENTIFIER_QUOTES,
     _EDIT_DISTANCE_FUNCTIONS,
     _EDIT_DISTANCE_REFUSALS,
@@ -456,7 +459,7 @@ class TestQueryAssembly:
             & set(inspect.signature(getattr(SQLPushdownCompiler, name)).parameters)
         ]
 
-        assert len(methods) == 10
+        assert len(methods) == 11
         assert taking == []
 
     def test_it_builds_changed_row_query_with_two_keys_and_two_rules(self) -> None:
@@ -640,6 +643,150 @@ class TestChangedSampleQuery:
         """Ensure the LIMIT is a real positive integer before it reaches SQL."""
         with pytest.raises(ConnectorError, match=r"LIMIT|SQL integer"):
             _duckdb().compile_changed_sample_query("s", "t", ["id"], self._RULES, limit=limit)
+
+
+class TestChangedFlagsQuery:
+    """Validate the statement a baseline run fetches match flags with, and no value."""
+
+    _RULES = [  # noqa: RUF012
+        DiffRule(column_names=["status"], whitespace_mode="both"),
+        DiffRule(column_names=["old_amount"], rename_to="amount", absolute_tolerance=0.5),
+        DiffRule(column_names=["notes"], ignore=True),
+    ]
+    _KEYS: list[dict[str, object]] = [{"id": 1, "line": "a"}, {"id": 2, "line": None}]  # noqa: RUF012
+
+    def _flags(self, compiler: SQLPushdownCompiler, keys: list[dict[str, object]]) -> SampleQuery:
+        query = compiler.compile_changed_flags_query("s", "t", ["id", "line"], self._RULES, keys)
+        assert query is not None
+        return query
+
+    def test_it_shares_the_changed_row_statement_and_adds_a_row_filter(self) -> None:
+        """Ensure a flagged row is one the changed-row count includes, and only a named one.
+
+        The statement shares the CTEs, the join, and the WHERE clause with the
+        changed-row count, then names each row as a conjunction over its keys,
+        with a NULL key read as `IS NULL`.
+        """
+        compiler = _duckdb()
+        mismatch = compiler.compile_query("s", "t", ["id", "line"], self._RULES)
+        statement = self._flags(compiler, self._KEYS).statement
+
+        where = mismatch[mismatch.index(" WHERE ") :]
+        assert statement.startswith(mismatch[: mismatch.index(" SELECT ")])
+        assert statement.endswith(
+            f'{where} AND (("src"."id" = 1 AND "src"."line" = \'a\') '
+            'OR ("src"."id" = 2 AND "src"."line" IS NULL))'
+        )
+
+    def test_it_projects_keys_and_flags_under_positional_aliases_and_no_value(self) -> None:
+        """Ensure the statement returns keys and match flags, and never a side's value."""
+        query = self._flags(_duckdb(), self._KEYS)
+
+        assert '"src"."id" AS "_veridelta_key_0", "src"."line" AS "_veridelta_key_1"' in (
+            query.statement
+        )
+        assert ', FALSE) AS "_veridelta_flag_0"' in query.statement
+        assert ', FALSE) AS "_veridelta_flag_1"' in query.statement
+        assert "_veridelta_source_" not in query.statement
+        assert "_veridelta_target_" not in query.statement
+        assert '"notes"' not in query.statement
+        assert query.renames == {
+            "_veridelta_key_0": "id",
+            "_veridelta_key_1": "line",
+            "_veridelta_flag_0": "status_is_match",
+            "_veridelta_flag_1": "amount_is_match",
+        }
+
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_a_text_key_goes_through_the_dialects_escapes(self, dialect: SQLDialect) -> None:
+        """Ensure a quote or a backslash in a key cannot end the literal, on every dialect."""
+        tricky = "O'Neil \\ end"
+        query = SQLPushdownCompiler(dialect).compile_changed_flags_query(
+            "s", "t", ["id"], self._RULES, [{"id": tricky}]
+        )
+        assert query is not None
+
+        operand = query.statement[query.statement.rindex(" = ") + 3 : -2]
+        assert _read_literal(operand, dialect) == (tricky, "")
+
+    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    def test_a_date_or_timestamp_key_is_cast_from_its_iso_text(self, dialect: SQLDialect) -> None:
+        """Ensure a temporal key, as Python holds it, reaches SQL through the dialect's cast table."""
+        keys: list[dict[str, object]] = [
+            {"day": date(2026, 1, 2), "at": datetime(2026, 1, 2, 3, 4, 5)}
+        ]
+        query = SQLPushdownCompiler(dialect).compile_changed_flags_query(
+            "s", "t", ["day", "at"], [DiffRule(column_names=["amount"])], keys
+        )
+        assert query is not None
+
+        casts = _CAST_KEYWORDS[dialect]
+        assert f"= CAST('2026-01-02' AS {casts['Date']})" in query.statement
+        assert f"= CAST('2026-01-02 03:04:05' AS {casts['Datetime']})" in query.statement
+
+    @pytest.mark.parametrize(
+        ("dtype", "cast"),
+        [
+            pytest.param(pl.Date(), "DATE", id="date"),
+            pytest.param(pl.Datetime("us"), "TIMESTAMP", id="timestamp"),
+            pytest.param(pl.String(), None, id="text"),
+            pytest.param(None, None, id="unknown"),
+        ],
+    )
+    def test_a_key_written_as_text_follows_its_stored_type(
+        self, dtype: pl.DataType | None, cast: str | None
+    ) -> None:
+        """Ensure a baseline file's text key is cast for a temporal column and quoted for the rest."""
+        query = _duckdb().compile_changed_flags_query(
+            "s",
+            "t",
+            ["day"],
+            [DiffRule(column_names=["amount"])],
+            [{"day": "2026-01-02"}],
+            target_types=None if dtype is None else {"day": dtype},
+        )
+        assert query is not None
+
+        expected = "'2026-01-02'" if cast is None else f"CAST('2026-01-02' AS {cast})"
+        assert query.statement.endswith(f'AND (("src"."day" = {expected}))')
+
+    def test_booleans_integers_and_floats_render_as_themselves(self) -> None:
+        """Ensure a key of each plain type renders without quotes, and an `int` through `_integer`."""
+        query = _duckdb().compile_changed_flags_query(
+            "s",
+            "t",
+            ["flag", "n", "x"],
+            [DiffRule(column_names=["amount"])],
+            [{"flag": True, "n": 7, "x": 2.5}],
+        )
+        assert query is not None
+
+        assert query.statement.endswith(
+            '(("src"."flag" = TRUE AND "src"."n" = 7 AND "src"."x" = 2.5))'
+        )
+
+    @pytest.mark.parametrize(
+        "value", [Decimal("1.5"), float("nan"), float("inf"), [1], b"x"], ids=type
+    )
+    def test_a_key_of_another_type_is_refused(self, value: object) -> None:
+        """Ensure no key reaches SQL through `repr` or `str` of a type no table here renders."""
+        with pytest.raises(ConnectorError, match="cannot write into SQL"):
+            _duckdb().compile_changed_flags_query("s", "t", ["id"], self._RULES, [{"id": value}])
+
+    def test_a_text_key_for_a_time_or_duration_column_is_refused(self) -> None:
+        """Ensure a temporal type with no cast keyword is refused rather than compared as text."""
+        with pytest.raises(ConnectorError, match="Time"):
+            _duckdb().compile_changed_flags_query(
+                "s", "t", ["id"], self._RULES, [{"id": "10:00"}], target_types={"id": pl.Time()}
+            )
+
+    def test_it_returns_none_without_a_compared_column_or_a_key(self) -> None:
+        """Ensure there is nothing to flag when every rule is ignored, or no row is named."""
+        ignored = [DiffRule(column_names=["notes"], ignore=True)]
+        none: list[dict[str, object]] = []
+
+        assert _duckdb().compile_changed_flags_query("s", "t", ["id"], ignored, self._KEYS) is None
+        assert _duckdb().compile_changed_flags_query("s", "t", ["id"], self._RULES, none) is None
 
 
 class TestAntiJoinAssembly:

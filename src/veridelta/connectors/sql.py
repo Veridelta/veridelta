@@ -16,8 +16,10 @@ tables, and a missing entry fails loudly instead of inheriting some other
 dialect's syntax.
 """
 
+import math
 import re
 from collections.abc import Collection, Mapping, Sequence
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Final, NamedTuple
 
@@ -70,6 +72,9 @@ sample and in the value map query."""
 
 SAMPLE_MATCH_PREFIX = "_veridelta_match_"
 """Positional alias prefix for each compared column's match flag in a sample."""
+
+FLAG_PREFIX = "_veridelta_flag_"
+"""Alias prefix of each match flag a baseline run fetches for a changed row it names."""
 
 _SOURCE_ALIAS = "src"
 """The source relation's alias in every statement that reads both sides."""
@@ -972,6 +977,159 @@ class SQLPushdownCompiler:
             f"WHERE {self._changed_condition(predicates)} ORDER BY {order} LIMIT {rendered_limit}"
         )
         return SampleQuery(statement, renames)
+
+    def compile_changed_flags_query(
+        self,
+        source_table: str,
+        target_table: str,
+        primary_keys: list[str],
+        rules: list[DiffRule],
+        keys: Sequence[Mapping[str, object]],
+        *,
+        source_types: ColumnTypes | None = None,
+        target_types: ColumnTypes | None = None,
+        key_rules: Sequence[DiffRule] | None = None,
+        wide_integers: frozenset[str] = frozenset(),
+        type_drift: frozenset[str] = frozenset(),
+    ) -> SampleQuery | None:
+        """Assemble a query for the match flags of named changed rows, with no value.
+
+        This is `compile_query` with one flag per compared column and a row
+        filter: the same normalized CTEs, join, and changed-row condition, so a
+        row comes back only when the changed-row count includes it, and each
+        flag is the predicate that decided it. `run --baseline` reads the flags
+        to tell a column the baseline accepts from one that still differs, and
+        no value leaves the warehouse. Each key value renders as an operand of
+        the key's stored type, through the literal and cast tables every other
+        statement uses.
+
+        Args:
+            source_table (str): Source relation (optionally dotted catalog path).
+            target_table (str): Target relation (optionally dotted catalog path).
+            primary_keys (list[str]): Join keys, spelled as the target stores them.
+            rules (list[DiffRule]): Per-column semantic overrides.
+            keys (Sequence[Mapping[str, object]]): The rows to flag, each its
+                key by key column, as a baseline lists them.
+            source_types (ColumnTypes | None): Probed source dtypes, as for
+                `compile_query`.
+            target_types (ColumnTypes | None): Probed target dtypes, which also
+                type a key written as text, such as a date in a baseline file.
+            key_rules (Sequence[DiffRule] | None): Key normalization, as for
+                `compile_query`.
+            wide_integers (frozenset[str]): Integer columns to measure in a wide
+                type, as for `compile_query`.
+            type_drift (frozenset[str]): Columns `strict_types` fails, as for
+                `compile_query`.
+
+        Returns:
+            SampleQuery | None: The statement and its alias names, or None when
+            no column is compared or no key is given, since then no flag is
+            needed.
+
+        Raises:
+            ConfigError: If a rule sets `min_jaro_winkler_similarity`, or a
+                `datetime_format` uses a directive this dialect cannot express.
+            ConnectorError: If a key value has a type SQL cannot be handed
+                safely, such as a decimal or a nested value, a key written as
+                text names a `Time` or `Duration` column, or, as for
+                `compile_query`, tables or keys are empty.
+        """
+        key_columns = self._key_columns(primary_keys, key_rules)
+        compared = self._compared_columns(rules)
+        if not compared or not keys:
+            return None
+
+        with_clause = self._normalized_with_clause(
+            source_table,
+            target_table,
+            [*key_columns, *compared],
+            source_types=source_types,
+            target_types=target_types,
+        )
+        predicates = self._column_predicates(
+            compared,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
+        renames: dict[str, str] = {}
+        projections: list[str] = []
+        for index, key in enumerate(primary_keys):
+            alias = f"{SAMPLE_KEY_PREFIX}{index}"
+            projections.append(f"{self._qualify(_SOURCE_ALIAS, key)} AS {self._quote_ident(alias)}")
+            renames[alias] = key
+        for index, ((_source_column, target_column, _rule), predicate) in enumerate(
+            zip(compared, predicates, strict=True)
+        ):
+            alias = f"{FLAG_PREFIX}{index}"
+            projections.append(f"COALESCE({predicate}, FALSE) AS {self._quote_ident(alias)}")
+            renames[alias] = f"{target_column}_is_match"
+        rows = " OR ".join(self._key_row(primary_keys, key, target_types) for key in keys)
+        join = self._normalized_join("INNER", primary_keys)
+        statement = (
+            f"{with_clause} SELECT {', '.join(projections)} {join} "
+            f"WHERE {self._changed_condition(predicates)} AND ({rows})"
+        )
+        return SampleQuery(statement, renames)
+
+    def _key_row(
+        self, primary_keys: list[str], key: Mapping[str, object], types: ColumnTypes | None
+    ) -> str:
+        """Render one row's key as a parenthesized conjunction over the normalized source keys."""
+        parts: list[str] = []
+        for name in primary_keys:
+            operand = self._qualify(_SOURCE_ALIAS, name)
+            value = key.get(name)
+            if value is None:
+                parts.append(f"{operand} IS NULL")
+            else:
+                dtype = None if types is None else types.get(name)
+                parts.append(f"{operand} = {self._key_operand(name, value, dtype)}")
+        return f"({' AND '.join(parts)})"
+
+    def _key_operand(self, name: str, value: object, dtype: pl.DataType | None) -> str:
+        """Render a key value as a SQL operand of the key's stored type.
+
+        A boolean, an `int`, and a finite `float` render as themselves, text
+        through `_literal`, and a date or a timestamp as a `CAST` of its ISO
+        text through `_CAST_KEYWORDS`, whether it arrives as a Python value or
+        as the text a baseline file holds for a temporal column. Anything else
+        is refused, since no table here renders it.
+        """
+        if isinstance(value, bool):
+            return "TRUE" if value else "FALSE"
+        if isinstance(value, int):
+            return self._integer(value)
+        if isinstance(value, float) and math.isfinite(value):
+            return repr(value)
+        if isinstance(value, datetime):
+            return self._cast_literal(value.isoformat(sep=" "), "Datetime")
+        if isinstance(value, date):
+            return self._cast_literal(value.isoformat(), "Date")
+        if isinstance(value, str):
+            return self._text_key_operand(name, value, dtype)
+        raise ConnectorError(
+            f"The baseline key '{name}' holds a {type(value).__name__}, which pushdown cannot "
+            "write into SQL. Key on a column of text, integers, dates, or timestamps, or "
+            "compare files exported from the tables."
+        )
+
+    def _text_key_operand(self, name: str, text: str, dtype: pl.DataType | None) -> str:
+        """Render a key written as text: cast for a date or timestamp column, quoted otherwise."""
+        if dtype == pl.Date:
+            return self._cast_literal(text, "Date")
+        if isinstance(dtype, pl.Datetime):
+            return self._cast_literal(text, "Datetime")
+        if dtype is not None and dtype.is_temporal():
+            raise ConnectorError(
+                f"The baseline key '{name}' is stored as {dtype}, which pushdown cannot write "
+                "into SQL. Key on a column of text, integers, dates, or timestamps, or compare "
+                "files exported from the tables."
+            )
+        return self._literal(text)
+
+    def _cast_literal(self, text: str, cast: CastTarget) -> str:
+        """Render a string literal cast to one of the dialect's type keywords."""
+        return f"CAST({self._literal(text)} AS {_CAST_KEYWORDS[self.dialect][cast]})"
 
     def compile_missing_query(
         self,

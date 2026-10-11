@@ -27,7 +27,7 @@ A pushdown run issues these statements:
 3. The added rows, found only in the target, and the removed rows, found only in the source.
 4. A tally of mismatches per column. It is skipped when no column is compared.
 
-With `pushdown_sample_rows` set, one more statement fetches a sample of the changed rows with their values; see [Row samples](#row-samples).
+With `pushdown_sample_rows` set, one more statement fetches a sample of the changed rows with their values; see [Row samples](#row-samples). With `--baseline`, one more statement per 200 accepted changed rows fetches, for those rows alone, a match flag per compared column and no value; see [Baselines](#baselines).
 
 These counts fill every `DiffSummary` field, `column_mismatches` included. `threshold`, `match_rate_percentage`, and the drift report mean what they mean in a local run.
 
@@ -70,6 +70,7 @@ The table covers `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, `%z`, and `%%`, separ
 - **Artifacts hold primary keys only**, since the comparison SQL never selects whole rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only`, so they cannot be mistaken for local artifacts, which hold whole records. A [row sample](#row-samples), when requested, is written as `changed_rows_sample`.
 - **A column of two different types is refused unless both are numeric.** A local run casts the target to the source type. A database converts one side by its own rules, so the text `"007"` against the integer `7`, or a date against a timestamp, could reach another verdict. Pushdown raises `ConfigError` before reading a row, naming each such column. Give it a `cast_to` that brings both sides to one type, or set `strict_types` to fail it; [Upgrading](upgrading.md#0330) shows both. Two numeric types still compare by value.
 - **A primary key of two types pairs as the database converts it.** A local run refuses a key whose two sides hold two types it cannot pair, such as text against a number; see [Primary keys](configuration.md#primary-keys). A database converts one side, so the text `"007"` pairs with the integer `7`. Give such a key a `cast_to`, and both pair rows the same way.
+- **`--save-baseline` is refused**, since the run holds keys alone and cannot say which columns differ on a changed row. `--baseline` works; see [Baselines](#baselines).
 - **`strict_types` compares the types the driver reports** for each side, after normalization. It fails every row of a column whose two types differ, as a local run does. These are the driver's types, not the declared ones. Snowflake's `NUMBER(38,0)`, for one, arrives as a decimal, so it meets a `NUMBER(38,0)` column but not a `FLOAT`.
 
 ## BigQuery
@@ -140,6 +141,14 @@ Veridelta opens one connection, as a read opens it, and runs each statement ther
 - `case_insensitive` lowercases with DuckDB's `lower`, which differs from Polars for a few letters. `İ` becomes `i` rather than `i̇`, and a final `Σ` becomes `σ` rather than `ς`.
 - The column probe reads the type of every column, ignored ones included. A column that Polars cannot read, such as an `INTERVAL`, fails the probe. Compare a view that casts it, such as to `VARCHAR`.
 - MotherDuck pushdown has not yet run against a live account, and neither have MotherDuck reads.
+
+## Baselines
+
+`veridelta run --baseline accepted.json` works on a pair compared in place as it does on a local run: the drift the file lists leaves the counts, the verdict, the artifacts, and the reports, and `accepted_count` says how many rows it accepted. Added and removed rows are accepted from the keys the run already reads back. A changed row needs one more fact, which columns differ on it, so one more statement per 200 accepted changed rows fetches a match flag per compared column for those rows alone. No value leaves the warehouse, and a row the file names that does not differ returns nothing.
+
+Each key in the file reaches SQL as an operand of the key's stored type: an integer as itself, text as a quoted literal through the dialect's escapes, and a date or a timestamp, written as text in the file, as a `CAST` of that text. A key column of another type, such as a decimal, refuses the baseline with `ConnectorError`.
+
+`--save-baseline` still needs a local run, since a pushdown run holds no differing columns to write; see [Accepting drift](cli.md#accepting-drift).
 
 ## Row samples
 

@@ -7,14 +7,25 @@ import json
 from datetime import date
 from pathlib import Path
 
+import duckdb
 import polars as pl
 import pytest
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
+from veridelta._results import accept_pushdown_baseline
 from veridelta.cli import main
+from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.engine import DiffEngine
-from veridelta.exceptions import ConfigError
-from veridelta.models import AcceptedChange, Baseline, DiffConfig, DiffResult, DuckDBConfig
+from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.models import (
+    AcceptedChange,
+    Baseline,
+    DiffConfig,
+    DiffResult,
+    DiffRule,
+    DuckDBConfig,
+)
 from veridelta.report import render_html, render_markdown
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
@@ -32,6 +43,21 @@ def _engine() -> DiffEngine:
 def _baseline(**entries: object) -> Baseline:
     """Build a baseline keyed by `id`."""
     return Baseline.model_validate({"primary_keys": ["id"], **entries})
+
+
+def _duckdb_pair(folder: Path) -> tuple[DuckDBConfig, DuckDBConfig]:
+    """Store the drifting pair as two tables of one DuckDB file, compared in place."""
+    database = folder / "pair.duckdb"
+    with duckdb.connect(str(database)) as writer:
+        writer.register("source_frame", pl.DataFrame(_SOURCE).to_arrow())
+        writer.register("target_frame", pl.DataFrame(_TARGET).to_arrow())
+        writer.execute("CREATE TABLE a AS SELECT * FROM source_frame")
+        writer.execute("CREATE TABLE b AS SELECT * FROM target_frame")
+    side = {"type": "duckdb", "database": str(database), "pushdown": True}
+    return (
+        DuckDBConfig.model_validate({**side, "table": "a"}),
+        DuckDBConfig.model_validate({**side, "table": "b"}),
+    )
 
 
 class TestAcceptedDrift:
@@ -123,15 +149,117 @@ class TestAcceptedDrift:
         with pytest.raises(ValidationError, match="every entry names the primary keys"):
             _baseline(added=[{"order_id": 5}])
 
-    def test_a_pair_compared_where_it_is_stored_refuses_a_baseline(self, tmp_path: Path) -> None:
-        """Ensure pushdown, whose rows stay where they are, refuses a baseline before connecting."""
-        side = {"type": "duckdb", "database": str(tmp_path / "x.duckdb"), "pushdown": True}
-        source = DuckDBConfig.model_validate({**side, "table": "a"})
-        target = DuckDBConfig.model_validate({**side, "table": "b"})
+    def test_a_pair_compared_where_it_is_stored_accepts_the_same_drift(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure pushdown accepts what a local run accepts, reading flags for the changed rows alone.
 
-        with pytest.raises(ConfigError, match="Leave out --baseline"):
+        Row 3 differs in `fare` only, so accepting `fare` settles it. Row 4
+        differs in `fare` and `zone`, so it stays changed with `zone` alone
+        counted. The flags statement names the two changed rows and no other.
+        """
+        source, target = _duckdb_pair(tmp_path)
+        baseline = _baseline(
+            added=[{"id": 5}],
+            removed=[{"id": 1}],
+            changed=[
+                {"key": {"id": 3}, "columns": ["fare"]},
+                {"key": {"id": 4}, "columns": ["fare"]},
+            ],
+        )
+
+        result = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]), source, target, baseline=baseline
+        )
+        local = _engine().run(baseline=baseline)
+
+        assert result.keys_only
+        assert result.summary.model_dump(exclude={"artifacts_written"}) == local.summary.model_dump(
+            exclude={"artifacts_written"}
+        )
+        assert (result.summary.changed_count, result.summary.accepted_count) == (1, 3)
+        assert result.summary.column_mismatches == {"zone": 1}
+        assert result.changed["id"].to_list() == [4]
+        assert result.accepted == local.accepted
+        assert result.accepted is not None
+        assert [entry.model_dump() for entry in result.accepted.changed] == [
+            {"key": {"id": 3}, "columns": ["fare"]},
+            {"key": {"id": 4}, "columns": ["fare"]},
+        ]
+
+    def test_a_pushdown_baseline_for_other_keys_is_refused_before_any_statement(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure the key check fails the run before the warehouse is asked anything."""
+        source, target = _duckdb_pair(tmp_path)
+
+        with pytest.raises(ConfigError, match="lists rows by the primary keys"):
             DiffEngine.run_from_configs(
-                DiffConfig(primary_keys=["id"]), source, target, baseline=_baseline()
+                DiffConfig(primary_keys=["id"]),
+                source,
+                target,
+                baseline=Baseline.model_validate(
+                    {"primary_keys": ["zone"], "added": [{"zone": "a"}]}
+                ),
+            )
+
+    def test_a_pushdown_sample_drops_the_rows_a_baseline_settled(self, tmp_path: Path) -> None:
+        """Ensure a row sample read before the baseline applied shows no accepted row, and goes when empty."""
+        source, target = _duckdb_pair(tmp_path)
+        config = DiffConfig(primary_keys=["id"], pushdown_sample_rows=5)
+        settling_row_3 = _baseline(changed=[{"key": {"id": 3}, "columns": ["fare"]}])
+        settling_both = _baseline(
+            changed=[
+                {"key": {"id": 3}, "columns": ["fare"]},
+                {"key": {"id": 4}, "columns": ["fare", "zone"]},
+            ]
+        )
+
+        partial = DiffEngine.run_from_configs(config, source, target, baseline=settling_row_3)
+        settled = DiffEngine.run_from_configs(config, source, target, baseline=settling_both)
+
+        assert partial.changed_sample is not None
+        assert partial.changed_sample["id"].to_list() == [4]
+        assert settled.changed_sample is None
+        assert settled.summary.changed_count == 0
+
+    def test_a_pushdown_baseline_with_no_compared_column_fetches_no_flags(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure a run that compares nothing accepts the keys it has and asks for no flags."""
+        source, target = _duckdb_pair(tmp_path)
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["fare", "zone"], ignore=True)]
+        )
+        baseline = _baseline(added=[{"id": 5}], changed=[{"key": {"id": 3}, "columns": ["fare"]}])
+
+        result = DiffEngine.run_from_configs(config, source, target, baseline=baseline)
+
+        assert (result.summary.added_count, result.summary.removed_count) == (0, 1)
+        assert (result.summary.changed_count, result.summary.accepted_count) == (0, 1)
+
+    def test_a_warehouse_that_drops_a_flag_alias_is_an_error(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a flags answer without its aliases fails loudly rather than accepting nothing."""
+        source, target = _duckdb_pair(tmp_path)
+        real = DuckDBPushdownSession.execute_pushdown
+
+        def without_aliases(
+            self: DuckDBPushdownSession, statement: str, query_type: str = "mismatch"
+        ) -> pl.LazyFrame:
+            if query_type == "flags":
+                return pl.LazyFrame({"other": [1]})
+            return real(self, statement, query_type)  # type: ignore[arg-type]
+
+        mocker.patch.object(DuckDBPushdownSession, "execute_pushdown", without_aliases)
+
+        with pytest.raises(ConnectorError, match="match flags without"):
+            DiffEngine.run_from_configs(
+                DiffConfig(primary_keys=["id"]),
+                source,
+                target,
+                baseline=_baseline(changed=[{"key": {"id": 3}, "columns": ["fare"]}]),
             )
 
     def test_the_reports_say_how_much_it_accepted(self) -> None:
@@ -306,3 +434,83 @@ class TestSavedBaseline:
         with pytest.raises(SystemExit) as accepted:
             main()
         assert accepted.value.code == 0
+
+
+class TestPushdownAcceptance:
+    """Validate the acceptance a pushdown run applies to its keys, from hand-built flags."""
+
+    _KEYS = ["id"]  # noqa: RUF012
+    _COLUMNS = ["fare", "zone"]  # noqa: RUF012
+
+    def _frames(self) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+        return (
+            pl.DataFrame({"id": [5]}),
+            pl.DataFrame({"id": [1]}),
+            pl.DataFrame({"id": [3, 4]}),
+        )
+
+    def _flags(self) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"id": [3, 4], "fare_is_match": [False, False], "zone_is_match": [True, False]}
+        )
+
+    def test_it_settles_a_row_whose_differing_columns_are_all_accepted(self) -> None:
+        """Ensure a fully accepted row leaves, a partly accepted one stays, and the tally follows."""
+        baseline = _baseline(
+            added=[{"id": 5}],
+            changed=[
+                {"key": {"id": 3}, "columns": ["fare"]},
+                {"key": {"id": 4}, "columns": ["fare"]},
+            ],
+        )
+
+        kept = accept_pushdown_baseline(
+            baseline,
+            self._KEYS,
+            self._frames(),
+            self._COLUMNS,
+            self._flags(),
+            {"fare": 2, "zone": 1},
+        )
+
+        assert kept.added.is_empty()
+        assert kept.removed["id"].to_list() == [1]
+        assert kept.changed["id"].to_list() == [4]
+        assert kept.rows == 2
+        assert kept.column_mismatches == {"zone": 1}
+        assert [entry.model_dump() for entry in kept.accepted.changed] == [
+            {"key": {"id": 3}, "columns": ["fare"]},
+            {"key": {"id": 4}, "columns": ["fare"]},
+        ]
+        assert kept.accepted.added == [{"id": 5}]
+
+    def test_an_entry_for_a_column_that_matches_accepts_nothing(self) -> None:
+        """Ensure a column that already matches on the row is not taken off the tally."""
+        baseline = _baseline(changed=[{"key": {"id": 3}, "columns": ["zone"]}])
+
+        kept = accept_pushdown_baseline(
+            baseline,
+            self._KEYS,
+            self._frames(),
+            self._COLUMNS,
+            self._flags(),
+            {"fare": 2, "zone": 1},
+        )
+
+        assert kept.changed["id"].to_list() == [3, 4]
+        assert kept.rows == 0
+        assert kept.column_mismatches == {"fare": 2, "zone": 1}
+        assert kept.accepted.changed == []
+
+    def test_without_flags_nothing_changed_is_accepted(self) -> None:
+        """Ensure an empty flags frame, as a run with no changed entry has, leaves the keys alone."""
+        empty = self._flags().clear()
+        baseline = _baseline(removed=[{"id": 1}])
+
+        kept = accept_pushdown_baseline(
+            baseline, self._KEYS, self._frames(), self._COLUMNS, empty, {"fare": 2, "zone": 1}
+        )
+
+        assert kept.removed.is_empty()
+        assert kept.changed["id"].to_list() == [3, 4]
+        assert (kept.rows, kept.column_mismatches) == (1, {"fare": 2, "zone": 1})

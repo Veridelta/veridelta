@@ -21,7 +21,7 @@ from tests.integration.duckdb_harness import (
 from veridelta.connectors.sql import _EDIT_DISTANCE_FUNCTIONS, SQLDialect
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, DataIntegrityError
-from veridelta.models import DiffConfig, DiffRule, ValueMapProposal
+from veridelta.models import Baseline, DiffConfig, DiffResult, DiffRule, ValueMapProposal
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -1960,3 +1960,87 @@ class TestValueMapProposalParity:
         assert first == second
         [entry] = first[0].entries
         assert 0 < entry.rows < 2000
+
+
+class TestAcceptedDriftParity:
+    """Validate that a baseline leaves the same drift in pushdown as in a local run."""
+
+    _SOURCE = pl.DataFrame(
+        {
+            "id": list(range(1, 9)),
+            "fare": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0],
+            "zone": ["a", "b", "c", "d", "e", "f", "g", "h"],
+        }
+    )
+    _TARGET = pl.DataFrame(
+        {
+            "id": [2, 3, 4, 5, 6, 7, 8, 9],
+            "fare": [20.0, 31.0, 41.0, 50.0, 60.0, 71.0, 80.0, 90.0],
+            "zone": ["b", "c", "x", "e", "y", "g", "h", "i"],
+        }
+    )
+    """Row 1 removed, row 9 added, rows 3 and 7 changed in fare, row 4 in both, row 6 in zone."""
+
+    @staticmethod
+    def _baseline(**entries: object) -> Baseline:
+        return Baseline.model_validate({"primary_keys": ["id"], **entries})
+
+    def _same(self, config: DiffConfig, baseline: Baseline) -> tuple[DiffResult, list[str]]:
+        local = run_local(config, self._SOURCE, self._TARGET, baseline=baseline)
+        pushed, statements = run_pushdown(config, self._SOURCE, self._TARGET, baseline=baseline)
+
+        assert pushed.summary.model_dump(exclude={"artifacts_written"}) == local.summary.model_dump(
+            exclude={"artifacts_written"}
+        )
+        assert pushed.accepted == local.accepted
+        assert sorted(pushed.changed["id"].to_list()) == sorted(local.changed["id"].to_list())
+        return pushed, statements
+
+    def test_it_accepts_rows_and_columns_as_the_local_engine_does(self) -> None:
+        """Ensure a mix of accepted added, removed, settled, and partly accepted rows agrees."""
+        baseline = self._baseline(
+            added=[{"id": 9}],
+            removed=[{"id": 1}],
+            changed=[
+                {"key": {"id": 3}, "columns": ["fare"]},
+                {"key": {"id": 4}, "columns": ["fare"]},
+                {"key": {"id": 2}, "columns": ["fare"]},
+            ],
+        )
+
+        pushed, statements = self._same(DiffConfig(primary_keys=["id"]), baseline)
+
+        assert pushed.summary.accepted_count == 3
+        assert pushed.summary.column_mismatches == {"fare": 1, "zone": 2}
+        assert sum("_veridelta_flag_0" in statement for statement in statements) == 1
+        assert not any("_veridelta_source_0" in statement for statement in statements)
+
+    def test_a_long_baseline_fetches_its_flags_in_chunks(self) -> None:
+        """Ensure more accepted rows than one statement names cost one statement per chunk."""
+        many = pl.DataFrame({"id": list(range(1, 451)), "fare": [1.0] * 450})
+        drifted = many.with_columns(pl.col("fare") + 1.0)
+        baseline = self._baseline(
+            changed=[{"key": {"id": key}, "columns": ["fare"]} for key in range(1, 451)]
+        )
+        config = DiffConfig(primary_keys=["id"])
+
+        local = run_local(config, many, drifted, baseline=baseline)
+        pushed, statements = run_pushdown(config, many, drifted, baseline=baseline)
+
+        assert pushed.summary.model_dump(exclude={"artifacts_written"}) == local.summary.model_dump(
+            exclude={"artifacts_written"}
+        )
+        assert pushed.summary.is_match
+        assert pushed.summary.accepted_count == 450
+        assert sum("_veridelta_flag_0" in statement for statement in statements) == 3
+
+    def test_entries_for_rows_that_do_not_drift_accept_nothing(self) -> None:
+        """Ensure a stale entry costs a flags statement and changes no count."""
+        baseline = self._baseline(
+            added=[{"id": 2}], changed=[{"key": {"id": 5}, "columns": ["fare", "zone"]}]
+        )
+
+        pushed, _ = self._same(DiffConfig(primary_keys=["id"]), baseline)
+
+        assert pushed.summary.accepted_count == 0
+        assert pushed.accepted == self._baseline()
