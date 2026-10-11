@@ -65,7 +65,7 @@ rules:
     cast_to: Int64
 ```
 
-Before 0.33.2, a run failed on such a key with an unexpected error from inside the join.
+Pushdown refuses the same keys with the same message, an integer key against a float key among them. Before 0.33.2, a local run failed on such a key with an unexpected error from inside the join. Before 0.40.0, pushdown paired the rows as the database converted them.
 
 ## Most values in a column differ
 

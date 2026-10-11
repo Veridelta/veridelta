@@ -21,6 +21,20 @@ veridelta validate -c veridelta.yaml
 
 Then run a comparison whose verdict you already know, and confirm the new release agrees. In CI, move the GitHub Action's `@v` ref, and the tag in the GitLab template's `remote` URL, to the new release, as [CI integrations](ci.md) shows.
 
+## 0.40.0
+
+Pushdown refuses a primary key whose two sides hold types a local run cannot pair, as a local run has since 0.33.2. A key pairs only when both sides hold one type, two integer types, or two float types. Any other pair raises `ConfigError` before a row is read, naming each such key with both of its types. Before, a database converted one side and paired the rows. The text `"007"` met the integer `7`, and an integer key met a float key, where a local run refused both.
+
+Give each named key a rule with `cast_to`, so both sides hold one type:
+
+```yaml
+rules:
+  - column_names: ["id"]
+    cast_to: "Int64"
+```
+
+A local run compares as before.
+
 ## 0.33.0
 
 Pushdown refuses a compared column whose two sides hold different types, unless both are numeric. It raises `ConfigError` before reading a row, and names each such column with both of its types. Before, a database converted one side by its own rules, so pushdown could reach another verdict than a local run. The text `"007"` against the integer `7` matched in DuckDB, where a local run reports drift.

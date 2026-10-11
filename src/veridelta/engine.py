@@ -57,6 +57,7 @@ from veridelta._resolution import (
     duplicate_keys_error,
     fold_rule_defaults,
     match_rule,
+    mixed_key_types_error,
     normalize_header_names,
     polars_datetime_format,
     reject_unzoned_timezone,
@@ -772,16 +773,12 @@ class DiffEngine:
         source = self.source.collect_schema()
         target = self.target.collect_schema()
         mixed = [
-            f"'{key}' ({source[key]} in the source, {target[key]} in the target)"
+            (key, source[key], target[key])
             for key in self.config.primary_keys
             if not pairable(source[key], target[key])
         ]
         if mixed:
-            raise ConfigError(
-                "Rows pair only on keys of one type, or of two integer or two float types, "
-                f"and these primary keys hold two other types: {', '.join(mixed)}. Give each "
-                "a rule with cast_to, such as cast_to: Int64, so both sides hold one type."
-            )
+            raise mixed_key_types_error(mixed)
 
     def _normalize_frame(self, frame: pl.LazyFrame, *, is_source: bool) -> pl.LazyFrame:
         """Apply stages 1 through 7 of the canonical transform order to one dataset."""

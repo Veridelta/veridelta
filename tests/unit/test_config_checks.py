@@ -725,6 +725,23 @@ class TestLiveSchemaChecks:
         assert severity == "error"
         assert expected in message
 
+    def test_it_refuses_a_key_of_two_types_once_types_are_known(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure `validate --schemas` reports the key a pushdown run would refuse."""
+        session = _warehouse_session(mocker)
+        session.execute_pushdown.side_effect = [
+            pl.LazyFrame(schema=_WAREHOUSE_SCHEMA),
+            pl.LazyFrame(schema={**_WAREHOUSE_SCHEMA, "ID": pl.String()}),
+        ]
+
+        [(severity, message)] = _check(
+            _snowflake("SRC"), _snowflake("TGT"), schemas=True, primary_keys=["ID"]
+        )
+
+        assert severity == "error"
+        assert "'ID' (Int64 in the source, String in the target)" in message
+
 
 @pytest.mark.usefixtures("drivers")
 class TestReadSchema:

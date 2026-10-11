@@ -579,6 +579,62 @@ class TestMixedTypesParity:
         assert summary.column_mismatches == {"val": 1}
 
 
+class TestMixedKeyTypesParity:
+    """Validate that a primary key of two types fails on both paths, with one message.
+
+    A local run refuses a key whose two sides hold types its join cannot
+    pair. Before, a database converted one side and paired the rows anyway,
+    so the text `"007"` met the integer `7` in a warehouse.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(
+                pl.Series("id", ["007", "20"]), pl.Series("id", [7, 20]), id="text-vs-int"
+            ),
+            pytest.param(pl.Series("id", [7, 20]), pl.Series("id", [7.0, 20.0]), id="int-vs-float"),
+        ],
+    )
+    def test_both_paths_refuse_the_key_with_one_message(
+        self, source: pl.Series, target: pl.Series
+    ) -> None:
+        """Ensure pushdown stops before reading a row, as the local run does."""
+        src = pl.DataFrame({"val": [1, 2]}).with_columns(source)
+        tgt = pl.DataFrame({"val": [1, 2]}).with_columns(target)
+        config = DiffConfig(primary_keys=["id"])
+
+        with pytest.raises(ConfigError) as local:
+            run_local(config, src, tgt)
+        with pytest.raises(ConfigError) as pushdown:
+            run_pushdown(config, src, tgt)
+
+        assert str(pushdown.value) == str(local.value)
+        assert "'id' (" in str(pushdown.value)
+
+    def test_value_map_proposals_refuse_it_too(self) -> None:
+        """Ensure proposing maps, which pairs rows on the keys, refuses the key as well."""
+        src = pl.DataFrame({"id": ["1", "2"], "code": ["a", "b"]})
+        tgt = pl.DataFrame({"id": [1, 2], "code": ["A", "B"]})
+
+        with pytest.raises(
+            ConfigError, match=r"'id' \(String in the source, Int64 in the target\)"
+        ):
+            run_value_map_pushdown(DiffConfig(primary_keys=["id"]), src, tgt)
+
+    def test_a_cast_on_the_key_pairs_the_rows_on_both_paths(self) -> None:
+        """Ensure the remedy the error names gives one verdict in both engines."""
+        src = pl.DataFrame({"id": ["007", "20", "31"], "val": [1, 2, 3]})
+        tgt = pl.DataFrame({"id": [7, 20, 30], "val": [1, 2, 3]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["id"], cast_to="Int64")]
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert (summary.added_count, summary.removed_count, summary.changed_count) == (1, 1, 0)
+
+
 class TestTimezoneParity:
     """Validate stage 6b, where the local conversion is metadata-only."""
 
