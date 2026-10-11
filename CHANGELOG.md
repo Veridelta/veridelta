@@ -1,3 +1,21 @@
+## v0.39.0 (2026-10-11)
+
+Two Redshift tables on one connection are compared inside Redshift when both set
+`pushdown`. Only counts and keys come back. Text is compared under the case-sensitive
+collation with trailing spaces counted, since Redshift ignores them and a database can be
+created to ignore case. Before the first statement, the session checks that the server reads
+the SQL as written, and raises `ConnectorError` if not. `datetime_format` and
+`max_levenshtein_distance` raise `ConfigError`, as do `pad_zeros` and `cast_to: String` on a
+float column, and a `regex_replace` replacement that refers to a group or holds `$` or a
+backslash. `veridelta validate` warns about each. The SQL has not run in a live Redshift
+yet; a live test waits for an account.
+[Redshift](https://veridelta.github.io/veridelta/pushdown/#redshift) on the pushdown page
+lists every difference from a local run.
+
+### Feat
+
+- compare two Redshift tables inside Redshift (#385)
+
 ## v0.38.0 (2026-10-11)
 
 Two SQL Server tables on one connection are compared inside SQL Server when both set
