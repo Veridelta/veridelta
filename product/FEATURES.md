@@ -3,7 +3,7 @@ type: Feature Map
 title: The feature map
 description: Every feature and every roadmap item against the use case it serves, the page that describes it, and the metric that proves it.
 status: draft
-generated: { by: claude-code, at: 2026-10-11T11:21:52Z }
+generated: { by: claude-code, at: 2026-10-11T11:42:32Z }
 ---
 
 # The feature map
@@ -78,7 +78,6 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 
 | Item | Use case | Metric it would move |
 | :--- | :--- | :--- |
-| Pushdown for more SQL dialects, such as Redshift and Synapse | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [GR-01](metrics/GR-01.md) |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
 
 ## Served by no use case, and why they stay

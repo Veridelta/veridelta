@@ -3,7 +3,7 @@ type: Users
 title: Who Veridelta serves
 description: The personas Veridelta serves, the users it refuses, and the use cases each persona brings, each with the evidence for it.
 status: draft
-generated: { by: claude-code, at: 2026-10-06T15:10:00Z }
+generated: { by: claude-code, at: 2026-10-11T11:42:32Z }
 ---
 
 # Who Veridelta serves
@@ -36,14 +36,14 @@ The last answer is the product's constraint, read as three rules. A newcomer rea
 ### P-01: The engineer verifying a migration
 
 - **Role and setting.** A data or analytics engineer moving a table or a pipeline from one system to another, who has to show that the new one matches the old one before anyone switches over.
-- **What they compare, and where it lives.** Two tables in one warehouse (Snowflake, Databricks, BigQuery, Postgres, or DuckDB), or exports of them as files on disk.
+- **What they compare, and where it lives.** Two tables in one warehouse or database (Snowflake, Databricks, BigQuery, Redshift, Postgres, SQL Server, Azure SQL, a Synapse dedicated SQL pool, or DuckDB), or exports of them as files on disk.
 - **The tools they use today.** A hand-written SQL `EXCEPT` or `MINUS` query, `pandas.DataFrame.compare`, a spreadsheet, or a notebook they eyeball.
 - **What they read from Veridelta.** The exit code and the summary counts in CI, the Markdown summary on the pull request, and the HTML report when something differs.
 - **What they must never be shown.** Credentials or SQL in any output, and row values in a log or a pull request comment unless they raised `markdown-max-rows` above zero.
 - **Tolerances.** A tolerance is theirs to declare, column by column. A match that forgives something no rule names is never acceptable.
 - **Trust posture.** They believe a verdict they can audit: the rules are in a file under version control, the counts come back, and a local run and a pushdown run agree.
 - **Success, in one sentence.** The migrated table is signed off from one CI run, with a report to hand over, and no row leaves the warehouse.
-- **Evidence.** The product, not a person: the README's "comparison inside the warehouse" feature, [the pushdown guide](../docs/pushdown.md), tutorial 5, `action.yml`, and the `snowflake`, `databricks`, and `bigquery` extras. The maintainer has never used a warehouse (answer 3), and chose to verify these backends against the live services anyway. That run is [issue 111](https://github.com/Veridelta/veridelta/issues/111), and releases ship before it by the maintainer's decision of 2026-10-06.
+- **Evidence.** The product, not a person: the README's "comparison inside the warehouse" feature, [the pushdown guide](../docs/pushdown.md), tutorial 5, `action.yml`, the `snowflake`, `databricks`, and `bigquery` extras, and the `mssql://` and `redshift://` sources that pushdown accepts since 0.38.0 and 0.39.0. No user asked for those two. The roadmap did, in [issue 379](https://github.com/Veridelta/veridelta/issues/379). The maintainer has never used a warehouse (answer 3), and chose to verify these backends against the live services anyway. That run is [issue 111](https://github.com/Veridelta/veridelta/issues/111), and releases ship before it by the maintainer's decision of 2026-10-06.
 - **Unknown.** Whether this person exists, their team, how many tables they move, and which CI they run. To learn it: the bug report and feature request forms, which ask for the environment, and Discussions.
 
 ### P-02: The developer comparing two CSV files
@@ -154,7 +154,7 @@ Someone who wants to hand two datasets to a language model and ask whether the d
 - **The persona.** [P-01](#p-01-the-engineer-verifying-a-migration).
 - **The moment.** The tables are too large to export, or the data may not leave the warehouse.
 - **The question, in their words.** "Do these two tables match, without pulling a row out?"
-- **The data, and where it lives.** Two tables in one of Snowflake, Databricks, BigQuery, Postgres, DuckDB, or MotherDuck.
+- **The data, and where it lives.** Two tables in one of Snowflake, Databricks, BigQuery, Redshift, Postgres, SQL Server, Azure SQL, a Synapse dedicated SQL pool, DuckDB, or MotherDuck, on one connection.
 - **Required latency.** A warehouse query: seconds to minutes.
 - **What a wrong answer costs, and to whom.** A verdict that differs from the local engine's is a bug that nobody can see from the counts alone.
 - **The alternative it beats.** A hand-written `EXCEPT` query per table pair, with no rules and no report.
