@@ -1,3 +1,22 @@
+## v0.36.0 (2026-10-11)
+
+`veridelta validate --json` and the MCP tool `validate_config` place each finding in the
+file. The report gains `findings`: one entry per error and warning, in that order, each with
+its `severity`, its `message`, and its `locations`. A validation failure is placed by its
+path of keys and indexes, such as `rules -> 0 -> regex_replace`, with that place's own
+message. A parse error is placed by its line and column, counted from 1. An unset variable
+or a malformed reference is placed at the field that names it. A problem the text does not
+place, such as a missing block, has no location. `config`, `valid`, `errors`, `warnings`,
+and the text output stay as they were, so nothing that parses them changes.
+`FindingLocation` joins the public models, and
+[Checking a configuration](https://veridelta.github.io/veridelta/cli/#checking-a-configuration)
+describes the field. The VS Code extension puts a diagnostic on the right line with it, and
+an agent reading `validate_config` learns where a problem is.
+
+### Feat
+
+- place each validate finding in the file (#370)
+
 ## v0.35.1 (2026-10-09)
 
 Each run of the GitHub Action writes its reports to a folder of its own, so a job that
