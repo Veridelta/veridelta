@@ -37,6 +37,9 @@ permissions:
 jobs:
   evaluate:
     name: Evaluate an Agent
+    # The secret may be a maintainer's own subscription token, so a run that
+    # anyone else starts or re-runs is skipped before it reaches the environment.
+    if: github.actor == 'NickHarder' && github.triggering_actor == 'NickHarder'
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: 90
@@ -54,11 +57,20 @@ jobs:
       - name: Run the Eval
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           EVAL_MODEL: ${{ inputs.model }}
           EVAL_RUNS: ${{ inputs.runs }}
           EVAL_BUDGET_USD: ${{ inputs.budget_usd }}
           EVAL_TASKS: ${{ inputs.tasks }}
+        # The environment holds an API key or a token from `claude setup-token`.
+        # A secret it lacks arrives empty, and is unset so it shadows neither.
         run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then unset ANTHROPIC_API_KEY; fi
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then unset CLAUDE_CODE_OAUTH_TOKEN; fi
+          if [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+            echo "::error::The evals environment holds neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN."
+            exit 1
+          fi
           uv run python -m evals.agent --agent live --model "$EVAL_MODEL" --runs "$EVAL_RUNS" \
             --budget-usd "$EVAL_BUDGET_USD" --tasks "$EVAL_TASKS" --out .evals/live
 
