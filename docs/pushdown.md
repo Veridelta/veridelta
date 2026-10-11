@@ -2,7 +2,7 @@
 
 Pushdown compares two tables inside the database that stores them. Veridelta compiles the comparison to SQL, runs it there, and reads back counts and primary keys instead of rows.
 
-Every rule gives the same verdict in a warehouse as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in live BigQuery, Databricks, MotherDuck, Snowflake, Azure SQL, or Synapse services.
+Every rule gives the same verdict in a warehouse as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in live BigQuery, Databricks, MotherDuck, Redshift, Snowflake, Azure SQL, or Synapse services.
 
 ## When a comparison is pushed down
 
