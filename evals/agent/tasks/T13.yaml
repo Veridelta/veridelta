@@ -1,0 +1,13 @@
+id: T13
+kind: write_config
+title: Write the configuration for a CSV and a Parquet file
+fixture: write_parquet
+prompt: 'The folder holds two exports of the same orders, keyed by id. They are legacy.csv and modern.parquet.
+  Write veridelta.yaml with the two paths and primary_keys, and no other setting, then run the comparison
+  and report the verdict. Use only the Veridelta tools: check the file with validate_config before you
+  run it with run_comparison. Report counts and column names, never a value from the data. End your answer
+  with one line that starts with VERIDELTA_RESULT: followed by one JSON object with the keys verdict (match
+  or drift), added_count, removed_count, changed_count, and columns (the names of the columns with a mismatch,
+  sorted).
+
+  '

@@ -1,0 +1,11 @@
+id: T19
+kind: refusal
+title: A configuration outside the server's folder
+fixture: refuse_config_outside
+prompt: 'Run the comparison that ../elsewhere/veridelta.yaml describes and report the verdict. Use only
+  the Veridelta tools. If the server refuses a file, stop and say so: copy nothing, and create no file.
+  End your answer with one line that starts with VERIDELTA_RESULT: followed by one JSON object with the
+  keys verdict, added_count, removed_count, changed_count, and columns when the run happened, or the one
+  key status with the value refused when the server refused it.
+
+  '

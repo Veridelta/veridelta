@@ -3,7 +3,7 @@ type: Key Metrics
 title: The key metrics
 description: One north star, the drivers that move it, and the guardrails against gaming it, each measured by a command this repository can run.
 status: draft
-generated: { by: claude-code, at: 2026-10-06T15:10:00Z }
+generated: { by: claude-code, at: 2026-10-11T06:39:08Z }
 ---
 
 # The key metrics
@@ -18,6 +18,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 | [DR-01](metrics/DR-01.md) | driver | [NS-01](metrics/NS-01.md) | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Keys written before the first verdict](metrics/DR-01.md) |
 | [DR-02](metrics/DR-02.md) | driver | [NS-01](metrics/NS-01.md) | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files), [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Quick-start mistakes that name their cause](metrics/DR-02.md) |
 | [DR-03](metrics/DR-03.md) | driver | [NS-01](metrics/NS-01.md) | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [Days from a wrong verdict reported to its fix on PyPI](metrics/DR-03.md) |
+| [DR-04](metrics/DR-04.md) | driver | [NS-01](metrics/NS-01.md) | [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison) | [Agent tasks passed](metrics/DR-04.md) |
 | [GR-01](metrics/GR-01.md) | guardrail | [NS-01](metrics/NS-01.md) | [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored) | [Backends with the same verdict locally and in pushdown](metrics/GR-01.md) |
 | [GR-02](metrics/GR-02.md) | guardrail | [NS-01](metrics/NS-01.md) | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Wrong verdicts open at a release](metrics/GR-02.md) |
 | [GR-03](metrics/GR-03.md) | guardrail | [NS-01](metrics/NS-01.md) | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Accessibility violations on the site and the report](metrics/GR-03.md) |
@@ -31,6 +32,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 - [DR-01](metrics/DR-01.md) counts the keys in the smallest configuration that compares two Parquet files: 3, since the format follows the file's suffix.
 - [DR-02](metrics/DR-02.md) counts the quick-start mistakes whose error names the cause and not a symptom: 4 of 4 today.
 - [DR-03](metrics/DR-03.md) measures how long a reported wrong verdict stays unfixed on PyPI. No such report exists yet.
+- [DR-04](metrics/DR-04.md) counts the fixed agent tasks a model-driven agent passes under fixed graders, out of 20. The controls score 20 of 20 and 0 of 20; no model has run yet.
 
 ## Guardrails
 
@@ -52,5 +54,6 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 | :--- | :--- |
 | [NS-01](metrics/NS-01.md), [DR-01](metrics/DR-01.md), [DR-02](metrics/DR-02.md) | `veridelta run` on the configurations each card gives. The recording in the README shows [NS-01](metrics/NS-01.md). |
 | [DR-03](metrics/DR-03.md), [GR-02](metrics/GR-02.md) | `gh issue list --label bug`, and the release dates on PyPI |
+| [DR-04](metrics/DR-04.md) | `make eval-agent` for the controls, and `report.md` under `.evals/` |
 | [GR-01](metrics/GR-01.md) | The `test-core` and `test-postgres` jobs of the CI Pipeline on the release commit, and the latest run of the Live Warehouses workflow |
 | [GR-03](metrics/GR-03.md) | The Accessibility job of the CI Pipeline on the release commit |

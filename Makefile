@@ -1,4 +1,4 @@
-.PHONY: install format lint hooks test notebooks postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check screenshots
+.PHONY: install format lint hooks test notebooks eval-agent postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check screenshots
 
 # The modules held to full branch coverage. CI's core-module gate names the same
 # list, which tests/unit/test_ci_integrations.py checks.
@@ -10,12 +10,12 @@ install:
 	uv run pre-commit install --hook-type commit-msg
 
 format:
-	uv run ruff format src/ tests/ hooks/
-	uv run ruff check src/ tests/ hooks/ --select I
+	uv run ruff format src/ tests/ hooks/ evals/
+	uv run ruff check src/ tests/ hooks/ evals/ --select I
 
 lint:
-	uv run ruff check src/ tests/ hooks/
-	uv run mypy src/ tests/ hooks/
+	uv run ruff check src/ tests/ hooks/ evals/
+	uv run mypy src/ tests/ hooks/ evals/
 	uv run pyright src/
 
 # The Git hooks on every file, as CI's lint job runs them. `lint` reads the Python
@@ -29,6 +29,12 @@ test:
 
 notebooks:
 	uv run pytest tests/notebooks --no-cov
+
+# The agent eval's two controls, which need no model: the scripted one must pass every task
+# and the wrong one none, or the graders are broken. Each writes its report under .evals/.
+eval-agent:
+	uv run python -m evals.agent --agent scripted --runs 3 --out .evals/scripted --expect all
+	uv run python -m evals.agent --agent wrong --runs 3 --out .evals/wrong --expect none
 
 postgres:
 	@test -n "$$VERIDELTA_POSTGRES_URI" || { echo "Set VERIDELTA_POSTGRES_URI to a Postgres server the tests may create tables on."; exit 1; }
