@@ -1,3 +1,22 @@
+## v0.37.0 (2026-10-11)
+
+`veridelta run --baseline accepted.json` works on a pair compared where it is stored, as it
+does on a local run. Before, a pushdown run refused the flag. Added and removed rows are
+accepted from the keys the run already reads back. A changed row needs one more fact, which
+columns differ on it, so one more statement per 200 accepted changed rows fetches a match
+flag per compared column for those rows alone. No value leaves the warehouse. The verdict,
+the counts, and the per-column tallies match a local run with the same file, which the
+parity tests hold. Each key in the file reaches SQL as an operand of the key's stored type,
+and a key column of another type, such as a decimal, refuses the baseline with
+`ConnectorError`. `--save-baseline` still needs a local run, since a pushdown run holds no
+differing columns to write.
+[Baselines](https://veridelta.github.io/veridelta/pushdown/#baselines) on the pushdown page
+describes the statements and what reaches the warehouse.
+
+### Feat
+
+- accept a baseline on a pair compared where it is stored (#375)
+
 ## v0.36.0 (2026-10-11)
 
 `veridelta validate --json` and the MCP tool `validate_config` place each finding in the
