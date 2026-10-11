@@ -1963,6 +1963,67 @@ class TestPushdownRuleHelpers:
         with pytest.raises(ConfigError, match="timezone-naive"):
             resolve_pushdown_keys(zoned, naive, naive)
 
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(pl.Int64(), pl.String(), id="number-text"),
+            pytest.param(pl.Int64(), pl.Float64(), id="integer-float"),
+            pytest.param(pl.Decimal(38, 0), pl.Decimal(18, 0), id="two-decimals"),
+            pytest.param(pl.Date(), pl.Datetime("us"), id="date-timestamp"),
+        ],
+    )
+    def test_it_refuses_a_key_a_local_run_cannot_pair_with_the_same_error(
+        self, source: pl.DataType, target: pl.DataType
+    ) -> None:
+        """Ensure a warehouse never pairs `"007"` with `7` where a local run refuses the key."""
+        config = DiffConfig(primary_keys=["id"])
+        local_source = pl.LazyFrame(schema={"id": source, "v": pl.Int64()})
+        local_target = pl.LazyFrame(schema={"id": target, "v": pl.Int64()})
+        with pytest.raises(ConfigError) as local:
+            DiffEngine.validate_rules(config, local_source, local_target)
+
+        with pytest.raises(ConfigError) as pushdown:
+            resolve_pushdown_keys(
+                config, pl.Schema({"id": source, "v": pl.Int64()}), pl.Schema({"id": target})
+            )
+
+        assert str(pushdown.value) == str(local.value)
+
+    def test_it_names_only_the_keys_that_cannot_pair_under_their_aligned_names(self) -> None:
+        """Ensure a renamed key is named as the comparison names it, and an integer pair passes."""
+        config = DiffConfig(
+            primary_keys=["region", "seq"],
+            rules=[DiffRule(column_names=["area"], rename_to="region")],
+        )
+
+        with pytest.raises(ConfigError) as caught:
+            resolve_pushdown_keys(
+                config,
+                pl.Schema({"area": pl.String(), "seq": pl.Int32()}),
+                pl.Schema({"region": pl.Int64(), "seq": pl.Int64()}),
+            )
+
+        message = str(caught.value)
+        assert "'region' (String in the source, Int64 in the target)." in message
+        assert "'seq'" not in message
+
+    @pytest.mark.parametrize(
+        "rule",
+        [
+            pytest.param(DiffRule(column_names=["id"], cast_to="Int64"), id="cast-to"),
+            pytest.param(DiffRule(column_names=["id"], pad_zeros=5), id="pad-zeros"),
+        ],
+    )
+    def test_a_rule_that_brings_both_sides_to_one_type_pairs_them(self, rule: DiffRule) -> None:
+        """Ensure the remedies the error names, or a padding rule, let the key through."""
+        config = DiffConfig(primary_keys=["id"], rules=[rule])
+
+        (key_rule,) = resolve_pushdown_keys(
+            config, pl.Schema({"id": pl.Int64()}), pl.Schema({"id": pl.String()})
+        )
+
+        assert key_rule.column_names == ["id"]
+
     def test_it_drops_null_mismatch_counts_and_rejects_non_numeric_ones(self) -> None:
         """Ensure an empty join and a garbled tally are both handled."""
         assert _column_mismatches_from_frame(pl.DataFrame({"amount": [None]}), ["amount"]) == {}

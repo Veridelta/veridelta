@@ -13,11 +13,13 @@ from typing import Final, NamedTuple
 
 import polars as pl
 
+from veridelta._matching import pairable
 from veridelta._resolution import (
     EffectiveRule,
     duplicate_keys_error,
     fold_rule_defaults,
     match_rule,
+    mixed_key_types_error,
     normalized_dtype,
     parsed_dtype,
     reject_unzoned_timezone,
@@ -102,11 +104,19 @@ def pushdown_rule(
 def resolve_pushdown_keys(
     diff: DiffConfig, source_schema: pl.Schema, target_schema: pl.Schema
 ) -> list[DiffRule]:
-    """Expand configuration into the normalization each primary key receives."""
+    """Expand configuration into the normalization each primary key receives.
+
+    Raises:
+        ConfigError: If a key's rule cannot hold its probed type, or if a key's
+            two sides hold types a local run's join cannot pair. A database
+            would convert one side and pair them, so text `"007"` would meet
+            the integer `7` where a local run refuses the key.
+    """
     source_names = set(source_schema.names())
     pairs = rename_pairs(diff.rules)
 
     resolved: list[DiffRule] = []
+    mixed: list[tuple[str, pl.DataType, pl.DataType]] = []
     for key in diff.primary_keys:
         # Schema validation has already proven the key survives alignment, so
         # either a present column is renamed onto it or it is stored as is.
@@ -116,7 +126,13 @@ def resolve_pushdown_keys(
         rule = match_rule(diff.rules, key)
         effective = fold_rule_defaults(rule, diff)
         _enforce_pushdown_preconditions(effective, ((stored, source_schema), (key, target_schema)))
+        source = normalized_dtype(effective, source_schema[stored])
+        target = normalized_dtype(effective, target_schema[key])
+        if source is not None and target is not None and not pairable(source, target):
+            mixed.append((key, source, target))
         resolved.append(pushdown_rule(stored, key, rule, effective))
+    if mixed:
+        raise mixed_key_types_error(mixed)
     return resolved
 
 
@@ -420,14 +436,11 @@ def plan_pushdown(
     source_schema, target_schema = validate_pushdown_schema(
         connector, source_table, target_table, diff
     )
+    # Keys first, as a local run pairs rows before it compares a column.
+    key_rules = resolve_pushdown_keys(diff, source_schema, target_schema)
     rules = resolve_pushdown_rules(diff, source_schema, target_schema)
     refuse_mixed_pushdown_types(diff, rules, source_schema, target_schema)
-    return _PushdownPlan(
-        source_schema,
-        target_schema,
-        resolve_pushdown_keys(diff, source_schema, target_schema),
-        rules,
-    )
+    return _PushdownPlan(source_schema, target_schema, key_rules, rules)
 
 
 class _PushdownStatements(NamedTuple):

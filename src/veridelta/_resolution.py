@@ -65,6 +65,28 @@ def duplicate_keys_error(keys: list[str], side: str, count: int) -> DataIntegrit
     )
 
 
+def mixed_key_types_error(
+    mixed: Sequence[tuple[str, pl.DataType, pl.DataType]],
+) -> ConfigError:
+    """Build the error for primary keys whose two sides hold types a join cannot pair.
+
+    Args:
+        mixed (Sequence[tuple[str, pl.DataType, pl.DataType]]): Each such key,
+            with its source type and its target type after normalization.
+
+    Returns:
+        ConfigError: One error naming every key, for a local run and pushdown alike.
+    """
+    described = ", ".join(
+        f"'{key}' ({source} in the source, {target} in the target)" for key, source, target in mixed
+    )
+    return ConfigError(
+        "Rows pair only on keys of one type, or of two integer or two float types, "
+        f"and these primary keys hold two other types: {described}. Give each "
+        "a rule with cast_to, such as cast_to: Int64, so both sides hold one type."
+    )
+
+
 def reject_unzoned_timezone(column: str, dtype: pl.DataType, zone: str) -> None:
     """Raise unless a column can take a `timezone` rule: a timestamp that carries its zone."""
     if not isinstance(dtype, pl.Datetime):
