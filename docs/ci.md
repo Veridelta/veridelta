@@ -102,7 +102,7 @@ A change made on purpose, such as an account closed for good, fails every pull r
           baseline: accepted.json
 ```
 
-The run then fails only on drift the file does not list, and the summary counts the rows it accepted. A missing or invalid file ends the run with `status` set to `error`, as does a pair compared where it is stored, which refuses a baseline.
+The run then fails only on drift the file does not list, and the summary counts the rows it accepted. A missing or invalid file ends the run with `status` set to `error`.
 
 ### Values in the summary
 

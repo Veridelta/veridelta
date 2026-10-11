@@ -215,8 +215,10 @@ class DiffEngine:
             diff (DiffConfig): Comparison settings and rules.
             source (SourceRef): Source file, lakehouse, database, DuckDB, or warehouse config.
             target (SourceRef): Target file, lakehouse, database, DuckDB, or warehouse config.
-            baseline (Baseline | None): Drift to accept, which a local run leaves out
-                of the counts and the verdict.
+            baseline (Baseline | None): Drift to accept, which either engine leaves
+                out of the counts and the verdict. A pair compared where it is
+                stored fetches a match flag per column for the changed rows the
+                baseline names, and no value.
 
         Returns:
             DiffResult: The result. A pushdown pair returns counts and keys, and a
@@ -224,7 +226,7 @@ class DiffEngine:
 
         Raises:
             ConfigError: If primary keys are missing, `schema_mode` is violated, or a
-                baseline is given for a pair compared where it is stored.
+                baseline lists rows by other primary keys than the run compares on.
             DataIntegrityError: If either dataset repeats a normalized primary key.
             ConnectorError: If warehouse backends are mixed or connections differ.
 
@@ -237,15 +239,9 @@ class DiffEngine:
         """
         pair = check_backend_pairing(source, target)
         if pair is not None:
-            if baseline is not None:
-                raise ConfigError(
-                    "A baseline applies to a run that compares both sides locally, and this "
-                    "pair is compared where it is stored. Leave out --baseline, or compare "
-                    "files exported from it."
-                )
             return pair.with_session(
                 lambda session, source_table, target_table: collect_pushdown_summary(
-                    session, source_table, target_table, diff
+                    session, source_table, target_table, diff, baseline=baseline
                 )
             )
 

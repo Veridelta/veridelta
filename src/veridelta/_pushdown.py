@@ -9,7 +9,7 @@ in `veridelta.connectors.sql`.
 """
 
 from collections.abc import Iterator, Mapping, Sequence
-from typing import NamedTuple
+from typing import Final, NamedTuple
 
 import polars as pl
 
@@ -25,12 +25,24 @@ from veridelta._resolution import (
     unusable_sentinel_error,
     validate_probe_schemas,
 )
-from veridelta._results import build_summary, export_artifacts
+from veridelta._results import (
+    accept_pushdown_baseline,
+    build_summary,
+    check_baseline_keys,
+    export_artifacts,
+)
 from veridelta.connectors import database as database_connectors
 from veridelta.connectors.base import PushdownQueryType, PushdownSession
 from veridelta.connectors.sql import SampleQuery, SQLPushdownCompiler
 from veridelta.exceptions import ConfigError, ConnectorError
-from veridelta.models import DiffConfig, DiffResult, DiffRule, normalize_column_name
+from veridelta.models import (
+    AcceptedChange,
+    Baseline,
+    DiffConfig,
+    DiffResult,
+    DiffRule,
+    normalize_column_name,
+)
 from veridelta.sentinels import usable_sentinels
 
 
@@ -496,14 +508,126 @@ def compile_pushdown(
     )
 
 
+FLAGS_CHUNK: Final = 200
+"""Accepted changed rows one flags statement names, so a long baseline stays within
+every dialect's statement size."""
+
+
+def _changed_flags(
+    connector: PushdownSession,
+    tables: tuple[str, str],
+    diff: DiffConfig,
+    plan: _PushdownPlan,
+    changed: pl.DataFrame,
+    compared_columns: Sequence[str],
+    entries: Sequence[AcceptedChange],
+) -> pl.DataFrame:
+    """Fetch the match flag of every compared column for the changed rows a baseline names.
+
+    One statement per `FLAGS_CHUNK` entries. Each returns a row only for a key
+    the changed-row count includes, with its keys and a flag per compared
+    column, and no value. An entry whose row does not differ returns nothing.
+    """
+    source_types, target_types, key_rules, rules = plan
+    wide_integers = wide_integer_columns(diff, rules, source_types, target_types)
+    type_drift = type_drift_columns(diff, rules, source_types, target_types)
+    frames = [
+        changed.clear().with_columns(
+            pl.lit(True).alias(f"{column}_is_match") for column in compared_columns
+        )
+    ]
+    for start in range(0, len(entries), FLAGS_CHUNK):
+        chunk = [entry.key for entry in entries[start : start + FLAGS_CHUNK]]
+        query = connector.compiler.compile_changed_flags_query(
+            *tables,
+            diff.primary_keys,
+            rules,
+            chunk,
+            source_types=source_types,
+            target_types=target_types,
+            key_rules=key_rules,
+            wide_integers=wide_integers,
+            type_drift=type_drift,
+        )
+        if query is None:
+            break
+        frame = connector.execute_pushdown(query.statement, query_type="flags").collect()
+        missing = [alias for alias in query.renames if alias not in frame.columns]
+        if missing:
+            raise ConnectorError(
+                f"The warehouse returned match flags without {', '.join(missing)}."
+            )
+        frames.append(frame.select(list(query.renames)).rename(query.renames))
+    return pl.concat(frames, how="vertical_relaxed")
+
+
+class _Accepted(NamedTuple):
+    """What a baseline left of a pushdown run, after the flags are read."""
+
+    added: pl.DataFrame
+    removed: pl.DataFrame
+    changed: pl.DataFrame
+    column_mismatches: dict[str, int]
+    changed_sample: pl.DataFrame | None
+    accepted_count: int
+    accepted: Baseline | None
+
+
+def _accept(
+    connector: PushdownSession,
+    tables: tuple[str, str],
+    diff: DiffConfig,
+    plan: _PushdownPlan,
+    baseline: Baseline | None,
+    frames: tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame],
+    compared_columns: list[str],
+    column_mismatches: dict[str, int],
+    changed_sample: pl.DataFrame | None,
+) -> _Accepted:
+    """Apply a baseline to what the warehouse returned, or pass it through without one."""
+    added, removed, changed = frames
+    if baseline is None:
+        return _Accepted(added, removed, changed, column_mismatches, changed_sample, 0, None)
+    names = list(diff.primary_keys)
+    flags = _changed_flags(
+        connector, tables, diff, plan, changed, compared_columns, baseline.changed
+    )
+    kept = accept_pushdown_baseline(
+        baseline, names, frames, compared_columns, flags, column_mismatches
+    )
+    sample = changed_sample
+    if sample is not None:
+        # The sample was read before the baseline applied, so it drops the rows that left.
+        sample = sample.join(kept.changed.select(names), on=names, how="semi", nulls_equal=True)
+        if sample.is_empty():
+            sample = None
+    return _Accepted(
+        kept.added,
+        kept.removed,
+        kept.changed,
+        kept.column_mismatches,
+        sample,
+        kept.rows,
+        kept.accepted,
+    )
+
+
 def collect_pushdown_summary(
     connector: PushdownSession,
     source_table: str,
     target_table: str,
     diff: DiffConfig,
+    baseline: Baseline | None = None,
 ) -> DiffResult:
-    """Compile and collect the warehouse key checks, counts, mismatches, and anti-joins."""
+    """Compile and collect the warehouse key checks, counts, mismatches, and anti-joins.
+
+    With a baseline, one more statement per `FLAGS_CHUNK` accepted changed rows
+    fetches those rows' match flags, and the drift the baseline lists leaves
+    the keys and the counts as it leaves a local run's.
+    """
     tables = (source_table, target_table)
+    if baseline is not None:
+        check_baseline_keys(baseline, list(diff.primary_keys))
     plan = plan_pushdown(connector, source_table, target_table, diff)
     # As in a local run, a ConfigError from rule resolution or compiling wins
     # over repeated keys, and repeated keys stop the run before any count or
@@ -528,39 +652,53 @@ def collect_pushdown_summary(
         if statements.sample is None or changed.is_empty()
         else _collect_changed_sample(connector, statements.sample)
     )
+    # Post-rename names, matching what the local path records, so the same
+    # column reads the same way whichever engine ran it.
+    compared_columns = [rule.rename_to or rule.column_names[0] for rule in plan.rules]
+    kept = _accept(
+        connector,
+        tables,
+        diff,
+        plan,
+        baseline,
+        (added, removed, changed),
+        compared_columns,
+        column_mismatches,
+        changed_sample,
+    )
 
     # Pushdown projects primary keys only, never full rows, so the suffix keeps
     # these files from being mistaken for local artifacts.
     frames = {
-        "added_rows_pks_only": added,
-        "removed_rows_pks_only": removed,
-        "changed_rows_pks_only": changed,
+        "added_rows_pks_only": kept.added,
+        "removed_rows_pks_only": kept.removed,
+        "changed_rows_pks_only": kept.changed,
     }
-    if changed_sample is not None:
+    if kept.changed_sample is not None:
         # A sample holds values, so its own name sets it apart from the keys.
-        frames["changed_rows_sample"] = changed_sample
+        frames["changed_rows_sample"] = kept.changed_sample
     artifacts_written = export_artifacts(frames, diff.output_path, diff.output_format)
 
     return DiffResult(
         summary=build_summary(
             diff,
-            changed,
-            added,
-            removed,
+            kept.changed,
+            kept.added,
+            kept.removed,
             source_total,
             target_total,
-            column_mismatches,
+            kept.column_mismatches,
             artifacts_written,
+            kept.accepted_count,
         ),
-        added=added,
-        removed=removed,
-        changed=changed,
+        added=kept.added,
+        removed=kept.removed,
+        changed=kept.changed,
         primary_keys=tuple(diff.primary_keys),
-        # Post-rename names, matching what the local path records, so the same
-        # column reads the same way whichever engine ran it.
-        compared_columns=tuple(rule.rename_to or rule.column_names[0] for rule in plan.rules),
+        compared_columns=tuple(compared_columns),
         keys_only=True,
-        changed_sample=changed_sample,
+        changed_sample=kept.changed_sample,
+        accepted=kept.accepted,
     )
 
 

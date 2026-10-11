@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from veridelta.connectors.base import PushdownQueryType
-    from veridelta.models import DiffConfig, DiffResult, ValueMapProposal
+    from veridelta.models import Baseline, DiffConfig, DiffResult, ValueMapProposal
 
 URI_VARIABLE = "VERIDELTA_POSTGRES_URI"
 """Environment variable naming the server the Postgres backend loads tables into."""
@@ -109,7 +109,11 @@ class RecordingPostgresSession(PostgresPushdownSession):
 
 
 def run_pushdown(
-    config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    baseline: Baseline | None = None,
 ) -> tuple[DiffResult, list[str]]:
     """Load the frames into Postgres and compare them there.
 
@@ -117,6 +121,7 @@ def run_pushdown(
         config (DiffConfig): Comparison rules and keys.
         source (pl.DataFrame): Source rows.
         target (pl.DataFrame): Target rows.
+        baseline (Baseline | None): Drift the run accepts.
 
     Returns:
         tuple[DiffResult, list[str]]: The pushdown result and the SQL that
@@ -126,7 +131,9 @@ def run_pushdown(
         session = RecordingPostgresSession(database_source(source_table, pushdown=True))
         with session:
             session.connect()
-            result = collect_pushdown_summary(session, source_table, target_table, config)
+            result = collect_pushdown_summary(
+                session, source_table, target_table, config, baseline=baseline
+            )
         return result, session.statements
 
 
@@ -169,20 +176,30 @@ def run_value_map_pushdown(
         return proposals, session.statements
 
 
-def run_local(config: DiffConfig, source: pl.DataFrame, target: pl.DataFrame) -> DiffResult:
+def run_local(
+    config: DiffConfig,
+    source: pl.DataFrame,
+    target: pl.DataFrame,
+    *,
+    baseline: Baseline | None = None,
+) -> DiffResult:
     """Load the frames into Postgres, read them back, and compare them locally.
 
     Args:
         config (DiffConfig): Comparison rules and keys.
         source (pl.DataFrame): Source rows.
         target (pl.DataFrame): Target rows.
+        baseline (Baseline | None): Drift the run accepts.
 
     Returns:
         DiffResult: The local engine's verdict on the tables as Postgres holds them.
     """
     with loaded_tables(source, target) as (source_table, target_table):
         return DiffEngine.run_from_configs(
-            config, database_source(source_table), database_source(target_table)
+            config,
+            database_source(source_table),
+            database_source(target_table),
+            baseline=baseline,
         )
 
 

@@ -95,6 +95,7 @@ PushdownQueryType = Literal[
     "count",
     "duplicates",
     "columns",
+    "flags",
     "schema",
     "value_maps",
     "settings",
