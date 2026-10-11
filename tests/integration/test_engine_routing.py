@@ -11,7 +11,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from veridelta._pushdown import validate_pushdown_schema
-from veridelta._warehouses import _WAREHOUSES, _WarehouseConfig
+from veridelta._warehouses import _DATABASE_WAREHOUSES, _WAREHOUSES, _WarehouseConfig
 from veridelta.config import load_config
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
@@ -19,6 +19,7 @@ from veridelta.connectors.sql import COUNT_ALIAS, SampleQuery
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
+    DATABASE_PUSHDOWN_SCHEMES,
     ArtifactFormat,
     BigQueryConfig,
     DatabaseConfig,
@@ -115,8 +116,8 @@ def _pushdown_by_query_type(statement: str, query_type: str = "mismatch") -> pl.
         total = SOURCE_TOTAL if is_source else TARGET_TOTAL
         return pl.DataFrame({COUNT_ALIAS: [total]}).lazy()
     if query_type == "columns":
-        # A fully matching column is included so the zero-count filter is exercised.
-        return pl.DataFrame({"amount": [5], "quantity": [0]}).lazy()
+        # One count per compared column, in order, as the tally statement selects them.
+        return pl.DataFrame({"amount": [5]}).lazy()
     if query_type == "duplicates":
         return pl.DataFrame({COUNT_ALIAS: [0]}).lazy()
     heights = {"mismatch": 2, "added": 3, "missing": 4}
@@ -767,13 +768,18 @@ class TestEngineConnectorRouting:
             DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 
     def test_it_registers_every_warehouse_config_type(self) -> None:
-        """Ensure the registry and the warehouse config union name the same backends.
+        """Ensure the registries and the warehouse config union name the same backends.
 
-        Routing looks a config's type up in the registry, so a backend added to
-        one and not the other would either be read as a local source or fail
-        its type narrowing.
+        Routing looks a config's type up in the registry, or a database's URI
+        scheme up in its own, so a backend added to one and not the other would
+        either be read as a local source or fail its type narrowing.
         """
-        assert set(_WAREHOUSES) == set(get_args(_WarehouseConfig))
+        assert set(_WAREHOUSES) | {DatabaseConfig} == set(get_args(_WarehouseConfig))
+        assert set(_DATABASE_WAREHOUSES) == DATABASE_PUSHDOWN_SCHEMES
+
+    def test_both_postgres_spellings_name_one_backend(self) -> None:
+        """Ensure a pair may write postgres:// on one side and postgresql:// on the other."""
+        assert _DATABASE_WAREHOUSES["postgres"] is _DATABASE_WAREHOUSES["postgresql"]
 
     def test_it_raises_connector_error_for_mixed_warehouse_and_file_backends(self) -> None:
         """Ensure a warehouse cannot be compared directly to a local file."""
@@ -1247,5 +1253,7 @@ class TestPushdownRowSamples:
 
         connector.execute_pushdown.side_effect = short_sample
 
-        with pytest.raises(ConnectorError, match=r"sample.*_veridelta_source_0"):
+        with pytest.raises(
+            ConnectorError, match="sample returned 1 column where the statement selects 4"
+        ):
             self._run(pushdown_sample_rows=5)

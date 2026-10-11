@@ -22,9 +22,10 @@ error as the cause.
 
 import logging
 import time
+from abc import abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, ClassVar, Final, cast
 from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 
 import polars as pl
@@ -61,7 +62,6 @@ connectorx: Any = optional_module("connectorx")
 _DATABASE_EXTRA = missing_extra("database", "Reading a database table")
 _UNCONNECTED = "Database connector is not connected. Call connect() first."
 _SQLITE_PREFIX = "sqlite://"
-_POSTGRES_UNCONNECTED = "Postgres pushdown session is not connected. Call connect() first."
 _LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value"
 
 _MSSQL_SCHEME: Final = "mssql"
@@ -241,7 +241,119 @@ class DatabaseConnector(ReaderConnector):
         return read_subject(self._config.table)
 
 
-class PostgresPushdownSession(PushdownSession):
+class _ConnectorXPushdownSession(PushdownSession):
+    """Run compiled comparison SQL inside a database, through ConnectorX.
+
+    Opened for two database sources on one connection that both set
+    `pushdown`. Each statement is one ConnectorX read, which opens its own
+    connection and returns Arrow, so nothing is held between statements and
+    `close()` only forgets the connection. Only counts and keys come back.
+
+    A subclass names its backend for logs and errors, sets its dialect, and
+    checks in `_check_server` that the server reads the SQL its dialect
+    writes the way the compiler assumes.
+    """
+
+    _backend: ClassVar[str]
+    """The backend's name in log lines and errors, such as `Postgres`."""
+
+    def __init__(self, config: DatabaseConfig, dialect: SQLDialect) -> None:
+        """Initialize the session for one side's connection settings.
+
+        Args:
+            config (DatabaseConfig): A database table that sets `pushdown`.
+            dialect (SQLDialect): The dialect the backend reads.
+        """
+        self._config = config
+        self.compiler = SQLPushdownCompiler(dialect)
+        self._uri: str | None = None
+
+    def connect(self) -> None:
+        """Check the server and keep the connection URI for the statements to come.
+
+        Raises:
+            ConnectorError: If the `database` extra is missing, the server cannot
+                be reached, or it would read the dialect's SQL another way.
+        """
+        if connectorx is None:
+            raise ConnectorError(_DATABASE_EXTRA)
+        uri = _connection_uri(self._config)
+        self._check_server(uri)
+        self._uri = uri
+
+    @abstractmethod
+    def _check_server(self, uri: str) -> None:
+        """Refuse a server that would read the dialect's SQL another way.
+
+        Args:
+            uri (str): The connection URI, with its password.
+
+        Raises:
+            ConnectorError: If the server cannot be reached or fails the check.
+        """
+
+    def execute_pushdown(
+        self, statement: str, query_type: PushdownQueryType = "mismatch"
+    ) -> pl.LazyFrame:
+        """Run one compiled statement and return its rows lazily.
+
+        Args:
+            statement (str): SQL from the session's compiler.
+            query_type (PushdownQueryType): Which round-trip this is, for logs
+                and errors.
+
+        Returns:
+            pl.LazyFrame: The statement's result.
+
+        Raises:
+            ConnectorError: If the session is not connected or the statement fails.
+        """
+        frame = self._read(statement, self._connected_uri(), query_type=query_type)
+        return frame.lazy()
+
+    def close(self) -> None:
+        """Forget the connection. Idempotent; `connect()` checks the server again."""
+        self._uri = None
+
+    def _connected_uri(self) -> str:
+        """Return the URI `connect()` kept."""
+        if self._uri is None:
+            raise ConnectorError(
+                f"{self._backend} pushdown session is not connected. Call connect() first."
+            )
+        return self._uri
+
+    def _read(self, statement: str, uri: str, *, query_type: str) -> pl.DataFrame:
+        """Run a statement through ConnectorX, logging and reporting without secrets."""
+        started = time.perf_counter()
+        try:
+            frame = pl.read_database_uri(statement, uri)
+        except ImportError:
+            raise ConnectorError(_DATABASE_EXTRA) from None
+        except Exception as exc:
+            logger.warning(
+                "%s %s statement on %s failed after %.3fs",
+                self._backend,
+                query_type,
+                self._config.redacted_uri,
+                time.perf_counter() - started,
+            )
+            raise ConnectorError(
+                f"{self._backend} {query_type} statement on '{self._config.redacted_uri}' "
+                f"failed: {_scrub(self._config, str(exc))}"
+            ) from None
+        logger.info(
+            "Ran %s %s statement on %s in %.3fs, %d rows",
+            self._backend,
+            query_type,
+            self._config.redacted_uri,
+            time.perf_counter() - started,
+            frame.height,
+        )
+        return frame
+
+
+class PostgresPushdownSession(_ConnectorXPushdownSession):
     """Run compiled comparison SQL inside Postgres, through ConnectorX.
 
     Opened for two database sources on one Postgres connection that both set
@@ -255,26 +367,18 @@ class PostgresPushdownSession(PushdownSession):
     quote of a value that ends in one.
     """
 
+    _backend = "Postgres"
+
     def __init__(self, config: DatabaseConfig) -> None:
         """Initialize the session for one side's connection settings.
 
         Args:
             config (DatabaseConfig): A Postgres table that sets `pushdown`.
         """
-        self._config = config
-        self.compiler = SQLPushdownCompiler(SQLDialect.POSTGRES)
-        self._uri: str | None = None
+        super().__init__(config, SQLDialect.POSTGRES)
 
-    def connect(self) -> None:
-        """Check the server and keep the connection URI for the statements to come.
-
-        Raises:
-            ConnectorError: If the `database` extra is missing, the server cannot
-                be reached, or it reads backslashes in string literals as escapes.
-        """
-        if connectorx is None:
-            raise ConnectorError(_DATABASE_EXTRA)
-        uri = _connection_uri(self._config)
+    def _check_server(self, uri: str) -> None:
+        """Refuse a server that reads a backslash in a string literal as an escape."""
         setting = self._read(_LITERAL_RULES, uri, query_type="settings")
         if setting.item(0, 0) != "on":
             raise ConnectorError(
@@ -283,26 +387,6 @@ class PostgresPushdownSession(PushdownSession):
                 "literal as an escape. Turn it on for the role or database, or compare "
                 "locally (pushdown: false)."
             )
-        self._uri = uri
-
-    def execute_pushdown(
-        self, statement: str, query_type: PushdownQueryType = "mismatch"
-    ) -> pl.LazyFrame:
-        """Run one compiled statement and return its rows lazily.
-
-        Args:
-            statement (str): SQL from the Postgres compiler.
-            query_type (PushdownQueryType): Which round-trip this is, for logs
-                and errors.
-
-        Returns:
-            pl.LazyFrame: The statement's result.
-
-        Raises:
-            ConnectorError: If the session is not connected or the statement fails.
-        """
-        frame = self._read(statement, self._connected_uri(), query_type=query_type)
-        return frame.lazy()
 
     def declared_types(self, table: str) -> dict[str, pl.Decimal]:
         """Return the declared precision and scale of a table's `numeric` columns.
@@ -323,43 +407,6 @@ class PostgresPushdownSession(PushdownSession):
         """
         statement = compile_postgres_columns_query(table)
         return _declared_decimals(self._read(statement, self._connected_uri(), query_type="schema"))
-
-    def close(self) -> None:
-        """Forget the connection. Idempotent; `connect()` checks the server again."""
-        self._uri = None
-
-    def _connected_uri(self) -> str:
-        """Return the URI `connect()` kept."""
-        if self._uri is None:
-            raise ConnectorError(_POSTGRES_UNCONNECTED)
-        return self._uri
-
-    def _read(self, statement: str, uri: str, *, query_type: str) -> pl.DataFrame:
-        """Run a statement through ConnectorX, logging and reporting without secrets."""
-        started = time.perf_counter()
-        try:
-            frame = pl.read_database_uri(statement, uri)
-        except ImportError:
-            raise ConnectorError(_DATABASE_EXTRA) from None
-        except Exception as exc:
-            logger.warning(
-                "Postgres %s statement on %s failed after %.3fs",
-                query_type,
-                self._config.redacted_uri,
-                time.perf_counter() - started,
-            )
-            raise ConnectorError(
-                f"Postgres {query_type} statement on '{self._config.redacted_uri}' failed: "
-                f"{_scrub(self._config, str(exc))}"
-            ) from None
-        logger.info(
-            "Ran Postgres %s statement on %s in %.3fs, %d rows",
-            query_type,
-            self._config.redacted_uri,
-            time.perf_counter() - started,
-            frame.height,
-        )
-        return frame
 
 
 def _declared_decimals(catalog: pl.DataFrame) -> dict[str, pl.Decimal]:

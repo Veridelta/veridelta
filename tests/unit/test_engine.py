@@ -1965,10 +1965,25 @@ class TestPushdownRuleHelpers:
 
     def test_it_drops_null_mismatch_counts_and_rejects_non_numeric_ones(self) -> None:
         """Ensure an empty join and a garbled tally are both handled."""
-        assert _column_mismatches_from_frame(pl.DataFrame({"amount": [None]})) == {}
+        assert _column_mismatches_from_frame(pl.DataFrame({"amount": [None]}), ["amount"]) == {}
 
         with pytest.raises(ConnectorError, match="was not numeric"):
-            _column_mismatches_from_frame(pl.DataFrame({"amount": ["five"]}))
+            _column_mismatches_from_frame(pl.DataFrame({"amount": ["five"]}), ["amount"])
+
+    def test_it_reads_the_tally_by_position_and_keeps_only_positive_counts(self) -> None:
+        """Ensure counts reach the configured names whatever case the database returns."""
+        tally = pl.DataFrame({"AMOUNT": [5], "quantity": [0], "Note": [2]})
+
+        counts = _column_mismatches_from_frame(tally, ["amount", "Quantity", "note"])
+
+        assert counts == {"amount": 5, "note": 2}
+
+    def test_it_rejects_a_tally_of_the_wrong_width(self) -> None:
+        """Ensure a tally that drops or adds a column fails rather than shifting counts."""
+        with pytest.raises(
+            ConnectorError, match="returned 2 columns where the statement selects 1"
+        ):
+            _column_mismatches_from_frame(pl.DataFrame({"a": [1], "b": [2]}), ["a"])
 
 
 class TestSharedRuleAndAlignmentHelpers:
