@@ -54,7 +54,7 @@
       "type": "number"
     },
     "match_rate_percentage": {
-      "description": "Express the match rate as a percentage.\n\nReturns:\n    float: The percentage, rounded to two decimal places, such as `99.98`.",
+      "description": "Express the match rate as a percentage, never below zero.\n\nThe mismatch ratio counts added and removed rows over the source rows,\nso it can pass 1 when most keys miss. The rate then stays at 0 and\nthe counts say how far apart the two sides are.\n\nReturns:\n    float: The percentage, rounded to two decimal places, such as `99.98`.",
       "readOnly": true,
       "title": "Match Rate Percentage",
       "type": "number"

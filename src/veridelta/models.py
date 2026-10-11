@@ -747,12 +747,16 @@ class DiffSummary(BaseModel):
     @computed_field
     @property
     def match_rate_percentage(self) -> float:
-        """Express the match rate as a percentage.
+        """Express the match rate as a percentage, never below zero.
+
+        The mismatch ratio counts added and removed rows over the source rows,
+        so it can pass 1 when most keys miss. The rate then stays at 0 and
+        the counts say how far apart the two sides are.
 
         Returns:
             float: The percentage, rounded to two decimal places, such as `99.98`.
         """
-        return round((1.0 - self.mismatch_ratio) * 100.0, 2)
+        return round(max(0.0, 1.0 - self.mismatch_ratio) * 100.0, 2)
 
     @computed_field
     @property

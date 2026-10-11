@@ -37,7 +37,7 @@ result.to_pandas()
 | `column_mismatches` | For each column with at least one mismatch, the changed rows where it differs. |
 | `total_mismatches` | Added, removed, and changed rows together. |
 | `mismatch_ratio` | `total_mismatches` over `total_rows_source`. |
-| `match_rate_percentage` | One minus `mismatch_ratio`, as a percentage rounded to two places. |
+| `match_rate_percentage` | One minus `mismatch_ratio`, as a percentage rounded to two places, and never below 0. |
 | `is_match` | Whether `mismatch_ratio` is at most `threshold`. |
 | `accepted_count` | Rows of drift a [baseline](cli.md#accepting-drift) accepted, which the counts above leave out. `0` without one. |
 | `is_perfect_match` | Whether nothing differs. |
