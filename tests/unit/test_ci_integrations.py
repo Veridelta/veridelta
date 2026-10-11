@@ -1618,9 +1618,69 @@ class TestEvalsWorkflow:
 
         assert {f"${{{{ inputs.{name} }}}}" for name in inputs} <= set(env.values())
         assert env["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"
         assert "${{" not in script
         assert (parsed.agent, parsed.model, parsed.runs) == ("live", "model-x", 3)
         assert (parsed.budget_usd, parsed.tasks, parsed.out) == (10.0, "all", Path(".evals/live"))
+
+    def test_only_the_maintainer_can_start_or_rerun_it(self) -> None:
+        """Ensure a run someone else starts, or re-runs, never reaches the environment.
+
+        The secret may be the maintainer's own subscription token, and a
+        contributor with write access could otherwise dispatch the workflow.
+        """
+        assert _evals_job()["if"] == (
+            "github.actor == 'NickHarder' && github.triggering_actor == 'NickHarder'"
+        )
+
+    @staticmethod
+    def _credentials(key: str, token: str) -> subprocess.CompletedProcess[str]:
+        """Run the step's lines before the eval, then print which credentials are left set."""
+        [step] = [s for s in _evals_job()["steps"] if "python -m evals.agent" in s.get("run", "")]
+        script: str = step["run"]
+        guard = script[: script.index("uv run python -m evals.agent")]
+        probe = guard + 'echo "${ANTHROPIC_API_KEY-unset}" "${CLAUDE_CODE_OAUTH_TOKEN-unset}"\n'
+        return subprocess.run(
+            ["bash", "--noprofile", "--norc", "-e", "-c", probe],
+            env={
+                "PATH": os.environ["PATH"],
+                "ANTHROPIC_API_KEY": key,
+                "CLAUDE_CODE_OAUTH_TOKEN": token,
+            },
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="The eval runs its step with bash on a Linux runner.",
+    )
+    @pytest.mark.parametrize(
+        ("key", "token", "left"),
+        [
+            ("key", "", ["key", "unset"]),
+            ("", "token", ["unset", "token"]),
+            ("key", "token", ["key", "token"]),
+        ],
+    )
+    def test_it_runs_on_either_secret(self, key: str, token: str, left: list[str]) -> None:
+        """Ensure a secret the environment lacks, which arrives empty, is unset and shadows nothing."""
+        ran = self._credentials(key, token)
+
+        assert ran.returncode == 0, ran.stdout + ran.stderr
+        assert ran.stdout.split() == left
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="The eval runs its step with bash on a Linux runner.",
+    )
+    def test_it_stops_before_the_eval_when_neither_secret_is_set(self) -> None:
+        """Ensure a run without a credential fails with a reason, not inside the SDK."""
+        ran = self._credentials("", "")
+
+        assert ran.returncode == 1
+        assert ran.stdout.startswith("::error::The evals environment holds neither")
 
     def test_the_report_reaches_the_summary_and_an_artifact_even_when_the_run_fails(self) -> None:
         """Ensure a failed run still shows its report, which is what the maintainer reads."""

@@ -7,8 +7,8 @@
 
 The controls, `scripted` and `wrong`, need no model and no key. The `live`
 agent drives the server through the Claude Agent SDK and needs `--model` and
-an `ANTHROPIC_API_KEY` in the environment. The command prints one summary
-line, writes `report.json` and `report.md` into `--out`,
+an `ANTHROPIC_API_KEY` or a `CLAUDE_CODE_OAUTH_TOKEN` in the environment. The
+command prints one summary line, writes `report.json` and `report.md` into `--out`,
 and, with `--expect all` or `--expect none`, exits 1 unless every task or no
 task passed, which is how `make eval-agent` holds the controls.
 """
