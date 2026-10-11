@@ -12,9 +12,8 @@ This page lists work that is not built yet. The current release is v{{ config.ex
 
 ## Editor
 
-These steps build on [Editor support](configuration.md#editor-support), one at a time, tracked in [issue 127](https://github.com/Veridelta/veridelta/issues/127):
+These steps build on [the VS Code extension](configuration.md#the-vs-code-extension), one at a time, tracked in [issue 127](https://github.com/Veridelta/veridelta/issues/127):
 
-- A VS Code extension, in its own repository, whose first command runs `veridelta validate --json` on the open file and fills the Problems panel. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files).
 - A second command that runs the comparison, opens the HTML report in the editor, and opens the discrepancy files. Serves [UC-01](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-01-a-first-verdict-on-two-files) and [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
 - Registration of `veridelta mcp` with the editor's agent mode. Serves [UC-04](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-04-let-an-agent-run-the-comparison).
 
