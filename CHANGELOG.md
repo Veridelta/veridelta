@@ -1,3 +1,14 @@
+## v0.40.1 (2026-10-11)
+
+The summary could print a match rate such as -100.0% when most keys missed, since the
+mismatch ratio counts added and removed rows over the source rows and can pass 1. The match
+rate now stays at 0%. The mismatch ratio keeps its value, and no verdict, exit code, CI gate,
+or metric reads the rate, so only what is printed changes.
+
+### Fix
+
+- keep the match rate at or above 0% (#391)
+
 ## v0.40.0 (2026-10-11)
 
 Pushdown and a local run could treat a primary key of two types differently. A local run
