@@ -121,7 +121,8 @@ class SQLDialect(StrEnum):
     into pushdown, and `DUCKDB` where two DuckDB tables in one database do.
     `TSQL` is the SQL Server family's dialect, written only in what Synapse
     dedicated SQL pools run, so one dialect serves SQL Server, Azure SQL, and
-    Synapse. The differential test harness also runs `DUCKDB` output, so the
+    Synapse. `REDSHIFT` runs where two database sources on one Redshift
+    connection opt into pushdown. The differential test harness also runs `DUCKDB` output, so the
     compiled SQL itself, not a rewrite of it, is checked against the local engine.
     """
 
@@ -131,6 +132,7 @@ class SQLDialect(StrEnum):
     BIGQUERY = "bigquery"
     POSTGRES = "postgres"
     TSQL = "tsql"
+    REDSHIFT = "redshift"
 
 
 # `cast_to` reaches SQL only through this table, since SQL cannot quote or bind a type name.
@@ -185,12 +187,21 @@ _CAST_KEYWORDS: Final[dict[SQLDialect, dict[CastTarget, str]]] = {
         "Date": "DATE",
         "Datetime": "DATETIME2",
     },
+    # Redshift turns TEXT into VARCHAR(256), which would cut longer values.
+    SQLDialect.REDSHIFT: {
+        "Int64": "BIGINT",
+        "Float64": "DOUBLE PRECISION",
+        "String": "VARCHAR(MAX)",
+        "Boolean": "BOOLEAN",
+        "Date": "DATE",
+        "Datetime": "TIMESTAMP",
+    },
 }
 """`cast_to` value to the type keyword each dialect spells it with."""
 
 # Postgres casts only `integer` to `boolean`, and BigQuery only `INT64` and `STRING` to `BOOL`.
 _ZERO_TEST_BOOLEANS: Final[frozenset[SQLDialect]] = frozenset(
-    {SQLDialect.POSTGRES, SQLDialect.BIGQUERY}
+    {SQLDialect.POSTGRES, SQLDialect.BIGQUERY, SQLDialect.REDSHIFT}
 )
 """Dialects that turn a number into a boolean by comparing it with zero."""
 
@@ -202,6 +213,7 @@ _IDENTIFIER_QUOTES: Final[dict[SQLDialect, tuple[str, str]]] = {
     SQLDialect.POSTGRES: ('"', '"'),
     # Brackets need no session setting, where double quotes need QUOTED_IDENTIFIER on.
     SQLDialect.TSQL: ("[", "]"),
+    SQLDialect.REDSHIFT: ('"', '"'),
 }
 """The opening and closing character each dialect quotes identifiers with."""
 
@@ -219,6 +231,8 @@ _LITERAL_ESCAPES: Final[dict[SQLDialect, tuple[tuple[str, str], ...]]] = {
     SQLDialect.POSTGRES: (("'", "''"),),
     # T-SQL reads a backslash as ordinary text, except before a line break: `_LITERAL_REFUSALS`.
     SQLDialect.TSQL: (("'", "''"),),
+    # Redshift reads backslash escapes, as its QUOTE_LITERAL shows by doubling them.
+    SQLDialect.REDSHIFT: (("\\", "\\\\"), ("'", "''")),
 }
 """Replacements that keep text inside a single-quoted literal, applied in order."""
 
@@ -230,6 +244,7 @@ _LITERAL_PREFIXES: Final[dict[SQLDialect, str]] = {
     SQLDialect.POSTGRES: "",
     # Without `N`, a literal is `varchar` in the database's code page, which loses other text.
     SQLDialect.TSQL: "N",
+    SQLDialect.REDSHIFT: "",
 }
 """What each dialect writes before a string literal's opening quote."""
 
@@ -320,6 +335,10 @@ _DATETIME_FORMAT_REFUSALS: Final[dict[SQLDialect, str]] = {
         "its TRY_CONVERT reads a fixed list of numbered styles, not a format string, so most "
         "formats have no spelling"
     ),
+    SQLDialect.REDSHIFT: (
+        "its TO_TIMESTAMP fails on a value it cannot read, where a local run returns NULL, so "
+        "one bad row would fail the whole statement"
+    ),
 }
 """Why each dialect without a format-string parse refuses `datetime_format`."""
 
@@ -334,6 +353,7 @@ _INFINITY_LITERALS: Final[dict[SQLDialect, str | None]] = {
     SQLDialect.POSTGRES: "'Infinity'::double precision",
     # A T-SQL FLOAT holds no infinity and no NaN, so every stored value is finite.
     SQLDialect.TSQL: None,
+    SQLDialect.REDSHIFT: "CAST('Infinity' AS DOUBLE PRECISION)",
 }
 """Each dialect's positive infinity, which bounds the finite values a tolerance may apply to,
 or None where every value the dialect stores is finite."""
@@ -357,6 +377,7 @@ _EDIT_DISTANCE_REFUSALS: Final[dict[SQLDialect, str]] = {
         "as two edits"
     ),
     SQLDialect.TSQL: ("Synapse and SQL Server before 2025 have no edit distance function"),
+    SQLDialect.REDSHIFT: "it has no edit distance function",
 }
 """Why each dialect without an edit distance function refuses `max_levenshtein_distance`."""
 
@@ -367,6 +388,8 @@ _REGEX_REPLACE_FLAGS: Final[dict[SQLDialect, str]] = {
     SQLDialect.DUCKDB: ", 'g'",
     SQLDialect.BIGQUERY: "",
     SQLDialect.POSTGRES: ", 'g'",
+    # Redshift replaces every match already; `p` reads the pattern as PCRE, nearer Polars' regex.
+    SQLDialect.REDSHIFT: ", 1, 'p'",
 }
 """Trailing `REGEXP_REPLACE` arguments to replace every match, as Polars' `replace_all` does."""
 
@@ -374,6 +397,14 @@ _REGEX_REPLACE_REFUSALS: Final[dict[SQLDialect, str]] = {
     SQLDialect.TSQL: "Synapse and SQL Server before 2025 have no REGEXP_REPLACE",
 }
 """Why each dialect without `REGEXP_REPLACE` refuses `regex_replace`."""
+
+_PLAIN_REPLACEMENTS: Final[dict[SQLDialect, str]] = {
+    SQLDialect.REDSHIFT: (
+        "its REGEXP_REPLACE documents no way to refer to a group or to escape a character in "
+        "the replacement"
+    ),
+}
+"""Why each dialect takes only plain text as a replacement: no group, `$`, or backslash."""
 
 
 _REFERENCE_NAME: Final = re.compile(r"[_0-9A-Za-z]+")
@@ -469,6 +500,7 @@ _TRIM_FORMS: Final[dict[SQLDialect, _TrimForm]] = {
     SQLDialect.POSTGRES: "functions",
     # Synapse has no LEADING or TRAILING keyword.
     SQLDialect.TSQL: "characters_first",
+    SQLDialect.REDSHIFT: "standard",
 }
 """The form each dialect trims characters with."""
 
@@ -483,6 +515,7 @@ _WIDE_INTEGER_TYPES: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "NUMERIC",
     SQLDialect.POSTGRES: "NUMERIC(38, 0)",
     SQLDialect.TSQL: "DECIMAL(38, 0)",
+    SQLDialect.REDSHIFT: "DECIMAL(38, 0)",
 }
 """An exact integer type wide enough to subtract any two stored integers in."""
 
@@ -495,6 +528,7 @@ _SAMPLE_HASH_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "FARM_FINGERPRINT",
     SQLDialect.POSTGRES: "hashtextextended",
     SQLDialect.TSQL: "HASHBYTES",
+    SQLDialect.REDSHIFT: "FNV_HASH",
 }
 """Each dialect's hash of several values, for sampling value map evidence by key."""
 
@@ -508,6 +542,7 @@ _ROW_LIMITS: Final[dict[SQLDialect, _RowLimit]] = {
     SQLDialect.BIGQUERY: "LIMIT",
     SQLDialect.POSTGRES: "LIMIT",
     SQLDialect.TSQL: "TOP",
+    SQLDialect.REDSHIFT: "LIMIT",
 }
 """How each dialect limits the rows of a changed-row sample."""
 
@@ -519,6 +554,7 @@ _BOOLEAN_VALUES: Final[dict[SQLDialect, bool]] = {
     SQLDialect.POSTGRES: True,
     # T-SQL has no boolean values: a predicate is projected through CASE as a BIT.
     SQLDialect.TSQL: False,
+    SQLDialect.REDSHIFT: True,
 }
 """Whether each dialect has boolean values, so a predicate can be projected or coalesced."""
 
@@ -529,6 +565,7 @@ _BOOLEAN_LITERALS: Final[dict[SQLDialect, tuple[str, str]]] = {
     SQLDialect.BIGQUERY: ("FALSE", "TRUE"),
     SQLDialect.POSTGRES: ("FALSE", "TRUE"),
     SQLDialect.TSQL: ("0", "1"),
+    SQLDialect.REDSHIFT: ("FALSE", "TRUE"),
 }
 """How each dialect writes false and true as values of a boolean column."""
 
@@ -540,6 +577,7 @@ _WIDE_COUNTS: Final[dict[SQLDialect, bool]] = {
     SQLDialect.POSTGRES: False,
     # T-SQL's COUNT(*) and SUM of an INT are INT, which overflows past 2,147,483,647 rows.
     SQLDialect.TSQL: True,
+    SQLDialect.REDSHIFT: False,
 }
 """Whether each dialect must count rows as `COUNT_BIG` and sum flags as `BIGINT`."""
 
@@ -550,6 +588,7 @@ _CEIL_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.BIGQUERY: "CEIL",
     SQLDialect.POSTGRES: "CEIL",
     SQLDialect.TSQL: "CEILING",
+    SQLDialect.REDSHIFT: "CEIL",
 }
 """Each dialect's ceiling function."""
 
@@ -563,8 +602,9 @@ _NULL_SAFE_EQUALITY: Final[dict[SQLDialect, _NullSafeEquality]] = {
     SQLDialect.DUCKDB: "distinct",
     SQLDialect.BIGQUERY: "distinct",
     SQLDialect.POSTGRES: "distinct",
-    # Synapse has no IS DISTINCT FROM.
+    # Synapse and Redshift have no IS DISTINCT FROM.
     SQLDialect.TSQL: "spelled_out",
+    SQLDialect.REDSHIFT: "spelled_out",
 }
 """The form each dialect writes null-safe equality in."""
 
@@ -578,6 +618,8 @@ _EXACT_TEXT: Final[dict[SQLDialect, str | None]] = {
     # every collation. A binary collation compares code points, and a sentinel after the
     # value makes trailing spaces count. A NULL stays NULL, as the session checks.
     SQLDialect.TSQL: "({} + N'|') COLLATE Latin1_General_100_BIN2",
+    # Redshift ignores trailing spaces, and a database can be created to ignore case too.
+    SQLDialect.REDSHIFT: "COLLATE({} || '|', 'case_sensitive')",
 }
 """How each dialect wraps a text operand so `=`, `IN`, and `GROUP BY` compare it as Polars
 does, character for character, or None where they already do."""
@@ -590,6 +632,7 @@ _TEXT_ENTRIES: Final[dict[SQLDialect, str | None]] = {
     SQLDialect.POSTGRES: None,
     # So TRIM, LOWER, and IN match characters by code point, not by collation weight.
     SQLDialect.TSQL: "CAST({} AS NVARCHAR(MAX)) COLLATE Latin1_General_100_BIN2",
+    SQLDialect.REDSHIFT: None,
 }
 """How each dialect reads a stored text column before any stage, or None to read it as stored."""
 
@@ -601,6 +644,7 @@ _AWARE_TIMESTAMP_ENTRIES: Final[dict[SQLDialect, str | None]] = {
     SQLDialect.POSTGRES: None,
     # ConnectorX applies a DATETIMEOFFSET's offset twice, so keys and samples come back at zero.
     SQLDialect.TSQL: "SWITCHOFFSET({}, '+00:00')",
+    SQLDialect.REDSHIFT: None,
 }
 """How each dialect reads a stored timestamp with a time zone, or None to read it as stored."""
 
@@ -608,6 +652,10 @@ _FLOAT_TEXT_REFUSALS: Final[dict[SQLDialect, str]] = {
     SQLDialect.TSQL: (
         "its FLOAT becomes text with six significant digits, so two different numbers "
         "could become the same text"
+    ),
+    SQLDialect.REDSHIFT: (
+        "its DOUBLE PRECISION becomes text with 15 significant digits unless "
+        "extra_float_digits says otherwise, so two different numbers could become the same text"
     ),
 }
 """Why each dialect that writes floats as text another way than Polars refuses to."""
@@ -883,18 +931,18 @@ def compile_mssql_utc_select(table: str, columns: Sequence[str], in_utc: Collect
     return f"SELECT {', '.join(projections)} FROM {_quoted_database_relation('mssql', table)}"
 
 
-TSQL_CHECK_TEXT: Final = "O'Br\u00efen \\ \u4e2d \U0001f680"
-"""Text a SQL Server pushdown session writes as a literal and expects back unchanged:
-a quote, a backslash, an accent, a letter outside Latin-1, and one outside the BMP."""
+SERVER_CHECK_TEXT: Final = "O'Br\u00efen \\ \u4e2d \U0001f680"
+"""Text a SQL Server or Redshift pushdown session writes as a literal and expects back
+unchanged: a quote, a backslash, an accent, a letter outside Latin-1, and one outside the BMP."""
 
-_TSQL_TRIM_PROBE: Final = "\u3000\t a b \u00a0\n"
-"""A value padded with whitespace Polars strips, for the check that trims it."""
+_TRIM_PROBE: Final = "\u3000\t a b \u00a0\n"
+"""A value padded with whitespace Polars strips, for the server checks that trim it."""
 
 
 def compile_tsql_server_checks() -> tuple[str, str]:
     """Compile the statements a SQL Server pushdown session checks the server with.
 
-    The first returns four columns: `TSQL_CHECK_TEXT` as the server reads its
+    The first returns four columns: `SERVER_CHECK_TEXT` as the server reads its
     literal; 1 if a NULL stays NULL once the exact text sentinel is appended,
     as it does while `CONCAT_NULL_YIELDS_NULL` is on; 1 if exact text tells
     case, accents, and a trailing space apart; and the engine edition. The
@@ -917,21 +965,63 @@ def compile_tsql_server_checks() -> tuple[str, str]:
         for left, right in (("a", "A"), ("e", "\u00e9"), ("a ", "a"))
     )
     settings = (
-        f"SELECT {_string_literal(dialect, TSQL_CHECK_TEXT)} AS [text], "
+        f"SELECT {_string_literal(dialect, SERVER_CHECK_TEXT)} AS [text], "
         f"CASE WHEN {exact.format('NULL')} IS NULL THEN 1 ELSE 0 END AS [nulls_stay_null], "
         f"CASE WHEN {distinct} THEN 1 ELSE 0 END AS [exact_text], "
         "CAST(SERVERPROPERTY('EngineEdition') AS INT) AS [edition]"
     )
-    padded = entry.format(_string_literal(dialect, _TSQL_TRIM_PROBE))
+    padded = entry.format(_string_literal(dialect, _TRIM_PROBE))
     characters = _string_literal(dialect, _WHITESPACE_CHARACTERS)
     trimmed = (
-        (f"LTRIM({padded}, {characters})", _TSQL_TRIM_PROBE.lstrip(_WHITESPACE_CHARACTERS)),
-        (f"RTRIM({padded}, {characters})", _TSQL_TRIM_PROBE.rstrip(_WHITESPACE_CHARACTERS)),
-        (f"TRIM({characters} FROM {padded})", _TSQL_TRIM_PROBE.strip(_WHITESPACE_CHARACTERS)),
+        (f"LTRIM({padded}, {characters})", _TRIM_PROBE.lstrip(_WHITESPACE_CHARACTERS)),
+        (f"RTRIM({padded}, {characters})", _TRIM_PROBE.rstrip(_WHITESPACE_CHARACTERS)),
+        (f"TRIM({characters} FROM {padded})", _TRIM_PROBE.strip(_WHITESPACE_CHARACTERS)),
     )
     agree = " AND ".join(f"{exact.format(trim)} = {text(value)}" for trim, value in trimmed)
     trims = f"SELECT CASE WHEN {agree} THEN 1 ELSE 0 END AS [trims]"
     return settings, trims
+
+
+def compile_redshift_server_check() -> str:
+    """Compile the statement a Redshift pushdown session checks the server with.
+
+    It returns five columns: `SERVER_CHECK_TEXT` as the server reads its
+    literal, which fails if Redshift stops reading backslash escapes; 1 if a
+    NULL stays NULL once the exact text sentinel is appended; 1 if exact text
+    tells case and a trailing space apart, even in a database created to
+    ignore case; 1 if NaN equals NaN, as in a local run; and 1 if each trim
+    form the dialect writes strips whitespace as Polars does.
+
+    Returns:
+        str: The check statement.
+    """
+    dialect = SQLDialect.REDSHIFT
+    exact = cast("str", _EXACT_TEXT[dialect])
+
+    def text(value: str) -> str:
+        return exact.format(_string_literal(dialect, value))
+
+    distinct = " AND ".join(
+        f"{text(left)} <> {text(right)}" for left, right in (("a", "A"), ("a ", "a"))
+    )
+    nan = "CAST('NaN' AS DOUBLE PRECISION)"
+    padded = _string_literal(dialect, _TRIM_PROBE)
+    characters = _string_literal(dialect, _WHITESPACE_CHARACTERS)
+    trimmed = " AND ".join(
+        f"{exact.format(f'TRIM({side} {characters} FROM {padded})')} = {text(value)}"
+        for side, value in (
+            ("LEADING", _TRIM_PROBE.lstrip(_WHITESPACE_CHARACTERS)),
+            ("TRAILING", _TRIM_PROBE.rstrip(_WHITESPACE_CHARACTERS)),
+            ("BOTH", _TRIM_PROBE.strip(_WHITESPACE_CHARACTERS)),
+        )
+    )
+    return (
+        f'SELECT {_string_literal(dialect, SERVER_CHECK_TEXT)} AS "text", '
+        f'CASE WHEN {exact.format("NULL")} IS NULL THEN 1 ELSE 0 END AS "nulls_stay_null", '
+        f'CASE WHEN {distinct} THEN 1 ELSE 0 END AS "exact_text", '
+        f'CASE WHEN {nan} = {nan} THEN 1 ELSE 0 END AS "nan_equal", '
+        f'CASE WHEN {trimmed} THEN 1 ELSE 0 END AS "trims"'
+    )
 
 
 def compile_database_probe(scheme: str, table: str) -> str:
@@ -1671,10 +1761,15 @@ class SQLPushdownCompiler:
             return f"(({hashed} % {buckets}) + {buckets}) % {buckets}"
         # These hashes are signed, and MOD keeps the dividend's sign. FARM_FINGERPRINT
         # takes one string, and hashtextextended one text and a seed.
+        # FNV_HASH takes one value and a seed, so each key seeds the next.
+        chained = f"{function}({keys[0]})"
+        for key in keys[1:]:
+            chained = f"{function}({key}, {chained})"
         hashed = {
             SQLDialect.SNOWFLAKE: f"{function}({joined})",
             SQLDialect.BIGQUERY: f"{function}(TO_JSON_STRING(STRUCT({joined})))",
             SQLDialect.POSTGRES: f"{function}(ROW({joined})::text, 0)",
+            SQLDialect.REDSHIFT: chained,
         }[self.dialect]
         return f"MOD(MOD({hashed}, {buckets}) + {buckets}, {buckets})"
 
@@ -2164,10 +2259,25 @@ class SQLPushdownCompiler:
         return wrapped
 
     def _regex_replacement(self, pattern: str, replacement: str) -> str:
-        """Rewrite a Polars replacement in the dialect's replacement syntax."""
+        """Rewrite a Polars replacement in the dialect's replacement syntax.
+
+        Raises:
+            ConfigError: If the dialect takes only plain text and the
+                replacement refers to a group or holds a `$` or a backslash.
+        """
+        tokens = _replacement_tokens(pattern, replacement)
+        refusal = _PLAIN_REPLACEMENTS.get(self.dialect)
+        if refusal is not None and any(
+            isinstance(token, int) or "$" in token or "\\" in token for token in tokens
+        ):
+            raise ConfigError(
+                f"regex_replace cannot be pushed down to {self.dialect.value} with the "
+                f"replacement {replacement!r}: {refusal}. Use a replacement of plain text, or "
+                "compare locally instead (pushdown: false)."
+            )
         written: list[str] = []
         follows_group = False
-        for token in _replacement_tokens(pattern, replacement):
+        for token in tokens:
             if isinstance(token, int):
                 written.append(self._group_reference(token))
                 follows_group = True

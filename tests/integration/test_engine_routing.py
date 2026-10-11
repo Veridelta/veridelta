@@ -1105,6 +1105,40 @@ class TestSqlServerPushdownRouting:
             DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 
 
+_REDSHIFT_URI = "redshift://analyst@cluster.internal:5439/dev"
+
+
+class TestRedshiftPushdownRouting:
+    """Validate how two `redshift://` sources that set `pushdown` are routed."""
+
+    def test_it_compares_two_opted_in_tables_inside_redshift(self, mocker: MockerFixture) -> None:
+        """Ensure the pair runs through one Redshift session and no row is read locally."""
+        session_cls = _configure_warehouse_compiler(mocker, "RedshiftPushdownSession")
+        load = mocker.patch.object(LoaderFactory, "load")
+        source = DatabaseConfig(uri=_REDSHIFT_URI, table="public.src", pushdown=True)
+        target = DatabaseConfig(uri=_REDSHIFT_URI, table="public.tgt", pushdown=True)
+
+        result = DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        session_cls.assert_called_once_with(source)
+        load.assert_not_called()
+        assert result.keys_only is True
+
+    def test_it_compiles_in_the_redshift_dialect(self) -> None:
+        """Ensure validate, which never connects, compiles a Redshift pair in its own dialect."""
+        assert _DATABASE_WAREHOUSES["redshift"].dialect is SQLDialect.REDSHIFT
+
+    def test_it_refuses_a_redshift_table_paired_with_postgres(self) -> None:
+        """Ensure a Redshift statement is never sent to Postgres, though both speak its protocol."""
+        source = DatabaseConfig(uri=_REDSHIFT_URI, table="public.src", pushdown=True)
+        target = _postgres_config(table="tgt")
+
+        with pytest.raises(
+            ConnectorError, match="the source is Redshift and the target is Postgres"
+        ):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+
 def _duckdb_config(*, table: str, pushdown: bool = True, **fields: object) -> DuckDBConfig:
     """Build a DuckDB side in one shared file, opted into pushdown unless told otherwise."""
     return DuckDBConfig.model_validate(

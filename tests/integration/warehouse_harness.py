@@ -4,14 +4,15 @@
 """Run the parity harness against a live warehouse instead of DuckDB.
 
 Selected by `VERIDELTA_PARITY_BACKEND` set to `bigquery`, `databricks`,
-`motherduck`, or `snowflake`, with that service's settings in the environment.
+`motherduck`, `redshift`, or `snowflake`, with that service's settings in the
+environment.
 CONTRIBUTING lists them under "Live warehouse tests", and `make live` runs the
 suite. The `live.yml` workflow runs it in CI, after the maintainer approves.
 
 Each comparison loads its two frames into fresh tables and drops them after.
-Snowflake and Databricks take parameterized `INSERT` statements, BigQuery a
-Parquet load job, since its free sandbox refuses DML, and MotherDuck an Arrow
-table. A table's name holds the minute it was made, as in
+Snowflake, Databricks, and Redshift take parameterized `INSERT` statements,
+BigQuery a Parquet load job, since its free sandbox refuses DML, and MotherDuck
+an Arrow table. A table's name holds the minute it was made, as in
 `vd_202610061200_1a2b3c4d_source`, so `drop_stale_tables` can drop the tables
 a failed run left behind once they are a day old.
 
@@ -43,9 +44,11 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Final
 from unittest import mock
+from urllib.parse import quote
 
 import polars as pl
 
+from veridelta.connectors.database import RedshiftPushdownSession
 from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.connectors.warehouse import (
     BigQueryConnector,
@@ -54,7 +57,13 @@ from veridelta.connectors.warehouse import (
     _snowflake_credentials,
 )
 from veridelta.engine import DiffEngine
-from veridelta.models import BigQueryConfig, DatabricksConfig, DuckDBConfig, SnowflakeConfig
+from veridelta.models import (
+    BigQueryConfig,
+    DatabaseConfig,
+    DatabricksConfig,
+    DuckDBConfig,
+    SnowflakeConfig,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -538,8 +547,112 @@ class _BigQuery(_Service):
         return mapped, None, None, (pl.Int64() if unsigned else None)
 
 
+_REDSHIFT_TYPES: Final[dict[type[pl.DataType], str]] = {
+    pl.Int8: "SMALLINT",
+    pl.Int16: "SMALLINT",
+    pl.Int32: "INTEGER",
+    pl.Int64: "BIGINT",
+    pl.UInt8: "SMALLINT",
+    pl.UInt16: "INTEGER",
+    pl.UInt32: "BIGINT",
+    pl.UInt64: "DECIMAL(20, 0)",
+    pl.Float32: "REAL",
+    pl.Float64: "DOUBLE PRECISION",
+    # TEXT would become VARCHAR(256), which cuts longer values.
+    pl.String: "VARCHAR(MAX)",
+    pl.Boolean: "BOOLEAN",
+    pl.Date: "DATE",
+}
+"""Redshift column type for each dtype that maps without a parameter."""
+
+_REDSHIFT_ROWS: Final = 500
+"""Most rows one Redshift `INSERT` carries."""
+
+
+class _Redshift(_Service):
+    """Amazon Redshift, signed in with a database user's password, tables in its schema."""
+
+    name = "redshift"
+    # A replacement that refers to a group is refused; plain replacements run.
+    refused_rules = frozenset({"datetime_format", "max_levenshtein_distance", "regex_replace"})
+    connector = RedshiftPushdownSession
+
+    def __init__(self) -> None:
+        """Read the cluster or workgroup endpoint and the database user."""
+        self.host = _setting("REDSHIFT_HOST")
+        self.port = int(_optional("REDSHIFT_PORT") or "5439")
+        self.database = _setting("REDSHIFT_DATABASE")
+        self.user = _setting("REDSHIFT_USER")
+        self.password = _setting("REDSHIFT_PASSWORD")
+
+    def source(self, table: str) -> SourceRef:
+        """Describe a loaded table as a Redshift database source that sets `pushdown`."""
+        uri = f"redshift://{quote(self.user, safe='')}@{self.host}:{self.port}/{self.database}"
+        return DatabaseConfig(uri=uri, password=self.password, table=table, pushdown=True)
+
+    def connect(self) -> Any:
+        """Open a psycopg connection over TLS, committing each statement."""
+        import psycopg
+
+        return psycopg.connect(
+            host=self.host,
+            port=self.port,
+            dbname=self.database,
+            user=self.user,
+            password=self.password,
+            sslmode="require",
+            autocommit=True,
+        )
+
+    def load(self, connection: Any, table: str, frame: pl.DataFrame) -> None:
+        """Create the table and insert its rows as bound parameters, in batches.
+
+        Bound parameters never pass through a string literal, so a backslash
+        reaches Redshift as one.
+        """
+        columns = ", ".join(
+            f"{_double_quoted(name)} {self._column_type(name, dtype)}"
+            for name, dtype in frame.schema.items()
+        )
+        rows = list(frame.iter_rows())
+        row_marks = "(" + ", ".join(["%s"] * frame.width) + ")"
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE TABLE {_double_quoted(table)} ({columns})")
+            for start in range(0, len(rows), _REDSHIFT_ROWS):
+                batch = rows[start : start + _REDSHIFT_ROWS]
+                marks = ", ".join([row_marks] * len(batch))
+                values = [value for row in batch for value in row]
+                cursor.execute(f"INSERT INTO {_double_quoted(table)} VALUES {marks}", values)
+
+    def drop(self, connection: Any, table: str) -> None:
+        """Drop the table."""
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP TABLE IF EXISTS {_double_quoted(table)}")
+
+    def tables(self, connection: Any) -> list[str]:
+        """List the current schema's `vd_` tables."""
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = CURRENT_SCHEMA() AND table_name LIKE 'vd%'"
+            )
+            return [row[0] for row in cursor.fetchall()]
+
+    def _column_type(self, name: str, dtype: pl.DataType) -> str:
+        """Return the Redshift type that stores a column without loss."""
+        if isinstance(dtype, pl.Decimal):
+            return f"DECIMAL({dtype.precision or 38}, {dtype.scale})"
+        if isinstance(dtype, pl.Datetime) and dtype.time_unit != "ns":
+            return "TIMESTAMP" if dtype.time_zone is None else "TIMESTAMPTZ"
+        column_type = _REDSHIFT_TYPES.get(type(dtype))
+        if column_type is None:
+            raise _unstorable("Redshift", name, dtype)
+        return column_type
+
+
 SERVICES: Final[dict[str, type[_Service]]] = {
-    service.name: service for service in (_BigQuery, _Databricks, _MotherDuck, _Snowflake)
+    service.name: service
+    for service in (_BigQuery, _Databricks, _MotherDuck, _Redshift, _Snowflake)
 }
 """Each live warehouse by the `VERIDELTA_PARITY_BACKEND` value that selects it."""
 

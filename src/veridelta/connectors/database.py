@@ -9,10 +9,10 @@ or `query` exactly once and holds the result: Polars has no lazy SQL reader, and
 wrapping the read in `pl.defer` would run the query again every time the engine
 asks for a schema. Requires the `database` extra (`uv add 'veridelta[database]'`).
 
-Two Postgres or two SQL Server tables that opt into `pushdown` are compared
-inside the database instead: `PostgresPushdownSession` and
-`TSqlPushdownSession` run each compiled statement through the same driver and
-read back only counts and keys.
+Two Postgres, two SQL Server, or two Redshift tables that opt into `pushdown`
+are compared inside the database instead: `PostgresPushdownSession`,
+`TSqlPushdownSession`, and `RedshiftPushdownSession` run each compiled
+statement through the same driver and read back only counts and keys.
 
 A password never reaches a log line or an error. Log lines carry the URI with
 its password masked and the table name, never SQL text. A failed read is
@@ -41,7 +41,7 @@ from veridelta.connectors.base import (
     read_subject,
 )
 from veridelta.connectors.sql import (
-    TSQL_CHECK_TEXT,
+    SERVER_CHECK_TEXT,
     SQLDialect,
     SQLPushdownCompiler,
     compile_database_partition_counts,
@@ -51,6 +51,7 @@ from veridelta.connectors.sql import (
     compile_mssql_utc_select,
     compile_postgres_columns_query,
     compile_postgres_text_select,
+    compile_redshift_server_check,
     compile_tsql_server_checks,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, missing_extra
@@ -447,9 +448,9 @@ class TSqlPushdownSession(_ConnectorXPushdownSession):
         ).row(0)
         where = f"SQL Server at '{self._config.redacted_uri}'"
         logger.info("%s is engine edition %s", where, edition)
-        if text != TSQL_CHECK_TEXT:
+        if text != SERVER_CHECK_TEXT:
             raise ConnectorError(
-                f"{where} read the string literal {TSQL_CHECK_TEXT!r} back as {text!r}, so "
+                f"{where} read the string literal {SERVER_CHECK_TEXT!r} back as {text!r}, so "
                 "it would compare other values than the configuration names. Compare "
                 "locally (pushdown: false)."
             )
@@ -477,6 +478,62 @@ class TSqlPushdownSession(_ConnectorXPushdownSession):
                 f"{where} trims whitespace another way than Polars does. Compare locally "
                 "(pushdown: false)."
             )
+
+
+class RedshiftPushdownSession(_ConnectorXPushdownSession):
+    """Run compiled comparison SQL inside Redshift, through ConnectorX.
+
+    Opened for two database sources on one `redshift://` connection that both
+    set `pushdown`. Each statement is one ConnectorX read over the Postgres
+    protocol, which opens its own connection and returns Arrow, so nothing is
+    held between statements and `close()` only forgets the connection. Only
+    counts and keys come back.
+
+    `connect()` checks that the server reads the Redshift dialect as the
+    compiler assumes. A string literal must come back as written, with its
+    backslash read as an escape. A NULL must stay NULL when text is appended
+    to it. Exact text must tell case and trailing spaces apart, even in a
+    database created to ignore case. NaN must equal NaN, as in a local run.
+    Each trim must strip the whitespace Polars strips.
+    """
+
+    _backend = "Redshift"
+
+    def __init__(self, config: DatabaseConfig) -> None:
+        """Initialize the session for one side's connection settings.
+
+        Args:
+            config (DatabaseConfig): A Redshift table that sets `pushdown`.
+        """
+        super().__init__(config, SQLDialect.REDSHIFT)
+
+    def _check_server(self, uri: str) -> None:
+        """Refuse a server that would read the Redshift dialect another way."""
+        text, nulls_stay_null, exact_text, nan_equal, trims = self._read(
+            compile_redshift_server_check(), uri, query_type="settings"
+        ).row(0)
+        where = f"Redshift at '{self._config.redacted_uri}'"
+        refusals = (
+            (
+                text != SERVER_CHECK_TEXT,
+                f"read the string literal {SERVER_CHECK_TEXT!r} back as {text!r}, so it "
+                "would compare other values than the configuration names",
+            ),
+            (
+                nulls_stay_null != 1,
+                "joins NULL and text into text, so a NULL would compare equal to an empty value",
+            ),
+            (
+                exact_text != 1,
+                "compares text that differs in case or trailing spaces as equal, even "
+                "under the case_sensitive collation",
+            ),
+            (nan_equal != 1, "does not read NaN as equal to NaN, as a local run does"),
+            (trims != 1, "trims whitespace another way than Polars does"),
+        )
+        for refused, reason in refusals:
+            if refused:
+                raise ConnectorError(f"{where} {reason}. Compare locally (pushdown: false).")
 
 
 def _declared_decimals(catalog: pl.DataFrame) -> dict[str, pl.Decimal]:

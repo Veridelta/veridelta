@@ -145,7 +145,7 @@ The hooks also format the code and add the Apache-2.0 license header. If a hook 
 
 ## Live warehouse tests
 
-The parity suite also runs inside the services pushdown supports: BigQuery, Databricks, MotherDuck, and Snowflake. Each case loads its frames into fresh tables, compares them there and locally, and drops them. A run first drops the tables a failed run left behind, once they are a day old.
+The parity suite also runs inside the services pushdown supports: BigQuery, Databricks, MotherDuck, Redshift, and Snowflake. Each case loads its frames into fresh tables, compares them there and locally, and drops them. A run first drops the tables a failed run left behind, once they are a day old.
 
 The `Live Warehouses` workflow runs the suite. It starts only by hand, from the Actions tab with **Run workflow**, against one service or all of them. Each job then waits for a maintainer to approve its `live` deployment. GitHub offers **Run workflow** only for a workflow on the default branch.
 
@@ -156,6 +156,7 @@ Each service needs an account, a repository variable set to `true` that turns it
 | BigQuery | `LIVE_BIGQUERY` | `BQ_PROJECT`, `BQ_CREDENTIALS_JSON` |
 | Databricks | `LIVE_DATABRICKS` | `DATABRICKS_HOST`, `DATABRICKS_HTTP_PATH`, `DATABRICKS_TOKEN` |
 | MotherDuck | `LIVE_MOTHERDUCK` | `MOTHERDUCK_TOKEN` |
+| Redshift | `LIVE_REDSHIFT` | `REDSHIFT_HOST`, `REDSHIFT_DATABASE`, `REDSHIFT_USER`, `REDSHIFT_PASSWORD` |
 | Snowflake | `LIVE_SNOWFLAKE` | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_ROLE`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_DATABASE` |
 
 Create the `live` environment under Settings, then Environments, with a maintainer as its required reviewer, and add the secrets there. Add the variables under Settings, then Secrets and variables, then Actions, as repository variables, which the job conditions read.
@@ -163,6 +164,7 @@ Create the `live` environment under Settings, then Environments, with a maintain
 - **BigQuery.** The free sandbox works and needs no card. Create a project and a dataset named `veridelta_live` in it. Then create a service account with the BigQuery Job User and BigQuery Data Editor roles, and a JSON key for it. `BQ_PROJECT` is the project ID, and `BQ_CREDENTIALS_JSON` holds the key file. Each query may bill 1 GB at most.
 - **Databricks.** The Free Edition works. Create the schema `veridelta_live` in the `workspace` catalog. The SQL warehouse's Connection details tab gives `DATABRICKS_HOST`, the server hostname, and `DATABRICKS_HTTP_PATH`. `DATABRICKS_TOKEN` is a personal access token.
 - **MotherDuck.** The free plan works. Create the database `veridelta_live`, and an access token for `MOTHERDUCK_TOKEN`.
+- **Redshift.** A Redshift Serverless workgroup works, and its free trial credit covers the runs. Create a database user with a password, and let it create tables in its default schema. `REDSHIFT_HOST` is the workgroup endpoint without its port, `REDSHIFT_DATABASE` is usually `dev`, and `REDSHIFT_PORT` overrides 5439. The workgroup must accept connections from GitHub's runners.
 - **Snowflake.** A 30-day trial works. Create it last, since the trial starts at sign-up. Create an X-Small warehouse that suspends after 60 seconds, with a resource monitor that caps its credits. Then create a database, and a service user with its own role and a key pair. The tables go in the database's `PUBLIC` schema, so the role needs `USAGE` on the warehouse, the database, and the schema, and `CREATE TABLE` on the schema. `SNOWFLAKE_PRIVATE_KEY` holds the private key in PEM form, and an encrypted key also needs `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`.
 
 To run one service from a terminal, set `VERIDELTA_PARITY_BACKEND` and the service's settings, then run `make live`. There, BigQuery reads a key file from `BQ_CREDENTIALS_PATH`, or the default credentials without one, and Snowflake reads its key from `SNOWFLAKE_PRIVATE_KEY_PATH`. `MOTHERDUCK_DATABASE` can name a DuckDB file instead of `md:veridelta_live`, which runs the MotherDuck backend without an account:
@@ -171,7 +173,7 @@ To run one service from a terminal, set `VERIDELTA_PARITY_BACKEND` and the servi
 VERIDELTA_PARITY_BACKEND=motherduck MOTHERDUCK_DATABASE=/tmp/live.duckdb make live
 ```
 
-A case that a service refuses, or whose data it cannot store, carries a `skip_on` marker with the reason, as for Postgres.
+A case whose rule a service refuses skips once the refusal is raised. A case whose data it cannot store carries a `skip_on` marker with the reason.
 
 ## Releasing
 

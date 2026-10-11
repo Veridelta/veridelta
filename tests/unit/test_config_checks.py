@@ -344,6 +344,25 @@ class TestConfigChecks:
         assert {severity for severity, _ in findings} == {"warning"}
         assert "six significant digits" in findings[3][1]
 
+    def test_it_warns_about_rules_redshift_cannot_push_down(self) -> None:
+        """Ensure a Redshift pair hears about a group reference and a float written as text."""
+        uri = "redshift://analyst@cluster.internal:5439/dev"
+        source = DatabaseConfig(uri=uri, table="public.src", pushdown=True)
+        target = DatabaseConfig(uri=uri, table="public.tgt", pushdown=True)
+        rules = [
+            DiffRule(column_names=["code"], regex_replace={"(a)": "$1"}),
+            DiffRule(column_names=["code"], regex_replace={"-": ""}),
+            DiffRule(column_names=["ratio"], cast_to="String"),
+        ]
+
+        findings = _check(source, target, rules=rules)
+
+        assert [message.split(",")[0] for _, message in findings] == [
+            "rules[0] regex_replace has no Redshift spelling",
+            "rules[2] cast_to writes a column as text",
+        ]
+        assert "15 significant digits" in findings[1][1]
+
     def test_it_lets_other_backends_write_floats_as_text(self) -> None:
         """Ensure a backend that writes floats as Polars does hears nothing about it."""
         uri = "postgresql://analyst@db.internal/sales"
