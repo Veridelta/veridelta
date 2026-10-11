@@ -9,7 +9,11 @@ from veridelta.connectors.base import (
     ReaderConnector,
     VerideltaConnector,
 )
-from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
+from veridelta.connectors.database import (
+    DatabaseConnector,
+    PostgresPushdownSession,
+    TSqlPushdownSession,
+)
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
@@ -34,5 +38,6 @@ __all__ = [
     "SQLDialect",
     "SQLPushdownCompiler",
     "SnowflakeConnector",
+    "TSqlPushdownSession",
     "VerideltaConnector",
 ]

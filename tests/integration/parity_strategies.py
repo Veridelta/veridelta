@@ -17,7 +17,9 @@ to differ are left out on purpose, so a failure is a real divergence:
   which the DuckDB harness cannot round-trip faithfully;
 - no rule field the backend's pushdown refuses, such as `datetime_format` on
   Postgres or `max_levenshtein_distance` on both backends, which
-  `comparison_cases` drops when told to.
+  `comparison_cases` drops when told to;
+- no NaN or infinity when the backend's floats cannot hold them, as on SQL
+  Server, when `comparison_cases` is told so.
 """
 
 from collections.abc import Callable
@@ -75,6 +77,11 @@ def _float_drift(draw: st.DrawFn, value: Any) -> Any:
         return float("nan")
     if choice == "inf":
         return float("inf")
+    return float(value) + draw(st.sampled_from([-1.0, -0.5, 0.25, 0.5, 1.0, 2.0]))
+
+
+def _finite_float_drift(draw: st.DrawFn, value: Any) -> Any:
+    """Shift a float across and along the tolerance boundaries."""
     return float(value) + draw(st.sampled_from([-1.0, -0.5, 0.25, 0.5, 1.0, 2.0]))
 
 
@@ -263,6 +270,17 @@ KINDS: dict[str, _Kind] = {
 }
 """Every column type the fuzzer generates, by name."""
 
+_FINITE_FLOAT64 = _Kind(
+    pl.Float64(),
+    st.one_of(
+        st.floats(-1e6, 1e6, allow_nan=False, allow_infinity=False),
+        st.just(-0.0),
+    ),
+    _finite_float_drift,
+    _numeric_rules(-1.0),
+)
+"""The float kind for a backend whose floats hold no NaN or infinity."""
+
 
 @st.composite
 def _cell(draw: st.DrawFn, kind: _Kind) -> Any:
@@ -287,7 +305,7 @@ def _target_cell(draw: st.DrawFn, kind: _Kind, value: Any) -> Any:
 
 @st.composite
 def comparison_cases(
-    draw: st.DrawFn, refused: frozenset[str] = frozenset()
+    draw: st.DrawFn, refused: frozenset[str] = frozenset(), *, finite_floats: bool = False
 ) -> tuple[DiffConfig, pl.DataFrame, pl.DataFrame]:
     """Draw a configuration and a source and target both engines should agree on.
 
@@ -295,13 +313,16 @@ def comparison_cases(
         draw (st.DrawFn): Hypothesis' draw function.
         refused (frozenset[str]): Rule fields to leave out of every rule,
             because the pushdown side would refuse them.
+        finite_floats (bool): Whether to draw floats without NaN or infinity,
+            because the pushdown side cannot store them.
 
     Returns:
         tuple[DiffConfig, pl.DataFrame, pl.DataFrame]: Keys on a unique `id`,
             one to three typed columns, and a rule for some of them.
     """
-    names = draw(st.lists(st.sampled_from(sorted(KINDS)), min_size=1, max_size=3))
-    columns = {f"c{index}_{name}": KINDS[name] for index, name in enumerate(names)}
+    kinds = {**KINDS, "float64": _FINITE_FLOAT64} if finite_floats else KINDS
+    names = draw(st.lists(st.sampled_from(sorted(kinds)), min_size=1, max_size=3))
+    columns = {f"c{index}_{name}": kinds[name] for index, name in enumerate(names)}
     strict = draw(st.booleans())
     rows = draw(st.integers(0, 8))
 

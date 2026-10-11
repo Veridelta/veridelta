@@ -43,11 +43,6 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
-_REFUSED_PARSE = pytest.mark.skip_on(
-    "postgres",
-    reason="Postgres refuses datetime_format pushdown: it has no parse that yields NULL.",
-)
-
 
 def _config(*rules: DiffRule, **settings: object) -> DiffConfig:
     """Key on `id`, with the given rules and settings."""
@@ -115,6 +110,13 @@ CASES = [
             ),
         ),
     ),
+    # A case-insensitive rule folds case only. A SQL Server collation that ignores accents
+    # would fold them too.
+    Case(
+        "status-accented-under-case-insensitive",
+        _config(DiffRule(column_names=["status"], case_insensitive=True)),
+        seeds=(change("status", 5, lambda: pl.col("status").str.replace("e", "é"), "accented"),),
+    ),
     Case(
         "region-padded",
         _config(),
@@ -133,6 +135,19 @@ CASES = [
         seeds=(
             change("region", 3, lambda: "  " + pl.col("region"), "padded left", forgiven=True),
             change("region", 4, lambda: pl.col("region") + " ", "padded right"),
+        ),
+    ),
+    # SQL Server's `=` ignores trailing spaces under every collation.
+    Case(
+        "region-trailing-space",
+        _config(),
+        seeds=(change("region", 4, lambda: pl.col("region") + " ", "trailing space"),),
+    ),
+    Case(
+        "region-trailing-space-under-whitespace-right",
+        _config(DiffRule(column_names=["region"], whitespace_mode="right")),
+        seeds=(
+            change("region", 4, lambda: pl.col("region") + " ", "trailing space", forgiven=True),
         ),
     ),
     Case(
@@ -199,7 +214,6 @@ CASES = [
             ),
             reshapes=(legacy_dates(forgiven=True),),
         ),
-        marks=_REFUSED_PARSE,
         id="legacy-dates-parsed",
     ),
     Case(

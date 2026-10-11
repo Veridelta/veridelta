@@ -29,10 +29,15 @@ from veridelta.connectors import (
     ReaderConnector,
     SnowflakeConnector,
     SQLDialect,
+    TSqlPushdownSession,
     VerideltaConnector,
 )
 from veridelta.connectors.base import mask_secrets, read_subject
-from veridelta.connectors.sql import compile_postgres_columns_query
+from veridelta.connectors.sql import (
+    TSQL_CHECK_TEXT,
+    compile_postgres_columns_query,
+    compile_tsql_server_checks,
+)
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import (
     DatabaseConfig,
@@ -192,6 +197,7 @@ class TestConnectorInterface:
             DatabricksConnector,
             BigQueryConnector,
             PostgresPushdownSession,
+            TSqlPushdownSession,
             DuckDBPushdownSession,
         ],
     )
@@ -1029,6 +1035,51 @@ def _setting(value: str) -> pl.DataFrame:
     return pl.DataFrame({"value": [value]})
 
 
+_TSQL_URI = "mssql://analyst@db.internal:1433/sales?encrypt=true"
+
+
+def _tsql_session(password: str | None = None) -> TSqlPushdownSession:
+    """Build an unconnected session for a pushed-down SQL Server table."""
+    return TSqlPushdownSession(
+        DatabaseConfig(uri=_TSQL_URI, password=password, table="dbo.orders", pushdown=True)
+    )
+
+
+def _sql_server(
+    mocker: MockerFixture,
+    *,
+    text: str = TSQL_CHECK_TEXT,
+    nulls_stay_null: int = 1,
+    exact_text: int = 1,
+    trims: int | Exception = 1,
+) -> MagicMock:
+    """Patch Polars' reader to answer the SQL Server checks, returning the reader mock.
+
+    Each argument is what the server returns for one check, and a healthy
+    SQL Server 2022 by default. Every other statement returns an empty frame.
+    """
+    mocker.patch("veridelta.connectors.database.connectorx", object())
+    settings, trimmed = compile_tsql_server_checks()
+
+    def _answer(statement: str, uri: str) -> pl.DataFrame:
+        if statement == settings:
+            return pl.DataFrame(
+                {
+                    "text": [text],
+                    "nulls_stay_null": [nulls_stay_null],
+                    "exact_text": [exact_text],
+                    "edition": [3],
+                }
+            )
+        if statement == trimmed:
+            if isinstance(trims, Exception):
+                raise trims
+            return pl.DataFrame({"trims": [trims]})
+        return pl.DataFrame()
+
+    return mocker.patch("veridelta.connectors.database.pl.read_database_uri", side_effect=_answer)
+
+
 class TestPartitionedDatabaseRead:
     """Validate a `table` read that ConnectorX splits across parallel connections."""
 
@@ -1297,4 +1348,121 @@ class TestPostgresPushdownSession:
 
         assert "settings" in caplog.text
         assert "current_setting" not in caplog.text
+        assert _DATABASE_SECRET not in caplog.text
+
+
+class TestTSqlPushdownSession:
+    """Validate the session that runs compiled comparison SQL inside SQL Server."""
+
+    def test_it_compiles_for_tsql(self) -> None:
+        """Ensure the engine compiles this session's statements in the T-SQL dialect."""
+        assert _tsql_session().compiler.dialect is SQLDialect.TSQL
+
+    def test_it_checks_the_server_before_any_statement(self, mocker: MockerFixture) -> None:
+        """Ensure connecting runs the settings check and then the trim check, and nothing else."""
+        read = _sql_server(mocker)
+
+        _tsql_session().connect()
+
+        settings, trims = compile_tsql_server_checks()
+        assert read.call_args_list == [call(settings, _TSQL_URI), call(trims, _TSQL_URI)]
+
+    def test_it_refuses_a_server_that_reads_a_literal_another_way(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a literal that comes back changed stops the run before any comparison."""
+        _sql_server(mocker, text="O'Brien  ?")
+
+        with pytest.raises(ConnectorError, match="read the string literal") as info:
+            _tsql_session().connect()
+
+        assert "pushdown: false" in str(info.value)
+
+    def test_it_refuses_a_server_where_null_and_text_make_text(self, mocker: MockerFixture) -> None:
+        """Ensure a NULL can never compare equal to an empty value through the sentinel.
+
+        With `CONCAT_NULL_YIELDS_NULL` off, `NULL + N'|'` is `N'|'`, the same
+        as an empty value with the sentinel appended.
+        """
+        _sql_server(mocker, nulls_stay_null=0)
+
+        with pytest.raises(ConnectorError, match="CONCAT_NULL_YIELDS_NULL is off"):
+            _tsql_session().connect()
+
+    def test_it_refuses_a_server_whose_exact_text_folds_anything(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure text that differs in case, accents, or trailing spaces never matches."""
+        _sql_server(mocker, exact_text=0)
+
+        with pytest.raises(ConnectorError, match="case, accents, or trailing spaces"):
+            _tsql_session().connect()
+
+    def test_it_names_the_version_a_server_without_trim_characters_needs(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure SQL Server 2019's one-argument LTRIM reads as a version to upgrade, secret-free."""
+        _sql_server(
+            mocker,
+            trims=RuntimeError(
+                f"The ltrim function requires 1 argument(s). {quote(_DATABASE_SECRET, safe='')}"
+            ),
+        )
+
+        with pytest.raises(ConnectorError, match="SQL Server has from 2022") as info:
+            _tsql_session(_DATABASE_SECRET).connect()
+
+        assert "requires 1 argument" in str(info.value)
+        assert info.value.__cause__ is None
+        assert quote(_DATABASE_SECRET, safe="") not in str(info.value)
+
+    def test_it_refuses_a_server_that_trims_another_way(self, mocker: MockerFixture) -> None:
+        """Ensure whitespace stripped differently from Polars stops the run."""
+        _sql_server(mocker, trims=0)
+
+        with pytest.raises(ConnectorError, match="trims whitespace another way"):
+            _tsql_session().connect()
+
+    def test_it_runs_each_statement_as_one_read(self, mocker: MockerFixture) -> None:
+        """Ensure a statement reaches ConnectorX as written and returns its rows lazily."""
+        read = _sql_server(mocker)
+        session = _tsql_session()
+        session.connect()
+        result = pl.DataFrame({"id": [3]})
+        read.side_effect = None
+        read.return_value = result
+
+        frame = session.execute_pushdown("SELECT [id] FROM [dbo].[orders]", query_type="added")
+
+        read.assert_called_with("SELECT [id] FROM [dbo].[orders]", _TSQL_URI)
+        assert frame.collect().equals(result)
+
+    def test_it_reports_a_failed_statement_without_the_password(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a driver error names the backend and statement kind but carries no secret."""
+        read = _sql_server(mocker)
+        session = _tsql_session(_DATABASE_SECRET)
+        session.connect()
+        read.side_effect = RuntimeError(f"login failed {quote(_DATABASE_SECRET, safe='')}")
+
+        with pytest.raises(ConnectorError, match="SQL Server mismatch statement") as info:
+            session.execute_pushdown("SELECT 1")
+
+        assert info.value.__cause__ is None
+        assert _DATABASE_SECRET not in "".join(traceback.format_exception(info.value))
+        assert quote(_DATABASE_SECRET, safe="") not in str(info.value)
+
+    def test_it_logs_the_engine_edition_and_never_the_sql(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure the log says which engine answered, without SQL or credentials."""
+        _sql_server(mocker)
+
+        with caplog.at_level(logging.INFO, logger="veridelta.connectors.database"):
+            _tsql_session(_DATABASE_SECRET).connect()
+
+        assert "engine edition 3" in caplog.text
+        assert "SQL Server settings statement" in caplog.text
+        assert "SELECT" not in caplog.text
         assert _DATABASE_SECRET not in caplog.text

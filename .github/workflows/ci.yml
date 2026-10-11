@@ -314,6 +314,9 @@ jobs:
       - name: Read Real MySQL and SQL Server Tables
         run: make databases
 
+      - name: Run the Parity Suite Inside SQL Server
+        run: make sqlserver
+
   test-accessibility:
     name: Accessibility
     needs: test-smoke

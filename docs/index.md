@@ -6,11 +6,11 @@ Veridelta compares two datasets on their primary keys and reports every row that
 
 [Watch the 60-second demo](https://github.com/Veridelta/veridelta-media/releases/latest): a port from IDL to Python must match one to one, every row differs, and only the real bug fails CI.
 
-Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, as are two Postgres or DuckDB tables that set `pushdown`. Only counts and keys come back, unless [`pushdown_sample_rows`](pushdown.md#row-samples) asks for a sample of the changed rows.
+Files, lakehouse tables, databases, and DuckDB files are read and compared on [Polars](https://pola.rs/). Two tables in one warehouse are compared inside it, as are two Postgres, SQL Server, or DuckDB tables that set `pushdown`. Only counts and keys come back, unless [`pushdown_sample_rows`](pushdown.md#row-samples) asks for a sample of the changed rows.
 
 ## Status
 
-Veridelta is in alpha, so a minor version can still change the configuration or the Python API. Its tests run on generated data, including a suite that seeds known drift into two datasets and checks that each run reports exactly that drift, in a local run and in pushdown. Nobody but its maintainer is known to have run it yet. Its pushdown SQL has run in DuckDB and Postgres 16, but not yet in a live cloud warehouse, as [Pushdown](pushdown.md) says.
+Veridelta is in alpha, so a minor version can still change the configuration or the Python API. Its tests run on generated data, including a suite that seeds known drift into two datasets and checks that each run reports exactly that drift, in a local run and in pushdown. Nobody but its maintainer is known to have run it yet. Its pushdown SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in a live cloud warehouse, as [Pushdown](pushdown.md) says.
 
 ## Install
 
@@ -81,7 +81,7 @@ flowchart LR
   subgraph sources [Sources]
     files[Files]
     lakehouse[Delta Iceberg]
-    databases[Postgres MySQL SQLite]
+    databases[Postgres SQL Server MySQL SQLite]
     duckdb[DuckDB MotherDuck]
     warehouse[Snowflake Databricks BigQuery]
   end
@@ -101,4 +101,4 @@ flowchart LR
   result --> exitCode[Exit code]
 ```
 
-File, lakehouse, database, and DuckDB sources load through `LoaderFactory` into a local `DiffEngine` run. A pair of tables in one warehouse, or two Postgres or DuckDB tables that set `pushdown`, compiles to SQL and runs in place. Both paths return a `DiffResult`.
+File, lakehouse, database, and DuckDB sources load through `LoaderFactory` into a local `DiffEngine` run. A pair of tables in one warehouse, or two Postgres, SQL Server, or DuckDB tables that set `pushdown`, compiles to SQL and runs in place. Both paths return a `DiffResult`.

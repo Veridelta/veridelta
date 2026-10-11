@@ -14,6 +14,7 @@ The project uses [uv](https://docs.astral.sh/uv/) and a Makefile:
 | `make eval-agent` | Runs the agent eval's two controls, which need no model: the scripted one must pass every task and the wrong one none. After a change to `evals/`, to the MCP server, or to the agent skill. |
 | `make schema` | Regenerates the schemas under `docs/schema/`, after a change to a configuration model or to the JSON a command prints. |
 | `make postgres` | Runs the parity suite inside a live Postgres, after a change to the SQL compiler. |
+| `make sqlserver` | Runs the parity suite inside a live SQL Server, after a change to the SQL compiler. |
 | `make live` | Runs the parity suite inside one live warehouse, with that service's account. A release needs it to pass. |
 | `make databases` | Reads real MySQL and SQL Server tables, after a change to the database connector. |
 | `make accessibility` | Checks the docs site and the HTML report with axe-core and a keyboard, in Chromium, after a change to either. |

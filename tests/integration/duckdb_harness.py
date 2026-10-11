@@ -23,12 +23,17 @@ use ASCII text, on which bytes and characters agree, so DuckDB still checks
 the SQL the warehouses that count characters run.
 
 `VERIDELTA_PARITY_BACKEND` picks where the pushdown side runs, from `BACKENDS`.
-`postgres` runs the same cases against a live Postgres through
-`postgres_harness`, and `bigquery`, `databricks`, `motherduck`, and
-`snowflake` against a live warehouse through `warehouse_harness`. In each,
-the comparison runs inside the database, and the local engine reads the same
-tables back. A case one backend refuses or cannot store carries a `skip_on`
-marker, and one that pins a single backend's behavior an `only_on` marker.
+`postgres` and `sqlserver` run the same cases against a live Postgres or SQL
+Server through `postgres_harness` and `sqlserver_harness`, and `bigquery`,
+`databricks`, `motherduck`, and `snowflake` against a live warehouse through
+`warehouse_harness`. In each, the comparison runs inside the database, and the
+local engine reads the same tables back.
+
+A case whose rule the selected backend refuses by name, such as
+`datetime_format` on Postgres, skips once the refusal is raised, so the
+refusal itself is still checked. A case one backend cannot store carries a
+`skip_on` marker, and one that pins a single backend's behavior an `only_on`
+marker.
 """
 
 from __future__ import annotations
@@ -37,15 +42,17 @@ import os
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Final, NamedTuple, Protocol, TypeVar
 
 import duckdb
+import pytest
 
-from tests.integration import postgres_harness, warehouse_harness
+from tests.integration import postgres_harness, sqlserver_harness, warehouse_harness
 from veridelta._pushdown import collect_pushdown_summary
 from veridelta._value_maps import collect_value_map_proposals
 from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.engine import DiffEngine
+from veridelta.exceptions import ConfigError
 from veridelta.models import Baseline, DuckDBConfig
 
 if TYPE_CHECKING:
@@ -61,6 +68,8 @@ SOURCE_TABLE = "src_data"
 
 TARGET_TABLE = "tgt_data"
 """Table the harness writes the target frame to."""
+
+_T = TypeVar("_T")
 
 PARITY_BACKEND = os.environ.get("VERIDELTA_PARITY_BACKEND", "duckdb")
 """Database the pushdown side runs in, a key of `BACKENDS`."""
@@ -124,6 +133,9 @@ class Backend(NamedTuple):
 
     run_local: _LocalRun
     """Compares two frames through the local engine, as the database stores them."""
+
+    finite_floats_only: bool = False
+    """Whether the database's floats hold no NaN or infinity, so no case may draw one."""
 
 
 class _RecordingSession(DuckDBPushdownSession):
@@ -236,6 +248,13 @@ BACKENDS: Final[dict[str, Callable[[], Backend]]] = {
         postgres_harness.run_value_map_pushdown,
         postgres_harness.run_local,
     ),
+    "sqlserver": lambda: Backend(
+        sqlserver_harness.REFUSED_RULES,
+        sqlserver_harness.run_pushdown,
+        sqlserver_harness.run_value_map_pushdown,
+        sqlserver_harness.run_local,
+        finite_floats_only=True,
+    ),
     **{name: _warehouse(name) for name in warehouse_harness.SERVICES},
 }
 """Each database the pushdown side can run in. Only the selected one is built."""
@@ -250,6 +269,26 @@ _BACKEND = BACKENDS[PARITY_BACKEND]()
 
 REFUSED_RULES = _BACKEND.refused_rules
 """Rule fields the selected backend's pushdown refuses before running any query."""
+
+FINITE_FLOATS_ONLY = _BACKEND.finite_floats_only
+"""Whether the selected backend's floats hold no NaN or infinity."""
+
+
+def _unless_refused(run: Callable[[], _T]) -> _T:
+    """Run the pushdown side, and skip the case if the backend refuses one of its rules.
+
+    A refusal names its rule field first, as in `datetime_format cannot be
+    pushed down to postgres`. Any other `ConfigError` propagates, so a case
+    that expects one still sees it.
+    """
+    try:
+        return run()
+    except ConfigError as exc:
+        message = str(exc)
+        for field in sorted(REFUSED_RULES):
+            if message.startswith(f"{field} cannot be pushed down"):
+                pytest.skip(f"{PARITY_BACKEND} pushdown refuses {field}: {message}")
+        raise
 
 
 def run_pushdown(
@@ -271,7 +310,7 @@ def run_pushdown(
         tuple[DiffResult, list[str]]: The pushdown result and the SQL that
             produced it, in execution order.
     """
-    return _BACKEND.run_pushdown(config, source, target, baseline=baseline)
+    return _unless_refused(lambda: _BACKEND.run_pushdown(config, source, target, baseline=baseline))
 
 
 def run_value_map_pushdown(
@@ -297,13 +336,15 @@ def run_value_map_pushdown(
         tuple[list[ValueMapProposal], list[str]]: The proposals and the SQL
             that produced them, in execution order.
     """
-    return _BACKEND.run_value_map_pushdown(
-        config,
-        source,
-        target,
-        min_confidence=min_confidence,
-        min_support=min_support,
-        sample_fraction=sample_fraction,
+    return _unless_refused(
+        lambda: _BACKEND.run_value_map_pushdown(
+            config,
+            source,
+            target,
+            min_confidence=min_confidence,
+            min_support=min_support,
+            sample_fraction=sample_fraction,
+        )
     )
 
 

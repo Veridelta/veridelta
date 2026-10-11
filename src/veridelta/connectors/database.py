@@ -9,9 +9,10 @@ or `query` exactly once and holds the result: Polars has no lazy SQL reader, and
 wrapping the read in `pl.defer` would run the query again every time the engine
 asks for a schema. Requires the `database` extra (`uv add 'veridelta[database]'`).
 
-Two Postgres tables that opt into `pushdown` are compared inside the database
-instead: `PostgresPushdownSession` runs each compiled statement through the same
-driver and reads back only counts and keys.
+Two Postgres or two SQL Server tables that opt into `pushdown` are compared
+inside the database instead: `PostgresPushdownSession` and
+`TSqlPushdownSession` run each compiled statement through the same driver and
+read back only counts and keys.
 
 A password never reaches a log line or an error. Log lines carry the URI with
 its password masked and the table name, never SQL text. A failed read is
@@ -40,6 +41,7 @@ from veridelta.connectors.base import (
     read_subject,
 )
 from veridelta.connectors.sql import (
+    TSQL_CHECK_TEXT,
     SQLDialect,
     SQLPushdownCompiler,
     compile_database_partition_counts,
@@ -49,6 +51,7 @@ from veridelta.connectors.sql import (
     compile_mssql_utc_select,
     compile_postgres_columns_query,
     compile_postgres_text_select,
+    compile_tsql_server_checks,
 )
 from veridelta.exceptions import ConfigError, ConnectorError, missing_extra
 from veridelta.models import POSTGRES_SCHEMES, DatabaseConfig
@@ -407,6 +410,73 @@ class PostgresPushdownSession(_ConnectorXPushdownSession):
         """
         statement = compile_postgres_columns_query(table)
         return _declared_decimals(self._read(statement, self._connected_uri(), query_type="schema"))
+
+
+class TSqlPushdownSession(_ConnectorXPushdownSession):
+    """Run compiled comparison SQL inside SQL Server, Azure SQL, or Synapse, through ConnectorX.
+
+    Opened for two database sources on one `mssql://` connection that both set
+    `pushdown`. Each statement is one ConnectorX read, which opens its own
+    connection and returns Arrow, so nothing is held between statements and
+    `close()` only forgets the connection. Only counts and keys come back.
+
+    `connect()` checks that the server reads the T-SQL dialect as the compiler
+    assumes. A string literal must come back as written. A NULL must stay NULL
+    when text is appended to it, as it does while `CONCAT_NULL_YIELDS_NULL` is
+    on; otherwise a NULL would compare equal to an empty value. Exact text must
+    tell case, accents, and trailing spaces apart. `LTRIM` and `RTRIM` must take
+    the characters to strip, as they do from SQL Server 2022. The check logs
+    the server's engine edition.
+    """
+
+    _backend = "SQL Server"
+
+    def __init__(self, config: DatabaseConfig) -> None:
+        """Initialize the session for one side's connection settings.
+
+        Args:
+            config (DatabaseConfig): A SQL Server table that sets `pushdown`.
+        """
+        super().__init__(config, SQLDialect.TSQL)
+
+    def _check_server(self, uri: str) -> None:
+        """Refuse a server that would read the T-SQL dialect another way."""
+        settings, trims = compile_tsql_server_checks()
+        text, nulls_stay_null, exact_text, edition = self._read(
+            settings, uri, query_type="settings"
+        ).row(0)
+        where = f"SQL Server at '{self._config.redacted_uri}'"
+        logger.info("%s is engine edition %s", where, edition)
+        if text != TSQL_CHECK_TEXT:
+            raise ConnectorError(
+                f"{where} read the string literal {TSQL_CHECK_TEXT!r} back as {text!r}, so "
+                "it would compare other values than the configuration names. Compare "
+                "locally (pushdown: false)."
+            )
+        if nulls_stay_null != 1:
+            raise ConnectorError(
+                f"CONCAT_NULL_YIELDS_NULL is off on {where}, so a NULL would compare equal "
+                "to an empty value. Turn it on for the database, or compare locally "
+                "(pushdown: false)."
+            )
+        if exact_text != 1:
+            raise ConnectorError(
+                f"{where} compares text that differs in case, accents, or trailing spaces as "
+                "equal even under a binary collation. Compare locally (pushdown: false)."
+            )
+        try:
+            trimmed = self._read(trims, uri, query_type="settings").item(0, 0)
+        except ConnectorError as exc:
+            raise ConnectorError(
+                f"{where} refused LTRIM and RTRIM with the characters to strip. Pushdown "
+                "needs them, which SQL Server has from 2022. Compare locally "
+                f"(pushdown: false), or upgrade. {exc}"
+            ) from None
+        if trimmed != 1:
+            raise ConnectorError(
+                f"{where} trims whitespace another way than Polars does. Compare locally "
+                "(pushdown: false)."
+            )
 
 
 def _declared_decimals(catalog: pl.DataFrame) -> dict[str, pl.Decimal]:

@@ -276,6 +276,36 @@ def pushdown_findings(diff: DiffConfig, pair: WarehousePair) -> list[ConfigFindi
                         path=("rules", index, setting),
                     )
                 )
+        findings.extend(_float_text_findings(compiler, name, index, rule))
+    return findings
+
+
+def _float_text_findings(
+    compiler: SQLPushdownCompiler, name: str, index: int, rule: DiffRule
+) -> list[ConfigFinding]:
+    """Report a rule that writes a column as text, which a backend refuses on floats."""
+    findings: list[ConfigFinding] = []
+    for setting, probe in (
+        ("pad_zeros", DiffRule(column_names=["probe"], pad_zeros=rule.pad_zeros)),
+        (
+            "cast_to",
+            DiffRule(
+                column_names=["probe"], cast_to="String" if rule.cast_to == "String" else None
+            ),
+        ),
+    ):
+        try:
+            compiler.compile_column_predicate(
+                probe, "probe", source_dtype=pl.Float64(), target_dtype=pl.Float64()
+            )
+        except ConfigError as exc:
+            findings.append(
+                warning_finding(
+                    f"rules[{index}] {setting} writes a column as text, which a {name} run "
+                    f"refuses on any column stored as floats: {exc}",
+                    path=("rules", index, setting),
+                )
+            )
     return findings
 
 

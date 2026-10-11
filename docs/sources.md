@@ -97,7 +97,7 @@ target:
 primary_keys: ["order_id"]
 ```
 
-Two Postgres tables on one server can instead be compared inside Postgres; see [Postgres](pushdown.md#postgres).
+Two Postgres tables on one server, or two SQL Server tables on one server, can instead be compared inside the database; see [Postgres](pushdown.md#postgres) and [SQL Server, Azure SQL, and Synapse](pushdown.md#sql-server-azure-sql-and-synapse).
 
 ### Connection string
 

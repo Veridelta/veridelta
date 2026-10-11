@@ -318,6 +318,44 @@ class TestConfigChecks:
         )
         assert "pushdown: false" in findings[1][1]
 
+    def test_it_warns_about_rules_sql_server_cannot_push_down(self) -> None:
+        """Ensure a SQL Server pair hears about every setting its run would refuse."""
+        uri = "mssql://analyst@db.internal/sales"
+        source = DatabaseConfig(uri=uri, table="dbo.src", pushdown=True)
+        target = DatabaseConfig(uri=uri, table="dbo.tgt", pushdown=True)
+        rules = [
+            DiffRule(column_names=["code"], regex_replace={"-": ""}),
+            DiffRule(column_names=["seen_at"], datetime_format="%Y-%m-%d"),
+            DiffRule(column_names=["name"], max_levenshtein_distance=1),
+            DiffRule(column_names=["zip"], pad_zeros=5),
+            DiffRule(column_names=["ratio"], cast_to="String"),
+            DiffRule(column_names=["count"], cast_to="Int64"),
+        ]
+
+        findings = _check(source, target, rules=rules)
+
+        assert [message.split(",")[0] for _, message in findings] == [
+            "rules[0] regex_replace has no SQL Server spelling",
+            "rules[1] datetime_format has no SQL Server spelling",
+            "rules[2] max_levenshtein_distance has no SQL Server spelling",
+            "rules[3] pad_zeros writes a column as text",
+            "rules[4] cast_to writes a column as text",
+        ]
+        assert {severity for severity, _ in findings} == {"warning"}
+        assert "six significant digits" in findings[3][1]
+
+    def test_it_lets_other_backends_write_floats_as_text(self) -> None:
+        """Ensure a backend that writes floats as Polars does hears nothing about it."""
+        uri = "postgresql://analyst@db.internal/sales"
+        source = DatabaseConfig(uri=uri, table="src", pushdown=True)
+        target = DatabaseConfig(uri=uri, table="tgt", pushdown=True)
+        rules = [
+            DiffRule(column_names=["zip"], pad_zeros=5),
+            DiffRule(column_names=["ratio"], cast_to="String"),
+        ]
+
+        assert _check(source, target, rules=rules) == []
+
     def test_it_warns_about_edit_distances_duckdb_cannot_push_down(self) -> None:
         """Ensure a DuckDB pair hears that its run would refuse an edit distance, and why."""
         source = DuckDBConfig(database="warehouse.duckdb", table="src", pushdown=True)
