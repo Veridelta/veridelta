@@ -204,6 +204,24 @@ veridelta schema > veridelta.schema.json
 
 The schema is slightly stricter than the loader. The loader converts `threshold: "0.1"` to a number, and the schema flags the quotes. In `source` and `target`, every text field also accepts a `${NAME}` reference.
 
+### The VS Code extension
+
+[Veridelta for VS Code](https://github.com/Veridelta/vscode-veridelta) runs `veridelta validate` on the open file from the Command Palette and puts each finding in the Problems panel, on the line that causes it. It is not on the Marketplace yet. Download the `.vsix` from [its latest release](https://github.com/Veridelta/vscode-veridelta/releases/latest) and install it from the Extensions view with "Install from VSIX...", or on the command line:
+
+```bash
+code --install-extension vscode-veridelta-<version>.vsix
+```
+
+Then open a configuration and run **Veridelta: Validate configuration**. The extension runs the `veridelta` command the terminal runs. When the extension host's PATH lacks it, or the project runs Veridelta through uv, name the words that run it in the `veridelta.command` setting:
+
+```json
+{
+  "veridelta.command": ["uv", "run", "veridelta"]
+}
+```
+
+The command runs in the configuration file's folder, so `uv run` finds the project and relative paths resolve as they do on the command line. Veridelta 0.36.0 or later places each problem on its line; an older Veridelta shows every problem on the first line.
+
 ### Validate from a task
 
 The schema flags a wrong key or value as you type. `veridelta validate` also checks what the schema cannot, such as a missing extra or a pattern Polars rejects; see [Checking a configuration](cli.md#checking-a-configuration). This VS Code task runs it on the file in the editor and lists the verdict in the Problems panel. Save it as `.vscode/tasks.json`, then run it from the Terminal menu with Run Task:
