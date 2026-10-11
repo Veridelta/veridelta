@@ -4,7 +4,7 @@ This page sets Veridelta beside four tools that also check data: datacompy, rela
 
 ## At a glance
 
-| | Veridelta | datacompy | reladiff | dbt `audit_helper` | Great Expectations |
+| Topic | Veridelta | datacompy | reladiff | dbt `audit_helper` | Great Expectations |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | What it checks | Two datasets, row by row, paired on primary keys | Two DataFrames or tables, paired on join columns or the index | Two tables, in one database or across two | Two queries or relations in a dbt project, paired on primary key columns | One dataset, against Expectations a team writes |
 | Where the comparison runs | Polars on your machine, or SQL inside the warehouse or database that holds both tables | pandas, Polars, Spark, or Snowflake | Inside the databases | Inside the warehouse, as dbt macros | Against the data sources its compatibility reference lists |
