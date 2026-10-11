@@ -74,6 +74,8 @@ The user guide is the reference:
 - [Pushdown](pushdown.md): comparing two tables inside the warehouse that stores them.
 - [AI agents](agents.md): running Veridelta from an agent, through the command line or the MCP server.
 
+[Compared with other tools](compared.md) sets Veridelta beside datacompy, reladiff, dbt `audit_helper`, and Great Expectations.
+
 ## How it works
 
 ```mermaid
