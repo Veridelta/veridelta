@@ -194,7 +194,9 @@ class TestWarehouseValueMapRouting:
         ("evidence", "match"),
         [
             pytest.param(
-                _evidence().drop(VALUE_MAP_ROWS_ALIAS), "missing the columns", id="missing-column"
+                _evidence().drop(VALUE_MAP_ROWS_ALIAS),
+                "returned 4 columns where the statement selects 5",
+                id="missing-column",
             ),
             pytest.param(
                 _evidence(**{VALUE_MAP_AGREEING_ALIAS: ["many", "few"]}),

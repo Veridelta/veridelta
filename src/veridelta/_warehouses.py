@@ -5,13 +5,15 @@
 
 A pair of sides runs in place only when both name the same warehouse. This module
 holds the table of warehouses, refuses a mixed pair, and opens one session for a
-pushed-down pair.
+pushed-down pair. A warehouse type is its own backend; a database source that sets
+`pushdown` runs on the backend its URI scheme names.
 """
 
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Final, TypeAlias, TypeGuard, TypeVar, cast
+from urllib.parse import urlsplit
 
 from veridelta.connectors.base import PushdownSession
 from veridelta.connectors.database import PostgresPushdownSession
@@ -68,20 +70,41 @@ _WAREHOUSES: Final[dict[type[object], _Warehouse]] = {
         SQLDialect.BIGQUERY,
         lambda config: BigQueryConnector(config),
     ),
-    # Only a database or DuckDB source that sets `pushdown` is routed here; the
-    # database model allows that on a Postgres table alone.
-    DatabaseConfig: _Warehouse(
-        "Postgres",
-        SQLDialect.POSTGRES,
-        lambda config: PostgresPushdownSession(config),
-    ),
+    # Only a DuckDB source that sets `pushdown` is routed here.
     DuckDBConfig: _Warehouse(
         "DuckDB",
         SQLDialect.DUCKDB,
         lambda config: DuckDBPushdownSession(config),
     ),
 }
-"""Every warehouse the engine pushes comparisons down to, keyed by config type."""
+"""Every warehouse the engine pushes comparisons down to, keyed by config type.
+
+A database source is routed by its URI scheme instead, through `_DATABASE_WAREHOUSES`.
+"""
+
+_POSTGRES: Final = _Warehouse(
+    "Postgres",
+    SQLDialect.POSTGRES,
+    lambda config: PostgresPushdownSession(config),
+)
+
+_DATABASE_WAREHOUSES: Final[dict[str, _Warehouse]] = {
+    # Both spellings name one backend, so a pair may mix them.
+    "postgres": _POSTGRES,
+    "postgresql": _POSTGRES,
+}
+"""The backend a database source that sets `pushdown` runs on, keyed by URI scheme.
+
+The keys equal `DATABASE_PUSHDOWN_SCHEMES`, which the model checks a URI against,
+so every database source that sets `pushdown` has a backend here.
+"""
+
+
+def _warehouse_of(config: _WarehouseConfig) -> _Warehouse:
+    """Return the backend one warehouse side runs on."""
+    if isinstance(config, DatabaseConfig):
+        return _DATABASE_WAREHOUSES[urlsplit(config.uri).scheme.lower()]
+    return _WAREHOUSES[type(config)]
 
 
 def is_warehouse(config: SourceRef) -> TypeGuard[_WarehouseConfig]:
@@ -121,9 +144,9 @@ class WarehousePair:
 
 
 @contextmanager
-def warehouse_session(config: SourceRef) -> Generator[PushdownSession]:
+def warehouse_session(config: _WarehouseConfig) -> Generator[PushdownSession]:
     """Connect to the warehouse one side names, and close the session whatever happens."""
-    session = _WAREHOUSES[type(config)].session(config)
+    session = _warehouse_of(config).session(config)
     session.connect()
     try:
         yield session
@@ -142,8 +165,8 @@ def check_backend_pairing(source: SourceRef, target: SourceRef) -> WarehousePair
         return None
     if not is_warehouse(target):
         raise ConnectorError(_MIXED_BACKENDS)
-    warehouse = _WAREHOUSES[type(source)]
-    target_warehouse = _WAREHOUSES[type(target)]
+    warehouse = _warehouse_of(source)
+    target_warehouse = _warehouse_of(target)
     if target_warehouse is not warehouse:
         raise ConnectorError(
             "Cross-dialect warehouse pushdown is unsupported: the source is "

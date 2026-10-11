@@ -262,13 +262,30 @@ def refuse_mixed_pushdown_types(
         )
 
 
-def _column_mismatches_from_frame(frame: pl.DataFrame) -> dict[str, int]:
-    """Reduce the single-row mismatch tally to positive per-column counts."""
+def by_position(frame: pl.DataFrame, names: Sequence[str], label: str) -> pl.DataFrame:
+    """Name a result's columns by their place in the statement, not by what the driver returns.
+
+    A database may hand back a column name in another case than the statement
+    wrote it, as Redshift folds names to lowercase and can fold them to
+    uppercase, so a result is read by position after its width is checked.
+    """
+    if frame.width != len(names):
+        unit = "column" if frame.width == 1 else "columns"
+        raise ConnectorError(
+            f"{label} returned {frame.width} {unit} where the statement selects {len(names)}."
+        )
+    return pl.DataFrame(dict(zip(names, frame.get_columns(), strict=True)))
+
+
+def _column_mismatches_from_frame(frame: pl.DataFrame, columns: Sequence[str]) -> dict[str, int]:
+    """Reduce the single-row mismatch tally to positive counts, one per compared column."""
     if frame.height != 1:
         raise ConnectorError("Column mismatch query did not return exactly one row.")
 
     counts: dict[str, int] = {}
-    for column, value in frame.row(0, named=True).items():
+    for column, value in (
+        by_position(frame, columns, "The column mismatch query").row(0, named=True).items()
+    ):
         # SUM over an empty join returns NULL rather than zero.
         if value is None:
             continue
@@ -552,12 +569,7 @@ def _changed_flags(
         if query is None:
             break
         frame = connector.execute_pushdown(query.statement, query_type="flags").collect()
-        missing = [alias for alias in query.renames if alias not in frame.columns]
-        if missing:
-            raise ConnectorError(
-                f"The warehouse returned match flags without {', '.join(missing)}."
-            )
-        frames.append(frame.select(list(query.renames)).rename(query.renames))
+        frames.append(by_position(frame, list(query.renames.values()), "The match flags query"))
     return pl.concat(frames, how="vertical_relaxed")
 
 
@@ -639,22 +651,23 @@ def collect_pushdown_summary(
         _pushdown_scalar(connector, statement, "count", f"Row count query for '{table}'")
         for table, statement in zip(tables, statements.counts, strict=True)
     )
-    changed = connector.execute_pushdown(statements.changed, query_type="mismatch").collect()
-    added = connector.execute_pushdown(statements.added, query_type="added").collect()
-    removed = connector.execute_pushdown(statements.missing, query_type="missing").collect()
+    keys = diff.primary_keys
+    changed = _key_rows(connector, statements.changed, "mismatch", keys, "The changed rows query")
+    added = _key_rows(connector, statements.added, "added", keys, "The added rows query")
+    removed = _key_rows(connector, statements.missing, "missing", keys, "The removed rows query")
 
+    # Post-rename names, matching what the local path records, so the same
+    # column reads the same way whichever engine ran it.
+    compared_columns = [rule.rename_to or rule.column_names[0] for rule in plan.rules]
     column_mismatches: dict[str, int] = {}
     if statements.columns is not None:
         tally = connector.execute_pushdown(statements.columns, query_type="columns").collect()
-        column_mismatches = _column_mismatches_from_frame(tally)
+        column_mismatches = _column_mismatches_from_frame(tally, compared_columns)
     changed_sample = (
         None
         if statements.sample is None or changed.is_empty()
         else _collect_changed_sample(connector, statements.sample)
     )
-    # Post-rename names, matching what the local path records, so the same
-    # column reads the same way whichever engine ran it.
-    compared_columns = [rule.rename_to or rule.column_names[0] for rule in plan.rules]
     kept = _accept(
         connector,
         tables,
@@ -702,10 +715,20 @@ def collect_pushdown_summary(
     )
 
 
+def _key_rows(
+    connector: PushdownSession,
+    statement: str,
+    query_type: PushdownQueryType,
+    keys: Sequence[str],
+    label: str,
+) -> pl.DataFrame:
+    """Fetch the keys a statement selects, named by the primary keys in order."""
+    return by_position(
+        connector.execute_pushdown(statement, query_type=query_type).collect(), keys, label
+    )
+
+
 def _collect_changed_sample(connector: PushdownSession, sample: SampleQuery) -> pl.DataFrame:
     """Fetch up to `pushdown_sample_rows` changed rows with both sides' values."""
     frame = connector.execute_pushdown(sample.statement, query_type="samples").collect()
-    missing = [alias for alias in sample.renames if alias not in frame.columns]
-    if missing:
-        raise ConnectorError(f"The warehouse returned a row sample without {', '.join(missing)}.")
-    return frame.select(list(sample.renames)).rename(sample.renames)
+    return by_position(frame, list(sample.renames.values()), "The changed rows sample")

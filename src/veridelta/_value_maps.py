@@ -14,6 +14,7 @@ from typing import Final
 import polars as pl
 
 from veridelta._pushdown import (
+    by_position,
     duplicate_key_statements,
     pushdown_columns,
     pushdown_rule,
@@ -149,11 +150,9 @@ _VALUE_MAP_FIELDS: Final[dict[str, str]] = {
 
 def _value_map_pairs(result: pl.DataFrame) -> pl.DataFrame:
     """Read the value map statement's result into typed, labeled pairs."""
-    missing = [name for name in _VALUE_MAP_RESULT_COLUMNS if name not in result.columns]
-    if missing:
-        raise ConnectorError(f"Value map query result is missing the columns {missing}.")
+    named = by_position(result, list(_VALUE_MAP_RESULT_COLUMNS), "The value map query")
     try:
-        typed = result.select(
+        typed = named.select(
             pl.col(name).cast(dtype) for name, dtype in _VALUE_MAP_RESULT_COLUMNS.items()
         )
     except pl.exceptions.PolarsError as exc:

@@ -241,7 +241,7 @@ class TestAcceptedDrift:
     def test_a_warehouse_that_drops_a_flag_alias_is_an_error(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
-        """Ensure a flags answer without its aliases fails loudly rather than accepting nothing."""
+        """Ensure a flags answer of the wrong width fails loudly rather than accepting nothing."""
         source, target = _duckdb_pair(tmp_path)
         real = DuckDBPushdownSession.execute_pushdown
 
@@ -254,7 +254,7 @@ class TestAcceptedDrift:
 
         mocker.patch.object(DuckDBPushdownSession, "execute_pushdown", without_aliases)
 
-        with pytest.raises(ConnectorError, match="match flags without"):
+        with pytest.raises(ConnectorError, match="match flags query returned 1 column where"):
             DiffEngine.run_from_configs(
                 DiffConfig(primary_keys=["id"]),
                 source,
@@ -434,6 +434,41 @@ class TestSavedBaseline:
         with pytest.raises(SystemExit) as accepted:
             main()
         assert accepted.value.code == 0
+
+
+class TestResultNamesInAnotherCase:
+    """Validate a pushdown run whose database returns column names in another case."""
+
+    def test_keys_counts_flags_and_the_sample_keep_their_names(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a run reads results by position, as Redshift can fold every name to uppercase."""
+        source, target = _duckdb_pair(tmp_path)
+        config = DiffConfig(primary_keys=["id"], pushdown_sample_rows=5)
+        baseline = _baseline(changed=[{"key": {"id": 3}, "columns": ["fare"]}])
+        expected = DiffEngine.run_from_configs(config, source, target, baseline=baseline)
+        real = DuckDBPushdownSession.execute_pushdown
+
+        def uppercased(
+            self: DuckDBPushdownSession, statement: str, query_type: str = "mismatch"
+        ) -> pl.LazyFrame:
+            frame = real(self, statement, query_type)  # type: ignore[arg-type]
+            if query_type == "schema":
+                return frame
+            return frame.rename({name: name.upper() for name in frame.collect_schema().names()})
+
+        mocker.patch.object(DuckDBPushdownSession, "execute_pushdown", uppercased)
+
+        result = DiffEngine.run_from_configs(config, source, target, baseline=baseline)
+
+        assert result.summary == expected.summary
+        assert result.summary.column_mismatches == {"fare": 1, "zone": 1}
+        assert result.changed.equals(expected.changed)
+        assert result.added.equals(expected.added)
+        assert result.removed.equals(expected.removed)
+        assert result.changed_sample is not None
+        assert expected.changed_sample is not None
+        assert result.changed_sample.equals(expected.changed_sample)
 
 
 class TestPushdownAcceptance:
