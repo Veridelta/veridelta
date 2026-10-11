@@ -54,7 +54,8 @@ class TestStaleTables:
     def test_it_names_one_backend_for_each_live_warehouse(self) -> None:
         """Ensure each service answers to the value of `VERIDELTA_PARITY_BACKEND` it is keyed by."""
         assert {name: service.name for name, service in warehouse_harness.SERVICES.items()} == {
-            name: name for name in ("bigquery", "databricks", "motherduck", "redshift", "snowflake")
+            name: name
+            for name in ("bigquery", "databricks", "motherduck", "redshift", "snowflake", "synapse")
         }
 
 
@@ -102,3 +103,68 @@ class TestRedshiftService:
         """Ensure nanoseconds, which Redshift would round, fail the case instead."""
         with pytest.raises(NotImplementedError, match="Redshift has no column type"):
             service._column_type("at", pl.Datetime("ns"))
+
+
+class _Recorder:
+    """A connection that records each statement its cursors run."""
+
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def cursor(self) -> "_Recorder":
+        return self
+
+    def execute(self, statement: str) -> None:
+        self.statements.append(statement)
+
+
+class TestSynapseService:
+    """Validate how the Synapse service describes and stores its tables, with no pool."""
+
+    @pytest.fixture
+    def service(self, monkeypatch: pytest.MonkeyPatch) -> warehouse_harness._Synapse:
+        """Build the service from settings a workflow would pass."""
+        for name, value in {
+            "SYNAPSE_HOST": "veridelta.sql.azuresynapse.net",
+            "SYNAPSE_DATABASE": "pool",
+            "SYNAPSE_USER": "veridelta",
+            "SYNAPSE_PASSWORD": "p@ss:w/rd",
+        }.items():
+            monkeypatch.setenv(name, value)
+        return warehouse_harness._Synapse()
+
+    def test_a_table_is_a_sql_server_source_over_tls(
+        self, service: warehouse_harness._Synapse
+    ) -> None:
+        """Ensure the pair routes to the T-SQL session and encrypts the connection."""
+        source = service.source("vd_202610010000_1a2b3c4d_source")
+
+        assert (
+            source.uri == "mssql://veridelta@veridelta.sql.azuresynapse.net:1433/pool?encrypt=true"
+        )
+        assert source.password == "p@ss:w/rd"
+        assert source.pushdown is True
+
+    def test_it_loads_a_round_robin_heap_with_one_select_per_row(
+        self, service: warehouse_harness._Synapse
+    ) -> None:
+        """Ensure the statements avoid multi-row VALUES, which a dedicated pool lacks."""
+        connection = _Recorder()
+        frame = pl.DataFrame({"id": [1, 2], "name": ["O'Brien", None]})
+
+        service.load(connection, "vd_t", frame)
+
+        create, insert = connection.statements
+        assert create.endswith(") WITH (DISTRIBUTION = ROUND_ROBIN, HEAP)")
+        assert "NVARCHAR(MAX) COLLATE Latin1_General_100_CI_AI" in create
+        assert insert == "INSERT INTO [vd_t] SELECT 1, N'O''Brien' UNION ALL SELECT 2, NULL"
+
+    def test_it_drops_a_table_only_when_it_exists(
+        self, service: warehouse_harness._Synapse
+    ) -> None:
+        """Ensure the drop never relies on DROP TABLE IF EXISTS."""
+        connection = _Recorder()
+
+        service.drop(connection, "vd_t")
+
+        assert connection.statements == ["IF OBJECT_ID(N'vd_t') IS NOT NULL DROP TABLE [vd_t]"]
