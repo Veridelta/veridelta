@@ -68,7 +68,9 @@ export VERIDELTA_POSTGRES_URI=postgresql://postgres:postgres@localhost:5432/post
 make postgres
 ```
 
-Cases that Postgres pushdown refuses, or whose data Postgres cannot store, carry a `skip_on("postgres")` marker with the reason, and the suite skips them there. A case that pins one backend's own behavior carries `only_on` instead. CI runs the suite against a `postgres:16` service on every pull request.
+Run it inside a live SQL Server with `make sqlserver` too. It loads each case into the server that `VERIDELTA_MSSQL_URI` names, with text stored under a collation that ignores case and accents, so a comparison that leans on the collation fails. It needs the `databases` dependency group, and the SQL Server container under "Database servers" below works.
+
+A case whose rule a backend refuses, such as `datetime_format` on Postgres or `regex_replace` on SQL Server, skips once the refusal is raised, so the refusal itself is checked. A case whose data a backend cannot store, such as a NaN on SQL Server, carries a `skip_on` marker with the reason. A case that pins one backend's own behavior carries `only_on` instead. CI runs the suite against a `postgres:16` service and a SQL Server 2022 service on every pull request.
 
 ### Database servers
 

@@ -21,6 +21,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 
 from tests.integration.duckdb_harness import (
+    FINITE_FLOATS_ONLY,
     REFUSED_RULES,
     run_local,
     run_pushdown,
@@ -34,7 +35,11 @@ pytestmark = [
     pytest.mark.only_on(
         "duckdb",
         "postgres",
-        reason="The fuzzer stays on DuckDB and Postgres: its drawn cases would cost a warehouse.",
+        "sqlserver",
+        reason=(
+            "The fuzzer stays on DuckDB, Postgres, and SQL Server: its drawn cases would cost "
+            "a warehouse."
+        ),
     ),
 ]
 
@@ -88,7 +93,7 @@ class TestFuzzedParity:
     """Validate that drawn comparisons reach one verdict on both engines."""
 
     @_PROFILE
-    @given(comparison_cases(refused=REFUSED_RULES))
+    @given(comparison_cases(refused=REFUSED_RULES, finite_floats=FINITE_FLOATS_ONLY))
     def test_both_engines_reach_the_same_verdict(
         self, case: tuple[DiffConfig, pl.DataFrame, pl.DataFrame]
     ) -> None:

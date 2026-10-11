@@ -25,13 +25,8 @@ from veridelta.models import Baseline, DiffConfig, DiffResult, DiffRule, ValueMa
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
-_REFUSED_PARSE = pytest.mark.skip_on(
-    "postgres",
-    reason="Postgres refuses datetime_format pushdown: it has no parse that yields NULL.",
-)
-_REFUSED_EDIT_DISTANCE = pytest.mark.skip_on(
-    "postgres",
-    reason="Postgres refuses max_levenshtein_distance pushdown: levenshtein needs fuzzystrmatch.",
+_NON_FINITE = pytest.mark.skip_on(
+    "sqlserver", reason="SQL Server's FLOAT holds no NaN or infinity."
 )
 
 
@@ -353,7 +348,6 @@ class TestCastParity:
         assert {key: getattr(summary, key) for key in expected} == expected
 
 
-@_REFUSED_PARSE
 class TestDatetimeFormatParity:
     """Validate stage 6a.
 
@@ -483,6 +477,10 @@ class TestStrictTypesParity:
                 False,
                 2,
                 id="decimal-scales",
+                marks=pytest.mark.skip_on(
+                    "sqlserver",
+                    reason="ConnectorX reads every SQL Server DECIMAL as Decimal(38, 10).",
+                ),
             ),
             pytest.param(
                 pl.Series("val", ["abc", "10"]),
@@ -632,7 +630,6 @@ class TestTimezoneParity:
                 ),
                 {"changed_count": 1},
                 id="text-parsed-with-an-offset",
-                marks=_REFUSED_PARSE,
             ),
         ],
     )
@@ -670,7 +667,6 @@ class TestTimezoneParity:
                 ),
                 "timezone-naive",
                 id="text-parsed-without-an-offset",
-                marks=_REFUSED_PARSE,
             ),
         ],
     )
@@ -1313,7 +1309,6 @@ class TestToleranceScopeParity:
                 [DiffRule(column_names=["val"], datetime_format="%Y-%m-%d %H:%M:%S")],
                 1,
                 id="parsed-timestamp",
-                marks=_REFUSED_PARSE,
             ),
             pytest.param(
                 pl.Series("val", ["10.00", "20.00"]),
@@ -1455,23 +1450,38 @@ class TestNumericComparisonParity:
     @pytest.mark.parametrize(
         ("source", "target", "tolerance", "matches"),
         [
-            pytest.param(float("nan"), 1e6, (0.5, 0.0), False, id="nan-source"),
-            pytest.param(float("nan"), 1e6, (0.0, 0.1), False, id="nan-source-relative"),
-            pytest.param(float("inf"), 1e308, (0.5, 0.0), False, id="inf-source"),
-            pytest.param(float("inf"), 1e308, (0.0, 0.1), False, id="inf-source-relative"),
-            pytest.param(float("inf"), float("-inf"), (0.5, 0.0), False, id="inf-vs-neg"),
+            pytest.param(float("nan"), 1e6, (0.5, 0.0), False, id="nan-source", marks=_NON_FINITE),
+            pytest.param(
+                float("nan"), 1e6, (0.0, 0.1), False, id="nan-source-relative", marks=_NON_FINITE
+            ),
+            pytest.param(
+                float("inf"), 1e308, (0.5, 0.0), False, id="inf-source", marks=_NON_FINITE
+            ),
+            pytest.param(
+                float("inf"), 1e308, (0.0, 0.1), False, id="inf-source-relative", marks=_NON_FINITE
+            ),
+            pytest.param(
+                float("inf"), float("-inf"), (0.5, 0.0), False, id="inf-vs-neg", marks=_NON_FINITE
+            ),
             pytest.param(
                 float("inf"),
                 float("-inf"),
                 (0.0, 0.1),
                 False,
                 id="inf-vs-neg-relative",
+                marks=_NON_FINITE,
             ),
-            pytest.param(1.0, float("nan"), (0.5, 0.0), False, id="nan-target"),
-            pytest.param(1.0, float("inf"), (0.5, 0.0), False, id="inf-target"),
-            pytest.param(float("nan"), float("nan"), (0.5, 0.0), True, id="nan-pair"),
-            pytest.param(float("inf"), float("inf"), (0.5, 0.0), True, id="inf-pair"),
-            pytest.param(float("-inf"), float("-inf"), (0.0, 0.1), True, id="neg-inf-pair"),
+            pytest.param(1.0, float("nan"), (0.5, 0.0), False, id="nan-target", marks=_NON_FINITE),
+            pytest.param(1.0, float("inf"), (0.5, 0.0), False, id="inf-target", marks=_NON_FINITE),
+            pytest.param(
+                float("nan"), float("nan"), (0.5, 0.0), True, id="nan-pair", marks=_NON_FINITE
+            ),
+            pytest.param(
+                float("inf"), float("inf"), (0.5, 0.0), True, id="inf-pair", marks=_NON_FINITE
+            ),
+            pytest.param(
+                float("-inf"), float("-inf"), (0.0, 0.1), True, id="neg-inf-pair", marks=_NON_FINITE
+            ),
             pytest.param(1.0, 1.4, (0.5, 0.0), True, id="finite-within"),
             pytest.param(100.0, 109.0, (0.0, 0.1), True, id="finite-relative"),
         ],
@@ -1524,7 +1534,6 @@ class TestSimilarityParity:
         with pytest.raises(ConfigError, match="Column 'name' sets min_jaro_winkler_similarity"):
             run_pushdown(config, src, tgt)
 
-    @_REFUSED_EDIT_DISTANCE
     @pytest.mark.parametrize(("treat_null", "changed"), [(True, 2), (False, 3)])
     def test_it_agrees_on_typos_within_and_beyond_the_limit(
         self, treat_null: bool, changed: int
@@ -1553,7 +1562,6 @@ class TestSimilarityParity:
 
         assert summary.changed_count == changed
 
-    @_REFUSED_EDIT_DISTANCE
     @pytest.mark.parametrize(("case_insensitive", "changed"), [(False, 1), (True, 0)])
     def test_it_folds_case_before_measuring_the_distance(
         self, case_insensitive: bool, changed: int
@@ -1585,7 +1593,6 @@ class TestSimilarityParity:
                 {},
                 1,
                 id="text",
-                marks=_REFUSED_EDIT_DISTANCE,
             ),
             pytest.param(pl.Series("val", [12, 20]), pl.Series("val", [13, 20]), {}, 1, id="int"),
             pytest.param(
@@ -1608,7 +1615,6 @@ class TestSimilarityParity:
                 {"pad_zeros": 5},
                 0,
                 id="padded-to-text",
-                marks=_REFUSED_EDIT_DISTANCE,
             ),
             pytest.param(
                 pl.Series("val", ["2024-01-01 00:00:00", "2024-01-01 00:00:00"]),
@@ -1616,7 +1622,6 @@ class TestSimilarityParity:
                 {"datetime_format": "%Y-%m-%d %H:%M:%S"},
                 1,
                 id="parsed-timestamp",
-                marks=_REFUSED_PARSE,
             ),
             pytest.param(
                 pl.Series("val", [12, 20]),
@@ -1624,7 +1629,6 @@ class TestSimilarityParity:
                 {"cast_to": "String"},
                 0,
                 id="cast-to-text",
-                marks=_REFUSED_EDIT_DISTANCE,
             ),
             pytest.param(
                 pl.Series("val", ["12", "20"]),

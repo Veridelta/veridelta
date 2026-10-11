@@ -21,7 +21,7 @@ import re
 from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Final, Literal, NamedTuple
+from typing import Final, Literal, NamedTuple, cast
 
 import polars as pl
 
@@ -494,7 +494,7 @@ _SAMPLE_HASH_FUNCTIONS: Final[dict[SQLDialect, str]] = {
     SQLDialect.DUCKDB: "hash",
     SQLDialect.BIGQUERY: "FARM_FINGERPRINT",
     SQLDialect.POSTGRES: "hashtextextended",
-    SQLDialect.TSQL: "BINARY_CHECKSUM",
+    SQLDialect.TSQL: "HASHBYTES",
 }
 """Each dialect's hash of several values, for sampling value map evidence by key."""
 
@@ -881,6 +881,57 @@ def compile_mssql_utc_select(table: str, columns: Sequence[str], in_utc: Collect
             f"SWITCHOFFSET({quoted}, '+00:00') AS {quoted}" if name in in_utc else quoted
         )
     return f"SELECT {', '.join(projections)} FROM {_quoted_database_relation('mssql', table)}"
+
+
+TSQL_CHECK_TEXT: Final = "O'Br\u00efen \\ \u4e2d \U0001f680"
+"""Text a SQL Server pushdown session writes as a literal and expects back unchanged:
+a quote, a backslash, an accent, a letter outside Latin-1, and one outside the BMP."""
+
+_TSQL_TRIM_PROBE: Final = "\u3000\t a b \u00a0\n"
+"""A value padded with whitespace Polars strips, for the check that trims it."""
+
+
+def compile_tsql_server_checks() -> tuple[str, str]:
+    """Compile the statements a SQL Server pushdown session checks the server with.
+
+    The first returns four columns: `TSQL_CHECK_TEXT` as the server reads its
+    literal; 1 if a NULL stays NULL once the exact text sentinel is appended,
+    as it does while `CONCAT_NULL_YIELDS_NULL` is on; 1 if exact text tells
+    case, accents, and a trailing space apart; and the engine edition. The
+    second returns 1 if each trim form the dialect writes strips whitespace as
+    Polars does. SQL Server before 2022 refuses it, since its `LTRIM` and
+    `RTRIM` take one argument.
+
+    Returns:
+        tuple[str, str]: The settings statement and the trim statement.
+    """
+    dialect = SQLDialect.TSQL
+    exact = cast("str", _EXACT_TEXT[dialect])
+    entry = cast("str", _TEXT_ENTRIES[dialect])
+
+    def text(value: str) -> str:
+        return exact.format(entry.format(_string_literal(dialect, value)))
+
+    distinct = " AND ".join(
+        f"{text(left)} <> {text(right)}"
+        for left, right in (("a", "A"), ("e", "\u00e9"), ("a ", "a"))
+    )
+    settings = (
+        f"SELECT {_string_literal(dialect, TSQL_CHECK_TEXT)} AS [text], "
+        f"CASE WHEN {exact.format('NULL')} IS NULL THEN 1 ELSE 0 END AS [nulls_stay_null], "
+        f"CASE WHEN {distinct} THEN 1 ELSE 0 END AS [exact_text], "
+        "CAST(SERVERPROPERTY('EngineEdition') AS INT) AS [edition]"
+    )
+    padded = entry.format(_string_literal(dialect, _TSQL_TRIM_PROBE))
+    characters = _string_literal(dialect, _WHITESPACE_CHARACTERS)
+    trimmed = (
+        (f"LTRIM({padded}, {characters})", _TSQL_TRIM_PROBE.lstrip(_WHITESPACE_CHARACTERS)),
+        (f"RTRIM({padded}, {characters})", _TSQL_TRIM_PROBE.rstrip(_WHITESPACE_CHARACTERS)),
+        (f"TRIM({characters} FROM {padded})", _TSQL_TRIM_PROBE.strip(_WHITESPACE_CHARACTERS)),
+    )
+    agree = " AND ".join(f"{exact.format(trim)} = {text(value)}" for trim, value in trimmed)
+    trims = f"SELECT CASE WHEN {agree} THEN 1 ELSE 0 END AS [trims]"
+    return settings, trims
 
 
 def compile_database_probe(scheme: str, table: str) -> str:
@@ -1612,8 +1663,12 @@ class SQLPushdownCompiler:
             # DuckDB's hash is unsigned.
             return f"{function}({joined}) % {buckets}"
         if self.dialect is SQLDialect.TSQL:
-            # BINARY_CHECKSUM is a signed INT, and `%` keeps the dividend's sign.
-            return f"(({function}({joined}) % {buckets}) + {buckets}) % {buckets}"
+            # BINARY_CHECKSUM keeps a small integer nearly as it is, so it would sample the
+            # lowest keys. The first four bytes of a SHA-256 make a signed INT instead, and
+            # `%` keeps the dividend's sign. CONCAT needs two arguments, so each key has a `|`.
+            text = ", ".join(f"{key}, N'|'" for key in keys)
+            hashed = f"CAST(SUBSTRING({function}('SHA2_256', CONCAT({text})), 1, 4) AS INT)"
+            return f"(({hashed} % {buckets}) + {buckets}) % {buckets}"
         # These hashes are signed, and MOD keeps the dividend's sign. FARM_FINGERPRINT
         # takes one string, and hashtextextended one text and a seed.
         hashed = {

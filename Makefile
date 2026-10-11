@@ -1,4 +1,4 @@
-.PHONY: install format lint hooks test notebooks eval-agent postgres live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check screenshots
+.PHONY: install format lint hooks test notebooks eval-agent postgres sqlserver live databases accessibility docs docs-serve schema all clean demo demo-video vhs-check screenshots
 
 # The modules held to full branch coverage. CI's core-module gate names the same
 # list, which tests/unit/test_ci_integrations.py checks.
@@ -39,6 +39,10 @@ eval-agent:
 postgres:
 	@test -n "$$VERIDELTA_POSTGRES_URI" || { echo "Set VERIDELTA_POSTGRES_URI to a Postgres server the tests may create tables on."; exit 1; }
 	VERIDELTA_PARITY_BACKEND=postgres uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py tests/integration/test_parity_fuzz.py tests/integration/test_postgres_pushdown.py --no-cov
+
+sqlserver:
+	@test -n "$$VERIDELTA_MSSQL_URI" || { echo "Set VERIDELTA_MSSQL_URI to a SQL Server the tests may create tables on."; exit 1; }
+	VERIDELTA_PARITY_BACKEND=sqlserver uv run --group databases pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py tests/integration/test_parity_fuzz.py tests/integration/test_sqlserver_pushdown.py --no-cov
 
 live:
 	@case "$$VERIDELTA_PARITY_BACKEND" in bigquery|databricks|motherduck|snowflake) ;; *) echo "Set VERIDELTA_PARITY_BACKEND to bigquery, databricks, motherduck, or snowflake; see 'Live warehouse tests' in CONTRIBUTING.md."; exit 1;; esac

@@ -752,9 +752,9 @@ class TestDatabaseConfig:
         """Ensure an existing configuration keeps comparing in Polars."""
         assert DatabaseConfig(uri="postgresql://db.internal/sales", table="t").pushdown is False
 
-    @pytest.mark.parametrize("scheme", ["postgresql", "postgres", "PostgreSQL"])
-    def test_it_pushes_down_a_postgres_table(self, scheme: str) -> None:
-        """Ensure a Postgres table can opt into comparing inside the database."""
+    @pytest.mark.parametrize("scheme", ["postgresql", "postgres", "PostgreSQL", "mssql", "MSSQL"])
+    def test_it_pushes_down_a_postgres_or_sql_server_table(self, scheme: str) -> None:
+        """Ensure a Postgres or SQL Server table can opt into comparing inside the database."""
         config = DatabaseConfig(uri=f"{scheme}://db.internal/sales", table="t", pushdown=True)
 
         assert config.pushdown is True
@@ -763,9 +763,9 @@ class TestDatabaseConfig:
         "uri",
         ["mysql://db.internal/sales", "sqlite:///srv/legacy.db", "redshift://db.internal/dev"],
     )
-    def test_it_pushes_down_postgres_only(self, uri: str) -> None:
+    def test_it_pushes_down_postgres_and_sql_server_only(self, uri: str) -> None:
         """Ensure a database Veridelta has no pushdown dialect for is refused at load time."""
-        with pytest.raises(ValidationError, match="postgresql:// connections only"):
+        with pytest.raises(ValidationError, match="postgresql:// and mssql:// connections only"):
             DatabaseConfig(uri=uri, table="t", pushdown=True)
 
     def test_it_pushes_down_a_table_only(self) -> None:

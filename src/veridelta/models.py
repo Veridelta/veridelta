@@ -1588,7 +1588,7 @@ class IcebergConfig(BaseModel):
 POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})
 """The URI schemes that name a Postgres database."""
 
-DATABASE_PUSHDOWN_SCHEMES: Final = POSTGRES_SCHEMES
+DATABASE_PUSHDOWN_SCHEMES: Final = POSTGRES_SCHEMES | {"mssql"}
 """URI schemes whose tables a database source can compare inside the database."""
 
 
@@ -1598,8 +1598,9 @@ class DatabaseConfig(BaseModel):
     The rows are read through ConnectorX into Polars and compared by the local
     engine, so a database pairs with files, lakehouse tables, or another
     database. Requires the `database` extra (`uv add 'veridelta[database]'`).
-    Two Postgres tables on one connection can instead be compared inside the
-    database, without reading their rows, when both sides set `pushdown`.
+    Two Postgres or two SQL Server tables on one connection can instead be
+    compared inside the database, without reading their rows, when both sides
+    set `pushdown`.
 
     Attributes:
         type (Literal["database"]): Source kind, which selects this model.
@@ -1616,8 +1617,8 @@ class DatabaseConfig(BaseModel):
         query (str | None): SQL statement to run instead, sent to the database
             exactly as written. Set exactly one of `table` and `query`.
         pushdown (bool): Whether to compare inside the database instead of
-            reading the rows. Postgres `table` sources only, and both sides must
-            set it. Defaults to False.
+            reading the rows. Postgres and SQL Server `table` sources only, and
+            both sides must set it. Defaults to False.
         partition_on (str | None): Integer column to split a `table` read on,
             so ConnectorX reads its ranges over several connections at once.
             Set it with `partitions`. The column may hold no NULL, since a
@@ -1651,8 +1652,8 @@ class DatabaseConfig(BaseModel):
         default=False,
         strict=True,
         description=(
-            "Compare inside the database instead of reading the rows. Postgres tables "
-            "only; set it on both sides."
+            "Compare inside the database instead of reading the rows. Postgres and SQL "
+            "Server tables only; set it on both sides."
         ),
     )
     partition_on: str | None = Field(
@@ -1680,7 +1681,7 @@ class DatabaseConfig(BaseModel):
         Raises:
             ValueError: If both or neither of `table` and `query` are set, the
                 URI has no scheme, `password` conflicts with the URI, or
-                `pushdown` is set on anything but a Postgres table.
+                `pushdown` is set on anything but a Postgres or SQL Server table.
         """
         if (self.table is None) == (self.query is None):
             raise ValueError(
@@ -1692,7 +1693,7 @@ class DatabaseConfig(BaseModel):
         if self.pushdown and parts.scheme.lower() not in DATABASE_PUSHDOWN_SCHEMES:
             raise ValueError(
                 "'pushdown' compares inside the database and works on postgresql:// "
-                "connections only."
+                "and mssql:// connections only."
             )
         if self.pushdown and self.table is None:
             raise ValueError("'pushdown' compares two tables, so set 'table' rather than 'query'.")

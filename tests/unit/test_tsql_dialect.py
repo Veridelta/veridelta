@@ -19,7 +19,12 @@ import pytest
 
 from tests.unit.sql_corpus import CASES, Case, fixture
 from veridelta._resolution import fold_rule_defaults, normalized_dtype
-from veridelta.connectors.sql import SQLDialect, SQLPushdownCompiler
+from veridelta.connectors.sql import (
+    TSQL_CHECK_TEXT,
+    SQLDialect,
+    SQLPushdownCompiler,
+    compile_tsql_server_checks,
+)
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, DiffRule
 
@@ -253,6 +258,59 @@ class TestStatementsSynapseRuns:
 
         assert found == []
 
+    def test_the_server_checks_use_no_spelling_synapse_refuses(self) -> None:
+        """Ensure the statements a session checks the server with also run on Synapse."""
+        found = [
+            pattern
+            for statement in compile_tsql_server_checks()
+            for pattern in self._FORBIDDEN
+            if re.search(pattern, statement)
+        ]
+
+        assert found == []
+
+
+class TestServerChecks:
+    """Validate the statements a SQL Server pushdown session checks the server with."""
+
+    def test_the_settings_check_reads_back_a_literal_the_dialect_writes(self) -> None:
+        """Ensure the literal holds a quote, a backslash, and text outside Latin-1, after N."""
+        settings, _ = compile_tsql_server_checks()
+
+        assert settings.startswith("SELECT N'O''Br\u00efen \\ \u4e2d \U0001f680' AS [text], ")
+        assert "'" in TSQL_CHECK_TEXT
+        assert "\\" in TSQL_CHECK_TEXT
+
+    def test_the_settings_check_appends_the_sentinel_to_a_null(self) -> None:
+        """Ensure the NULL check runs the exact text wrapper every comparison uses."""
+        settings, _ = compile_tsql_server_checks()
+
+        assert f"CASE WHEN (NULL + N'|') {_EXACT} IS NULL THEN 1 ELSE 0 END" in settings
+
+    def test_the_settings_check_compares_case_accents_and_trailing_spaces(self) -> None:
+        """Ensure exact text must tell apart each difference the default collation hides."""
+        settings, _ = compile_tsql_server_checks()
+
+        for left, right in (("a", "A"), ("e", "\u00e9"), ("a ", "a")):
+            entries = [
+                f"(CAST(N'{text}' AS NVARCHAR(MAX)) {_EXACT} + N'|') {_EXACT}"
+                for text in (left, right)
+            ]
+            assert " <> ".join(entries) in settings
+
+    def test_the_trim_check_strips_with_each_form_the_dialect_writes(self) -> None:
+        """Ensure the trim check runs the functions a `whitespace_mode` compiles to."""
+        _, trims = compile_tsql_server_checks()
+
+        for rule, function in (
+            (DiffRule(column_names=["x"], whitespace_mode="left"), "LTRIM("),
+            (DiffRule(column_names=["x"], whitespace_mode="right"), "RTRIM("),
+            (DiffRule(column_names=["x"], whitespace_mode="both"), "TRIM(N'"),
+        ):
+            assert function in _predicate(rule)
+            assert function in trims
+        assert trims.endswith(" THEN 1 ELSE 0 END AS [trims]")
+
 
 class TestRefusals:
     """Validate what T-SQL refuses before any statement runs, and why."""
@@ -334,8 +392,12 @@ class TestPaddingAndTimestamps:
         assert "inf" not in sql.lower()
         assert "ABS([tgt].[x] - [src].[x]) <= 0.5" in sql
 
-    def test_a_value_map_sample_hashes_keys_with_binary_checksum(self) -> None:
-        """Ensure a sampled value map keeps a non-negative bucket of a signed INT hash."""
+    def test_a_value_map_sample_hashes_keys_with_sha_256(self) -> None:
+        """Ensure a sampled value map keeps a non-negative bucket of a hash that mixes keys.
+
+        BINARY_CHECKSUM leaves a small integer nearly as it is, so it would read
+        the lowest keys rather than a share spread across all of them.
+        """
         types = pl.Schema({"id": pl.Int64(), "status": pl.String()})
         sql = _tsql().compile_value_map_query(
             "s",
@@ -349,7 +411,9 @@ class TestPaddingAndTimestamps:
         )
 
         assert sql is not None
-        assert "((BINARY_CHECKSUM([src].[id]) % 1000000) + 1000000) % 1000000 < 500000" in sql
+        hashed = "CAST(SUBSTRING(HASHBYTES('SHA2_256', CONCAT([src].[id], N'|')), 1, 4) AS INT)"
+        assert f"(({hashed} % 1000000) + 1000000) % 1000000 < 500000" in sql
+        assert "CHECKSUM" not in sql
 
 
 class TestTextPrediction:

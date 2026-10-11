@@ -15,7 +15,7 @@ from veridelta._warehouses import _DATABASE_WAREHOUSES, _WAREHOUSES, _WarehouseC
 from veridelta.config import load_config
 from veridelta.connectors.database import DatabaseConnector, PostgresPushdownSession
 from veridelta.connectors.lakehouse import DeltaLakeConnector, IcebergConnector
-from veridelta.connectors.sql import COUNT_ALIAS, SampleQuery
+from veridelta.connectors.sql import COUNT_ALIAS, SampleQuery, SQLDialect
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
 from veridelta.models import (
@@ -1054,6 +1054,55 @@ class TestPostgresPushdownRouting:
 
         assert source == pl.Schema({"id": pl.Int64(), "amount": pl.Decimal(10, 2)})
         assert target == pl.Schema({"id": pl.Int64(), "amount": pl.Decimal(12, 4)})
+
+
+_MSSQL_URI = "mssql://analyst@db.internal:1433/sales?encrypt=true"
+
+
+class TestSqlServerPushdownRouting:
+    """Validate how two `mssql://` sources that set `pushdown` are routed."""
+
+    def test_it_compares_two_opted_in_tables_inside_sql_server(self, mocker: MockerFixture) -> None:
+        """Ensure the pair runs through one SQL Server session and no row is read locally."""
+        session_cls = _configure_warehouse_compiler(mocker, "TSqlPushdownSession")
+        session = session_cls.return_value
+        load = mocker.patch.object(LoaderFactory, "load")
+        source = DatabaseConfig(uri=_MSSQL_URI, table="dbo.src", pushdown=True)
+        target = DatabaseConfig(uri=_MSSQL_URI, table="dbo.tgt", pushdown=True)
+
+        result = DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+        session_cls.assert_called_once_with(source)
+        session.connect.assert_called_once()
+        session.close.assert_called_once()
+        load.assert_not_called()
+        assert result.keys_only is True
+
+    def test_it_compiles_in_tsql(self) -> None:
+        """Ensure validate, which never connects, compiles a SQL Server pair in T-SQL."""
+        assert _DATABASE_WAREHOUSES["mssql"].dialect is SQLDialect.TSQL
+
+    def test_it_needs_one_connection(self) -> None:
+        """Ensure two tables on two databases are never compared in place."""
+        source = DatabaseConfig(uri=_MSSQL_URI, table="dbo.src", pushdown=True)
+        target = DatabaseConfig(
+            uri="mssql://analyst@db.internal:1433/archive?encrypt=true",
+            table="dbo.tgt",
+            pushdown=True,
+        )
+
+        with pytest.raises(ConnectorError, match="SQL Server connections must match"):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
+
+    def test_it_refuses_a_sql_server_table_paired_with_postgres(self) -> None:
+        """Ensure a T-SQL statement is never sent to Postgres, or the other way round."""
+        source = DatabaseConfig(uri=_MSSQL_URI, table="dbo.src", pushdown=True)
+        target = _postgres_config(table="tgt")
+
+        with pytest.raises(
+            ConnectorError, match="the source is SQL Server and the target is Postgres"
+        ):
+            DiffEngine.run_from_configs(DiffConfig(primary_keys=["id"]), source, target)
 
 
 def _duckdb_config(*, table: str, pushdown: bool = True, **fields: object) -> DuckDBConfig:

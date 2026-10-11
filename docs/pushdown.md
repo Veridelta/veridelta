@@ -2,7 +2,7 @@
 
 Pushdown compares two tables inside the database that stores them. Veridelta compiles the comparison to SQL, runs it there, and reads back counts and primary keys instead of rows.
 
-Every rule gives the same verdict in a warehouse as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB and in Postgres 16, but not yet in live BigQuery, Databricks, MotherDuck, or Snowflake services.
+Every rule gives the same verdict in a warehouse as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in live BigQuery, Databricks, MotherDuck, Snowflake, Azure SQL, or Synapse services.
 
 ## When a comparison is pushed down
 
@@ -16,7 +16,7 @@ A pair of warehouse tables is always compared in place. Both sides must use the 
 
 Naming the same table on both sides raises `ConfigError`, since a table compared with itself always matches. A warehouse paired with a file, a lakehouse table, or a database, or with a different warehouse, raises `ConnectorError`.
 
-Database and DuckDB sources are read into memory and compared locally. Two Postgres tables on one server, or two tables in one DuckDB database, are compared in place when both set `pushdown`; see [Postgres](#postgres) and [DuckDB and MotherDuck](#duckdb-and-motherduck).
+Database and DuckDB sources are read into memory and compared locally. Two Postgres tables on one server, two SQL Server tables on one server, or two tables in one DuckDB database are compared in place when both set `pushdown`; see [Postgres](#postgres), [SQL Server, Azure SQL, and Synapse](#sql-server-azure-sql-and-synapse), and [DuckDB and MotherDuck](#duckdb-and-motherduck).
 
 ## Statements
 
@@ -41,11 +41,11 @@ Probed names are compared exactly as the compiler quotes them, with no case fold
 
 ## Rules in SQL
 
-All nine transform stages compile for compared columns, and stages 1 to 7 for primary keys. One setting is refused everywhere: `min_jaro_winkler_similarity` raises `ConfigError` before any comparison runs. Snowflake's `JAROWINKLER_SIMILARITY` ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function. Neither can reproduce a local verdict. Postgres also refuses `datetime_format` and `max_levenshtein_distance`, and DuckDB refuses `max_levenshtein_distance`; see [Postgres](#postgres) and [DuckDB and MotherDuck](#duckdb-and-motherduck).
+All nine transform stages compile for compared columns, and stages 1 to 7 for primary keys. One setting is refused everywhere: `min_jaro_winkler_similarity` raises `ConfigError` before any comparison runs. Snowflake's `JAROWINKLER_SIMILARITY` ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function. Neither can reproduce a local verdict. Postgres also refuses `datetime_format` and `max_levenshtein_distance`, SQL Server refuses those two and `regex_replace`, and DuckDB refuses `max_levenshtein_distance`; see [Postgres](#postgres), [SQL Server, Azure SQL, and Synapse](#sql-server-azure-sql-and-synapse), and [DuckDB and MotherDuck](#duckdb-and-motherduck).
 
 ### Edit distance
 
-`max_levenshtein_distance` compiles to Snowflake's `EDITDISTANCE`, Databricks' `levenshtein`, or BigQuery's `EDIT_DISTANCE`, which count characters as a local run does. A warehouse run needs no `fuzzy` extra. Postgres and DuckDB refuse the setting, each for its own reason.
+`max_levenshtein_distance` compiles to Snowflake's `EDITDISTANCE`, Databricks' `levenshtein`, or BigQuery's `EDIT_DISTANCE`, which count characters as a local run does. A warehouse run needs no `fuzzy` extra. Postgres, SQL Server, and DuckDB refuse the setting, each for its own reason.
 
 ### Text in SQL
 
@@ -105,13 +105,48 @@ primary_keys: ["order_id"]
 
 Veridelta then runs each statement inside Postgres through ConnectorX, as in a warehouse, and only counts and primary keys come back. Everything above applies, with these additions:
 
-- Both `uri` values start with `postgresql://` or `postgres://` and match, as do both `password` values, so one connection reaches both tables. Each side names a `table`; a `query` cannot be compared in place. Other databases, Redshift included, are always read and compared locally.
+- Both `uri` values start with `postgresql://` or `postgres://` and match, as do both `password` values, so one connection reaches both tables. Each side names a `table`; a `query` cannot be compared in place. SQL Server has [its own section](#sql-server-azure-sql-and-synapse). Other databases, Redshift included, are always read and compared locally.
 - Set `pushdown` on both sides or on neither. A pair where only one side sets it raises `ConfigError` instead of reading both.
 - The server must read string literals by the SQL standard, which is the Postgres default (`standard_conforming_strings` on). Veridelta checks before the first statement and raises `ConnectorError` if it is off, since a backslash in a value would otherwise be read as an escape.
 - `datetime_format` and `max_levenshtein_distance` raise `ConfigError` before any statement runs. Postgres has no date parse that returns NULL for text it cannot read, so one bad value would fail the whole statement. Its `levenshtein` needs the `fuzzystrmatch` extension and refuses text longer than 255 characters. Leave `pushdown` off to compare such columns locally; `veridelta validate` warns about both.
 - After the column probes, one catalog query per table reads the declared precision and scale of each `numeric` column, which a local read also keeps. `strict_types` tells `numeric(10, 2)` from `numeric(12, 4)`, and `pad_zeros` or `cast_to: String` writes seven in a `numeric(20, 0)` column as `7` with or without `pushdown`.
 - A `numeric` declared without a precision, with one above 38, or with a negative scale has the type ConnectorX reads it as: `Decimal(38, 10)`. Turned into text, seven in such a column is `7` with `pushdown` and `7.0000000000` without it.
 - Primary keys and row samples come back through ConnectorX too. A `numeric` value among them is rounded to ten decimal places, and one with more than 18 digits before the decimal point fails the statement.
+
+## SQL Server, Azure SQL, and Synapse
+
+Two tables on one SQL Server, Azure SQL, or Azure Synapse connection can be compared where they are stored. Set `pushdown: true` on both sides of an `mssql://` source:
+
+```yaml
+source:
+  type: database
+  uri: mssql://analyst@sales-db.internal:1433/sales?encrypt=true
+  password: ${SALES_DB_PASSWORD}
+  table: legacy.orders
+  pushdown: true
+
+target:
+  type: database
+  uri: mssql://analyst@sales-db.internal:1433/sales?encrypt=true
+  password: ${SALES_DB_PASSWORD}
+  table: modern.orders
+  pushdown: true
+
+primary_keys: ["order_id"]
+```
+
+An `mssql://` URI cannot tell the three apart, so Veridelta writes one dialect for all of them. It uses only the T-SQL that a Synapse dedicated SQL pool runs. Everything above applies, with these additions:
+
+- The server is SQL Server 2022 or later, Azure SQL Database, Azure SQL Managed Instance, or a Synapse dedicated SQL pool. The SQL has run in SQL Server 2022 only. Sign-in uses a user and a password; Microsoft Entra ID sign-in is not supported yet.
+- Both `uri` values match, as do both `password` values, so one connection reaches both tables. Each side names a `table`; a `query` cannot be compared in place.
+- Text is compared character by character, whatever the columns' collation. The default collation ignores case and accents, and `=` ignores trailing spaces under every collation. So Veridelta compares text under a binary collation, with one character appended to keep trailing spaces. `case_insensitive` and `whitespace_mode` still forgive what they name.
+- Before the first statement, Veridelta checks that the server reads its SQL as written. A string literal must come back unchanged. `NULL` joined with text must stay `NULL`, as it does while `CONCAT_NULL_YIELDS_NULL` is on. The binary collation must tell case, accents, and trailing spaces apart. `LTRIM` and `RTRIM` must take the characters to strip, as they do from SQL Server 2022. A failed check raises `ConnectorError`.
+- `regex_replace`, `datetime_format`, and `max_levenshtein_distance` raise `ConfigError` before any statement runs. Synapse and SQL Server before 2025 have no `REGEXP_REPLACE` and no edit distance function. `TRY_CONVERT` reads a fixed list of numbered styles, not a format string. Leave `pushdown` off to compare such columns locally; `veridelta validate` warns about all three.
+- `pad_zeros` and `cast_to: String` raise `ConfigError` on a `FLOAT` or `REAL` column. SQL Server writes a float as text with six significant digits, so two different numbers could become the same text. `veridelta validate` warns about both.
+- A value with a backslash before a line break, in `value_map` or `null_values`, raises `ConfigError`. Inside a string literal, SQL Server reads that pair as a line continuation and drops both.
+- ConnectorX reads every `DECIMAL` as `Decimal(38, 10)`, with or without `pushdown`, so `strict_types` cannot tell `DECIMAL(10, 2)` from `DECIMAL(12, 4)`. Turned into text by `pad_zeros` or `cast_to: String`, seven in a `DECIMAL(10, 2)` column is `7.00` with `pushdown` and `7.0000000000` without it. Two columns of different scales can then differ with `pushdown` and match without it, never the other way round.
+- A `DATETIMEOFFSET` value is compared at the instant it holds, with or without `pushdown`.
+- Primary keys and row samples come back through ConnectorX too, so a `DECIMAL` key arrives as `Decimal(38, 10)`.
 
 ## DuckDB and MotherDuck
 
