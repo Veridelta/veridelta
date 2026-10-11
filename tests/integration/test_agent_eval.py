@@ -12,14 +12,23 @@ files the metric DR-04 says they are.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pytest
 
 from evals.agent.__main__ import main
-from evals.agent.agents import AgentRun, ScriptedAgent, WrongAgent
-from evals.agent.fixtures import FIXTURES
+from evals.agent.agents import AgentRun, ScriptedAgent, ToolCall, WrongAgent
+from evals.agent.fixtures import FIXTURES, build_fixture
 from evals.agent.graders import Check, result_of
+from evals.agent.live import (
+    FILE_TOOLS,
+    SERVER_TOOLS,
+    TOOL_PREFIX,
+    LiveAgent,
+    plan_session,
+    run_from_messages,
+)
 from evals.agent.report import write_report
 from evals.agent.runner import Attempt, Report, TaskScore, attempt, run_eval
 from evals.agent.tasks import RESULT_MARKER, Task, load_tasks, select
@@ -192,3 +201,149 @@ class TestScoring:
         assert (passed, missed) == (0, 1)
         assert (tmp_path / "report.md").is_file()
         assert main(["--agent", "scripted", "--runs", "0"]) == 2
+
+
+@dataclass
+class ToolUseBlock:
+    """A tool call as the SDK streams it."""
+
+    id: str
+    name: str
+    input: dict[str, object]
+
+
+@dataclass
+class ToolResultBlock:
+    """A tool's answer as the SDK streams it."""
+
+    tool_use_id: str
+    content: str | list[dict[str, object]] | None
+    is_error: bool | None
+
+
+@dataclass
+class TextBlock:
+    """Text the model wrote."""
+
+    text: str
+
+
+@dataclass
+class _Message:
+    """An assistant or user message: a list of blocks."""
+
+    content: list[object]
+
+
+@dataclass
+class _Result:
+    """The SDK's closing message."""
+
+    subtype: str
+    is_error: bool
+    num_turns: int
+    total_cost_usd: float | None
+    result: str | None
+
+
+def _task(kind: str) -> Task:
+    """Return the first task of a kind."""
+    return next(task for task in _TASKS if task.kind == kind)
+
+
+class TestLiveAgent:
+    """Hold the live agent's plan and its reading of the SDK's messages, with no SDK and no key."""
+
+    def test_a_verdict_task_gets_the_server_tools_and_nothing_else(self, tmp_path: Path) -> None:
+        """Ensure the model sees the six tools, no built-in tool, and a server rooted at the folder."""
+        task = _task("verdict")
+        fixture = build_fixture(task.fixture, tmp_path)
+
+        session = plan_session(task, fixture, "model-x")
+
+        assert session.tools == []
+        assert session.allowed_tools == [f"{TOOL_PREFIX}{name}" for name in SERVER_TOOLS]
+        assert session.mcp_servers == {
+            "veridelta": {
+                "type": "stdio",
+                "command": "veridelta",
+                "args": ["mcp", "--root", str(fixture.root)],
+            }
+        }
+        assert (session.cwd, session.model) == (str(fixture.root), "model-x")
+        assert (session.max_turns, session.max_budget_usd) == (task.max_turns, task.budget_usd)
+        assert session.permission_mode == "dontAsk"
+        assert session.prompt == task.prompt
+
+    def test_an_editing_task_gets_the_file_tools_too(self, tmp_path: Path) -> None:
+        """Ensure only a task that fixes or writes a configuration can touch a file."""
+        for kind in ("fix_config", "write_config"):
+            task = _task(kind)
+            (tmp_path / kind).mkdir()
+            session = plan_session(task, build_fixture(task.fixture, tmp_path / kind), "m")
+
+            assert session.tools == list(FILE_TOOLS)
+            assert session.allowed_tools[-3:] == list(FILE_TOOLS)
+
+    def test_a_task_that_allows_row_values_starts_the_server_with_the_flag(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure the row-value gate follows the task, as the controls' server does."""
+        task = next(task for task in _TASKS if task.allow_row_values)
+
+        session = plan_session(task, build_fixture(task.fixture, tmp_path), "m")
+
+        assert session.mcp_servers["veridelta"]["args"][-1] == "--allow-row-values"
+
+    def test_it_reads_the_calls_the_answer_and_the_cost_from_the_messages(self) -> None:
+        """Ensure each tool use pairs with its result under the graders' name, and the result closes the run."""
+        messages = [
+            _Message(
+                [
+                    TextBlock("Checking."),
+                    ToolUseBlock("u1", f"{TOOL_PREFIX}validate_config", {"path": "veridelta.yaml"}),
+                ]
+            ),
+            _Message([ToolResultBlock("u1", [{"type": "text", "text": '{"valid": true}'}], False)]),
+            _Message([ToolUseBlock("u2", "Read", {"file_path": "x"})]),
+            _Message([ToolResultBlock("u2", "denied", True)]),
+            _Message([TextBlock("Done.")]),
+            _Result("success", False, 4, 0.0125, "Done.\nVERIDELTA_RESULT: {}"),
+        ]
+
+        run = run_from_messages(messages)
+
+        assert run.tool_calls == [
+            ToolCall("validate_config", {"path": "veridelta.yaml"}, None, False, '{"valid": true}'),
+            ToolCall("Read", {"file_path": "x"}, None, True, "denied"),
+        ]
+        assert run.final_answer == "Done.\nVERIDELTA_RESULT: {}"
+        assert (run.cost_usd, run.turns, run.error) == (0.0125, 4, None)
+
+    def test_a_result_that_reports_an_error_becomes_the_runs_error(self) -> None:
+        """Ensure a turn or budget limit the SDK hit is recorded, with the last text as the answer."""
+        messages = [
+            _Message([TextBlock("Still working.")]),
+            _Result("error_max_turns", True, 12, 0.3, None),
+        ]
+
+        run = run_from_messages(messages)
+
+        assert run.error == "error_max_turns"
+        assert run.final_answer == "Still working."
+        assert run.cost_usd == 0.3
+
+    def test_a_spent_budget_stops_the_run_before_the_sdk_is_touched(self, tmp_path: Path) -> None:
+        """Ensure the hard stop holds for every attempt together, whatever the SDK's own cap does."""
+        task = _task("verdict")
+        agent = LiveAgent("model-x", budget_usd=0.0)
+
+        run = agent.run(task, build_fixture(task.fixture, tmp_path))
+
+        assert run.error is not None
+        assert "budget" in run.error
+        assert run.tool_calls == []
+
+    def test_the_command_needs_a_model_for_the_live_agent(self) -> None:
+        """Ensure no live run starts on a model nobody named."""
+        assert main(["--agent", "live", "--runs", "1"]) == 2

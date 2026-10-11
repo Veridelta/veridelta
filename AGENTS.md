@@ -93,5 +93,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [The MCP server runs on the official SDK, from an extra, over stdio](decisions/mcp-server-on-the-official-sdk.md)
 - [engine.py keeps DiffEngine, and its helpers live in private modules beside it](decisions/engine-helpers-in-private-modules.md)
 - [No model decides a verdict](decisions/no-model-inside-the-verdict.md)
+- [The live agent eval runs on the Claude Agent SDK](decisions/agent-eval-on-the-claude-agent-sdk.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

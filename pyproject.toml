@@ -153,6 +153,12 @@ databases = [
 accessibility = [
     "playwright>=1.56.0",
 ]
+# The SDK the live agent eval drives `veridelta mcp` through, which bundles the
+# Claude Code CLI. Only the Agent Evals workflow installs it; the controls and CI
+# need no model. The guard test lets a model SDK into this group alone.
+evals = [
+    "claude-agent-sdk>=0.2.165",
+]
 
 [project.scripts]
 veridelta = "veridelta.cli:main"
@@ -203,6 +209,8 @@ module = [
     "jsonschema.*",
     "mcp",
     "mcp.*",
+    "claude_agent_sdk",
+    "claude_agent_sdk.*",
     "anyio",
     "anyio.*",
     "psycopg",

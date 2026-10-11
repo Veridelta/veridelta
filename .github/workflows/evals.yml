@@ -1,0 +1,78 @@
+name: Agent Evals
+
+# Runs the agent eval against a model through the Claude Agent SDK, on the fixed
+# tasks and graders under evals/agent/. It starts only by hand, waits for a
+# maintainer to approve the `evals` environment, which holds the key, and writes
+# the report to the job summary and to an artifact. The two controls need none
+# of this: `make eval-agent` runs them with no key, and CI holds them.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: The model id the SDK runs. Required, with no default, so no run spends on a model nobody chose.
+        required: true
+        type: string
+      runs:
+        description: Attempts per task. A task passes by majority.
+        default: "3"
+        type: string
+      budget_usd:
+        description: The most the whole run may spend, in US dollars.
+        default: "10"
+        type: string
+      tasks:
+        description: all, or task ids such as T01,T07.
+        default: all
+        type: string
+
+# One run at a time, so two runs never share one budget's worth of key use.
+concurrency:
+  group: agent-evals
+  cancel-in-progress: false
+
+# The job runs a model's tool calls, so the token can only read the code.
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    name: Evaluate an Agent
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set Up uv, Python, and the Dependencies
+        uses: ./.github/actions/setup
+        with:
+          group: evals
+
+      - name: Run the Eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          EVAL_MODEL: ${{ inputs.model }}
+          EVAL_RUNS: ${{ inputs.runs }}
+          EVAL_BUDGET_USD: ${{ inputs.budget_usd }}
+          EVAL_TASKS: ${{ inputs.tasks }}
+        run: |
+          uv run python -m evals.agent --agent live --model "$EVAL_MODEL" --runs "$EVAL_RUNS" \
+            --budget-usd "$EVAL_BUDGET_USD" --tasks "$EVAL_TASKS" --out .evals/live
+
+      - name: Write the Report to the Job Summary
+        if: always()
+        run: |
+          if [ -f .evals/live/report.md ]; then
+            cat .evals/live/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the Report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-eval-report
+          path: .evals/live/
+          if-no-files-found: ignore
