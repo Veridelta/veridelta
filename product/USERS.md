@@ -93,7 +93,7 @@ A team that wants expectations on one dataset, profiling, schedules, and alerts.
 
 ### AP-02: The user wanting a model to decide what counts as drift
 
-Someone who wants to hand two datasets to a language model and ask whether the differences matter. Veridelta's promise is that nothing is forgiven unless a rule says so, and a model that forgives drift cannot show why. No model call ever decides a verdict. A model may sit on top, driving the command line or proposing a rule with its evidence, as the roadmap's AI workflows say.
+Someone who wants to hand two datasets to a language model and ask whether the differences matter. Veridelta's promise is that nothing is forgiven unless a rule says so, and a model that forgives drift cannot show why. No model call ever decides a verdict, as [the decision record](../decisions/no-model-inside-the-verdict.md) settles. A model may sit on top, driving the command line or proposing a rule with its evidence, as the roadmap's AI workflows say.
 
 ## Use cases
 

@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-11
+
+- **Update**: [who Veridelta serves](USERS.md) links [AP-02](USERS.md#ap-02-the-user-wanting-a-model-to-decide-what-counts-as-drift) to the decision record that settles it: no model decides a verdict, no tool of `veridelta mcp` writes a file or applies a rule, and a guard test holds the package to both. Slice F3 of [issue 128](https://github.com/Veridelta/veridelta/issues/128).
+
 ## 2026-10-09
 
 - **Update**: [the feature map](FEATURES.md) adds the GitHub Action's `baseline` input, which passes a baseline file to `run --baseline`, so a pull request fails only on drift the file does not list. The GitLab template does not get it, as the decision to freeze the template records. The maintainer chose it on 2026-10-09, from the decisions in [issue 290](https://github.com/Veridelta/veridelta/issues/290).
