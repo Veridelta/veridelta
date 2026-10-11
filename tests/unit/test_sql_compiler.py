@@ -18,6 +18,7 @@ from veridelta.connectors.sql import (
     _EDIT_DISTANCE_REFUSALS,
     _LITERAL_ESCAPES,
     _REGEX_REPLACE_FLAGS,
+    _REGEX_REPLACE_REFUSALS,
     _SAMPLE_HASH_FUNCTIONS,
     _WHITESPACE_CHARACTERS,
     _WIDE_INTEGER_TYPES,
@@ -55,6 +56,9 @@ _QUOTE_ENDS_LITERAL_DIALECTS = frozenset({SQLDialect.DATABRICKS, SQLDialect.BIGQ
 _BIGQUERY_ESCAPES = {"n": "\n", "r": "\r"}
 """BigQuery escape sequences that decode to something other than the escaped character."""
 
+_PREFIXED_LITERAL_DIALECTS = frozenset({SQLDialect.TSQL})
+"""Dialects whose literals take an `N` before the opening quote to hold any Unicode text."""
+
 
 def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
     r"""Lex one single-quoted literal off the front of `sql` the way `dialect` does.
@@ -65,7 +69,9 @@ def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
     also decodes `\n` and `\r` and refuses a raw line break inside quotes.
     Snowflake and DuckDB read a doubled quote as one quote; Databricks reads it
     as the end of one literal and the start of the next, which it then
-    concatenates, so the quote is lost; BigQuery reads it as the end.
+    concatenates, so the quote is lost; BigQuery reads it as the end. T-SQL
+    reads a literal after an `N` as Unicode, and drops a backslash and the line
+    break after it as a line continuation.
 
     Args:
         sql (str): SQL text starting with an opening quote.
@@ -74,11 +80,16 @@ def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
     Returns:
         tuple[str, str]: The decoded value and the SQL after its closing quote.
     """
+    if dialect in _PREFIXED_LITERAL_DIALECTS:
+        assert sql.startswith("N'"), f"{dialect.value} needs N before a literal: {sql!r}"
+        sql = sql[1:]
     assert sql.startswith("'")
     decoded: list[str] = []
     index = 1
     while index < len(sql):
         char = sql[index]
+        if char == "\\" and dialect is SQLDialect.TSQL and sql[index + 1 : index + 2] in "\r\n":
+            raise AssertionError(f"T-SQL drops a backslash before a line break: {sql!r}")
         if char == "\\" and dialect in _BACKSLASH_ESCAPE_DIALECTS:
             escaped = sql[index + 1]
             if dialect is SQLDialect.BIGQUERY:
@@ -129,12 +140,14 @@ class TestSQLDialect:
         assert SQLDialect.DUCKDB.value == "duckdb"
         assert SQLDialect.BIGQUERY.value == "bigquery"
         assert SQLDialect.POSTGRES.value == "postgres"
+        assert SQLDialect.TSQL.value == "tsql"
         assert {member.value for member in SQLDialect} == {
             "snowflake",
             "databricks",
             "duckdb",
             "bigquery",
             "postgres",
+            "tsql",
         }
 
 
@@ -221,6 +234,22 @@ class TestStringLiteralEscaping:
 
         assert decoded == value
         assert remainder == ""
+
+    @pytest.mark.parametrize("dialect", list(SQLDialect), ids=lambda d: d.value)
+    @pytest.mark.parametrize("value", ["a\\\nb", "a\\\r\nb", "a\\\rb"], ids=["lf", "crlf", "cr"])
+    def test_a_backslash_before_a_line_break_is_written_or_refused(
+        self, dialect: SQLDialect, value: str
+    ) -> None:
+        """Ensure T-SQL refuses the text it would read as a line continuation, and others keep it."""
+        compiler = SQLPushdownCompiler(dialect)
+        if dialect is SQLDialect.TSQL:
+            with pytest.raises(ConfigError, match="line continuation"):
+                compiler._literal(value)  # pyright: ignore[reportPrivateUsage]
+            return
+
+        literal = compiler._literal(value)  # pyright: ignore[reportPrivateUsage]
+
+        assert _read_literal(literal, dialect) == (value, "")
 
     def test_it_doubles_backslashes_for_warehouses_that_unescape_them(self) -> None:
         r"""Ensure a regex class, a sentinel, and a map key reach the warehouse intact.
@@ -628,7 +657,11 @@ class TestChangedSampleQuery:
         statement = self._sample(compiler, limit=25).statement
 
         keys = f"{quote('_veridelta_key_0')}, {quote('_veridelta_key_1')}"
-        assert statement.endswith(f" ORDER BY {keys} LIMIT 25")
+        if dialect is SQLDialect.TSQL:
+            assert " SELECT TOP (25) " in statement
+            assert statement.endswith(f" ORDER BY {keys}")
+        else:
+            assert statement.endswith(f" ORDER BY {keys} LIMIT 25")
 
     def test_it_returns_none_when_no_column_is_compared(self) -> None:
         """Ensure there is nothing to sample when every rule is ignored."""
@@ -721,8 +754,9 @@ class TestChangedFlagsQuery:
         assert query is not None
 
         casts = _CAST_KEYWORDS[dialect]
-        assert f"= CAST('2026-01-02' AS {casts['Date']})" in query.statement
-        assert f"= CAST('2026-01-02 03:04:05' AS {casts['Datetime']})" in query.statement
+        literal = SQLPushdownCompiler(dialect)._literal  # pyright: ignore[reportPrivateUsage]
+        assert f"= CAST({literal('2026-01-02')} AS {casts['Date']})" in query.statement
+        assert f"= CAST({literal('2026-01-02 03:04:05')} AS {casts['Datetime']})" in query.statement
 
     @pytest.mark.parametrize(
         ("dtype", "cast"),
@@ -1502,13 +1536,14 @@ class TestEditDistanceCompilation:
         """Ensure each dialect either computes an edit distance or says why it refuses to.
 
         Postgres' `levenshtein` needs an extension and refuses text over 255
-        characters, and DuckDB's counts bytes rather than characters.
+        characters, DuckDB's counts bytes rather than characters, and T-SQL has
+        none before SQL Server 2025.
         """
         functions, refusals = set(_EDIT_DISTANCE_FUNCTIONS), set(_EDIT_DISTANCE_REFUSALS)
 
         assert functions | refusals == set(SQLDialect)
         assert functions & refusals == set()
-        assert refusals == {SQLDialect.POSTGRES, SQLDialect.DUCKDB}
+        assert refusals == {SQLDialect.POSTGRES, SQLDialect.DUCKDB, SQLDialect.TSQL}
 
     @pytest.mark.parametrize(
         ("dialect", "reason"),
@@ -1835,8 +1870,21 @@ class TestRegexReplaceEveryMatch:
     """Validate that `regex_replace` replaces every match in every dialect, as Polars does."""
 
     def test_the_flag_table_covers_every_dialect(self) -> None:
-        """Ensure a new dialect cannot be added without deciding its flags."""
-        assert set(_REGEX_REPLACE_FLAGS) == set(SQLDialect)
+        """Ensure a new dialect cannot be added without deciding its flags or its refusal."""
+        flags, refusals = set(_REGEX_REPLACE_FLAGS), set(_REGEX_REPLACE_REFUSALS)
+
+        assert flags | refusals == set(SQLDialect)
+        assert flags & refusals == set()
+
+    @pytest.mark.parametrize("dialect", sorted(_REGEX_REPLACE_REFUSALS), ids=lambda d: d.value)
+    def test_a_dialect_without_regexp_replace_refuses_it(self, dialect: SQLDialect) -> None:
+        """Ensure a rule the dialect cannot run is refused before any statement, with the reason."""
+        rule = DiffRule(column_names=["code"], regex_replace={"-": ""})
+
+        with pytest.raises(
+            ConfigError, match=f"regex_replace cannot be pushed down to {dialect.value}"
+        ):
+            SQLPushdownCompiler(dialect).compile_column_predicate(rule, "code")
 
     @pytest.mark.parametrize(
         ("dialect", "expected"),
@@ -1944,7 +1992,7 @@ class TestRegexReplacementReferences:
         with pytest.raises(ConfigError, match="groups 0 through 9"):
             compiler._regex_replacement("(a)", replacement)  # pyright: ignore[reportPrivateUsage]
 
-    @pytest.mark.parametrize("dialect", list(SQLDialect))
+    @pytest.mark.parametrize("dialect", sorted(_REGEX_REPLACE_FLAGS))
     def test_it_quotes_the_rewritten_replacement_as_a_literal(self, dialect: SQLDialect) -> None:
         """Ensure the rewritten replacement reaches `REGEXP_REPLACE` intact.
 
