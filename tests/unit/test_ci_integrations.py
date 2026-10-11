@@ -47,6 +47,7 @@ _CI = _ROOT / ".github" / "workflows" / "ci.yml"
 _SETUP = _ROOT / ".github" / "actions" / "setup" / "action.yml"
 _RERUN = _ROOT / ".github" / "workflows" / "rerun-dropped.yml"
 _LIVE = _ROOT / ".github" / "workflows" / "live.yml"
+_EVALS = _ROOT / ".github" / "workflows" / "evals.yml"
 _EXAMPLES = [_ROOT / "docs" / "ci.md", *sorted((_ROOT / "docs").glob("*/*.ipynb"))]
 """The pages whose workflow examples a user copies."""
 _PINNED_ACTION = re.compile(r"uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v(\d+)\.")
@@ -939,6 +940,7 @@ class TestWorkflowPins:
         assert {path.name for path in _WORKFLOWS} >= {
             "ci.yml",
             "docs.yml",
+            "evals.yml",
             "live.yml",
             "release.yml",
             "rerun-dropped.yml",
@@ -1527,3 +1529,128 @@ class TestRerunDroppedJobs:
 
         assert '[ "$newest" != "$RUN_ID" ]' in script
         assert script.index('"$newest" != "$RUN_ID"') < script.index("rerun-failed-jobs")
+
+
+def _evals_triggers() -> dict[str, Any]:
+    """Return the agent eval workflow's triggers, under the key PyYAML reads `on` as."""
+    workflow = _workflow(_EVALS)
+    triggers: dict[str, Any] = workflow[True] if True in workflow else workflow["on"]
+    return triggers
+
+
+def _evals_job() -> dict[str, Any]:
+    """Return the agent eval workflow's one job."""
+    [job] = _workflow(_EVALS)["jobs"].values()
+    found: dict[str, Any] = job
+    return found
+
+
+_MODEL_ID = re.compile(
+    "claude"
+    + "-"
+    + "(?:"
+    + "|".join(("opus", "sonnet", "haiku", "fable", "mythos"))
+    + ")"
+    + r"-\d",
+    re.IGNORECASE,
+)
+"""The shape of a Claude model id, assembled so this file holds none itself."""
+
+
+class TestEvalsWorkflow:
+    """Pin the workflow that runs the agent eval against a model.
+
+    It spends the key the `evals` environment holds, so it starts only by hand,
+    names its model at dispatch, waits for a maintainer, and gives the model's
+    tool calls a read-only token. The controls, which CI runs, need none of it.
+    """
+
+    def test_it_starts_only_by_hand_with_a_model_nobody_chose_in_advance(self) -> None:
+        """Ensure no push or schedule spends the key, and no default model is ever run."""
+        triggers = _evals_triggers()
+        model = triggers["workflow_dispatch"]["inputs"]["model"]
+
+        assert set(triggers) == {"workflow_dispatch"}
+        assert model["required"] is True
+        assert "default" not in model
+
+    def test_its_one_job_waits_for_approval_with_a_read_only_token_and_a_time_limit(self) -> None:
+        """Ensure the key is read only once approved, the token cannot write, and a hung run stops."""
+        workflow = _workflow(_EVALS)
+        job = _evals_job()
+
+        assert job["environment"] == "evals"
+        assert workflow["permissions"] == {"contents": "read"}
+        assert "permissions" not in job
+        assert job["timeout-minutes"] == 90
+        assert workflow["concurrency"] == {"group": "agent-evals", "cancel-in-progress": False}
+
+    def test_it_installs_the_evals_group_through_the_shared_setup(self) -> None:
+        """Ensure the SDK comes from the lockfile's `evals` group, and from nowhere else."""
+        steps = _evals_job()["steps"]
+        with (_ROOT / "pyproject.toml").open("rb") as file:
+            groups = tomllib.load(file)["dependency-groups"]
+
+        assert str(steps[0]["uses"]).startswith("actions/checkout@")
+        assert steps[1]["uses"] == "./.github/actions/setup"
+        assert steps[1]["with"] == {"group": "evals"}
+        assert any(line.startswith("claude-agent-sdk>=") for line in groups["evals"])
+
+    def test_every_input_reaches_the_eval_through_env_and_the_command_parses(self) -> None:
+        """Ensure no input is pasted into the script, and the script runs the live agent."""
+        inputs = _evals_triggers()["workflow_dispatch"]["inputs"]
+        [step] = [s for s in _evals_job()["steps"] if "python -m evals.agent" in s.get("run", "")]
+        env: dict[str, str] = step["env"]
+        script: str = step["run"].replace("\\\n", " ")
+        command = script[script.index("python -m evals.agent") + len("python -m evals.agent") :]
+        filled = command
+        for variable, value in {
+            "EVAL_MODEL": "model-x",
+            "EVAL_RUNS": "3",
+            "EVAL_BUDGET_USD": "10",
+            "EVAL_TASKS": "all",
+        }.items():
+            filled = filled.replace(f'"${variable}"', value)
+
+        from evals.agent.__main__ import build_parser as build_eval_parser
+
+        parsed = build_eval_parser().parse_args(shlex.split(filled))
+
+        assert {f"${{{{ inputs.{name} }}}}" for name in inputs} <= set(env.values())
+        assert env["ANTHROPIC_API_KEY"] == "${{ secrets.ANTHROPIC_API_KEY }}"
+        assert "${{" not in script
+        assert (parsed.agent, parsed.model, parsed.runs) == ("live", "model-x", 3)
+        assert (parsed.budget_usd, parsed.tasks, parsed.out) == (10.0, "all", Path(".evals/live"))
+
+    def test_the_report_reaches_the_summary_and_an_artifact_even_when_the_run_fails(self) -> None:
+        """Ensure a failed run still shows its report, which is what the maintainer reads."""
+        later = [step for step in _evals_job()["steps"][3:]]
+
+        assert all(step.get("if") == "always()" for step in later)
+        assert any("GITHUB_STEP_SUMMARY" in step.get("run", "") for step in later)
+        assert any(
+            str(step.get("uses", "")).startswith("actions/upload-artifact@") for step in later
+        )
+
+    def test_no_model_id_is_committed(self) -> None:
+        """Ensure the model a live run uses is chosen at dispatch, never written into the repository.
+
+        A committed id would silently decide what every run measures, and go
+        stale. The changelog is history and is left as written.
+        """
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=_ROOT, capture_output=True, text=True, check=True
+        ).stdout.split()
+        found: list[str] = []
+        for name in tracked:
+            path = _ROOT / name
+            if name == "CHANGELOG.md" or not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if _MODEL_ID.search(text):
+                found.append(name)
+
+        assert found == []
