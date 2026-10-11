@@ -20,7 +20,7 @@ import pytest
 from tests.unit.sql_corpus import CASES, Case, fixture
 from veridelta._resolution import fold_rule_defaults, normalized_dtype
 from veridelta.connectors.sql import (
-    TSQL_CHECK_TEXT,
+    SERVER_CHECK_TEXT,
     SQLDialect,
     SQLPushdownCompiler,
     compile_tsql_server_checks,
@@ -278,8 +278,8 @@ class TestServerChecks:
         settings, _ = compile_tsql_server_checks()
 
         assert settings.startswith("SELECT N'O''Br\u00efen \\ \u4e2d \U0001f680' AS [text], ")
-        assert "'" in TSQL_CHECK_TEXT
-        assert "\\" in TSQL_CHECK_TEXT
+        assert "'" in SERVER_CHECK_TEXT
+        assert "\\" in SERVER_CHECK_TEXT
 
     def test_the_settings_check_appends_the_sentinel_to_a_null(self) -> None:
         """Ensure the NULL check runs the exact text wrapper every comparison uses."""

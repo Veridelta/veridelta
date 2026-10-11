@@ -752,20 +752,24 @@ class TestDatabaseConfig:
         """Ensure an existing configuration keeps comparing in Polars."""
         assert DatabaseConfig(uri="postgresql://db.internal/sales", table="t").pushdown is False
 
-    @pytest.mark.parametrize("scheme", ["postgresql", "postgres", "PostgreSQL", "mssql", "MSSQL"])
-    def test_it_pushes_down_a_postgres_or_sql_server_table(self, scheme: str) -> None:
-        """Ensure a Postgres or SQL Server table can opt into comparing inside the database."""
+    @pytest.mark.parametrize(
+        "scheme", ["postgresql", "postgres", "PostgreSQL", "mssql", "MSSQL", "redshift"]
+    )
+    def test_it_pushes_down_a_table_on_a_database_with_a_dialect(self, scheme: str) -> None:
+        """Ensure a Postgres, SQL Server, or Redshift table can opt into comparing in place."""
         config = DatabaseConfig(uri=f"{scheme}://db.internal/sales", table="t", pushdown=True)
 
         assert config.pushdown is True
 
     @pytest.mark.parametrize(
         "uri",
-        ["mysql://db.internal/sales", "sqlite:///srv/legacy.db", "redshift://db.internal/dev"],
+        ["mysql://db.internal/sales", "sqlite:///srv/legacy.db", "oracle://db.internal/sales"],
     )
-    def test_it_pushes_down_postgres_and_sql_server_only(self, uri: str) -> None:
+    def test_it_pushes_down_only_where_it_has_a_dialect(self, uri: str) -> None:
         """Ensure a database Veridelta has no pushdown dialect for is refused at load time."""
-        with pytest.raises(ValidationError, match="postgresql:// and mssql:// connections only"):
+        with pytest.raises(
+            ValidationError, match="postgresql://, mssql://, and redshift:// connections only"
+        ):
             DatabaseConfig(uri=uri, table="t", pushdown=True)
 
     def test_it_pushes_down_a_table_only(self) -> None:

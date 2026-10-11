@@ -27,6 +27,7 @@ from veridelta.connectors import (
     PostgresPushdownSession,
     PushdownSession,
     ReaderConnector,
+    RedshiftPushdownSession,
     SnowflakeConnector,
     SQLDialect,
     TSqlPushdownSession,
@@ -34,8 +35,9 @@ from veridelta.connectors import (
 )
 from veridelta.connectors.base import mask_secrets, read_subject
 from veridelta.connectors.sql import (
-    TSQL_CHECK_TEXT,
+    SERVER_CHECK_TEXT,
     compile_postgres_columns_query,
+    compile_redshift_server_check,
     compile_tsql_server_checks,
 )
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -198,6 +200,7 @@ class TestConnectorInterface:
             BigQueryConnector,
             PostgresPushdownSession,
             TSqlPushdownSession,
+            RedshiftPushdownSession,
             DuckDBPushdownSession,
         ],
     )
@@ -1048,7 +1051,7 @@ def _tsql_session(password: str | None = None) -> TSqlPushdownSession:
 def _sql_server(
     mocker: MockerFixture,
     *,
-    text: str = TSQL_CHECK_TEXT,
+    text: str = SERVER_CHECK_TEXT,
     nulls_stay_null: int = 1,
     exact_text: int = 1,
     trims: int | Exception = 1,
@@ -1075,6 +1078,42 @@ def _sql_server(
             if isinstance(trims, Exception):
                 raise trims
             return pl.DataFrame({"trims": [trims]})
+        return pl.DataFrame()
+
+    return mocker.patch("veridelta.connectors.database.pl.read_database_uri", side_effect=_answer)
+
+
+_REDSHIFT_URI = "redshift://analyst@cluster.internal:5439/dev"
+
+
+def _redshift_session(password: str | None = None) -> RedshiftPushdownSession:
+    """Build an unconnected session for a pushed-down Redshift table."""
+    return RedshiftPushdownSession(
+        DatabaseConfig(uri=_REDSHIFT_URI, password=password, table="public.orders", pushdown=True)
+    )
+
+
+def _redshift(mocker: MockerFixture, **answers: object) -> MagicMock:
+    """Patch Polars' reader to answer the Redshift check, returning the reader mock.
+
+    Each keyword overrides one column of the check's row, which a healthy
+    cluster answers with the check text and four ones. Every other statement
+    returns an empty frame.
+    """
+    mocker.patch("veridelta.connectors.database.connectorx", object())
+    row: dict[str, object] = {
+        "text": SERVER_CHECK_TEXT,
+        "nulls_stay_null": 1,
+        "exact_text": 1,
+        "nan_equal": 1,
+        "trims": 1,
+        **answers,
+    }
+    check = compile_redshift_server_check()
+
+    def _answer(statement: str, uri: str) -> pl.DataFrame:
+        if statement == check:
+            return pl.DataFrame({name: [value] for name, value in row.items()})
         return pl.DataFrame()
 
     return mocker.patch("veridelta.connectors.database.pl.read_database_uri", side_effect=_answer)
@@ -1466,3 +1505,56 @@ class TestTSqlPushdownSession:
         assert "SQL Server settings statement" in caplog.text
         assert "SELECT" not in caplog.text
         assert _DATABASE_SECRET not in caplog.text
+
+
+class TestRedshiftPushdownSession:
+    """Validate the session that runs compiled comparison SQL inside Redshift."""
+
+    def test_it_compiles_for_redshift(self) -> None:
+        """Ensure the engine compiles this session's statements in the Redshift dialect."""
+        assert _redshift_session().compiler.dialect is SQLDialect.REDSHIFT
+
+    def test_it_checks_the_server_in_one_statement(self, mocker: MockerFixture) -> None:
+        """Ensure connecting runs the check once, on the URI, and nothing else."""
+        read = _redshift(mocker)
+
+        _redshift_session().connect()
+
+        read.assert_called_once_with(compile_redshift_server_check(), _REDSHIFT_URI)
+
+    @pytest.mark.parametrize(
+        ("answers", "match"),
+        [
+            pytest.param({"text": "O'Brien  ?"}, "read the string literal", id="literal"),
+            pytest.param({"nulls_stay_null": 0}, "joins NULL and text", id="null-concatenation"),
+            pytest.param({"exact_text": 0}, "case or trailing spaces", id="exact-text"),
+            pytest.param({"nan_equal": 0}, "NaN as equal to NaN", id="nan"),
+            pytest.param({"trims": 0}, "trims whitespace another way", id="trims"),
+        ],
+    )
+    def test_it_refuses_a_server_that_reads_the_dialect_another_way(
+        self, mocker: MockerFixture, answers: dict[str, object], match: str
+    ) -> None:
+        """Ensure each failed check stops the run before any comparison, with the way out."""
+        _redshift(mocker, **answers)
+
+        with pytest.raises(ConnectorError, match=match) as info:
+            _redshift_session().connect()
+
+        assert "pushdown: false" in str(info.value)
+
+    def test_it_reports_a_failed_statement_without_the_password(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a driver error names the backend and statement kind but carries no secret."""
+        read = _redshift(mocker)
+        session = _redshift_session(_DATABASE_SECRET)
+        session.connect()
+        read.side_effect = RuntimeError(f"auth failed {quote(_DATABASE_SECRET, safe='')}")
+
+        with pytest.raises(ConnectorError, match="Redshift mismatch statement") as info:
+            session.execute_pushdown("SELECT 1")
+
+        assert info.value.__cause__ is None
+        assert _DATABASE_SECRET not in "".join(traceback.format_exception(info.value))
+        assert quote(_DATABASE_SECRET, safe="") not in str(info.value)

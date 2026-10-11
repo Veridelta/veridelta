@@ -17,6 +17,7 @@ from veridelta.connectors.sql import (
     _EDIT_DISTANCE_FUNCTIONS,
     _EDIT_DISTANCE_REFUSALS,
     _LITERAL_ESCAPES,
+    _PLAIN_REPLACEMENTS,
     _REGEX_REPLACE_FLAGS,
     _REGEX_REPLACE_REFUSALS,
     _SAMPLE_HASH_FUNCTIONS,
@@ -46,7 +47,7 @@ from veridelta.models import DiffRule
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
 _BACKSLASH_ESCAPE_DIALECTS = frozenset(
-    {SQLDialect.SNOWFLAKE, SQLDialect.DATABRICKS, SQLDialect.BIGQUERY}
+    {SQLDialect.SNOWFLAKE, SQLDialect.DATABRICKS, SQLDialect.BIGQUERY, SQLDialect.REDSHIFT}
 )
 """Dialects whose single-quoted strings read backslash escape sequences."""
 
@@ -141,6 +142,7 @@ class TestSQLDialect:
         assert SQLDialect.BIGQUERY.value == "bigquery"
         assert SQLDialect.POSTGRES.value == "postgres"
         assert SQLDialect.TSQL.value == "tsql"
+        assert SQLDialect.REDSHIFT.value == "redshift"
         assert {member.value for member in SQLDialect} == {
             "snowflake",
             "databricks",
@@ -148,6 +150,7 @@ class TestSQLDialect:
             "bigquery",
             "postgres",
             "tsql",
+            "redshift",
         }
 
 
@@ -1536,20 +1539,26 @@ class TestEditDistanceCompilation:
         """Ensure each dialect either computes an edit distance or says why it refuses to.
 
         Postgres' `levenshtein` needs an extension and refuses text over 255
-        characters, DuckDB's counts bytes rather than characters, and T-SQL has
-        none before SQL Server 2025.
+        characters, DuckDB's counts bytes rather than characters, T-SQL has
+        none before SQL Server 2025, and Redshift has none.
         """
         functions, refusals = set(_EDIT_DISTANCE_FUNCTIONS), set(_EDIT_DISTANCE_REFUSALS)
 
         assert functions | refusals == set(SQLDialect)
         assert functions & refusals == set()
-        assert refusals == {SQLDialect.POSTGRES, SQLDialect.DUCKDB, SQLDialect.TSQL}
+        assert refusals == {
+            SQLDialect.POSTGRES,
+            SQLDialect.DUCKDB,
+            SQLDialect.TSQL,
+            SQLDialect.REDSHIFT,
+        }
 
     @pytest.mark.parametrize(
         ("dialect", "reason"),
         [
             pytest.param(SQLDialect.POSTGRES, "fuzzystrmatch", id="postgres"),
             pytest.param(SQLDialect.DUCKDB, "counts UTF-8 bytes", id="duckdb"),
+            pytest.param(SQLDialect.REDSHIFT, "no edit distance function", id="redshift"),
         ],
     )
     def test_it_refuses_an_edit_distance_with_its_reason(
@@ -1898,6 +1907,11 @@ class TestRegexReplaceEveryMatch:
             pytest.param(
                 SQLDialect.DUCKDB, "REGEXP_REPLACE(\"src\".\"phone\", '-', '', 'g')", id="duckdb"
             ),
+            pytest.param(
+                SQLDialect.REDSHIFT,
+                "REGEXP_REPLACE(\"src\".\"phone\", '-', '', 1, 'p')",
+                id="redshift",
+            ),
         ],
     )
     def test_it_asks_for_a_global_replace_where_the_default_is_first_only(
@@ -1992,7 +2006,9 @@ class TestRegexReplacementReferences:
         with pytest.raises(ConfigError, match="groups 0 through 9"):
             compiler._regex_replacement("(a)", replacement)  # pyright: ignore[reportPrivateUsage]
 
-    @pytest.mark.parametrize("dialect", sorted(_REGEX_REPLACE_FLAGS))
+    @pytest.mark.parametrize(
+        "dialect", sorted(set(_REGEX_REPLACE_FLAGS) - set(_PLAIN_REPLACEMENTS))
+    )
     def test_it_quotes_the_rewritten_replacement_as_a_literal(self, dialect: SQLDialect) -> None:
         """Ensure the rewritten replacement reaches `REGEXP_REPLACE` intact.
 
@@ -2010,6 +2026,40 @@ class TestRegexReplacementReferences:
         replacement, rest = _read_literal(sql[len(prefix) :], dialect)
         expected = "$1$2" if dialect is SQLDialect.DATABRICKS else r"\1\2"
         assert replacement == expected
+        assert rest == f"{_REGEX_REPLACE_FLAGS[dialect]})"
+
+    @pytest.mark.parametrize(
+        "replacement",
+        [
+            pytest.param("$1", id="numbered"),
+            pytest.param("${1}x", id="braced"),
+            pytest.param("$$", id="escaped-dollar"),
+            pytest.param("x$", id="trailing-dollar"),
+            pytest.param(r"a\b", id="backslash"),
+        ],
+    )
+    @pytest.mark.parametrize("dialect", sorted(_PLAIN_REPLACEMENTS), ids=lambda d: d.value)
+    def test_a_dialect_that_takes_plain_text_refuses_anything_else(
+        self, dialect: SQLDialect, replacement: str
+    ) -> None:
+        """Ensure a replacement whose meaning the dialect does not document is never guessed."""
+        rule = DiffRule(column_names=["code"], regex_replace={"(a)": replacement})
+
+        with pytest.raises(ConfigError, match="documents no way to refer to a group"):
+            SQLPushdownCompiler(dialect).compile_column_predicate(rule, "code")
+
+    @pytest.mark.parametrize("dialect", sorted(_PLAIN_REPLACEMENTS), ids=lambda d: d.value)
+    def test_a_dialect_that_takes_plain_text_writes_it_as_a_literal(
+        self, dialect: SQLDialect
+    ) -> None:
+        """Ensure plain text, an apostrophe included, reaches the replacement intact."""
+        compiler = SQLPushdownCompiler(dialect)
+        rule = DiffRule(column_names=["code"], regex_replace={"-": "O'B"})
+
+        sql = compiler._apply_regex_replace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        replacement, rest = _read_literal(sql[len("REGEXP_REPLACE(x, '-', ") :], dialect)
+        assert replacement == "O'B"
         assert rest == f"{_REGEX_REPLACE_FLAGS[dialect]})"
 
 

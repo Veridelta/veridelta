@@ -12,6 +12,7 @@ from veridelta.connectors.base import (
 from veridelta.connectors.database import (
     DatabaseConnector,
     PostgresPushdownSession,
+    RedshiftPushdownSession,
     TSqlPushdownSession,
 )
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession
@@ -35,6 +36,7 @@ __all__ = [
     "PushdownQueryType",
     "PushdownSession",
     "ReaderConnector",
+    "RedshiftPushdownSession",
     "SQLDialect",
     "SQLPushdownCompiler",
     "SnowflakeConnector",

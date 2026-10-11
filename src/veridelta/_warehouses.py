@@ -16,7 +16,11 @@ from typing import Any, Final, TypeAlias, TypeGuard, TypeVar, cast
 from urllib.parse import urlsplit
 
 from veridelta.connectors.base import PushdownSession
-from veridelta.connectors.database import PostgresPushdownSession, TSqlPushdownSession
+from veridelta.connectors.database import (
+    PostgresPushdownSession,
+    RedshiftPushdownSession,
+    TSqlPushdownSession,
+)
 from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.connectors.sql import SQLDialect
 from veridelta.connectors.warehouse import (
@@ -97,6 +101,11 @@ _DATABASE_WAREHOUSES: Final[dict[str, _Warehouse]] = {
         "SQL Server",
         SQLDialect.TSQL,
         lambda config: TSqlPushdownSession(config),
+    ),
+    "redshift": _Warehouse(
+        "Redshift",
+        SQLDialect.REDSHIFT,
+        lambda config: RedshiftPushdownSession(config),
     ),
 }
 """The backend a database source that sets `pushdown` runs on, keyed by URI scheme.

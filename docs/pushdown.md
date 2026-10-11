@@ -16,7 +16,7 @@ A pair of warehouse tables is always compared in place. Both sides must use the 
 
 Naming the same table on both sides raises `ConfigError`, since a table compared with itself always matches. A warehouse paired with a file, a lakehouse table, or a database, or with a different warehouse, raises `ConnectorError`.
 
-Database and DuckDB sources are read into memory and compared locally. Two Postgres tables on one server, two SQL Server tables on one server, or two tables in one DuckDB database are compared in place when both set `pushdown`; see [Postgres](#postgres), [SQL Server, Azure SQL, and Synapse](#sql-server-azure-sql-and-synapse), and [DuckDB and MotherDuck](#duckdb-and-motherduck).
+Database and DuckDB sources are read into memory and compared locally. Two Postgres, SQL Server, or Redshift tables on one server, or two tables in one DuckDB database, are compared in place when both set `pushdown`; see [Postgres](#postgres), [SQL Server, Azure SQL, and Synapse](#sql-server-azure-sql-and-synapse), [Redshift](#redshift), and [DuckDB and MotherDuck](#duckdb-and-motherduck).
 
 ## Statements
 
@@ -41,11 +41,11 @@ Probed names are compared exactly as the compiler quotes them, with no case fold
 
 ## Rules in SQL
 
-All nine transform stages compile for compared columns, and stages 1 to 7 for primary keys. One setting is refused everywhere: `min_jaro_winkler_similarity` raises `ConfigError` before any comparison runs. Snowflake's `JAROWINKLER_SIMILARITY` ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function. Neither can reproduce a local verdict. Postgres also refuses `datetime_format` and `max_levenshtein_distance`, SQL Server refuses those two and `regex_replace`, and DuckDB refuses `max_levenshtein_distance`; see [Postgres](#postgres), [SQL Server, Azure SQL, and Synapse](#sql-server-azure-sql-and-synapse), and [DuckDB and MotherDuck](#duckdb-and-motherduck).
+All nine transform stages compile for compared columns, and stages 1 to 7 for primary keys. One setting is refused everywhere: `min_jaro_winkler_similarity` raises `ConfigError` before any comparison runs. Snowflake's `JAROWINKLER_SIMILARITY` ignores case and returns a whole number from 0 to 100, and Databricks has no Jaro-Winkler function. Neither can reproduce a local verdict. Postgres and Redshift also refuse `datetime_format` and `max_levenshtein_distance`, SQL Server refuses those two and `regex_replace`, and DuckDB refuses `max_levenshtein_distance`; see [Postgres](#postgres), [SQL Server, Azure SQL, and Synapse](#sql-server-azure-sql-and-synapse), [Redshift](#redshift), and [DuckDB and MotherDuck](#duckdb-and-motherduck).
 
 ### Edit distance
 
-`max_levenshtein_distance` compiles to Snowflake's `EDITDISTANCE`, Databricks' `levenshtein`, or BigQuery's `EDIT_DISTANCE`, which count characters as a local run does. A warehouse run needs no `fuzzy` extra. Postgres, SQL Server, and DuckDB refuse the setting, each for its own reason.
+`max_levenshtein_distance` compiles to Snowflake's `EDITDISTANCE`, Databricks' `levenshtein`, or BigQuery's `EDIT_DISTANCE`, which count characters as a local run does. A warehouse run needs no `fuzzy` extra. Postgres, SQL Server, Redshift, and DuckDB refuse the setting, each for its own reason.
 
 ### Text in SQL
 
@@ -105,7 +105,7 @@ primary_keys: ["order_id"]
 
 Veridelta then runs each statement inside Postgres through ConnectorX, as in a warehouse, and only counts and primary keys come back. Everything above applies, with these additions:
 
-- Both `uri` values start with `postgresql://` or `postgres://` and match, as do both `password` values, so one connection reaches both tables. Each side names a `table`; a `query` cannot be compared in place. SQL Server has [its own section](#sql-server-azure-sql-and-synapse). Other databases, Redshift included, are always read and compared locally.
+- Both `uri` values start with `postgresql://` or `postgres://` and match, as do both `password` values, so one connection reaches both tables. Each side names a `table`; a `query` cannot be compared in place. SQL Server and Redshift have their own sections below. Other databases are always read and compared locally.
 - Set `pushdown` on both sides or on neither. A pair where only one side sets it raises `ConfigError` instead of reading both.
 - The server must read string literals by the SQL standard, which is the Postgres default (`standard_conforming_strings` on). Veridelta checks before the first statement and raises `ConnectorError` if it is off, since a backslash in a value would otherwise be read as an escape.
 - `datetime_format` and `max_levenshtein_distance` raise `ConfigError` before any statement runs. Postgres has no date parse that returns NULL for text it cannot read, so one bad value would fail the whole statement. Its `levenshtein` needs the `fuzzystrmatch` extension and refuses text longer than 255 characters. Leave `pushdown` off to compare such columns locally; `veridelta validate` warns about both.
@@ -147,6 +147,41 @@ An `mssql://` URI cannot tell the three apart, so Veridelta writes one dialect f
 - ConnectorX reads every `DECIMAL` as `Decimal(38, 10)`, with or without `pushdown`, so `strict_types` cannot tell `DECIMAL(10, 2)` from `DECIMAL(12, 4)`. Turned into text by `pad_zeros` or `cast_to: String`, seven in a `DECIMAL(10, 2)` column is `7.00` with `pushdown` and `7.0000000000` without it. Two columns of different scales can then differ with `pushdown` and match without it, never the other way round.
 - A `DATETIMEOFFSET` value is compared at the instant it holds, with or without `pushdown`.
 - Primary keys and row samples come back through ConnectorX too, so a `DECIMAL` key arrives as `Decimal(38, 10)`.
+
+## Redshift
+
+Two tables on one Redshift cluster or Serverless workgroup can be compared where they are stored. Set `pushdown: true` on both sides of a `redshift://` source:
+
+```yaml
+source:
+  type: database
+  uri: redshift://analyst@analytics.123456789012.us-east-1.redshift-serverless.amazonaws.com:5439/dev
+  password: ${REDSHIFT_PASSWORD}
+  table: legacy.orders
+  pushdown: true
+
+target:
+  type: database
+  uri: redshift://analyst@analytics.123456789012.us-east-1.redshift-serverless.amazonaws.com:5439/dev
+  password: ${REDSHIFT_PASSWORD}
+  table: modern.orders
+  pushdown: true
+
+primary_keys: ["order_id"]
+```
+
+The SQL has not run in a live Redshift yet. A gated live test runs it once an account exists. Everything above applies, with these additions:
+
+- Sign-in uses a database user and a password. To sign in with IAM, pass temporary credentials from `aws redshift get-cluster-credentials`, or `aws redshift-serverless get-credentials`, as the user and `password`.
+- Both `uri` values match, as do both `password` values, so one connection reaches both tables. Each side names a `table`; a `query` cannot be compared in place.
+- Redshift stores names in lowercase unless `enable_case_sensitive_identifier` is on. Write column names and keys in lowercase.
+- Text is compared character by character, under `COLLATE(…, 'case_sensitive')` with one character appended. Redshift ignores trailing spaces when it compares text, and a database can be created to ignore case. `case_insensitive` and `whitespace_mode` still forgive what they name.
+- Before the first statement, Veridelta checks that the server reads its SQL as written. A string literal holding a backslash must come back unchanged, since Redshift reads backslash escapes and Veridelta doubles each backslash. `NULL` joined with text must stay `NULL`. Exact text must tell case and trailing spaces apart. NaN must equal NaN. Each trim must strip the whitespace a local run strips. A failed check raises `ConnectorError`.
+- `datetime_format` and `max_levenshtein_distance` raise `ConfigError` before any statement runs. Redshift's `TO_TIMESTAMP` fails on a value it cannot read, where a local run returns NULL, and Redshift has no edit distance function. Leave `pushdown` off to compare such columns locally; `veridelta validate` warns about both.
+- `regex_replace` reads its pattern as PCRE, the closest Redshift has to a local run's regular expressions. Its replacement must be plain text. One that refers to a group, or holds `$` or a backslash, raises `ConfigError`, since Redshift documents no syntax for either.
+- `pad_zeros` and `cast_to: String` raise `ConfigError` on a `REAL` or `DOUBLE PRECISION` column. Redshift writes a float as text with 15 significant digits unless `extra_float_digits` says otherwise, so two different numbers could become the same text.
+- A `CHAR` column keeps its padding when read locally, and drops it when Redshift turns it into text. Compare a `CHAR` column with `whitespace_mode: right`, or keep `pushdown` off.
+- A local read rounds each `DECIMAL` to ten decimal places, as ConnectorX reads it, while `pushdown` compares the stored values. Primary keys and row samples come back through ConnectorX too, rounded the same way.
 
 ## DuckDB and MotherDuck
 

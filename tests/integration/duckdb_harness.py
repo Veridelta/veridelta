@@ -25,8 +25,8 @@ the SQL the warehouses that count characters run.
 `VERIDELTA_PARITY_BACKEND` picks where the pushdown side runs, from `BACKENDS`.
 `postgres` and `sqlserver` run the same cases against a live Postgres or SQL
 Server through `postgres_harness` and `sqlserver_harness`, and `bigquery`,
-`databricks`, `motherduck`, and `snowflake` against a live warehouse through
-`warehouse_harness`. In each, the comparison runs inside the database, and the
+`databricks`, `motherduck`, `redshift`, and `snowflake` against a live service
+through `warehouse_harness`. In each, the comparison runs inside the database, and the
 local engine reads the same tables back.
 
 A case whose rule the selected backend refuses by name, such as

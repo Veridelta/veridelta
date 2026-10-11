@@ -136,12 +136,11 @@ def _tolerances() -> Case:
 
 
 def _text_rules() -> Case:
-    """Sentinels, regex, every whitespace mode, case, a value map, and a normalized key."""
+    """Sentinels, every whitespace mode, case, a value map, and a normalized key."""
     source, target = _same(
         {
             "code": pl.String(),
             "status": pl.String(),
-            "sku": pl.String(),
             "city": pl.String(),
             "first": pl.String(),
             "last": pl.String(),
@@ -159,7 +158,6 @@ def _text_rules() -> Case:
                 value_map={"A": "Active", "I": "Inactive", "O'Brien": "Quoted"},
                 case_insensitive=True,
             ),
-            DiffRule(column_names=["sku"], regex_replace={"-": "", "([a-z]+)_([0-9]+)": "$2$1"}),
             DiffRule(column_names=["city"], whitespace_mode="both"),
             DiffRule(column_names=["first"], whitespace_mode="left"),
             DiffRule(column_names=["last"], whitespace_mode="right"),
@@ -167,6 +165,32 @@ def _text_rules() -> Case:
         ],
     )
     return Case("text_rules", diff, source, target)
+
+
+def _regex_plain() -> Case:
+    """Regular expressions whose replacements are plain text, chained on one column."""
+    source, target = _same({"id": pl.Int64(), "sku": pl.String(), "phone": pl.String()})
+    diff = DiffConfig(
+        primary_keys=["id"],
+        rules=[
+            DiffRule(column_names=["sku"], regex_replace={"-": "", "[^A-Za-z0-9]": ""}),
+            DiffRule(column_names=["phone"], regex_replace={"\\(|\\)": "", "\\s+": " "}),
+        ],
+    )
+    return Case("regex_plain", diff, source, target)
+
+
+def _regex_groups() -> Case:
+    """A replacement that refers to capture groups, and one with a literal `$`."""
+    source, target = _same({"id": pl.Int64(), "sku": pl.String(), "price": pl.String()})
+    diff = DiffConfig(
+        primary_keys=["id"],
+        rules=[
+            DiffRule(column_names=["sku"], regex_replace={"([a-z]+)_([0-9]+)": "$2$1"}),
+            DiffRule(column_names=["price"], regex_replace={"USD": "$$"}),
+        ],
+    )
+    return Case("regex_groups", diff, source, target)
 
 
 def _casts() -> Case:
@@ -315,6 +339,8 @@ def _jaro_winkler() -> Case:
 CASES: Final[tuple[Case, ...]] = (
     _tolerances(),
     _text_rules(),
+    _regex_plain(),
+    _regex_groups(),
     _casts(),
     _datetime_formats(),
     _type_drift(),
