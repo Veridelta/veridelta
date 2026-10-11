@@ -109,6 +109,7 @@ nav:
     - CI integrations: ci.md
     - Pushdown: pushdown.md
     - AI agents: agents.md
+  - Compared with other tools: compared.md
   - API reference: api.md
   - Upgrading: upgrading.md
   - Changelog: changelog.md
