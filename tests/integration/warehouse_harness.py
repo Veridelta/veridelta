@@ -4,23 +4,27 @@
 """Run the parity harness against a live warehouse instead of DuckDB.
 
 Selected by `VERIDELTA_PARITY_BACKEND` set to `bigquery`, `databricks`,
-`motherduck`, `redshift`, or `snowflake`, with that service's settings in the
-environment.
+`motherduck`, `redshift`, `snowflake`, or `synapse`, with that service's
+settings in the environment.
 CONTRIBUTING lists them under "Live warehouse tests", and `make live` runs the
 suite. The `live.yml` workflow runs it in CI, after the maintainer approves.
 
 Each comparison loads its two frames into fresh tables and drops them after.
 Snowflake, Databricks, and Redshift take parameterized `INSERT` statements,
 BigQuery a Parquet load job, since its free sandbox refuses DML, and MotherDuck
-an Arrow table. A table's name holds the minute it was made, as in
-`vd_202610061200_1a2b3c4d_source`, so `drop_stale_tables` can drop the tables
-a failed run left behind once they are a day old.
+an Arrow table. Synapse takes `INSERT ... SELECT` statements joined by
+`UNION ALL`, since a dedicated SQL pool has no multi-row `VALUES`. A table's
+name holds the minute it was made, as in `vd_202610061200_1a2b3c4d_source`, so
+`drop_stale_tables` can drop the tables a failed run left behind once they are
+a day old.
 
 Pushdown goes through `DiffEngine.run_from_configs`, as `veridelta run` does,
 so the shipped routing and connector run. The harness wraps the connector's
 `execute_pushdown` only to record each statement for failure messages. The
 local run reads both tables back through the same connector, so the local
-engine sees the values as the warehouse stores them.
+engine sees the values as the warehouse stores them. A Redshift or Synapse
+table is a database source instead, so its local run reads it through
+`DatabaseConnector`, as a pair that sets `pushdown: false` does.
 
 Each dtype is stored as the nearest type the warehouse has. A dtype with no
 type that holds its values exactly raises `NotImplementedError`, as in the
@@ -48,7 +52,12 @@ from urllib.parse import quote
 
 import polars as pl
 
-from veridelta.connectors.database import RedshiftPushdownSession
+from tests.integration import sqlserver_harness
+from veridelta.connectors.database import (
+    DatabaseConnector,
+    RedshiftPushdownSession,
+    TSqlPushdownSession,
+)
 from veridelta.connectors.duckdb import DuckDBPushdownSession
 from veridelta.connectors.warehouse import (
     BigQueryConnector,
@@ -162,6 +171,34 @@ class _Service(ABC):
     def close(self, connection: Any) -> None:
         """Close a connection `connect` opened."""
         connection.close()
+
+    def read(self, table: str) -> pl.DataFrame:
+        """Read a whole table through the shipped connector, as a local run of it would."""
+        connector = self.connector(self.source(table))
+        connector.connect()
+        try:
+            statement = f"SELECT * FROM {connector.compiler._quote_relation(table)}"
+            frame: pl.DataFrame = connector.execute_pushdown(statement, "samples").collect()
+            return frame
+        finally:
+            connector.close()
+
+
+class _DatabaseService(_Service):
+    """A database a `type: database` source reaches, whose local run reads it as one."""
+
+    @abstractmethod
+    def source(self, table: str) -> DatabaseConfig:
+        """Describe one loaded table as a database source that sets `pushdown`."""
+
+    def read(self, table: str) -> pl.DataFrame:
+        """Read a whole table as a pair that sets `pushdown: false` reads it."""
+        reader = DatabaseConnector(self.source(table).model_copy(update={"pushdown": False}))
+        reader.connect()
+        try:
+            return reader.lazyframe().collect()
+        finally:
+            reader.close()
 
 
 class _MotherDuck(_Service):
@@ -569,7 +606,7 @@ _REDSHIFT_ROWS: Final = 500
 """Most rows one Redshift `INSERT` carries."""
 
 
-class _Redshift(_Service):
+class _Redshift(_DatabaseService):
     """Amazon Redshift, signed in with a database user's password, tables in its schema."""
 
     name = "redshift"
@@ -585,7 +622,7 @@ class _Redshift(_Service):
         self.user = _setting("REDSHIFT_USER")
         self.password = _setting("REDSHIFT_PASSWORD")
 
-    def source(self, table: str) -> SourceRef:
+    def source(self, table: str) -> DatabaseConfig:
         """Describe a loaded table as a Redshift database source that sets `pushdown`."""
         uri = f"redshift://{quote(self.user, safe='')}@{self.host}:{self.port}/{self.database}"
         return DatabaseConfig(uri=uri, password=self.password, table=table, pushdown=True)
@@ -650,9 +687,84 @@ class _Redshift(_Service):
         return column_type
 
 
+_SYNAPSE_ROWS: Final = 100
+"""Most rows one Synapse `INSERT ... SELECT ... UNION ALL` statement carries."""
+
+
+class _Synapse(_DatabaseService):
+    """A Synapse dedicated SQL pool, signed in with SQL authentication.
+
+    It shares the SQL Server backend's column types and literals, so text is
+    stored under a collation that ignores case and accents there too. A pool
+    has no multi-row `VALUES`, so rows go in as `SELECT`s joined by `UNION ALL`,
+    and each table is a round-robin heap, the one layout that holds
+    `NVARCHAR(MAX)`.
+    """
+
+    name = "synapse"
+    refused_rules = sqlserver_harness.REFUSED_RULES
+    connector = TSqlPushdownSession
+
+    def __init__(self) -> None:
+        """Read the workspace's dedicated endpoint, the pool, and the SQL user."""
+        self.host = _setting("SYNAPSE_HOST")
+        self.database = _setting("SYNAPSE_DATABASE")
+        self.user = _setting("SYNAPSE_USER")
+        self.password = _setting("SYNAPSE_PASSWORD")
+
+    def source(self, table: str) -> DatabaseConfig:
+        """Describe a loaded table as a SQL Server source that sets `pushdown`, over TLS."""
+        uri = f"mssql://{quote(self.user, safe='')}@{self.host}:1433/{self.database}?encrypt=true"
+        return DatabaseConfig(uri=uri, password=self.password, table=table, pushdown=True)
+
+    def connect(self) -> Any:
+        """Open a pymssql connection, committing each statement."""
+        import pymssql
+
+        return pymssql.connect(
+            server=self.host,
+            port="1433",
+            user=self.user,
+            password=self.password,
+            database=self.database,
+            autocommit=True,
+        )
+
+    def load(self, connection: Any, table: str, frame: pl.DataFrame) -> None:
+        """Create a round-robin heap and insert its rows as `SELECT`s joined by `UNION ALL`."""
+        quoted = sqlserver_harness._quoted(table)
+        columns = ", ".join(
+            f"{sqlserver_harness._quoted(sqlserver_harness._column_name(name))} "
+            f"{sqlserver_harness._column_type(name, dtype)}"
+            for name, dtype in frame.schema.items()
+        )
+        rows = [
+            "SELECT " + ", ".join(sqlserver_harness._literal(value) for value in row)
+            for row in frame.iter_rows()
+        ]
+        cursor = connection.cursor()
+        cursor.execute(f"CREATE TABLE {quoted} ({columns}) WITH (DISTRIBUTION = ROUND_ROBIN, HEAP)")
+        for start in range(0, len(rows), _SYNAPSE_ROWS):
+            selects = " UNION ALL ".join(rows[start : start + _SYNAPSE_ROWS])
+            cursor.execute(f"INSERT INTO {quoted} {selects}")
+
+    def drop(self, connection: Any, table: str) -> None:
+        """Drop the table, if it exists."""
+        literal = "N'" + table.replace("'", "''") + "'"
+        connection.cursor().execute(
+            f"IF OBJECT_ID({literal}) IS NOT NULL DROP TABLE {sqlserver_harness._quoted(table)}"
+        )
+
+    def tables(self, connection: Any) -> list[str]:
+        """List the pool's `vd_` tables."""
+        cursor = connection.cursor()
+        cursor.execute("SELECT name FROM sys.tables WHERE name LIKE 'vd%'")
+        return [row[0] for row in cursor.fetchall()]
+
+
 SERVICES: Final[dict[str, type[_Service]]] = {
     service.name: service
-    for service in (_BigQuery, _Databricks, _MotherDuck, _Redshift, _Snowflake)
+    for service in (_BigQuery, _Databricks, _MotherDuck, _Redshift, _Snowflake, _Synapse)
 }
 """Each live warehouse by the `VERIDELTA_PARITY_BACKEND` value that selects it."""
 
@@ -840,20 +952,9 @@ class WarehouseBackend:
             DiffResult: The local engine's verdict on the tables as the warehouse stores them.
         """
         with self.loaded_tables(source, target) as (source_table, target_table):
-            stored_source = self._read(source_table)
-            stored_target = self._read(target_table)
+            stored_source = self.service.read(source_table)
+            stored_target = self.service.read(target_table)
         return DiffEngine(config, stored_source.lazy(), stored_target.lazy()).run(baseline=baseline)
-
-    def _read(self, table: str) -> pl.DataFrame:
-        """Read a whole table through the shipped connector."""
-        connector = self.service.connector(self.service.source(table))
-        connector.connect()
-        try:
-            statement = f"SELECT * FROM {connector.compiler._quote_relation(table)}"
-            frame: pl.DataFrame = connector.execute_pushdown(statement, "samples").collect()
-            return frame
-        finally:
-            connector.close()
 
 
 def backend(name: str) -> WarehouseBackend:

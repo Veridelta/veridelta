@@ -3,7 +3,7 @@ type: Key Metrics
 title: The key metrics
 description: One north star, the drivers that move it, and the guardrails against gaming it, each measured by a command this repository can run.
 status: draft
-generated: { by: claude-code, at: 2026-10-11T11:21:52Z }
+generated: { by: claude-code, at: 2026-10-11T11:33:07Z }
 ---
 
 # The key metrics
@@ -36,7 +36,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 
 ## Guardrails
 
-- [GR-01](metrics/GR-01.md) counts the pushdown backends on which the parity suite reached the same verdict as a local run: 3 of 8 today, against a target of 8 of 8 before a release that waits for the first live run. A faster verdict that differs by backend is worth nothing.
+- [GR-01](metrics/GR-01.md) counts the pushdown backends on which the parity suite reached the same verdict as a local run: 3 of 9 today, against a target of 9 of 9 before a release that waits for the first live run. A faster verdict that differs by backend is worth nothing.
 - [GR-02](metrics/GR-02.md) counts the wrong verdicts reported and still open at a release: 0 today, and 0 at every release.
 - [GR-03](metrics/GR-03.md) counts the accessibility violations on the docs site and the HTML report: 0 today, and 0 at every release.
 

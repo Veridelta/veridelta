@@ -26,7 +26,7 @@ from veridelta.models import Baseline, DiffConfig, DiffResult, DiffRule, ValueMa
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 _NON_FINITE = pytest.mark.skip_on(
-    "sqlserver", reason="SQL Server's FLOAT holds no NaN or infinity."
+    "sqlserver", "synapse", reason="SQL Server's FLOAT holds no NaN or infinity."
 )
 
 
@@ -479,6 +479,7 @@ class TestStrictTypesParity:
                 id="decimal-scales",
                 marks=pytest.mark.skip_on(
                     "sqlserver",
+                    "synapse",
                     reason="ConnectorX reads every SQL Server DECIMAL as Decimal(38, 10).",
                 ),
             ),

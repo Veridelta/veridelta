@@ -17,6 +17,7 @@ on:
           - motherduck
           - redshift
           - snowflake
+          - synapse
         default: all
 
 # One run at a time, so two runs never load tables into one account together.
@@ -200,4 +201,37 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_PRIVATE_KEY_PATH: ${{ runner.temp }}/snowflake.p8
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
+        run: make live
+
+  synapse:
+    name: Synapse
+    if: vars.LIVE_SYNAPSE == 'true' && (inputs.backend == 'all' || inputs.backend == 'synapse')
+    runs-on: ubuntu-latest
+    environment: live
+    timeout-minutes: 45
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv and Set up Python
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.23"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+          python-version: "3.12"
+
+      # The harness loads Synapse tables through pymssql, from the `databases` group.
+      - name: Install Dependencies
+        run: uv sync --locked --all-extras --group databases
+
+      - name: Run the Parity Suite
+        env:
+          VERIDELTA_PARITY_BACKEND: synapse
+          SYNAPSE_HOST: ${{ secrets.SYNAPSE_HOST }}
+          SYNAPSE_DATABASE: ${{ secrets.SYNAPSE_DATABASE }}
+          SYNAPSE_USER: ${{ secrets.SYNAPSE_USER }}
+          SYNAPSE_PASSWORD: ${{ secrets.SYNAPSE_PASSWORD }}
         run: make live

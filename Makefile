@@ -45,7 +45,7 @@ sqlserver:
 	VERIDELTA_PARITY_BACKEND=sqlserver uv run --group databases pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py tests/integration/test_parity_fuzz.py tests/integration/test_sqlserver_pushdown.py --no-cov
 
 live:
-	@case "$$VERIDELTA_PARITY_BACKEND" in bigquery|databricks|motherduck|redshift|snowflake) ;; *) echo "Set VERIDELTA_PARITY_BACKEND to bigquery, databricks, motherduck, redshift, or snowflake; see 'Live warehouse tests' in CONTRIBUTING.md."; exit 1;; esac
+	@case "$$VERIDELTA_PARITY_BACKEND" in bigquery|databricks|motherduck|redshift|snowflake|synapse) ;; *) echo "Set VERIDELTA_PARITY_BACKEND to bigquery, databricks, motherduck, redshift, snowflake, or synapse; see 'Live warehouse tests' in CONTRIBUTING.md."; exit 1;; esac
 	uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py --no-cov -rs
 
 databases:
