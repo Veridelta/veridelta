@@ -134,6 +134,83 @@ class TestLoaders:
         ):
             LoaderFactory.load(SourceConfig(path=str(path), format=fmt))  # type: ignore[arg-type]
 
+    def test_it_names_the_data_files_beside_a_missing_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a missing file's error lists the data files in its folder, by name.
+
+        An agent has no tool that lists a folder, so the error is how it finds
+        the file the configuration meant. A file whose suffix names no format,
+        or whose name starts with a dot, is left out.
+        """
+        for name in ("modern.csv", "legacy.csv", "notes.txt", ".legacy.csv"):
+            (tmp_path / name).write_text("id\n1\n")
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConnectorError) as info:
+            LoaderFactory.load(SourceConfig(path="legacy_old.csv"))
+
+        assert str(info.value) == (
+            "The csv file 'legacy_old.csv' does not exist. "
+            "Its folder holds 'legacy.csv' and 'modern.csv'."
+        )
+
+    def test_it_says_when_a_missing_file_has_no_data_file_beside_it(self, tmp_path: Path) -> None:
+        """Ensure an empty folder is named as empty, so nobody looks for a near match."""
+        (tmp_path / "notes.txt").write_text("nothing to compare")
+        path = tmp_path / "orders.parquet"
+
+        with pytest.raises(ConnectorError) as info:
+            LoaderFactory.load(SourceConfig(path=str(path)))
+
+        assert str(info.value) == (
+            f"The parquet file '{path}' does not exist. "
+            "Its folder holds no file whose suffix names a format."
+        )
+
+    def test_it_names_ten_data_files_beside_a_missing_file_and_counts_the_rest(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure a crowded folder adds ten names and a count, not every name."""
+        for index in range(12):
+            (tmp_path / f"part_{index:02}.csv").write_text("id\n1\n")
+        path = tmp_path / "part.csv"
+
+        with pytest.raises(ConnectorError) as info:
+            LoaderFactory.load(SourceConfig(path=str(path)))
+
+        shown = ", ".join(f"'part_{index:02}.csv'" for index in range(10))
+        assert str(info.value) == (
+            f"The csv file '{path}' does not exist. Its folder holds {shown}, and 2 more."
+        )
+
+    def test_it_lists_no_folder_that_does_not_exist(self, tmp_path: Path) -> None:
+        """Ensure a missing file in a missing folder says only that the file is missing."""
+        path = tmp_path / "exports" / "orders.csv"
+
+        with pytest.raises(ConnectorError) as info:
+            LoaderFactory.load(SourceConfig(path=str(path)))
+
+        assert str(info.value) == f"The csv file '{path}' does not exist."
+
+    def test_it_lists_no_folder_for_a_cloud_path(self, mocker: MockerFixture) -> None:
+        """Ensure a missing object in a bucket names no local folder.
+
+        A bucket is never listed: the reader's credentials may reach far more
+        than the configuration names, and a local folder of the same name is
+        unrelated.
+        """
+        scandir = mocker.patch("veridelta._reading.os.scandir")
+        mocker.patch.object(
+            LoaderFactory.get_loader("parquet"), "load", side_effect=FileNotFoundError("gone")
+        )
+
+        with pytest.raises(ConnectorError) as info:
+            LoaderFactory.load(SourceConfig(path="s3://lake/orders.parquet"))
+
+        assert str(info.value) == "The parquet file 's3://lake/orders.parquet' does not exist."
+        scandir.assert_not_called()
+
     def test_it_names_a_pattern_that_matches_no_file(self, tmp_path: Path) -> None:
         """Ensure a glob that finds nothing fails before the comparison, naming the pattern."""
         pattern = tmp_path / "*.parquet"

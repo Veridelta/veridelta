@@ -51,6 +51,8 @@ Avro columns keep the types in the file's schema. Its `options` take `columns` a
 
 Veridelta reads each file's schema before the comparison starts. So a missing file, a pattern that matches none, or a file that cannot be read fails at once, with a `ConnectorError` that names it.
 
+The error for a missing local file also names the data files in its folder, up to ten, so a misspelled name shows its fix. A cloud path's bucket is not listed.
+
 ## Lakehouse tables
 
 A Delta Lake or Iceberg table is scanned lazily, as an unevaluated Polars `LazyFrame`. Install the `delta` or `iceberg` extra. This pair compares version 12 of a Delta table with one snapshot of an Iceberg table:
