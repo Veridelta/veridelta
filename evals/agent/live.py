@@ -57,11 +57,16 @@ SYSTEM_PROMPT: Final = (
     "comparison: validate_config before run_comparison, and the proposal tools when the user "
     "asks what rule would explain a difference. Change a configuration file only when the "
     "task asks you to fix or write one, and never add a rule the user did not ask for. Report "
-    "verdicts, counts, and column names, and never repeat a value from the data. If the "
-    "server refuses a file, stop and say so. End every answer with the result line the task "
-    "describes."
+    "verdicts, counts, and column names, and never repeat a value from the data unless the "
+    "task asks for it. If the server refuses a file, stop and say so. End every answer with "
+    "the result line the task describes."
 )
-"""What the model is told before the task's prompt."""
+"""What the model is told before the task's prompt.
+
+A task that asks for a proposal asks for the values in it, so the rule against
+repeating values yields to the task, as the server's own instructions yield to
+the user. A canary task forbids values in its own prompt.
+"""
 
 
 @dataclass(frozen=True)
