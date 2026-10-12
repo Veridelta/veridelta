@@ -3,7 +3,7 @@ type: Key Metrics
 title: The key metrics
 description: One north star, the drivers that move it, and the guardrails against gaming it, each measured by a command this repository can run.
 status: draft
-generated: { by: claude-code, at: 2026-10-12T01:01:17Z }
+generated: { by: claude-code, at: 2026-10-12T02:15:12Z }
 ---
 
 # The key metrics
@@ -32,7 +32,7 @@ Veridelta has no telemetry and adds none, so every metric here is measured from 
 - [DR-01](metrics/DR-01.md) counts the keys in the smallest configuration that compares two Parquet files: 3, since the format follows the file's suffix.
 - [DR-02](metrics/DR-02.md) counts the quick-start mistakes whose error names the cause and not a symptom: 4 of 4 today.
 - [DR-03](metrics/DR-03.md) measures how long a reported wrong verdict stays unfixed on PyPI. No such report exists yet.
-- [DR-04](metrics/DR-04.md) counts the fixed agent tasks a model-driven agent passes under fixed graders, out of 20. The controls score 20 of 20 and 0 of 20. On the first live runs, a mid-size model passed 20 of 20 and a small model 18 of 20, against a target of 20 of 20 on every model run. After two error messages named their fix, the small model passed the two tasks it had failed, 3 of 3 attempts each.
+- [DR-04](metrics/DR-04.md) counts the fixed agent tasks a model-driven agent passes under fixed graders, out of 20. The controls score 20 of 20 and 0 of 20. On the first live runs, a mid-size model passed 20 of 20 and a small model 18 of 20, against a target of 20 of 20 on every model run. After two error messages named their fix, and the eval's prompt stopped contradicting one task, the small model passed 20 of 20.
 
 ## Guardrails
 
