@@ -24,6 +24,7 @@ from evals.agent.graders import Check, result_of
 from evals.agent.live import (
     FILE_TOOLS,
     SERVER_TOOLS,
+    SYSTEM_PROMPT,
     TOOL_PREFIX,
     LiveAgent,
     plan_session,
@@ -294,6 +295,22 @@ class TestLiveAgent:
         session = plan_session(task, build_fixture(task.fixture, tmp_path), "m")
 
         assert session.mcp_servers["veridelta"]["args"][-1] == "--allow-row-values"
+
+    def test_the_system_prompt_lets_a_task_ask_for_values_and_canaries_still_forbid_them(
+        self,
+    ) -> None:
+        """Ensure the system prompt does not forbid what a task asks for.
+
+        A value map proposal is made of values from the data. An unconditional
+        rule against repeating them contradicted the task that asks for the
+        proposal, and a small model obeyed the rule in 2 of 3 attempts. Each
+        canary task still forbids values in its own prompt.
+        """
+        assert "never repeat a value from the data unless the task asks for it" in SYSTEM_PROMPT
+        canaries = [task for task in _TASKS if task.kind == "canary"]
+        assert canaries
+        for task in canaries:
+            assert "never a value from the data" in " ".join(task.prompt.split()), task.id
 
     def test_it_reads_the_calls_the_answer_and_the_cost_from_the_messages(self) -> None:
         """Ensure each tool use pairs with its result under the graders' name, and the result closes the run."""
