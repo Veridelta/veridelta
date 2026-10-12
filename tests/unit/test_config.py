@@ -247,6 +247,22 @@ class TestErrorLocations:
         assert location.message is not None
         assert location.message.startswith("Input should be")
 
+    def test_an_unknown_format_names_the_format_the_suffix_names(self, tmp_path: Path) -> None:
+        """Ensure a misspelled format's finding says which format the file's suffix names."""
+        with pytest.raises(ConfigError) as exc_info:
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: legacy.csv\ntarget:\n  path: modern.csv\n  format: parquett\n"
+                "primary_keys: [id]\n",
+            )
+
+        [location] = exc_info.value.locations
+        assert location.path == ("target", "format")
+        assert location.message is not None
+        assert location.message.endswith(
+            "The path's suffix names csv. Set format to csv, or leave format out."
+        )
+
     def test_a_block_that_is_not_a_mapping_is_placed_at_the_block(self, tmp_path: Path) -> None:
         """Ensure a list where a block should be points at the block's key."""
         with pytest.raises(ConfigError, match="must be a mapping") as exc_info:

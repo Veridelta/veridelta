@@ -16,7 +16,18 @@ from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    ValidatorFunctionWrapHandler,
+    computed_field,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 
 from veridelta.exceptions import ConfigError
 
@@ -260,6 +271,30 @@ class SourceConfig(BaseModel):
             return values
         inferred = infer_format(str(values.get("path", "")))
         return values if inferred is None else {**values, "format": inferred}
+
+    @field_validator("format", mode="wrap")
+    @classmethod
+    def _format_the_suffix_names(
+        cls, value: Any, handler: ValidatorFunctionWrapHandler, info: ValidationInfo
+    ) -> SourceType:
+        """Name the format the path's suffix names, when `format` is not one Veridelta reads.
+
+        The nearest spelling can be the wrong format: `parquett` on a `.csv` file
+        means csv, not parquet. The error keeps Pydantic's type and location.
+        """
+        try:
+            return cast("SourceType", handler(value))
+        except ValidationError as exc:
+            path = info.data.get("path")
+            named = infer_format(path) if isinstance(path, str) else None
+            if named is None:
+                raise
+            raise PydanticCustomError(
+                "literal_error",
+                "{message}. The path's suffix names {named}. "
+                "Set format to {named}, or leave format out.",
+                {"message": exc.errors()[0]["msg"], "named": named},
+            ) from exc
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:
         """Leave object-store credentials out of the printed reader options.

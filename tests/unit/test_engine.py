@@ -220,6 +220,52 @@ class TestLoaders:
         ):
             LoaderFactory.load(SourceConfig(path=str(pattern), format="parquet"))
 
+    @pytest.mark.parametrize(
+        ("path", "added"),
+        [
+            pytest.param(
+                "orders.csv",
+                " The path's suffix names csv. Set format to csv, or leave format out.",
+                id="suffix-names-another-format",
+            ),
+            pytest.param("orders.parquet", "", id="suffix-names-the-same-format"),
+            pytest.param("orders.txt", "", id="suffix-names-no-format"),
+        ],
+    )
+    def test_a_failed_read_names_the_format_the_suffix_names(
+        self, mocker: MockerFixture, path: str, added: str
+    ) -> None:
+        """Ensure a read that fails under one format names the format the suffix names.
+
+        The reader's own words, such as a missing Parquet footer, do not say what
+        to change, and the nearest spelling of a misspelled format can be wrong.
+        """
+        mocker.patch.object(
+            LoaderFactory.get_loader("parquet"), "load", side_effect=OSError("cannot open it.")
+        )
+
+        with pytest.raises(ConnectorError) as info:
+            LoaderFactory.load(SourceConfig(path=path, format="parquet"))
+
+        assert str(info.value) == (
+            f"Reading the parquet file '{path}' failed: cannot open it.{added}"
+        )
+
+    def test_a_csv_file_read_as_parquet_says_to_set_csv(self, tmp_path: Path) -> None:
+        """Ensure the reader's own message, which ends without a period, still reads as a sentence."""
+        path = tmp_path / "modern.csv"
+        path.write_text("id,value\n1,a\n")
+
+        with pytest.raises(ConnectorError) as info:
+            LoaderFactory.load(SourceConfig(path=str(path), format="parquet"))
+
+        message = str(info.value)
+        assert message.startswith(f"Reading the parquet file '{path}' failed: ")
+        assert message.endswith(
+            ". The path's suffix names csv. Set format to csv, or leave format out."
+        )
+        assert ".." not in message
+
     def test_it_leaves_a_signature_out_of_a_failed_read(
         self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
     ) -> None:

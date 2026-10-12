@@ -82,6 +82,28 @@ def _files_beside(path: str) -> str:
     return f" Its folder holds {listed}."
 
 
+def _with_the_suffix_format(config: SourceConfig, detail: str) -> str:
+    """Add the format the path's suffix names to a failed read's detail, when it differs.
+
+    A file whose `format` disagrees with its suffix fails with the reader's own
+    words, such as a missing Parquet footer, which do not say what to change.
+
+    Args:
+        config (SourceConfig): The file the read failed on.
+        detail (str): The reader's message.
+
+    Returns:
+        str: The detail, with the fix added when the suffix names another format.
+    """
+    named = infer_format(config.path)
+    if named is None or named == config.format:
+        return detail
+    return (
+        f"{detail.rstrip().rstrip('.')}. The path's suffix names {named}. "
+        f"Set format to {named}, or leave format out."
+    )
+
+
 fastexcel = optional_module("fastexcel")
 """Presence probe for the `excel` extra. Polars imports this itself, but only
 at call time, so checking here turns a bare ImportError into an install hint."""
@@ -384,7 +406,7 @@ class LoaderFactory:
             except (OSError, pl.exceptions.PolarsError) as exc:
                 raise ConnectorError(
                     f"Reading the {config.format} file '{shown_location(config.path)}' failed: "
-                    f"{without_location(str(exc), config.path)}"
+                    f"{_with_the_suffix_format(config, without_location(str(exc), config.path))}"
                 ) from exc
             logger.info(
                 "Opened the %s file '%s' (%d columns)",

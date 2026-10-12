@@ -368,6 +368,42 @@ class TestSourceFormatInference:
 
         assert config.format == "csv"
 
+    def test_an_unknown_format_names_the_format_the_suffix_names(self) -> None:
+        """Ensure a misspelled format points at the suffix, not at the nearest spelling.
+
+        `parquett` reads as a typo for `parquet`, and an agent fixed it that way
+        on a CSV file. The error keeps Pydantic's type and location.
+        """
+        with pytest.raises(ValidationError) as info:
+            SourceConfig(path="modern.csv", format="parquett")  # type: ignore[arg-type]
+
+        [error] = info.value.errors()
+        assert error["type"] == "literal_error"
+        assert error["loc"] == ("format",)
+        assert error["msg"] == (
+            "Input should be 'csv', 'parquet', 'json', 'ndjson', 'arrow', 'avro' or 'excel'. "
+            "The path's suffix names csv. Set format to csv, or leave format out."
+        )
+
+    @pytest.mark.parametrize(
+        "data",
+        [
+            pytest.param({"path": "export.txt", "format": "parquett"}, id="unknown-suffix"),
+            pytest.param({"format": "parquett"}, id="no-path"),
+        ],
+    )
+    def test_an_unknown_format_names_no_suffix_when_none_names_a_format(
+        self, data: dict[str, str]
+    ) -> None:
+        """Ensure the error adds nothing when the path gives no format to suggest."""
+        with pytest.raises(ValidationError) as info:
+            SourceConfig.model_validate(data)
+
+        [message] = [error["msg"] for error in info.value.errors() if error["loc"] == ("format",)]
+        assert message == (
+            "Input should be 'csv', 'parquet', 'json', 'ndjson', 'arrow', 'avro' or 'excel'"
+        )
+
     def test_it_leaves_an_input_that_is_no_mapping_to_pydantic(self) -> None:
         """Ensure a bare path, with no mapping to fill, fails as Pydantic reports it."""
         with pytest.raises(ValidationError, match="dictionary"):
