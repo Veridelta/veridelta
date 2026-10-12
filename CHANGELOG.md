@@ -1,3 +1,16 @@
+## v0.40.2 (2026-10-12)
+
+A missing local file's error named the file and nothing else, so a misspelled or renamed
+path gave no lead. The error now names the data files in the file's folder, up to ten,
+sorted, with a count of the rest. A file counts when its suffix names a format. Only names
+are read, and a cloud path is never listed. In the first live run of the agent eval, a small
+model left a wrong path unchanged three times out of three, since an agent that drives
+`veridelta mcp` has no tool that lists a folder.
+
+### Fix
+
+- name the data files beside a missing file (#399)
+
 ## v0.40.1 (2026-10-11)
 
 The summary could print a match rate such as -100.0% when most keys missed, since the
