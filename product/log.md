@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-12
+
+- **Update**: [DR-04](metrics/DR-04.md) records a rerun of the two tasks the small model failed. 0.40.2 names the data files beside a missing file, and 0.40.3 names the format a file's suffix names. The small model then passed both tasks, 3 of 3 attempts each. Its next full run measures the target. Serves [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison).
+
 ## 2026-10-11
 
 - **Update**: [DR-04](metrics/DR-04.md) records its first two live runs: a mid-size model passed 20 of 20 tasks and a small model 18 of 20, and the target is 20 of 20 on every model run. The small model failed a missing source file and an unknown format, since neither error names the fix. Per the card, those are defects in the messages, fixed next. Serves [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison).
