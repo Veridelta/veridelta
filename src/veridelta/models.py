@@ -135,7 +135,7 @@ def mismatch_ratio_of(mismatches: int, source_rows: int) -> float:
     return float(mismatches) / float(max(source_rows, 1))
 
 
-def _infer_format(path: str) -> SourceType | None:
+def infer_format(path: str) -> SourceType | None:
     """Return the format a path's suffix names, or None when the suffix says nothing.
 
     The suffix is the file name's, after any `?` query or `#` fragment is
@@ -258,7 +258,7 @@ class SourceConfig(BaseModel):
         values = cast("dict[str, Any]", data)
         if "format" in values:
             return values
-        inferred = _infer_format(str(values.get("path", "")))
+        inferred = infer_format(str(values.get("path", "")))
         return values if inferred is None else {**values, "format": inferred}
 
     def __repr_args__(self) -> Iterable[tuple[str | None, Any]]:

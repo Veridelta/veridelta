@@ -8,12 +8,15 @@ that names one. `veridelta.engine` re-exports the loaders as public API.
 """
 
 import logging
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, ClassVar, Final
 
 import polars as pl
 
+from veridelta._resolution import quoted_list
 from veridelta.connectors.base import (
     ReaderConnector,
     optional_module,
@@ -31,11 +34,52 @@ from veridelta.models import (
     IcebergConfig,
     SourceConfig,
     SourceRef,
+    infer_format,
 )
 
 # Named for the module the loaders lived in. `--verbose` prints the name, and the
 # 0.14.4 changelog promised it, so it stays `veridelta.engine` wherever they live.
 logger = logging.getLogger("veridelta.engine")
+
+
+_FILES_NAMED: Final = 10
+"""The most data files a missing file's error names from its folder."""
+
+
+def _files_beside(path: str) -> str:
+    """Name the data files in the folder a missing local file was looked for in.
+
+    A misspelled or renamed path is the usual cause, and an agent that cannot list
+    a folder learns the right name from the error alone. A file counts when its
+    suffix names a format and its name does not start with a dot. Only names are
+    read, never a file's content, and a cloud path is not listed.
+
+    Args:
+        path (str): The path the configuration gave.
+
+    Returns:
+        str: A sentence to append, starting with a space, or nothing for a cloud
+            path or a folder that cannot be read.
+    """
+    if "://" in path:
+        return ""
+    try:
+        with os.scandir(Path(path).expanduser().parent) as entries:
+            names = sorted(
+                entry.name
+                for entry in entries
+                if not entry.name.startswith(".") and infer_format(entry.name)
+            )
+    except OSError:
+        return ""
+    if not names:
+        return " Its folder holds no file whose suffix names a format."
+    shown = names[:_FILES_NAMED]
+    if len(names) > len(shown):
+        listed = f"{', '.join(repr(name) for name in shown)}, and {len(names) - len(shown)} more"
+    else:
+        listed = quoted_list(shown)
+    return f" Its folder holds {listed}."
 
 
 fastexcel = optional_module("fastexcel")
@@ -335,6 +379,7 @@ class LoaderFactory:
             except FileNotFoundError as exc:
                 raise ConnectorError(
                     f"The {config.format} file '{shown_location(config.path)}' does not exist."
+                    f"{_files_beside(config.path)}"
                 ) from exc
             except (OSError, pl.exceptions.PolarsError) as exc:
                 raise ConnectorError(
