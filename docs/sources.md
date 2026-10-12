@@ -37,7 +37,7 @@ uv add 'veridelta[all]'
 
 ## Files
 
-A file source reads `path` in one of these formats: `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, or `excel`. Any other `format` is rejected when the configuration loads. When `format` is absent, the file's suffix decides it, in any case and before any `?` in the path. The suffixes are `.csv`; `.parquet` or `.pq`; `.json`; `.ndjson` or `.jsonl`; `.arrow`, `.ipc`, or `.feather`; `.avro`; and `.xlsx` or `.xls`. A suffix not in that list, or none, reads as `csv`. A `format` you write always wins. A file read as the wrong format seldom holds the primary keys, and the error that stops the run names the file, the format it was read as, and the columns it found.
+A file source reads `path` in one of these formats: `csv`, `parquet`, `json`, `ndjson`, `arrow`, `avro`, or `excel`. Any other `format` is rejected when the configuration loads. When `format` is absent, the file's suffix decides it, in any case and before any `?` in the path. The suffixes are `.csv`; `.parquet` or `.pq`; `.json`; `.ndjson` or `.jsonl`; `.arrow`, `.ipc`, or `.feather`; `.avro`; and `.xlsx` or `.xls`. A suffix not in that list, or none, reads as `csv`. A `format` you write always wins. A file read as the wrong format seldom holds the primary keys, and the error that stops the run names the file, the format it was read as, and the columns it found. When `format` is not one of these, or the file fails to read under it, the error also names the format the suffix names, if it names one.
 
 `options` go to the matching Polars reader. `{"separator": ";"}` reaches `scan_csv`, and `{"sheet_name": "Q3"}` reaches `read_excel`.
 
