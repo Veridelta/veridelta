@@ -4,6 +4,7 @@ What changed in the product bundle and why, newest first. A commit's diff shows 
 
 ## 2026-10-12
 
+- **Update**: [DR-04](metrics/DR-04.md) meets its target: the small model passed 20 of 20 tasks, 60 of 60 attempts. The full run before it passed 19 of 20, since the eval's system prompt forbade the values that T16 asks for, and [#404](https://github.com/Veridelta/veridelta/pull/404) made that rule yield to the task. The card says which runs used which prompt. Serves [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison).
 - **Update**: [DR-04](metrics/DR-04.md) records a rerun of the two tasks the small model failed. 0.40.2 names the data files beside a missing file, and 0.40.3 names the format a file's suffix names. The small model then passed both tasks, 3 of 3 attempts each. Its next full run measures the target. Serves [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison).
 
 ## 2026-10-11
