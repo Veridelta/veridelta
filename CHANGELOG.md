@@ -1,3 +1,17 @@
+## v0.40.3 (2026-10-12)
+
+A format Veridelta does not accept, such as `parquett`, failed with the list of formats,
+and a file read under the wrong format failed with the reader's own words. Neither said
+which format the file's suffix names. Both errors now add it: "The path's suffix names csv.
+Set format to csv, or leave format out." The validation error keeps its type and location,
+so `validate --json` still places it at the `format` key. In the first live run of the
+agent eval, a small model changed `parquett` to `parquet` on a CSV file, the nearest
+spelling and the wrong format.
+
+### Fix
+
+- name the format a file's suffix names when its format fails (#401)
+
 ## v0.40.2 (2026-10-12)
 
 A missing local file's error named the file and nothing else, so a misspelled or renamed
