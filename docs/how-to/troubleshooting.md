@@ -47,7 +47,7 @@ Changed:       0
 
 No key pairs, since each side spells its keys another way, such as `A1` against `a1`, or `7` against `007` in text. Rules on a key column apply before rows are paired. Give the key the rule that makes both sides spell it one way, such as `case_insensitive: true`, `whitespace_mode: both`, or `pad_zeros: 3`. See [Primary keys](../configuration.md#primary-keys).
 
-The match rate reads 0% in this case. The mismatch ratio counts added and removed rows over the source rows, so it can pass 1, and the rate stays at 0% rather than go below it.
+The match rate reads 0% in this case. The mismatch ratio counts added and removed rows over the source rows, so it can exceed 1. The rate never goes below 0%.
 
 ## A key holds two types
 
@@ -65,7 +65,7 @@ rules:
     cast_to: Int64
 ```
 
-Pushdown refuses the same keys with the same message, an integer key against a float key among them. Before 0.33.2, a local run failed on such a key with an unexpected error from inside the join. Before 0.40.0, pushdown paired the rows as the database converted them.
+Pushdown refuses the same keys with the same message, an integer key against a float key among them.
 
 ## Most values in a column differ
 

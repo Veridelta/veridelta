@@ -55,7 +55,7 @@ The error for a missing local file also names the data files in its folder, up t
 
 ## Lakehouse tables
 
-A Delta Lake or Iceberg table is scanned lazily, as an unevaluated Polars `LazyFrame`. Install the `delta` or `iceberg` extra. This pair compares version 12 of a Delta table with one snapshot of an Iceberg table:
+A Delta Lake or Iceberg table is scanned lazily, as a Polars `LazyFrame`. Install the `delta` or `iceberg` extra. This pair compares version 12 of a Delta table with one snapshot of an Iceberg table:
 
 ```yaml
 source:
@@ -81,7 +81,7 @@ The scan reads the table's transaction log or metadata when it opens. So a missi
 
 ## Databases
 
-A `database` source reads a table, or the result of a query, from an operational database through [ConnectorX](https://github.com/sfu-db/connector-x). Install the `database` extra. The rows are compared locally. A database pairs with a file, a lakehouse table, or another database, and `crosswalk` reads it too. This pair compares a Postgres table with the result of a MySQL query:
+A `database` source reads a table, or the result of a query, from an operational database through [ConnectorX](https://github.com/sfu-db/connector-x). Install the `database` extra. The rows are compared locally. A database pairs with any source but a warehouse, and `crosswalk` reads it too. This pair compares a Postgres table with the result of a MySQL query:
 
 ```yaml
 source:
@@ -103,7 +103,7 @@ Two Postgres, SQL Server, or Redshift tables on one server can instead be compar
 
 ### Connection string
 
-`uri` is a ConnectorX connection string that starts with `postgresql://` or `postgres://`, `mysql://` (MariaDB too), `mssql://`, `oracle://`, `redshift://`, `clickhouse://`, or `sqlite://`.
+`uri` is a ConnectorX connection string, such as one that starts with `postgresql://` or `postgres://`, `mysql://` (MariaDB too), `mssql://`, `oracle://`, `redshift://`, `clickhouse://`, or `sqlite://`.
 
 A SQLite URI is followed by a file path, as in `sqlite:///srv/data/legacy.db`, or `sqlite://C:/data/legacy.db` on Windows. The path must name an existing file. Veridelta refuses a missing one, which ConnectorX would otherwise create as an empty database.
 
@@ -120,7 +120,7 @@ Set exactly one of `table` and `query`:
 
 `password` is percent-encoded into the URI. It can contain `@`, `:`, `/`, or any other character, and needs a user name in `uri`.
 
-A password written into `uri` itself must already be percent-encoded, which an expanded `${VAR}` is not. Setting both fails when the file loads. Logs and errors print the URI without its query, and mask the value of a parameter named like a credential, such as `?password=`, where a driver's message repeats it. Use `password` all the same.
+A password written into `uri` itself must already be percent-encoded, which an expanded `${VAR}` is not. Setting both fails when the file loads. Logs and errors print the URI without its query. Where a driver's message repeats a parameter named like a credential, such as `?password=`, its value is masked. Set the password in `password`, not in `uri`.
 
 ### Reading and types
 
@@ -158,7 +158,7 @@ MySQL has no boolean type, so a flag arrives as a number. These MySQL types arri
 
 A `cast_to` rule cannot turn `Binary` into a number or a boolean, and a run refuses one before it reads a row. To compare a `BIT` column as a number, read it with `CAST(column AS UNSIGNED)` in a `query`.
 
-SQL Server has a boolean type, `BIT`, and these of its types arrive as follows:
+SQL Server has a boolean type, `BIT`. These SQL Server types arrive as follows:
 
 | SQL Server type | Polars type |
 | :--- | :--- |
@@ -185,7 +185,7 @@ source:
   partitions: 4
 ```
 
-Veridelta reads the column's lowest and highest values, and ConnectorX splits that span into `partitions` ranges and reads them in parallel. Each range opens its own connection, so the database must accept that many more.
+Veridelta reads the column's lowest and highest values, and ConnectorX splits that span into `partitions` ranges and reads them in parallel. Each range opens its own connection, so the database must accept that many more connections.
 
 The column must hold integers and no NULL. A NULL falls in no range, so ConnectorX would leave its row out. Veridelta counts the column's NULLs first and fails the read if it finds any. An empty table is read in one piece.
 
@@ -337,7 +337,7 @@ Project ids follow Google's rules: six to thirty lowercase letters, digits, or h
 
 ## Credentials
 
-Do not commit a `password`, a `private_key_passphrase`, an `access_token`, or a `motherduck_token` in YAML, a database `password` included. Write `${NAME}` so the loader reads the value from the environment; see [Environment variables](configuration.md#environment-variables). Or build the connection in Python, as in `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`, and pass it to `DiffEngine.run_from_configs`.
+Do not commit a `password`, a `private_key_passphrase`, an `access_token`, or a `motherduck_token` in YAML. Write `${NAME}` so the loader reads the value from the environment; see [Environment variables](configuration.md#environment-variables). Or build the connection in Python, as in `SnowflakeConfig(..., password=os.environ["SNOWFLAKE_PASSWORD"])`, and pass it to `DiffEngine.run_from_configs`.
 
 Printing a connection config, or formatting one into a log line, leaves out its credentials:
 
@@ -349,7 +349,7 @@ Printing a connection config, or formatting one into a log line, leaves out its 
 - `storage_options`, for Delta Lake and Iceberg;
 - a `storage_options` map inside a file source's `options`. The other reader options still print.
 
-A password written inside a database `uri` prints as `***`, and the rest of the URI prints as written. The credentials stay readable as attributes and in `model_dump()`, because the connectors and readers need them. Remove them before logging a dump.
+A database `uri` prints with its password as `***` and without its query. The credentials stay readable as attributes and in `model_dump()`, because the connectors and readers need them. Remove them before logging a dump.
 
 ## Logging
 
@@ -362,7 +362,7 @@ logging.basicConfig(level=logging.INFO)
 logging.getLogger("veridelta.connectors").setLevel(logging.INFO)
 ```
 
-- `INFO` records a session or scan opening and closing. It also records each database read, Postgres pushdown statements included, with its row count and the URI with its password masked. Each DuckDB read, pushdown statements included, is recorded with its row count and `database`.
+- `INFO` records a session or scan opening and closing. It also records each database read, pushdown statements included, with its row count and the URI with its password masked. Each DuckDB read, pushdown statements included, is recorded with its row count and `database`.
 - `INFO` also records each warehouse pushdown statement by its kind, with its duration. The kinds are `schema`, `duplicates`, `count`, `mismatch`, `added`, `missing`, `columns`, and `samples`.
 - `WARNING` records a connection, a read, or a statement that fails, before the error reports it. A warehouse session that does not close cleanly is recorded with the error's type only.
 - `DEBUG` adds the driver's traceback for a session that does not close cleanly.

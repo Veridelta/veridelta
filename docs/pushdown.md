@@ -2,7 +2,7 @@
 
 Pushdown compares two tables inside the database that stores them. Veridelta compiles the comparison to SQL, runs it there, and reads back counts and primary keys instead of rows.
 
-Every rule gives the same verdict in a warehouse as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in live BigQuery, Databricks, MotherDuck, Redshift, Snowflake, Azure SQL, or Synapse services.
+Every rule gives the same verdict in place as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in live BigQuery, Databricks, MotherDuck, Redshift, Snowflake, Azure SQL, or Synapse services.
 
 ## When a comparison is pushed down
 
@@ -14,7 +14,7 @@ A pair of warehouse tables is always compared in place. Both sides must use the 
 | `databricks` | `server_hostname`, `http_path`, `access_token`, `catalog`, `schema_name` |
 | `bigquery` | `project`, `dataset`, `location`, `credentials_path`, `maximum_bytes_billed` |
 
-Naming the same table on both sides raises `ConfigError`, since a table compared with itself always matches. A warehouse paired with a file, a lakehouse table, or a database, or with a different warehouse, raises `ConnectorError`.
+Naming the same table on both sides raises `ConfigError`, since a table compared with itself always matches. A warehouse paired with any other kind of source, or with a different warehouse, raises `ConnectorError`.
 
 Database and DuckDB sources are read into memory and compared locally. Two Postgres, SQL Server, or Redshift tables on one server, or two tables in one DuckDB database, are compared in place when both set `pushdown`; see [Postgres](#postgres), [SQL Server, Azure SQL, and Synapse](#sql-server-azure-sql-and-synapse), [Redshift](#redshift), and [DuckDB and MotherDuck](#duckdb-and-motherduck).
 
@@ -27,7 +27,7 @@ A pushdown run issues these statements:
 3. The added rows, found only in the target, and the removed rows, found only in the source.
 4. A tally of mismatches per column. It is skipped when no column is compared.
 
-With `pushdown_sample_rows` set, one more statement fetches a sample of the changed rows with their values; see [Row samples](#row-samples). With `--baseline`, one more statement per 200 accepted changed rows fetches, for those rows alone, a match flag per compared column and no value; see [Baselines](#baselines).
+With `pushdown_sample_rows` set, one more statement fetches a sample of the changed rows with their values; see [Row samples](#row-samples). With `--baseline`, one more statement per 200 accepted changed rows fetches a match flag per compared column for those rows, and no values; see [Baselines](#baselines).
 
 These counts fill every `DiffSummary` field, `column_mismatches` included. `threshold`, `match_rate_percentage`, and the drift report mean what they mean in a local run.
 
@@ -70,7 +70,7 @@ The table covers `%Y`, `%m`, `%d`, `%H`, `%M`, `%S`, `%f`, `%z`, and `%%`, separ
 - **Artifacts hold primary keys only**, since the comparison SQL never selects whole rows. They are written as `added_rows_pks_only`, `removed_rows_pks_only`, and `changed_rows_pks_only`, so they cannot be mistaken for local artifacts, which hold whole records. A [row sample](#row-samples), when requested, is written as `changed_rows_sample`.
 - **A column of two different types is refused unless both are numeric.** A local run casts the target to the source type. A database converts one side by its own rules, so the text `"007"` against the integer `7`, or a date against a timestamp, could reach another verdict. Pushdown raises `ConfigError` before reading a row, naming each such column. Give it a `cast_to` that brings both sides to one type, or set `strict_types` to fail it; [Upgrading](upgrading.md#0330) shows both. Two numeric types still compare by value.
 - **`--save-baseline` is refused**, since the run holds keys alone and cannot say which columns differ on a changed row. `--baseline` works; see [Baselines](#baselines).
-- **`strict_types` compares the types the driver reports** for each side, after normalization. It fails every row of a column whose two types differ, as a local run does. These are the driver's types, not the declared ones. Snowflake's `NUMBER(38,0)`, for one, arrives as a decimal, so it meets a `NUMBER(38,0)` column but not a `FLOAT`.
+- **`strict_types` compares the types the driver reports** for each side, after normalization. It fails every row of a column whose two types differ, as a local run does. These are the driver's types, not the declared ones. Snowflake's `NUMBER(38,0)`, for one, arrives as a decimal, so `strict_types` passes it against a `NUMBER(38,0)` column and fails it against a `FLOAT`.
 
 ## BigQuery
 
@@ -169,7 +169,7 @@ target:
 primary_keys: ["order_id"]
 ```
 
-The SQL has not run in a live Redshift yet. A gated live test runs it once an account exists. Everything above applies, with these additions:
+The SQL has not yet run in a live Redshift. Everything above applies, with these additions:
 
 - Sign-in uses a database user and a password. To sign in with IAM, pass temporary credentials from `aws redshift get-cluster-credentials`, or `aws redshift-serverless get-credentials`, as the user and `password`.
 - Both `uri` values match, as do both `password` values, so one connection reaches both tables. Each side names a `table`; a `query` cannot be compared in place.
@@ -202,7 +202,7 @@ target:
 primary_keys: ["order_id"]
 ```
 
-Veridelta opens one connection, as a read opens it, and runs each statement there. A file opens read-only, and every session reads time in UTC; see [DuckDB and MotherDuck](sources.md#duckdb-and-motherduck). Everything above applies, with these additions:
+Veridelta opens one connection, the same way a local read does, and runs each statement there. A file opens read-only, and every session reads time in UTC; see [DuckDB and MotherDuck](sources.md#duckdb-and-motherduck). Everything above applies, with these additions:
 
 - Both sides name a `table`, and their `database` and `motherduck_token` values match, so one connection reaches both tables. Write `database` the same way on both sides, since `./warehouse.duckdb` and `warehouse.duckdb` count as different. A `query` cannot be compared in place.
 - Set `pushdown` on both sides or on neither. A pair where only one side sets it raises `ConfigError` instead of reading both.
@@ -215,7 +215,7 @@ Veridelta opens one connection, as a read opens it, and runs each statement ther
 
 `veridelta run --baseline accepted.json` works on a pair compared in place as it does on a local run: the drift the file lists leaves the counts, the verdict, the artifacts, and the reports, and `accepted_count` says how many rows it accepted. Added and removed rows are accepted from the keys the run already reads back. A changed row needs one more fact, which columns differ on it, so one more statement per 200 accepted changed rows fetches a match flag per compared column for those rows alone. No value leaves the warehouse, and a row the file names that does not differ returns nothing.
 
-Each key in the file reaches SQL as an operand of the key's stored type: an integer as itself, text as a quoted literal through the dialect's escapes, and a date or a timestamp, written as text in the file, as a `CAST` of that text. A key column of another type, such as a decimal, refuses the baseline with `ConnectorError`.
+Each key in the file reaches SQL as an operand of the key's stored type: an integer as itself, text as a quoted literal through the dialect's escapes, and a date or a timestamp, written as text in the file, as a `CAST` of that text. A baseline with a key column of any other type, such as a decimal, raises `ConnectorError`.
 
 `--save-baseline` still needs a local run, since a pushdown run holds no differing columns to write; see [Accepting drift](cli.md#accepting-drift).
 

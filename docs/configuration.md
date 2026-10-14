@@ -212,7 +212,7 @@ The schema is slightly stricter than the loader. The loader converts `threshold:
 code --install-extension vscode-veridelta-<version>.vsix
 ```
 
-Then open a configuration and run **Veridelta: Validate configuration**. The extension runs the `veridelta` command the terminal runs. When the extension host's PATH lacks it, or the project runs Veridelta through uv, name the words that run it in the `veridelta.command` setting:
+Then open a configuration and run **Veridelta: Validate configuration**. The extension runs the `veridelta` command the terminal runs. When the extension host's PATH lacks it, or the project runs Veridelta through uv, set `veridelta.command` to the command and arguments that run it:
 
 ```json
 {

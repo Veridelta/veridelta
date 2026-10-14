@@ -12,7 +12,7 @@ These items build on [AI agents](agents.md), in this order, tracked in [issue 12
 
 ### Ambitious
 
-These items may not come soon, and some may never ship. They are listed so the direction is written down. Each is opt-in, and none changes a verdict except through a rule the user declares.
+These items may not come soon, and some may never ship. They are listed so the direction is written down. Each is opt-in.
 
 - A rule that compares text by meaning, through embeddings from a provider the user chooses. Paraphrased text and model outputs match when their meaning matches. No use case yet: nobody has asked for matching by meaning, and the item stays as direction until someone does.
 - A summary of a run written by a language model, with the user's own key or a local model. It sends totals only, unless the user allows row values, and is tested from recorded exchanges. The MCP server lets an agent explain a run, so this item may stay unbuilt. No use case yet: the reviewer reads the report, and nobody has asked for prose.

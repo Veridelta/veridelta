@@ -30,7 +30,7 @@ Choose datacompy to compare two DataFrames inside Python code or a notebook.
 Where the two differ:
 
 - **Two databases.** Veridelta compares two tables in place only when both are on one connection; see [Pushdown](pushdown.md). Two tables in two systems are read and compared on the machine that runs Veridelta. reladiff compares across two databases without moving every row.
-- **The verdict.** reladiff reports which rows differ. Veridelta also applies rules per column before it decides, and reports the count of mismatches in each column, an HTML report, and an exit code for CI.
+- **The verdict.** reladiff reports which rows differ. Veridelta also applies rules per column before it decides. It reports the count of mismatches in each column, writes an HTML report, and exits with a code for CI.
 
 Choose reladiff to diff two large tables that live in two different databases.
 

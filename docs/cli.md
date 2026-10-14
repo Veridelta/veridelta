@@ -46,7 +46,7 @@ Progress messages always go to stderr, so `veridelta run --json | jq` needs no f
 
 `veridelta run legacy.csv modern.csv --key id` runs what a file holding only `primary_keys: [id]` and the two paths would run, with the same summary and exit codes. Each file's format follows its suffix, as in a configuration. Rules, `threshold`, discrepancy files, and every other setting need a configuration file. The output flags, such as `--html` and `--json`, work the same either way.
 
-An error then names the arguments rather than a configuration file. Two files without `--key`, `--key` without two files, or two files with `-c` exit `2`, as any invalid argument does.
+In this form, an error names the arguments rather than a configuration file. Two files without `--key`, `--key` without two files, or two files with `-c` exit `2`, as any invalid argument does.
 
 In Python, `files_config(source, target, primary_keys)` from `veridelta.config` returns what `load_config` returns for that file.
 
@@ -78,7 +78,7 @@ A command that cannot finish explains why on stderr. With `--json`, it also prin
 
 ## Logging
 
-`-v` or `--verbose` prints Veridelta's own log lines on stderr, for `run`, `validate`, `crosswalk`, and `mcp`. Each line records a file opened, a connection, a read, or a pushdown statement. Reads and statements carry their timings:
+`-v` or `--verbose` prints Veridelta's own log lines on stderr, for every command but `schema`. Each line records a file opened, a connection, a read, or a pushdown statement. Reads and statements carry their timings:
 
 ```text
 INFO veridelta.connectors.database: Read 1200 rows of table 'orders' from postgresql://analyst@db.internal/sales in 0.412s
@@ -131,7 +131,7 @@ With `--schemas`, `validate` also connects and checks the rules against each sid
 - A pair compared in place runs the column probes a run starts with, then compiles every comparison statement without running it. That settles each warning above one way or the other.
 - A name in a rule's `column_names` that neither side has, after `normalize_column_names` when it is on, is a warning. Such a rule does nothing. That is safe, since it only fails to forgive, but a misspelled name would otherwise go unnoticed.
 
-Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, `warnings`, and `findings`. Each finding carries its `severity`, its `message`, and its `locations` in the file: a `path` of keys and indexes from the root, such as `["rules", 0, "regex_replace"]`, or the `line` and `column` of a parse error, both counted from 1, with the message for that place. A problem the text does not place, such as a missing block, has no location. The verdict goes to stderr.
+Errors print to stdout as `error:` lines and warnings as `warning:` lines. With `--json`, they print as one object with `config`, `valid`, `errors`, `warnings`, and `findings`. Each finding carries its `severity`, its `message`, and its `locations` in the file. A location is a `path` of keys and indexes from the root, such as `["rules", 0, "regex_replace"]`, or the `line` and `column` of a parse error, both counted from 1. Each location has the message for that place. A problem the text does not place, such as a missing block, has no location. The verdict goes to stderr.
 
 <details markdown>
 <summary>Watch <code>validate --schemas</code> catch a wrong primary key</summary>
@@ -214,7 +214,7 @@ rules:
 
 ## Suggesting rules
 
-`veridelta suggest` runs the comparison, then suggests rules that would explain the differences it finds, each with its evidence. It prints the rules as YAML on stdout, ready to paste first in `rules`, and the evidence on stderr. No model is called:
+`veridelta suggest` runs the comparison, then suggests rules that would explain the differences it finds, each with its evidence. It prints the rules as YAML on stdout, ready to paste first in `rules`, and the evidence on stderr. No language model is called:
 
 ```bash
 veridelta suggest -c veridelta.yaml
@@ -240,9 +240,9 @@ A text column gets trimming, `whitespace_mode: both`, when its differing values 
 
 A column with text on one side and dates or timestamps on the other gets `datetime_format` when the text reads as those dates under one format. The common formats are tried, such as `%Y-%m-%d`, `%d/%m/%Y`, and `%m/%d/%Y`, with or without a time, and the one that matches the most rows wins. A timestamp with a zone is left out, since text without an offset names no instant.
 
-A column of any type gets `null_values` when a common spelling of NULL stands on one side where the other side is NULL. The spellings are an empty string, `N/A`, `NA`, `#N/A`, `NULL`, `(null)`, `<null>`, `None`, `nil`, `NaN`, `-`, `--`, and `?`, in any case, and the numbers -1, -9, -99, -999, -9999, and -99999. A suggested sentinel joins the column's sentinels today, from its rule or from `default_null_values`. A real value beside NULL, such as a city, is a change, and `false` is never suggested, since it is too often meant.
+A column of any type gets `null_values` when a common spelling of NULL stands on one side where the other side is NULL. The spellings are an empty string, `N/A`, `NA`, `#N/A`, `NULL`, `(null)`, `<null>`, `None`, `nil`, `NaN`, `-`, `--`, and `?`, in any case, and the numbers -1, -9, -99, -999, -9999, and -99999. A suggested sentinel joins the sentinels the column already has, from its rule or from `default_null_values`. A real value beside NULL, such as a city, is a change, and `false` is never suggested, since it is usually a real value.
 
-Then the comparison runs again with the rule, and the evidence counts the rows it makes match, of the rows that differ in that column, with up to three example keys, and for a tolerance, the largest gap. A row with a NULL on one side is explained only by a null sentinel. A rule that would make a row that matches today differ is not suggested, such as case folding ahead of a `value_map` whose keys are capitals.
+Then the comparison runs again with the rule. The evidence counts the rows it makes match, of the rows that differ in that column, and gives up to three example keys. For a tolerance, it also gives the largest gap. A row with a NULL on one side is explained only by a null sentinel. A rule that would make a row that matches today differ is not suggested, such as case folding ahead of a `value_map` whose keys are capitals.
 
 Each printed rule names its column alone. When a rule governs the column today, such as one that matches it by `pattern`, the suggestion keeps that rule's settings, and a note says to put it first in `rules`, where it wins over the other. In Python, `DiffEngine.suggest_rules()` returns the suggestions as `RuleSuggestion` models.
 
@@ -315,7 +315,7 @@ veridelta mcp --root .
 
 | Flag | Description |
 | :--- | :--- |
-| `--root DIR` | A folder the tools may read configuration files and data on this machine from. Repeat it for more folders. Default: the current directory. |
+| `--root DIR` | A folder from which the tools may read configuration files and data on this machine. Repeat it for more folders. Default: the current directory. |
 | `--allow-row-values` | Let `read_discrepancies`, `propose_value_maps`, and `suggest_rules` return values from the data. Off by default. |
 | `--allow-queries` | Let a tool run a side's `query`, which runs as written. A DuckDB file still reads other files only from under the roots. Off by default. |
 | `--max-rows N` | The most rows, value map entries, or example keys one call returns, at least 1. Default: 50. |

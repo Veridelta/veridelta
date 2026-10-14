@@ -4,7 +4,7 @@ This folder is a kit for recording a real agent that compares two datasets throu
 
 ## What is here
 
-- `orders_before.csv` and `orders_after.csv`: twelve orders exported before and after a pipeline change. Two orders changed status, one amount moved by a cent, and one order is new.
+- `orders_before.csv` and `orders_after.csv`: twelve orders exported before a pipeline change, and the same orders plus a new one exported after it. Two orders changed status, and one amount moved by a cent.
 - `veridelta.yaml`: compares the two files on `order_id`, with no rules.
 - `PROMPT.md`: the prompt to paste.
 

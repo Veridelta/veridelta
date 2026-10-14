@@ -17,7 +17,7 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
     veridelta validate -c veridelta.yaml --json
     ```
 
-    Fix each entry in `errors` before a run. Its place in the file is in `findings`, as a `path` of keys, or as a `line` and `column` counted from 1. The command exits `1` while there is one, and `3`, with an `error` object, when the check cannot finish.
+    Fix each entry in `errors` before a run. Its place in the file is in `findings`, as a `path` of keys, or as a `line` and `column` counted from 1. The command exits `1` when there is an error, and `3`, with an `error` object, when the check cannot finish.
 
 2. Run the comparison, so stdout carries only the summary:
 
@@ -49,7 +49,7 @@ Veridelta compares two datasets, such as two files or two warehouse tables, unde
 
 ## As MCP tools
 
-Where the `mcp` extra is installed, `veridelta mcp` serves steps 1, 2, 5, and 6 as Model Context Protocol tools: `validate_config`, `run_comparison`, `propose_value_maps`, and `suggest_rules`. They return what `veridelta validate --json`, `veridelta run --json`, `veridelta crosswalk --json`, and `veridelta suggest --json` print. Another tool, `describe_schema`, lists one side's columns and their types, and reads no rows, which helps when a rule must name a column. `read_discrepancies`, `propose_value_maps`, and `suggest_rules` return values from the data, so they work only on a server started with `--allow-row-values`; keep those values out of a reply unless the user asks. The guide for AI agents shows how to register it with a host.
+Where the `mcp` extra is installed, `veridelta mcp` serves steps 1, 2, 5, and 6 as Model Context Protocol tools: `validate_config`, `run_comparison`, `propose_value_maps`, and `suggest_rules`. They return what `veridelta validate --json`, `veridelta run --json`, `veridelta crosswalk --json`, and `veridelta suggest --json` print. Another tool, `describe_schema`, lists one side's columns and their types, and reads no rows, which helps when a rule must name a column. `read_discrepancies` returns the rows that differ. It, `propose_value_maps`, and `suggest_rules` return values from the data, so they work only on a server started with `--allow-row-values`. Keep those values out of a reply unless the user asks. The guide for AI agents shows how to register the server with a host.
 
 ## Writing a configuration
 
@@ -57,7 +57,7 @@ Where the `mcp` extra is installed, `veridelta mcp` serves steps 1, 2, 5, and 6 
 
 ## Checking the output
 
-`veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints, and `validate`, `crosswalk`, `suggest`, `baseline`, and `error` name the others. Check what you parse against them.
+`veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints. `veridelta schema validate`, `crosswalk`, `suggest`, `baseline`, and `error` print the others. Check what you parse against them.
 
 On a pull request, the comment the GitHub Action keeps ends with the run's summary as JSON, on the line after `<!-- veridelta-summary`, in an HTML comment that readers never see. Parse that line to read the result without running the comparison again.
 

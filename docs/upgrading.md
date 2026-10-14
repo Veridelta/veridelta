@@ -78,7 +78,7 @@ result = DiffEngine.run_from_configs(diff, source, target)
 
 `fetch_schema()` no longer exists on a connector. Read a reader's schema with `lazyframe().collect_schema()`. Probe a warehouse table with `compile_schema_probe_query(table)`, run through `execute_pushdown(sql, query_type="schema")`.
 
-A connector of your own now subclasses one of two bases. One the local engine reads subclasses `ReaderConnector`. One that runs compiled SQL subclasses `PushdownSession`, and defines `compiler` and `execute_pushdown()`. A reader has no `execute_pushdown`.
+A connector of your own now subclasses one of two bases. A connector that the local engine reads subclasses `ReaderConnector`. A connector that runs compiled SQL subclasses `PushdownSession`, and defines `compiler` and `execute_pushdown()`. A reader has no `execute_pushdown`.
 
 ## 0.14.0
 
