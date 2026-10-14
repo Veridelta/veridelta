@@ -142,7 +142,7 @@ The template defines one job, named `veridelta` by default, which:
 - installs the release the template ships with;
 - prints the summary to the job log;
 - keeps the reports and the OpenTelemetry metrics as artifacts, exposed on the merge request as "Veridelta report", unless `upload-artifact` is `false`;
-- with `otel-send` set to `true`, also sends the metrics, to the endpoint that masked CI/CD variables such as `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_EXPORTER_OTLP_HEADERS` name.
+- with `otel-send` set to `true`, also sends the metrics to the endpoint that `OTEL_EXPORTER_OTLP_ENDPOINT` names. Set it and `OTEL_EXPORTER_OTLP_HEADERS` as masked CI/CD variables.
 
 **Merge request notes.** To keep a summary note on the merge request, add a project access token with the `api` scope as a masked CI/CD variable named `VERIDELTA_GITLAB_TOKEN`. Without it, the job still runs and reports. The job keeps one note per `config` path. Two jobs that run the same path from different working directories write over each other's note.
 
@@ -153,7 +153,7 @@ The template defines one job, named `veridelta` by default, which:
 - `python-version` is empty by default, which runs the image's Python. Set it, such as to `"3.13"`, and uv downloads that version when the image lacks it.
 - `stage`, `job-name`, and `image` place the job in your pipeline.
 
-There is no `github-token` input, since the note reads the masked `VERIDELTA_GITLAB_TOKEN` variable. There is no `artifact-name` either, since GitLab keeps each job's artifacts apart. The template has no `baseline` input: it stays as it is unless a GitLab user asks for more, so open an issue to ask for one.
+There is no `github-token` input, since the note reads the masked `VERIDELTA_GITLAB_TOKEN` variable. There is no `artifact-name` either, since GitLab keeps each job's artifacts apart. The template has no `baseline` input. Open an issue to ask for one.
 
 With `upload-artifact` set to `false`, the reports go to a temporary directory instead. GitLab then logs that no files match the artifact path, which does not change the job's result.
 
@@ -178,6 +178,6 @@ Both integrations read `veridelta run`'s exit code together with its JSON summar
 | :--- | :--- | :--- |
 | `match` | 0 | The comparison is within its threshold. |
 | `drift` | 1 | The JSON summary reports `is_match: false`. |
-| `error` | 3, or any other | The run did not finish, such as a configuration error, an unreachable source, a missing extra, or metrics `otel-send` could not send. There is no summary, and the job always fails. |
+| `error` | 3, or any other | The run did not finish, such as on a configuration error, an unreachable source, or a missing extra, or `otel-send` could not send the metrics. The job always fails. |
 
 A pinned older release also exits `1` when it fails, so `1` counts as drift only when the summary says so.

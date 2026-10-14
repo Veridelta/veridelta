@@ -21,7 +21,7 @@ uv add 'veridelta[snowflake]'   # extras: snowflake, databricks, bigquery, delta
 
 ## Quick start
 
-The smallest configuration names the two files and the keys that pair their rows. The suffix of each path says what format it is, and the recording above runs this file on two three-row files:
+The smallest configuration names the two files and the keys that pair their rows. The suffix of each path says what format it is. The recording above runs this file on two three-row files:
 
 ```yaml
 # veridelta.yaml
@@ -32,7 +32,7 @@ target:
   path: modern.csv
 ```
 
-`validate` checks the file without reading any rows, and `run` compares the two files. It exits 0 when they match, 1 when rows differ, and 3 when the run could not finish. [Command line](cli.md) lists every code and flag:
+`validate` checks the file without reading any rows, and `run` compares the two files. `run` exits 0 when they match, 1 when rows differ, and 3 when the run could not finish. [Command line](cli.md) lists every code and flag:
 
 ```bash
 veridelta validate -c veridelta.yaml
@@ -45,11 +45,11 @@ Two files that need no rules need no configuration file either. Name them and th
 veridelta run legacy.csv modern.csv --key id
 ```
 
-[Configuration](configuration.md) lists every setting, and [Rules](rules.md) say what counts as a match, column by column.
+[Configuration](configuration.md) lists every setting, and [Rules](rules.md) says what counts as a match, column by column.
 
 ## Where to start
 
-The tutorials build a comparison step by step. Each one opens in Google Colab from its first paragraph, where its first cell installs Veridelta:
+The tutorials build a comparison step by step. Each one links to Google Colab in its first paragraph, and its first cell installs Veridelta:
 
 1. [Core concepts](examples/01_core_concepts.ipynb): the Python API, `DiffResult`, and rules.
 2. [YAML and CLI](examples/02_yaml_and_cli.ipynb): a configuration file, `--json`, and artifacts.

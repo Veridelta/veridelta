@@ -17,7 +17,7 @@ People read four parts of Veridelta:
 - **Plain text on the command line.** The command line prints plain text, with no color, symbol, or animation that carries meaning. The verdict is also an [exit code](https://veridelta.github.io/veridelta/cli/#exit-codes), and `--json` prints every result in a form any tool can read.
 - **Words for every verdict.** The HTML report and the Markdown summary say `PASSED` or `FAILED` in words. Color never carries a result alone.
 - **Structure.** Pages and reports use headings in order, real tables, and link text that names its target. The diagram on the home page is described in the paragraph after it.
-- **Media.** The recording on the README and the documentation home is one animated image with a text alternative that says what happens. GitHub's setting for animated images pauses it on the README. The other recordings, on the command line page, sit in closed `<details>` blocks, so they play only when opened, and each has its transcript as text beside it.
+- **Media.** The recording on the README and the documentation home is one animated image with a text alternative that says what happens. GitHub's setting for animated images pauses it on the README. The other recordings, on the command line page and the AI agents page, sit in closed `<details>` blocks, so they play only when opened, and each has its transcript as text beside it.
 - **Keyboard.** Each control in the HTML report is a native button, reached with Tab and shown with the browser's focus ring. A table wider than the screen takes focus too, so arrow keys scroll it.
 - **Without JavaScript.** The HTML report shows every row it holds. Its script only splits long tables into pages of 25 rows.
 
@@ -42,7 +42,7 @@ No person has tested Veridelta with a screen reader, a keyboard alone, or high m
 - The recording on the home page is an animated image that plays on its own, and the site has no control to pause it. Its text alternative says what it shows.
 - The diagram on the home page loads Mermaid from unpkg.com. Where that is blocked, the page shows the diagram's source, and the paragraph after it still describes it.
 
-A run's counts are also in `veridelta run --json` and in the Markdown summary, and its rows in the [discrepancy files](https://veridelta.github.io/veridelta/results/#artifacts) it writes. The user guide, the AI agents page, and the roadmap are also in [`llms-full.txt`](https://veridelta.github.io/veridelta/llms-full.txt), as one plain text file. The page sources are Markdown files and notebooks in the repository's `docs` folder.
+Other formats hold the same content. A run's counts are in `veridelta run --json` and in the Markdown summary, and its rows in the [discrepancy files](https://veridelta.github.io/veridelta/results/#artifacts) it writes. The user guide, the AI agents page, and the roadmap are also in [`llms-full.txt`](https://veridelta.github.io/veridelta/llms-full.txt), as one plain text file. The page sources are Markdown files and notebooks in the repository's `docs` folder.
 
 ## Supported environments
 
@@ -90,7 +90,7 @@ In anything people read:
 - never let color, a symbol, or position carry meaning alone;
 - keep the command line plain text, and put anything a script reads in `--json`.
 
-CI's Accessibility job checks every docs page and a sample report with axe-core, and drives the report by keyboard. Run it locally with `make accessibility`, after installing the browser as [CONTRIBUTING.md](CONTRIBUTING.md#accessibility) says.
+Run CI's Accessibility job locally with `make accessibility`, after installing the browser as [CONTRIBUTING.md](CONTRIBUTING.md#accessibility) says.
 
 ## Ownership
 

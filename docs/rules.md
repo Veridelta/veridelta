@@ -200,8 +200,8 @@ rules:
 
 An entry needs both of these:
 
-- **Confidence**, set by `--min-confidence` (default 0.95): the share of the source value's paired rows whose target is the proposed value. Every row with that source value counts, including rows that already match and rows whose target is NULL. An entry that would break a matching row pays for it. The floor must be above 0.5, which leaves at most one candidate per source value.
-- **Support**, set by `--min-support` (default 5): how many rows agree. A coincidence in a handful of rows is never proposed.
+- **Confidence**, set by `--min-confidence` (default 0.95): the share of the source value's paired rows whose target is the proposed value. Every row with that source value counts, including rows that already match and rows whose target is NULL. A matching row that an entry would break lowers its confidence. The floor must be above 0.5, which leaves at most one candidate per source value.
+- **Support**, set by `--min-support` (default 5): how many rows agree. At the default, a coincidence in a handful of rows is not proposed.
 
 Values are read as the `value_map` stage sees them, after null sentinels, `regex_replace`, whitespace, and case. A `case_insensitive` column gets lowercase entries.
 

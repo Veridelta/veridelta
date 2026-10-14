@@ -49,7 +49,7 @@ An AI agent, such as a coding assistant, runs Veridelta through its command line
 
 ## MCP server
 
-`veridelta mcp` serves steps 1, 2, 5, and 6 above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. Two more tools list a side's columns and read the rows that differ. It needs the `mcp` extra:
+`veridelta mcp` serves steps 1, 2, 5, and 6 above as [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) tools, so an agent's host can call them without a shell. Two more tools list a side's columns and read the rows that differ. The server needs the `mcp` extra:
 
 ```bash
 uv add 'veridelta[mcp]'
@@ -74,7 +74,7 @@ A host that reads its servers from a file takes the same command as an entry. Cl
 }
 ```
 
-In VS Code, [the extension](configuration.md#the-vs-code-extension) registers the server with agent mode: one `--root` per workspace folder, run in the first, with the settings `veridelta.mcp.allowRowValues`, `veridelta.mcp.allowQueries`, and `veridelta.mcp.maxRows` as its flags. Without the extension, `.vscode/mcp.json` takes the same command, with the workspace folder as the root:
+In VS Code, [the extension](configuration.md#the-vs-code-extension) registers the server with agent mode. It passes one `--root` per workspace folder, runs the server in the first, and turns the settings `veridelta.mcp.allowRowValues`, `veridelta.mcp.allowQueries`, and `veridelta.mcp.maxRows` into its flags. Without the extension, `.vscode/mcp.json` takes the same command, with the workspace folder as the root:
 
 ```json
 {
@@ -89,14 +89,14 @@ In VS Code, [the extension](configuration.md#the-vs-code-extension) registers th
 }
 ```
 
-Where Veridelta is installed without uv, the command is `veridelta mcp` itself. To let the agent read rows, add `--allow-row-values` to the command. The server has six tools, and each takes `path`, the configuration file, which a relative path reads against the first root:
+Where Veridelta is installed without uv, the command is `veridelta mcp` itself. To let the agent read rows, add `--allow-row-values` to the command. The server has six tools. Each takes `path`, the configuration file, and resolves a relative path against the first root:
 
 | Tool | Returns | Reads |
 | :--- | :--- | :--- |
 | `validate_config` | What `veridelta validate --json` prints: `config`, `valid`, `errors`, `warnings`, and `findings`, which place each one in the file. Its `schemas` and `allow_missing_env` arguments work as the command's flags do. | No rows. With `schemas`, each side's columns. |
-| `run_comparison` | What `veridelta run --json` prints, the [summary](results.md#summary), with `verdict`, `match` or `drift`, the `exit_code` the command gives, 0 or 1, and `artifacts_written`. | Both sides. |
+| `run_comparison` | The [summary](results.md#summary) that `veridelta run --json` prints, with three more fields: `verdict`, which is `match` or `drift`; `exit_code`, which is `0` or `1` as the command exits; and `artifacts_written`. | Both sides. |
 | `describe_schema` | One side's `columns`, each name as stored mapped to its type as Polars names it, such as `Int64`, and the `side`. Its `side` argument is `source` or `target`. | That side's columns, and no rows. A side that reads a `query` is refused, since only running it would name its columns. |
-| `read_discrepancies` | The rows of one `kind`, `added`, `removed`, or `changed`, up to `limit`, 20 by default: `kind`, `total`, `rows`, `truncated`, and `keys_only`, which says the pair was compared in place, so each row holds its primary key alone. | Both sides, since each call runs the comparison. Only on a server started with `--allow-row-values`. |
+| `read_discrepancies` | The rows of one `kind`, `added`, `removed`, or `changed`, up to `limit`, 20 by default: `kind`, `total`, `rows`, `truncated`, and `keys_only`, which is true when the pair was compared in place, so each row holds its primary key alone. | Both sides, since each call runs the comparison. Only on a server started with `--allow-row-values`. |
 | `propose_value_maps` | What `veridelta crosswalk --json` prints, as `proposals`, with `total` and `truncated`. Its `min_confidence`, `min_support`, and `sample_fraction` arguments work as the command's flags do. | Both sides. Only on a server started with `--allow-row-values`. |
 | `suggest_rules` | What `veridelta suggest --json` prints, as `suggestions`, with `total` and `truncated`. Its `max_share` argument works as the command's `--max-share` does. Each suggestion's `examples` hold primary keys from the data. | Both sides, read locally, so a pair compared in place is refused. Only on a server started with `--allow-row-values`. |
 
@@ -148,12 +148,12 @@ Where Veridelta is installed without uv, the command is `veridelta mcp` itself. 
 The person who starts the server decides what it may read, and no tool call can change that:
 
 - Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.
-- A tool that opens a side reads files on this machine only from under the roots, `~` and links included, since a column name or an error can carry a file's text as a row does. Data elsewhere, such as an object store or a warehouse, is read as the command line reads it.
+- A tool that opens a side reads files on this machine only from under the roots, after it expands `~` and follows links, since a column name or an error can carry a file's text as a row does. Data elsewhere, such as an object store or a warehouse, is read as the command line reads it.
 - A run writes the rows that differ to the configuration's `output_path`, so `run_comparison` and `read_discrepancies` refuse one outside every root before they read a row.
 - A side's `query` runs as written, with the configuration's credentials, so a tool that would run one refuses unless the server is started with `--allow-queries`. Even then, a DuckDB file's connection reads other files, attaches databases, and loads extensions only from under the roots. A MotherDuck connection is not held to the roots.
-- A tool returns findings, counts, and column names, never the configuration or a value from the data, unless the server is started with `--allow-row-values`. A password inside an error is masked, as on the command line, and so is every value of four characters or more that the configuration takes from an environment variable, wherever it appears in an answer.
+- A tool returns findings, counts, and column names. It never returns the configuration, and it returns a value from the data only on a server started with `--allow-row-values`. A password inside an error is masked, as on the command line, and so is every value of four characters or more that the configuration takes from an environment variable, wherever it appears in an answer.
 - With `--allow-row-values`, `read_discrepancies` returns at most `--max-rows` rows per call, 50 by default. `propose_value_maps` returns at most that many value map entries, counting the entries a column's rule already has, and a proposal comes back whole or not at all. `suggest_rules` returns at most that many example keys, and a suggestion comes back whole or not at all.
-- With `schemas`, a check reads each side's columns as `veridelta validate --schemas` does, and without it a check opens no data. `describe_schema` reads one side's columns the same way, and a warehouse table with the probe a run starts with.
+- With `schemas`, a check reads each side's columns as `veridelta validate --schemas` does, and without it a check opens no data. `describe_schema` reads one side's columns the same way. For a warehouse table, it runs the schema probe a run starts with.
 - A host may start the server with only some of the user's environment variables. A `${NAME}` that the configuration references must reach the server, through the host's `env` setting for it if need be, or the check reports it unset. `allow_missing_env` checks a file without them.
 
 A call that fails returns its error's type and message, as `run --json` prints them, such as `ConfigError` for a path outside the roots. [Serving tools to an agent](cli.md#serving-tools-to-an-agent) lists the command's flags.
@@ -166,6 +166,7 @@ The summary holds counts and column names only. These outputs hold values from t
 - the [HTML report](results.md#html-report);
 - a [Markdown summary](results.md#markdown-summary) with `--markdown-max-rows` above zero;
 - the proposals `veridelta crosswalk` prints;
+- the example keys `veridelta suggest` prints;
 - what `read_discrepancies`, `propose_value_maps`, and `suggest_rules` return, on an MCP server started with `--allow-row-values`.
 
 A pair compared in place, such as two warehouse tables, brings back counts and primary keys only, unless it fetches a [row sample](pushdown.md#row-samples).
@@ -176,7 +177,7 @@ A pair compared in place, such as two warehouse tables, brings back counts and p
 
 ## Checking the output
 
-`veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints, and `validate`, `crosswalk`, `suggest`, `baseline`, and `error` name the others. The docs site serves the same files; see [Printing the schema](cli.md#printing-the-schema). A script or an agent can check what it parses against them.
+`veridelta schema run` prints the JSON Schema of what `veridelta run --json` prints. `veridelta schema validate`, `crosswalk`, `suggest`, `baseline`, and `error` print the others. The docs site serves the same files; see [Printing the schema](cli.md#printing-the-schema). A script or an agent can check what it parses against them.
 
 On a pull request, the comment the [GitHub Action](ci.md#github-actions) keeps ends with the run's summary as JSON, in an HTML comment that readers never see. It holds counts and the column names the comment shows, never a value, and [Markdown summary](results.md#markdown-summary) shows how to parse it.
 

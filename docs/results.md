@@ -34,7 +34,7 @@ result.to_pandas()
 | `added_count` | Rows only in the target. |
 | `removed_count` | Rows only in the source. |
 | `changed_count` | Rows in both with at least one compared value that differs. |
-| `column_mismatches` | For each column with at least one mismatch, the changed rows where it differs. |
+| `column_mismatches` | For each column with at least one mismatch, the number of changed rows where it differs. |
 | `total_mismatches` | Added, removed, and changed rows together. |
 | `mismatch_ratio` | `total_mismatches` over `total_rows_source`. |
 | `match_rate_percentage` | One minus `mismatch_ratio`, as a percentage rounded to two places, and never below 0. |
@@ -63,7 +63,7 @@ A run with `pushdown_sample_rows` set also carries `changed_sample`: up to that 
 ![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-light.png#only-light)
 ![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-dark.png#only-dark)
 
-`write_html` writes the standalone report that `veridelta run` writes with `--html`. It embeds its own styles and script, so it opens offline. Every row is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
+`write_html` writes the standalone report that `veridelta run` writes with `--html`. It embeds its own styles and script, so it opens offline. Every row it shows is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
 
 ```python
 from veridelta.report import write_html, write_markdown
@@ -102,7 +102,7 @@ from veridelta.report import write_markdown
 write_markdown(result, "summary.md", max_rows=20)
 ```
 
-Each value is written as code. Text is quoted, so a trailing space or an empty string shows, and NULL reads as _null_. A value longer than 60 characters is cut and ends in `...`. The table stops at `max_rows` values, or before the summary, its JSON comment included, reaches 60,000 bytes, which keeps a pull request comment under GitHub's limit. A last line then says how many values it showed. A pushdown run lists the values of its [row sample](pushdown.md#row-samples), so it needs `pushdown_sample_rows` too.
+Each value is written as code. Text is quoted, so a trailing space or an empty string shows, and NULL reads as _null_. A value longer than 60 characters is cut and ends in `...`. The table stops at `max_rows` values, or earlier if the summary, its JSON comment included, would exceed 60,000 bytes. That keeps a pull request comment under GitHub's limit. When the table leaves values out, a last line says how many it showed. A pushdown run lists the values of its [row sample](pushdown.md#row-samples), so it needs `pushdown_sample_rows` too.
 
 CI posts the summary where more people may read it than may read the data. Ask for values only where every reader of the job summary and the pull request may see them.
 
