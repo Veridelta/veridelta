@@ -240,7 +240,7 @@ CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {
 UNCASTABLE: Final[dict[type[pl.DataType], frozenset[CastTarget]]] = {
     pl.Binary: frozenset({"Int64", "Float64", "Boolean", "Date", "Datetime"}),
     pl.String: frozenset({"Boolean"}),
-    pl.Categorical: frozenset({"Float64", "Boolean", "Date", "Datetime"}),
+    pl.Categorical: frozenset({"Int64", "Float64", "Boolean", "Date", "Datetime"}),
     pl.Decimal: frozenset({"Date", "Datetime"}),
     pl.Date: frozenset({"Boolean"}),
     pl.Datetime: frozenset({"Boolean"}),
@@ -248,13 +248,41 @@ UNCASTABLE: Final[dict[type[pl.DataType], frozenset[CastTarget]]] = {
     pl.Duration: frozenset({"String", "Boolean", "Date", "Datetime"}),
     pl.List: frozenset(CAST_TARGETS),
 }
-"""`cast_to` targets Polars refuses for each column type, whatever its values.
+"""`cast_to` targets `cast_expr` refuses for each column type, whatever its values.
 
 Polars refuses them only once a value reaches the cast, which in a run is
 mid-comparison. Checking the type first turns that into a `ConfigError` before
 any row is read, in a run and in `validate --schemas` alike. A test holds the
-table to what Polars does.
+table to what `cast_expr` does. A categorical column refuses the numbers on
+every Polars: before 2.0 the cast returned the dictionary codes, not the values.
 """
+
+
+def cast_expr(
+    expr: pl.Expr, dtype: pl.DataType | None, target: pl.DataType, *, strict: bool = True
+) -> pl.Expr:
+    """Cast `expr`, a column holding `dtype`, to `target`.
+
+    Polars 2.0 no longer casts text into a date or a timestamp, so a `String`
+    column reaches a `Date` or `Datetime` target through `str.to_date` or
+    `str.to_datetime`, with the formats the cast took before 2.0: `2026-01-01`
+    for a date, and `2026-01-01T10:30:00` with optional fractional seconds for
+    a timestamp. A fixed format keeps a value such as `01/02/2026` from being
+    read as a date, which inferring the format would do. Every other pair goes
+    through `cast`. With `strict` off, a value that does not convert becomes
+    null instead of failing the run.
+    """
+    if isinstance(dtype, pl.String):
+        if isinstance(target, pl.Date):
+            return expr.str.to_date(format="%Y-%m-%d", strict=strict)
+        if isinstance(target, pl.Datetime):
+            return expr.str.to_datetime(
+                format="%Y-%m-%dT%H:%M:%S%.f",
+                time_unit=target.time_unit,
+                time_zone=target.time_zone,
+                strict=strict,
+            )
+    return expr.cast(target, strict=strict)
 
 
 _OFFSET_DIRECTIVE: Final = re.compile(r"%%|%[:#]*z")

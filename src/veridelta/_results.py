@@ -13,6 +13,7 @@ from typing import Any, Final, NamedTuple
 
 import polars as pl
 
+from veridelta._resolution import cast_expr
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
     AcceptedChange,
@@ -153,7 +154,9 @@ def _baseline_keys(
     column's type, and one that cannot cast matches no row.
     """
     frame = pl.DataFrame({name: [key[name] for key in keys] for name in names}, strict=False)
-    return frame.select(pl.col(name).cast(schema[name], strict=False) for name in names)
+    return frame.select(
+        cast_expr(pl.col(name), frame.schema[name], schema[name], strict=False) for name in names
+    )
 
 
 def _unaccepted_rows(
