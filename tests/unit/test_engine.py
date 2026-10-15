@@ -32,6 +32,7 @@ from veridelta._resolution import (
     CAST_TARGETS,
     UNCASTABLE,
     alignment_maps,
+    cast_expr,
     fold_rule_defaults,
     match_rule,
     normalized_dtype,
@@ -3279,7 +3280,73 @@ _CAST_SAMPLES: Final = [
     pl.Series([timedelta(seconds=1)], dtype=pl.Duration("us")),
     pl.Series([[1]], dtype=pl.List(pl.Int64)),
 ]
+
+_REFUSED_AHEAD_OF_POLARS: Final = {(pl.Categorical, "Int64")}
+"""Pairs the table refuses on every Polars. Before 2.0, the cast returned the dictionary codes."""
 """One value of each column type a cast could start from."""
+
+
+class TestTextCasts:
+    """Validate that `cast_to` parses text into a date or a timestamp on every Polars."""
+
+    @pytest.mark.parametrize(
+        ("target", "text", "value"),
+        [
+            pytest.param("Date", "2026-01-01", date(2026, 1, 1), id="date"),
+            pytest.param(
+                "Datetime", "2026-01-01T10:30:00", datetime(2026, 1, 1, 10, 30), id="datetime"
+            ),
+            pytest.param(
+                "Datetime",
+                "2026-01-01T10:30:00.250",
+                datetime(2026, 1, 1, 10, 30, 0, 250000),
+                id="fraction",
+            ),
+        ],
+    )
+    def test_text_cast_to_a_date_meets_the_date(
+        self, target: CastTarget, text: str, value: date
+    ) -> None:
+        """Ensure a text column cast to a temporal type matches the stored temporal column.
+
+        Polars 2.0 removed the cast from text to a date, so the engine parses
+        the text instead, and a cast rule keeps working across the upgrade.
+        """
+        src = pl.DataFrame({"id": [1, 2], "day": [text, text]})
+        tgt = pl.DataFrame({"id": [1, 2], "day": [value, value]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["day"], cast_to=target)]
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 0
+
+    @pytest.mark.parametrize(
+        ("target", "text"),
+        [
+            pytest.param("Date", "yesterday", id="no-date"),
+            pytest.param("Date", "01/02/2026", id="ambiguous-date"),
+            pytest.param("Datetime", "2026-01-01 10:30:00", id="space-not-t"),
+        ],
+    )
+    def test_text_in_another_form_fails_and_names_the_column(
+        self, target: CastTarget, text: str
+    ) -> None:
+        """Ensure text the cast does not read fails the run with the column named.
+
+        Only the ISO form the cast took before Polars 2.0 is read. Inferring a
+        format would read `01/02/2026` as a date, and as the wrong one for half
+        the world. Any other form needs `datetime_format`.
+        """
+        src = pl.DataFrame({"id": [1], "day": [text]})
+        tgt = pl.DataFrame({"id": [1], "day": [datetime(2026, 1, 1)]})
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["day"], cast_to=target)]
+        )
+
+        with pytest.raises(pl.exceptions.PolarsError, match="column 'day'"):
+            DiffEngine(config, src.lazy(), tgt.lazy()).run()
 
 
 class TestCastRefusal:
@@ -3292,6 +3359,7 @@ class TestCastRefusal:
             pytest.param(pl.Series([b"\x01"], dtype=pl.Binary), "Int64", id="bit-to-number"),
             pytest.param(pl.Series([date(2026, 1, 1)]), "Boolean", id="date-to-boolean"),
             pytest.param(pl.Series(["true"]), "Boolean", id="text-to-boolean"),
+            pytest.param(pl.Series(["7"], dtype=pl.Categorical), "Int64", id="category-to-number"),
         ],
     )
     def test_it_names_the_column_instead_of_failing_mid_run(
@@ -3323,7 +3391,6 @@ class TestCastRefusal:
         with pytest.raises(ConfigError, match="which cannot be cast to Boolean"):
             DiffEngine.validate_rules(config, columns, columns)
 
-    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     @pytest.mark.parametrize("sample", _CAST_SAMPLES, ids=lambda sample: str(sample.dtype))
     @pytest.mark.parametrize("target", get_args(CastTarget))
     def test_its_refusals_are_the_casts_polars_refuses(
@@ -3331,18 +3398,24 @@ class TestCastRefusal:
     ) -> None:
         """Ensure the table of refused casts follows Polars, so an upgrade cannot drift it.
 
-        Polars skips the cast for an empty or all-null column, so only a value
-        shows a refusal. It words one as "not supported" or "cannot cast". A
-        value it cannot convert is not a refusal: the type can take the cast.
+        The cast runs through `cast_expr`, as the engine's does. Polars skips
+        the cast for an empty or all-null column, so only a value shows a
+        refusal. It words one as "not supported" or "cannot cast". A value it
+        cannot convert is not a refusal: the type can take the cast. A pair in
+        `_REFUSED_AHEAD_OF_POLARS` is refused whether or not Polars still casts it.
         """
         refused = target in UNCASTABLE.get(type(sample.dtype), frozenset())
 
         try:
-            sample.cast(CAST_TARGETS[target])
+            sample.to_frame("x").select(cast_expr(pl.col("x"), sample.dtype, CAST_TARGETS[target]))
             outcome = "cast"
         except (pl.exceptions.InvalidOperationError, pl.exceptions.ComputeError) as exc:
             words = str(exc)
             refusal = "not supported" in words or words.startswith("cannot cast")
             outcome = "refused" if refusal else f"bad value: {words}"
 
-        assert (outcome == "refused") == refused, outcome
+        if (type(sample.dtype), target) in _REFUSED_AHEAD_OF_POLARS:
+            assert refused
+            assert outcome in {"cast", "refused"}, outcome
+        else:
+            assert (outcome == "refused") == refused, outcome

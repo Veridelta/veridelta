@@ -52,6 +52,7 @@ from veridelta._resolution import (
     CAST_TARGETS,
     UNCASTABLE,
     EffectiveRule,
+    cast_expr,
     check_schema,
     drop_and_rename,
     duplicate_keys_error,
@@ -896,7 +897,7 @@ class DiffEngine:
                     f"cannot be cast to {target}. Convert it where it is read, such as in "
                     "a database query."
                 )
-            expr = expr.cast(CAST_TARGETS[target])
+            expr = cast_expr(expr, dtype, CAST_TARGETS[target])
         return expr.alias(column)
 
     def _convert_time_zone(
@@ -924,7 +925,7 @@ class DiffEngine:
                 return null_equality(pl.lit(False), src, tgt, rule)
             # Numbers skip the cast, which would truncate a Float64 `10.7` to an Int64 `10`.
             elif not (dtype.is_numeric() and tgt_dtype is not None and tgt_dtype.is_numeric()):
-                tgt = tgt.cast(dtype, strict=False)
+                tgt = cast_expr(tgt, tgt_dtype, dtype, strict=False)
                 compared_tgt_dtype = dtype
 
         similar = similarity_test(rule) if isinstance(dtype, pl.String) else None
