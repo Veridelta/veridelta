@@ -1,3 +1,25 @@
+## v0.41.0 (2026-10-15)
+
+Veridelta runs on Polars 2.0 as well as 1.x, and no longer holds Polars below 2.0, as 0.40.4
+did. Polars 2.0 removed the cast from text to a date, stopped coercing types in a membership
+test, and stopped keeping a join's left order. The engine now parses text into a date through
+one helper, with the ISO forms the old cast read, compares a numeric sentinel as a float, and
+asks each join for the source's order, so a verdict and a report are the same on every Polars.
+A categorical column refuses `cast_to: Int64` before a row is read, where the cast returned
+the dictionary codes before, and an optional extra that fails to import counts as not
+installed instead of breaking `import veridelta`. A new CI job runs the suite on the Polars
+floor, 1.39.3. The upgrading page lists what to change.
+
+### Feat
+
+- support Polars 2.0 (#417)
+
+### Fix
+
+- keep source order in results on every Polars (#416)
+- compare a numeric sentinel by value across number types (#415)
+- parse text into a date through one cast helper (#414)
+
 ## v0.40.4 (2026-10-15)
 
 Veridelta asked for any Polars from 1.39.3 up, so a fresh install took Polars 2.0.0, released
