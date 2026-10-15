@@ -1,3 +1,14 @@
+## v0.40.4 (2026-10-15)
+
+Veridelta asked for any Polars from 1.39.3 up, so a fresh install took Polars 2.0.0, released
+this week. Polars 2.0 no longer casts text to a date and no longer coerces types in a
+membership test, so a date key written as text and a numeric sentinel on a float column both
+failed. Veridelta now needs Polars below 2.0. Issue 410 tracks the port to Polars 2.0.
+
+### Fix
+
+- **deps**: keep Polars below 2.0 (#411)
+
 ## v0.40.3 (2026-10-12)
 
 A format Veridelta does not accept, such as `parquett`, failed with the list of formats,
