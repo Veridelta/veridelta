@@ -339,6 +339,26 @@ class TestLoaders:
         assert optional_module("veridelta_no_such_optional_module") is None
         assert optional_module("json") is not None
 
+    def test_it_treats_an_optional_module_that_fails_to_import_as_absent(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure a broken extra counts as absent, with a warning, instead of breaking the import.
+
+        The Snowflake connector's vendored urllib3 reads `ssl.PROTOCOL_TLSv1` at
+        import, which some Python 3.14 builds lack, so it raised `AttributeError`
+        and `import veridelta` failed for everyone, Snowflake user or not.
+        """
+        mocker.patch(
+            "veridelta.connectors.base.importlib.import_module",
+            side_effect=AttributeError("module 'ssl' has no attribute 'PROTOCOL_TLSv1'"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="veridelta.connectors.base"):
+            assert optional_module("snowflake.connector") is None
+
+        assert "snowflake.connector is installed but does not import" in caplog.text
+        assert "PROTOCOL_TLSv1" in caplog.text
+
 
 class TestStructuralAlignment:
     """Validate the structural alignment and schema validation heuristics."""
