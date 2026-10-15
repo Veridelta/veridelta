@@ -41,8 +41,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # Polars 2.0 changes casts and is_in; issue 410 tracks the port.
-    "polars>=1.39.3,<2",
+    "polars>=1.39.3",
     "pydantic>=2.12.5",
     "pyyaml>=6.0.3",
     # The output schemas need its `TypedDict` on Python 3.11. Pydantic requires it too.

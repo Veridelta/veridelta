@@ -181,6 +181,31 @@ jobs:
           files: ./coverage.xml
           fail_ci_if_error: false
 
+  test-floor:
+    name: Core Engine (Polars floor)
+    needs: test-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set Up uv, Python, and the Dependencies
+        uses: ./.github/actions/setup
+        with:
+          python-version: "3.12"
+
+      # The lock pins the newest Polars. The floor in pyproject.toml is what a
+      # user may still hold, so the suite runs on it too, and a test holds the
+      # two versions to each other.
+      - name: Install the Polars Floor
+        run: uv pip install "polars==1.39.3"
+
+      - name: Execute Core Tests on the Polars Floor
+        run: uv run --no-sync pytest tests/unit tests/integration --no-cov
+
   test-e2e:
     name: CLI End-to-End (${{ matrix.os }})
     needs: test-smoke
@@ -464,7 +489,7 @@ jobs:
   ci-passed:
     name: CI Passed
     if: always()
-    needs: [static-analysis, docs, test-smoke, test-package, test-core, test-e2e, test-notebooks, test-postgres, test-databases, test-accessibility, action]
+    needs: [static-analysis, docs, test-smoke, test-package, test-core, test-floor, test-e2e, test-notebooks, test-postgres, test-databases, test-accessibility, action]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
