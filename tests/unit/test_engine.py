@@ -1041,6 +1041,27 @@ class TestEvaluationStrictness:
 class TestDataIntegrityAndSetDifferences:
     """Validate set-difference logic, uniqueness constraints, and artifact generation."""
 
+    def test_it_returns_rows_in_the_order_their_side_holds_them(self) -> None:
+        """Ensure changed and removed rows keep the source's order, and added rows the target's.
+
+        Polars 2.0 keeps a join's left order only when asked, so the engine
+        asks. The report, the discrepancy files, and the MCP server's rows all
+        show that order, and the tutorials print it.
+        """
+        source_ids = [7, 3, 11, 1, 9, 5, 12, 2, 10, 4, 8, 6]
+        target_ids = [14, 6, 1, 10, 12, 2, 13, 8, 4, 7, 11, 5]
+        changed = {7, 1, 12, 4, 6}
+        src = pl.DataFrame({"id": source_ids, "val": source_ids})
+        tgt = pl.DataFrame(
+            {"id": target_ids, "val": [i + 100 if i in changed else i for i in target_ids]}
+        )
+
+        result = DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
+
+        assert result.changed["id"].to_list() == [7, 1, 12, 4, 6]
+        assert result.removed["id"].to_list() == [3, 9]
+        assert result.added["id"].to_list() == [14, 13]
+
     def test_it_aborts_execution_when_primary_keys_contain_duplicates(self) -> None:
         """Ensure validation catches duplicate keys in the source to prevent Cartesian join explosions."""
         src = pl.DataFrame({"id": [1, 1, 2], "val": ["A", "B", "C"]})

@@ -739,7 +739,7 @@ class DiffEngine:
         if sample_fraction < 1:
             cutoff = round(sample_fraction * SAMPLE_BUCKETS)
             source = source.filter(pl.struct(keys).hash(seed=0) % SAMPLE_BUCKETS < cutoff)
-        return source.join(target, on=keys, how="inner")
+        return source.join(target, on=keys, how="inner", maintain_order="left")
 
     def _get_effective_rule(self, col_name: str) -> EffectiveRule:
         """Resolve all rules (Specific > Pattern > Global) into a unified dictionary."""
@@ -1005,9 +1005,15 @@ class DiffEngine:
         # here rather than silently exploding the joins below.
         self._check_uniqueness()
 
+        # Each join keeps its left side's order, so the rows come back as their
+        # side holds them on every Polars. Before 2.0 that order was incidental.
         keys = self.config.primary_keys
-        added_df = self.target.join(self.source, on=keys, how="anti").collect()
-        removed_df = self.source.join(self.target, on=keys, how="anti").collect()
+        added_df = self.target.join(
+            self.source, on=keys, how="anti", maintain_order="left"
+        ).collect()
+        removed_df = self.source.join(
+            self.target, on=keys, how="anti", maintain_order="left"
+        ).collect()
         changed_df = self._collect_changed_rows(compared_columns, match_expressions)
         if baseline is None:
             return self._build_result(added_df, removed_df, changed_df, compared_columns)
@@ -1055,7 +1061,7 @@ class DiffEngine:
         keys = self.config.primary_keys
         source = self.source.rename(lambda col: col if col in keys else f"{col}_source")
         target = self.target.rename(lambda col: col if col in keys else f"{col}_target")
-        common_lazy = source.join(target, on=keys, how="inner")
+        common_lazy = source.join(target, on=keys, how="inner", maintain_order="left")
 
         all_matched = pl.all_horizontal([f"{col}_is_match" for col in compared_columns])
         return common_lazy.with_columns(match_expressions).filter(~all_matched).collect()
