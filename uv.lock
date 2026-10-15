@@ -4645,7 +4645,7 @@ requires-dist = [
     { name = "fastexcel", marker = "extra == 'excel'", specifier = ">=0.11.0" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.11.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.3.0,<3" },
-    { name = "polars", specifier = ">=1.39.3" },
+    { name = "polars", specifier = ">=1.39.3,<2" },
     { name = "pyarrow", marker = "python_full_version >= '3.14' and extra == 'snowflake'", specifier = ">=23.0.1,<24" },
     { name = "pyarrow", marker = "python_full_version < '3.14' and extra == 'snowflake'", specifier = ">=23.0.1" },
     { name = "pyarrow", marker = "extra == 'bigquery'", specifier = ">=23.0.1" },

@@ -30,6 +30,10 @@ updates:
     groups:
       dependencies:
         patterns: ["*"]
+    # pyproject.toml holds Polars below 2.0 until issue 410 ports the casts.
+    ignore:
+      - dependency-name: polars
+        update-types: ["version-update:semver-major"]
 
   # The Dev Container's base image and its uv, each pinned by digest.
   - package-ecosystem: docker
