@@ -4,6 +4,7 @@
 """The connector contracts: the shared lifecycle, the readers, and the pushdown sessions."""
 
 import importlib
+import logging
 from abc import ABC, abstractmethod
 from types import ModuleType, TracebackType
 from typing import ClassVar, Final, Literal, Self
@@ -13,6 +14,8 @@ import polars as pl
 from veridelta.connectors.sql import SQLPushdownCompiler
 from veridelta.exceptions import ConnectorError
 from veridelta.models import redacted_location
+
+logger = logging.getLogger(__name__)
 
 
 def mask_secrets(text: str, *secrets: str | None) -> str:
@@ -71,10 +74,15 @@ def read_subject(table: str | None) -> str:
 
 
 def optional_module(name: str) -> ModuleType | None:
-    """Import the module of an optional extra, or return None when it is not installed.
+    """Import the module of an optional extra, or return None when it cannot be used.
 
     A module that reads through an extra binds the result to a module attribute,
     which its tests patch, so no test depends on the extras installed where it runs.
+
+    A module that is installed but raises on import, as a driver does on an
+    interpreter it does not support, counts as absent too, with a warning that
+    names the error. Otherwise one broken extra would break `import veridelta`
+    for everyone who does not use it.
 
     Args:
         name (str): The module to import, such as `snowflake.connector`.
@@ -85,6 +93,9 @@ def optional_module(name: str) -> ModuleType | None:
     try:
         return importlib.import_module(name)
     except ImportError:
+        return None
+    except Exception as exc:
+        logger.warning("The optional module %s is installed but does not import: %s", name, exc)
         return None
 
 

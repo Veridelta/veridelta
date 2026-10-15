@@ -824,7 +824,14 @@ class DiffEngine:
 
         sentinels = usable_sentinels(rule["null_values"], dtype)
         if sentinels:
-            expr = pl.when(expr.is_in(sentinels)).then(None).otherwise(expr)
+            # Polars 2.0 no longer coerces `is_in` across numeric types, so a
+            # number is compared as Float64, as Polars did before 2.0: a Float64
+            # column meets -999, and 0.5 never meets an integer column's 0.
+            if dtype.is_numeric():
+                found = expr.cast(pl.Float64).is_in([float(value) for value in sentinels])
+            else:
+                found = expr.is_in(sentinels)
+            expr = pl.when(found).then(None).otherwise(expr)
             applied = True
         # Only an explicit rule raises: a global default is expected to span a mixed schema.
         elif rule["null_values"] and rule["null_values_explicit"]:

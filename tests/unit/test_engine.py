@@ -339,6 +339,26 @@ class TestLoaders:
         assert optional_module("veridelta_no_such_optional_module") is None
         assert optional_module("json") is not None
 
+    def test_it_treats_an_optional_module_that_fails_to_import_as_absent(
+        self, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ensure a broken extra counts as absent, with a warning, instead of breaking the import.
+
+        The Snowflake connector's vendored urllib3 reads `ssl.PROTOCOL_TLSv1` at
+        import, which some Python 3.14 builds lack, so it raised `AttributeError`
+        and `import veridelta` failed for everyone, Snowflake user or not.
+        """
+        mocker.patch(
+            "veridelta.connectors.base.importlib.import_module",
+            side_effect=AttributeError("module 'ssl' has no attribute 'PROTOCOL_TLSv1'"),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="veridelta.connectors.base"):
+            assert optional_module("snowflake.connector") is None
+
+        assert "snowflake.connector is installed but does not import" in caplog.text
+        assert "PROTOCOL_TLSv1" in caplog.text
+
 
 class TestStructuralAlignment:
     """Validate the structural alignment and schema validation heuristics."""
@@ -1259,6 +1279,28 @@ class TestCanonicalTransformPipeline:
         # 0 is an int sentinel, but numeric sentinels span the whole family.
         assert result["ratio"].to_list() == [None, 1.5]
         assert result["flag"].to_list() == [None, True]
+
+    def test_it_compares_a_numeric_sentinel_by_value_across_number_types(self) -> None:
+        """Ensure a sentinel meets the number it names in any numeric column, and no other.
+
+        Polars 2.0 refuses `is_in` across numeric types, so the engine compares
+        numbers as floats, as Polars did before. A `7.0` sentinel nulls an
+        integer 7, a `0.5` sentinel leaves an integer 0 alone, and `-999` nulls
+        a decimal -999.
+        """
+        frame = pl.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "whole": [7, 0, 8],
+                "exact": pl.Series([Decimal("-999"), Decimal("1.50"), Decimal("2.25")]),
+            }
+        )
+        config = DiffConfig(primary_keys=["id"], default_null_values=[7.0, 0.5, -999])
+
+        result = _normalized(config, frame)
+
+        assert result["whole"].to_list() == [None, 0, 8]
+        assert result["exact"].to_list() == [None, Decimal("1.50"), Decimal("2.25")]
 
     def test_it_keeps_quoted_and_unquoted_sentinels_distinct(self) -> None:
         """Ensure '-999' targets text while -999 targets numbers."""
