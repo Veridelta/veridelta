@@ -1399,6 +1399,27 @@ class TestCIWorkflow:
         assert steps["Execute Core Tests Without Coverage"]["if"] == "${{ !matrix.coverage }}"
         assert steps["Execute Core Tests Without Coverage"]["run"].endswith(" --no-cov")
 
+    def test_the_floor_job_runs_the_oldest_polars_the_package_allows(self) -> None:
+        """Ensure the suite runs on the Polars floor as well as on the lock, so the floor only moves on purpose.
+
+        The lock pins the newest Polars, which is what every other job runs. A
+        user may still hold the oldest Polars `pyproject.toml` allows, so one
+        job installs that version over the synced environment and runs the
+        suite without syncing it back.
+        """
+        job = _workflow(_CI)["jobs"]["test-floor"]
+        with (_ROOT / "pyproject.toml").open("rb") as file:
+            dependencies = tomllib.load(file)["project"]["dependencies"]
+        [polars] = [dependency for dependency in dependencies if dependency.startswith("polars")]
+        floor = re.fullmatch(r"polars>=([\d.]+)", polars)
+        steps = {step["name"]: step for step in job["steps"]}
+
+        assert floor is not None, polars
+        assert steps["Install the Polars Floor"]["run"] == f'uv pip install "polars=={floor[1]}"'
+        assert steps["Execute Core Tests on the Polars Floor"]["run"].startswith(
+            "uv run --no-sync "
+        )
+
     def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
         """Ensure the CLI runs as a real command on each OS the core suite runs on."""
         jobs = _workflow(_CI)["jobs"]

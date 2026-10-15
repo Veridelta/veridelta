@@ -21,6 +21,14 @@ veridelta validate -c veridelta.yaml
 
 Then run a comparison whose verdict you already know, and confirm the new release agrees. In CI, move the GitHub Action's `@v` ref, and the tag in the GitLab template's `remote` URL, to the new release, as [CI integrations](ci.md) shows.
 
+## 0.41.0
+
+Veridelta runs on Polars 2.0 as well as on 1.x, and no longer holds Polars below 2.0. Three things change, on every Polars:
+
+- A categorical column refuses `cast_to: Int64` before a row is read, as it refused `Float64`. Before, the cast returned the dictionary codes, not the values. Convert the column where it is read, such as in a database query.
+- A text column cast to `Datetime` reads `2026-01-01T10:30:00`, with optional fractional seconds, as before. Text that ends in `Z` or an offset, such as `2026-01-01T10:30:00+02:00`, which the cast read while dropping the offset, now needs `datetime_format`. [Casts](rules.md#casts) lists the forms a cast reads.
+- An optional extra that is installed but fails to import counts as not installed, and a warning names the error. Before, `import veridelta` failed for everyone, whether they used the extra or not.
+
 ## 0.40.0
 
 Pushdown refuses a primary key whose two sides hold types a local run cannot pair, as a local run has since 0.33.2. A key pairs only when both sides hold one type, two integer types, or two float types. Any other pair raises `ConfigError` before a row is read, naming each such key with both of its types. Before, a database converted one side and paired the rows. The text `"007"` met the integer `7`, and an integer key met a float key, where a local run refused both.
