@@ -145,6 +145,61 @@ Where Veridelta is installed without uv, the command is `veridelta mcp` itself. 
 
 </details>
 
+<details markdown>
+<summary>Watch an agent compare two exports in Claude Code</summary>
+
+A real Claude Code session, recorded with the kit in [`demo/agent/`](https://github.com/Veridelta/veridelta/tree/main/demo/agent) and the server started with `--allow-row-values`. It runs unedited from the start to the agent's first answer. The header and the host's other servers are blurred, and the last frame is held so the answer can be read.
+
+![A Claude Code session. The user lists the MCP servers, and veridelta shows six tools. The user pastes a prompt asking the agent to check the configuration, run the comparison, read the rows that differ, and say whether any change looks like rounding, without changing a file. The agent calls the veridelta tools six times and runs three shell commands. Its answer: the configuration is valid and matches rows on order_id with no rules; the run is drift, 12 orders before and 13 after, with 4 issues. Status changed on orders 1004, shipped to cancelled, and 1009, open to cancelled. Amount changed on order 1006, 58.50 to 58.51. Order 1013 is new. Only the one-cent change could be rounding, and a tolerance rule would forgive it, which the agent leaves to the user.](assets/demo-agent-session.gif)
+
+```text
+> Compare the two order exports in this folder with the veridelta tools. Check the
+  configuration first, then run the comparison, then read the rows that differ. Tell me
+  what changed, column by column, and whether any change looks like rounding rather than
+  a real difference. Do not change any file.
+
+  Searched for 1 pattern, called veridelta 6 times, ran 3 shell commands
+
+I've finished the comparison. The after export has 1 new order and 3 changed orders, and
+no orders were removed. I didn't change any files.
+
+Configuration: veridelta.yaml checked out with no errors or warnings. It matches rows on
+order_id and has no tolerance or other rules. Both files have the same three columns:
+order_id (integer), status (text) and amount (decimal).
+
+Run: the result was "drift", with 12 orders before and 13 after. The match rate is
+66.67%, with 4 issues in total.
+
+Changes by column:
+
+| Column      | Mismatches | Orders | Before -> after     |
+| status      | 2          | 1004   | shipped -> cancelled |
+|             |            | 1009   | open -> cancelled    |
+| amount      | 1          | 1006   | 58.50 -> 58.51       |
+| (new order) | -          | 1013   | open, 99.00          |
+
+In the changed orders, every column other than the one listed stayed the same. I checked
+these rows against the CSV files directly and they match what the tool reported.
+
+Rounding or a real difference?
+- The two status changes are real. Text values can't be rounding, and both orders were
+  cancelled. Order 1004 was already shipped, so that cancellation may be worth asking
+  about.
+- The amount change on order 1006 is the only one that could be rounding. It's a single
+  cent, and both files store the amount to 2 decimal places, so it isn't one export
+  cutting off digits. The likeliest rounding explanation is two systems rounding
+  something like 58.505 in different directions. But the files can't tell that apart
+  from a real one-cent price change. Whoever owns the source system would have to
+  confirm it.
+- The new order 1013 is a real difference, since it only exists in the after file.
+
+The configuration has no tolerance for amount, so even a one-cent difference counts as
+drift. If you decide amount differences up to one cent are acceptable, a tolerance rule
+would make order 1006 pass. That's your decision to make; I haven't added the rule.
+```
+
+</details>
+
 The person who starts the server decides what it may read, and no tool call can change that:
 
 - Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.

@@ -21,3 +21,5 @@ This folder is a kit for recording a real agent that compares two datasets throu
 4. Stop the recording, and keep it whole. Cut no frame, and add no caption that claims more than the docs.
 
 Another agent host works too: give it the command after `--`, as its documentation says.
+
+A recording made with this kit is on the [AI agents](https://veridelta.github.io/veridelta/agents/#mcp-server) page.
