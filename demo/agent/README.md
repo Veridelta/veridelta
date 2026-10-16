@@ -17,8 +17,15 @@ This folder is a kit for recording a real agent that compares two datasets throu
     claude mcp add veridelta -- uvx --from 'veridelta[mcp]' veridelta mcp --root . --allow-row-values
     ```
 
-3. Open Claude Code in the copy, start a screen recorder, paste the prompt from `PROMPT.md`, and let the agent finish.
-4. Stop the recording, and keep it whole. Cut no frame, and add no caption that claims more than the docs.
+3. Install the Veridelta skill in the copy. It gives the agent Veridelta's steps, and points it to `veridelta schema` and `veridelta suggest` for a rule's settings, so it need not read the package's source:
+
+    ```bash
+    mkdir -p .claude/skills/veridelta
+    curl -fsSL -o .claude/skills/veridelta/SKILL.md https://raw.githubusercontent.com/Veridelta/veridelta/main/skills/veridelta/SKILL.md
+    ```
+
+4. Open Claude Code in the copy, start a screen recorder, paste the prompt from `PROMPT.md`, and let the agent finish.
+5. Stop the recording, and keep it whole. Cut no frame, and add no caption that claims more than the docs.
 
 Another agent host works too: give it the command after `--`, as its documentation says.
 
