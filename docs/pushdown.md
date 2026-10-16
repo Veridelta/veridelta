@@ -2,7 +2,7 @@
 
 Pushdown compares two tables inside the database that stores them. Veridelta compiles the comparison to SQL, runs it there, and reads back counts and primary keys instead of rows.
 
-Every rule gives the same verdict in place as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in live BigQuery, Databricks, MotherDuck, Redshift, Snowflake, Azure SQL, or Synapse services.
+Every rule gives the same verdict in place as in a local run, except where this page says otherwise. The generated SQL has run in DuckDB, Postgres 16, SQL Server 2022, and a live MotherDuck account, but not yet in live BigQuery, Databricks, Redshift, Snowflake, Azure SQL, or Synapse services. The maintainer tests those as time allows. If you use pushdown on one of them, [open an issue](https://github.com/Veridelta/veridelta/issues/new/choose) with what you saw, whether it worked or not, and that warehouse moves to the front.
 
 ## When a comparison is pushed down
 
@@ -209,7 +209,7 @@ Veridelta opens one connection, the same way a local read does, and runs each st
 - `max_levenshtein_distance` raises `ConfigError` before any statement runs. DuckDB's `levenshtein` counts UTF-8 bytes, not characters, so `é` against `e` is two edits where a local run counts one. Leave `pushdown` off to compare such columns locally; `veridelta validate` warns about it.
 - `case_insensitive` lowercases with DuckDB's `lower`, which differs from Polars for a few letters. `İ` becomes `i` rather than `i̇`, and a final `Σ` becomes `σ` rather than `ς`.
 - The column probe reads the type of every column, ignored ones included. A column that Polars cannot read, such as an `INTERVAL`, fails the probe. Compare a view that casts it, such as to `VARCHAR`.
-- MotherDuck pushdown has not yet run against a live account, and neither have MotherDuck reads.
+- The parity suite passed against a live MotherDuck account on 2026-10-16, every case reaching the local run's verdict ([run](https://github.com/Veridelta/veridelta/actions/runs/38974225978)).
 
 ## Baselines
 

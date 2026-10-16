@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-16
+
+- **Update**: [GR-01](metrics/GR-01.md) reaches 4 of 9. The Live Warehouses workflow ran for the first time, against MotherDuck, and every case reached the local run's verdict ([run](https://github.com/Veridelta/veridelta/actions/runs/38974225978)). The pushdown and sources guides no longer say MotherDuck has never run live, and `CONTRIBUTING.md` says which service is configured. Serves [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored). Tracked in [issue 111](https://github.com/Veridelta/veridelta/issues/111).
+
 ## 2026-10-12
 
 - **Update**: [DR-04](metrics/DR-04.md) meets its target: the small model passed 20 of 20 tasks, 60 of 60 attempts. The full run before it passed 19 of 20, since the eval's system prompt forbade the values that T16 asks for, and [#404](https://github.com/Veridelta/veridelta/pull/404) made that rule yield to the task. The card says which runs used which prompt. Serves [UC-04](USERS.md#uc-04-let-an-agent-run-the-comparison).

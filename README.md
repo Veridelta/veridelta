@@ -30,7 +30,7 @@ It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelt
 
 ## Status
 
-Veridelta is in alpha, so a minor version can still change the configuration or the Python API. Its tests run on generated data, including a suite that seeds known drift into two datasets and checks that each run reports exactly that drift, in a local run and in pushdown. Nobody but its maintainer is known to have run it yet. Its pushdown SQL has run in DuckDB, Postgres 16, and SQL Server 2022, but not yet in a live cloud warehouse, as [Pushdown](https://veridelta.github.io/veridelta/pushdown/) says.
+Veridelta is in alpha, so a minor version can still change the configuration or the Python API. Its tests run on generated data, including a suite that seeds known drift into two datasets and checks that each run reports exactly that drift, in a local run and in pushdown. Nobody but its maintainer is known to have run it yet. Its pushdown SQL has run in DuckDB, Postgres 16, SQL Server 2022, and a live MotherDuck account, but not yet in the other cloud warehouses, as [Pushdown](https://veridelta.github.io/veridelta/pushdown/) says. If you try one, [open an issue](https://github.com/Veridelta/veridelta/issues/new/choose).
 
 ## Install
 
