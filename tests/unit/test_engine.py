@@ -966,6 +966,52 @@ class TestEvaluationStrictness:
         assert summary.changed_count == expected_changed
 
     @pytest.mark.parametrize(
+        ("source", "target", "tolerance", "expected_changed"),
+        [
+            pytest.param(1.00, 1.01, 0.01, 0, id="one-cent"),
+            pytest.param(0.29, 0.30, 0.01, 0, id="one-cent-below-one"),
+            pytest.param(100.00, 100.01, 0.01, 0, id="one-cent-on-hundreds"),
+            pytest.param(1_000_000.00, 1_000_000.01, 0.01, 0, id="one-cent-on-millions"),
+            pytest.param(1.01, 1.00, 0.01, 0, id="one-cent-down"),
+            pytest.param(1.00, 1.0101, 0.01, 1, id="past-the-cent"),
+            pytest.param(1.00, 1.1, 0.1, 0, id="one-tenth"),
+            pytest.param(1.00, 1.1000001, 0.1, 1, id="past-the-tenth"),
+        ],
+    )
+    def test_it_forgives_a_float_difference_written_at_the_tolerance(
+        self, source: float, target: float, tolerance: float, expected_changed: int
+    ) -> None:
+        """Ensure a tolerance is the largest difference that still matches, as the docs say.
+
+        Floats hold `0.01`, `1.01`, and `1.00` only to the nearest binary
+        fraction, so `1.01 - 1.00` is `0.010000000000000009`, and a one-cent
+        tolerance used to call a one-cent change a mismatch.
+        """
+        src = pl.DataFrame({"id": [1], "val": [source]})
+        tgt = pl.DataFrame({"id": [1], "val": [target]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["val"], absolute_tolerance=tolerance)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == expected_changed
+
+    def test_it_adds_no_rounding_slack_to_integers(self) -> None:
+        """Ensure integers still subtract exactly, however large."""
+        src = pl.DataFrame({"id": [1], "val": [10**17]})
+        tgt = pl.DataFrame({"id": [1], "val": [10**17 + 2]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["val"], absolute_tolerance=1.0)],
+        )
+
+        summary = DiffEngine(config, src.lazy(), tgt.lazy()).run().summary
+
+        assert summary.changed_count == 1
+
+    @pytest.mark.parametrize(
         ("source", "target", "expected_changed"),
         [
             pytest.param(

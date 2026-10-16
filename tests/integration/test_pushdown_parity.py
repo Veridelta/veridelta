@@ -1441,6 +1441,24 @@ class TestNumericComparisonParity:
 
         assert summary.changed_count == expected_changed
 
+    def test_it_agrees_that_a_float_difference_at_the_tolerance_matches(self) -> None:
+        """Ensure a one-cent tolerance forgives a one-cent difference on both paths.
+
+        `1.01 - 1.00` is `0.010000000000000009` in floats, past `0.01`, so both
+        paths used to call these pairs changed. A difference past the cent still
+        is.
+        """
+        src = pl.DataFrame({"id": [1, 2, 3, 4, 5], "val": [1.00, 0.29, 100.00, 58.50, 1.00]})
+        tgt = pl.DataFrame({"id": [1, 2, 3, 4, 5], "val": [1.01, 0.30, 100.01, 58.51, 1.0101]})
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["val"], absolute_tolerance=0.01)],
+        )
+
+        summary = assert_parity(config, src, tgt)
+
+        assert summary.changed_count == 1
+
     @pytest.mark.parametrize(
         ("source", "target", "expected_changed"),
         [
