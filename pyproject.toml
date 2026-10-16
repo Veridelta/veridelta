@@ -57,13 +57,14 @@ Issues = "https://github.com/Veridelta/veridelta/issues"
 snowflake = [
     # 4.7.3 is the first release with no known advisory: earlier ones log
     # credentials (CVE-2024-49750) or skip the TLS hostname check
-    # (CVE-2026-15925), among others.
-    "snowflake-connector-python>=4.7.3",
+    # (CVE-2026-15925), among others. 5.0.0 is a rewrite its own README calls a
+    # public preview, not ready for production data, so the extra stays on 4.x.
+    "snowflake-connector-python>=4.7.3,<5",
     # 23.0.1 is the first release with no known advisory: earlier ones run code
     # from a crafted IPC file (CVE-2023-47248) or free memory in use while
     # reading one (CVE-2026-25087).
     "pyarrow>=23.0.1; python_version < '3.14'",
-    # The driver warns on any pyarrow outside this range once running on 3.14.
+    # The 4.x driver warns on any pyarrow outside this range once running on 3.14.
     "pyarrow>=23.0.1,<24; python_version >= '3.14'",
 ]
 databricks = [
