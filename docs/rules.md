@@ -272,6 +272,8 @@ Two numbers match when they are equal, or when their difference is at most `abso
 
 Only finite values are loosened. `NaN` matches only `NaN`, and an infinity matches only the same infinity, however wide the tolerance. Integer differences are exact and never wrap around the column's type: Int8 `100` and `-100` differ by 200.
 
+A difference written at the tolerance matches on a float column too. Floats hold `1.00`, `1.01`, and `0.01` only approximately, so `1.01 - 1.00` comes out a hair above `0.01`. Veridelta allows a few units of that rounding, so `absolute_tolerance: 0.01` forgives every one-cent change, and `1.00` against `1.0101` still differs. Integer and decimal columns need no such allowance.
+
 A tolerance must be finite. To stop comparing a column, use `ignore`.
 
 `veridelta suggest` proposes a tolerance, trimming, case folding, a date format, or null sentinels from the data, with the rows each explains; see [Suggesting rules](cli.md#suggesting-rules).

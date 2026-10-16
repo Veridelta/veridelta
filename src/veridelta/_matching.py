@@ -16,6 +16,7 @@ import polars as pl
 
 from veridelta._resolution import EffectiveRule
 from veridelta.connectors.base import optional_module
+from veridelta.connectors.sql import ROUNDING_SLACK
 from veridelta.exceptions import ConfigError, missing_extra
 
 rapidfuzz_distance = optional_module("rapidfuzz.distance")
@@ -38,6 +39,11 @@ def tolerance_match(
     # columns wraps below zero instead of going negative.
     abs_diff = pl.when(tgt >= src).then(tgt - src).otherwise(src - tgt)
     threshold = rule["abs_tol"] + (rule["rel_tol"] * src.abs())
+    # Floats round on read and on subtraction, so a difference written at the tolerance
+    # can land just past it. Integers and decimals subtract exactly.
+    floats = dtype.is_float() or (tgt_dtype is not None and tgt_dtype.is_float())
+    if floats:
+        threshold = threshold + ROUNDING_SLACK * (threshold + src.abs())
     within = abs_diff <= threshold
     if dtype.is_float():
         # `0 * inf` is NaN, and Polars sorts NaN above every number, so a

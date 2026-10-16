@@ -29,6 +29,18 @@ from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import SQL_IDENTIFIER_SEGMENT, CastTarget, DiffRule, SentinelValue
 from veridelta.sentinels import usable_sentinels
 
+ROUNDING_SLACK: Final = 2.0**-49
+"""How far past its tolerance a difference of floats may land and still match, as a
+share of the allowance plus the source value's size.
+
+A float holds `0.01`, `1.01`, and `1.00` only to the nearest binary fraction, so
+`1.01 - 1.00` comes out as `0.010000000000000009`, past a tolerance of `0.01`. The
+slack is a few units of a double's rounding, so a difference written at the
+tolerance matches, and any difference a person could write past it still does not.
+The local engine adds the same slack in `veridelta._matching`. Integers and
+decimals subtract exactly, so neither engine adds it to them.
+"""
+
 ColumnTypes = Mapping[str, pl.DataType]
 """Column name to dtype, as probed from a warehouse relation."""
 
@@ -1138,7 +1150,10 @@ class SQLPushdownCompiler:
             target_dtype,
             is_source=False,
         )
-        return self._compare(src_expr, tgt_expr, rule)
+        floats = self._output_is_float(rule, source_dtype) or self._output_is_float(
+            rule, target_dtype
+        )
+        return self._compare(src_expr, tgt_expr, rule, floats=floats)
 
     def compile_query(
         self,
@@ -1215,6 +1230,7 @@ class SQLPushdownCompiler:
             wide_integers=wide_integers,
             type_drift=type_drift,
             text=text,
+            floats=self._float_columns(compared, source_types, target_types),
         )
         if not predicates:
             # Nothing to compare means nothing can have changed. Without this
@@ -1295,6 +1311,7 @@ class SQLPushdownCompiler:
             wide_integers=wide_integers,
             type_drift=type_drift,
             text=text,
+            floats=self._float_columns(compared, source_types, target_types),
         )
         renames: dict[str, str] = {}
         projections: list[str] = []
@@ -1403,6 +1420,7 @@ class SQLPushdownCompiler:
             wide_integers=wide_integers,
             type_drift=type_drift,
             text=text,
+            floats=self._float_columns(compared, source_types, target_types),
         )
         renames: dict[str, str] = {}
         projections: list[str] = []
@@ -1635,6 +1653,7 @@ class SQLPushdownCompiler:
             wide_integers=wide_integers,
             type_drift=type_drift,
             text=text,
+            floats=self._float_columns(compared, source_types, target_types),
         )
         terms = [
             f"{self._mismatch_sum(predicate)} AS {self._quote_ident(target_column)}"
@@ -2019,6 +2038,7 @@ class SQLPushdownCompiler:
         wide_integers: frozenset[str],
         type_drift: frozenset[str],
         text: frozenset[str],
+        floats: frozenset[str] = frozenset(),
     ) -> list[str]:
         """Build each compared column's match predicate over the normalized CTEs."""
         return [
@@ -2029,6 +2049,7 @@ class SQLPushdownCompiler:
                 wide=target_column in wide_integers,
                 drift=target_column in type_drift,
                 exact=target_column in text,
+                floats=target_column in floats,
             )
             for _source_column, target_column, rule in compared
         ]
@@ -2090,6 +2111,27 @@ class SQLPushdownCompiler:
             if self._output_is_text(rule, self._stored_type(source_types, source, target, True))
             and self._output_is_text(rule, self._stored_type(target_types, source, target, False))
         )
+
+    def _float_columns(
+        self,
+        compared: Sequence[tuple[str, str, DiffRule]],
+        source_types: ColumnTypes | None,
+        target_types: ColumnTypes | None,
+    ) -> frozenset[str]:
+        """Name the compared columns that hold floats on either side after normalization."""
+        return frozenset(
+            target
+            for source, target, rule in compared
+            if self._output_is_float(rule, self._stored_type(source_types, source, target, True))
+            or self._output_is_float(rule, self._stored_type(target_types, source, target, False))
+        )
+
+    @staticmethod
+    def _output_is_float(rule: DiffRule, dtype: pl.DataType | None) -> bool:
+        """Predict whether one side holds floats after normalization, as the local engine does."""
+        if rule.cast_to is not None:
+            return rule.cast_to == "Float64"
+        return dtype is not None and dtype.is_float()
 
     @staticmethod
     def _stored_type(
@@ -2497,7 +2539,13 @@ class SQLPushdownCompiler:
         return keyword
 
     def _numeric_predicate(
-        self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
+        self,
+        src_expr: str,
+        tgt_expr: str,
+        rule: DiffRule,
+        *,
+        wide: bool = False,
+        floats: bool = False,
     ) -> str:
         """Build the engine-equivalent absolute/relative tolerance predicate."""
         abs_tol = repr(rule.absolute_tolerance or 0.0)
@@ -2510,7 +2558,10 @@ class SQLPushdownCompiler:
                 f"({self._value_equality(src, tgt)} OR "
                 f"ABS({tgt} - {src}) <= {abs_tol} + ({rel_tol} * ABS({src})))"
             )
-        allowance = f"ABS({tgt_expr} - {src_expr}) <= {abs_tol} + ({rel_tol} * ABS({src_expr}))"
+        limit = f"{abs_tol} + ({rel_tol} * ABS({src_expr}))"
+        if floats:
+            limit = f"{limit} + ({ROUNDING_SLACK!r} * ({limit} + ABS({src_expr})))"
+        allowance = f"ABS({tgt_expr} - {src_expr}) <= {limit}"
         # The allowance needs a finite source, since `0 * ABS(inf)` is NaN. Every supported engine
         # sorts NaN above all numbers, so `ABS(diff) <= NaN` would accept any target.
         infinity = _INFINITY_LITERALS[self.dialect]
@@ -2533,7 +2584,13 @@ class SQLPushdownCompiler:
         return f"({src_expr} = {tgt_expr} OR {distance}({src_expr}, {tgt_expr}) <= {limit!r})"
 
     def _loosened_predicate(
-        self, src_expr: str, tgt_expr: str, rule: DiffRule, *, wide: bool = False
+        self,
+        src_expr: str,
+        tgt_expr: str,
+        rule: DiffRule,
+        *,
+        wide: bool = False,
+        floats: bool = False,
     ) -> str | None:
         """Build the stage 8 predicate for a rule that loosens equality."""
         if rule.min_jaro_winkler_similarity is not None:
@@ -2544,7 +2601,7 @@ class SQLPushdownCompiler:
                 "max_levenshtein_distance, or compare the tables locally."
             )
         if rule.absolute_tolerance or rule.relative_tolerance:
-            return self._numeric_predicate(src_expr, tgt_expr, rule, wide=wide)
+            return self._numeric_predicate(src_expr, tgt_expr, rule, wide=wide, floats=floats)
         if rule.max_levenshtein_distance is not None:
             return self._edit_distance_predicate(src_expr, tgt_expr, rule.max_levenshtein_distance)
         return None
@@ -2558,13 +2615,14 @@ class SQLPushdownCompiler:
         wide: bool = False,
         drift: bool = False,
         exact: bool = False,
+        floats: bool = False,
     ) -> str:
         """Build the final match predicate, including null-safe equality."""
         if drift:
             if rule.treat_null_as_equal:
                 return f"({src_expr} IS NULL AND {tgt_expr} IS NULL)"
             return self._never()
-        loosened = self._loosened_predicate(src_expr, tgt_expr, rule, wide=wide)
+        loosened = self._loosened_predicate(src_expr, tgt_expr, rule, wide=wide, floats=floats)
         if loosened is not None:
             if rule.treat_null_as_equal:
                 return f"({src_expr} IS NULL AND {tgt_expr} IS NULL) OR ({loosened})"
