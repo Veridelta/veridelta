@@ -1,3 +1,15 @@
+## v0.41.1 (2026-10-16)
+
+The `snowflake` extra now holds the Snowflake driver below 5.0. Version 5.0.0 shipped on
+2026-10-15 as a rewrite that its own README calls a public preview, not ready for production
+data, and a fresh install of `veridelta[snowflake]` had started to pick it up. An install
+that already has 5.0.0 moves back to the latest 4.x on its next upgrade. The pyarrow cap on
+Python 3.14 stays, since the 4.x driver still declares it.
+
+### Fix
+
+- **deps**: keep the Snowflake driver below 5.0 (#419)
+
 ## v0.41.0 (2026-10-15)
 
 Veridelta runs on Polars 2.0 as well as 1.x, and no longer holds Polars below 2.0, as 0.40.4
