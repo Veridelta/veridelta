@@ -1,3 +1,17 @@
+## v0.41.2 (2026-10-16)
+
+A tolerance now forgives a float difference written at the tolerance. Floats hold `1.00`,
+`1.01`, and `0.01` only approximately, so `1.01 - 1.00` came out just past `0.01`, and
+`absolute_tolerance: 0.01` called most one-cent changes a mismatch. Both the local engine
+and pushdown now allow a few units of a double's rounding when either side holds floats, so
+every one-cent change matches and `1.00` against `1.0101` still differs. Integer and decimal
+columns are unchanged. A run can report fewer changed rows on a float column under a
+tolerance than it did before.
+
+### Fix
+
+- forgive a float difference written at the tolerance (#422)
+
 ## v0.41.1 (2026-10-16)
 
 The `snowflake` extra now holds the Snowflake driver below 5.0. Version 5.0.0 shipped on
