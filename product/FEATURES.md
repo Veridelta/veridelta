@@ -79,6 +79,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Item | Use case | Metric it would move |
 | :--- | :--- | :--- |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
+| A run record that ties a verdict to its configuration, baseline, commit, and CI run, and a report that leads with the verdict, the rules, and mismatch patterns ([issue 440](https://github.com/Veridelta/veridelta/issues/440)) | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | None measures sign-off yet. [GR-03](metrics/GR-03.md) must stay at zero as the report changes. |
 
 ## Served by no use case, and why they stay
 

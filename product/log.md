@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-28
+
+- **Update**: [the feature map](FEATURES.md) and [the roadmap](../docs/roadmap.md) add a run record and a report built for sign-off. A reviewer cannot tell from today's report which configuration, baseline, or commit produced it, and finds a mismatch only by scanning a match flag per column. Git and GitHub stay the record of who declared a rule and who approved a run, and the run record's hashes tie a verdict to them. Serves [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) and [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request). Slice R0 of [issue 440](https://github.com/Veridelta/veridelta/issues/440).
+
 ## 2026-10-16
 
 - **Update**: [GR-01](metrics/GR-01.md) reaches 4 of 9. The Live Warehouses workflow ran for the first time, against MotherDuck, and every case reached the local run's verdict ([run](https://github.com/Veridelta/veridelta/actions/runs/38974225978)). The pushdown and sources guides no longer say MotherDuck has never run live, and `CONTRIBUTING.md` says which service is configured. Serves [UC-05](USERS.md#uc-05-compare-two-tables-where-they-are-stored). Tracked in [issue 111](https://github.com/Veridelta/veridelta/issues/111).
