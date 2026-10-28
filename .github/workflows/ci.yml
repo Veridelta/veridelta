@@ -182,7 +182,7 @@ jobs:
           fail_ci_if_error: false
 
   test-floor:
-    name: Core Engine (Polars floor)
+    name: Core Engine (dependency floors)
     needs: test-smoke
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -203,7 +203,12 @@ jobs:
       - name: Install the Polars Floor
         run: uv pip install "polars==1.39.3"
 
-      - name: Execute Core Tests on the Polars Floor
+      # DuckDB 1.x and 2.0 answer a statement with no result differently, and
+      # the read handles both, so the suite runs on the oldest DuckDB as well.
+      - name: Install the DuckDB Floor
+        run: uv pip install "duckdb==1.5.0"
+
+      - name: Execute Core Tests on the Floors
         run: uv run --no-sync pytest tests/unit tests/integration --no-cov
 
   test-e2e:

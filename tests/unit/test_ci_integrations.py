@@ -1416,8 +1416,38 @@ class TestCIWorkflow:
 
         assert floor is not None, polars
         assert steps["Install the Polars Floor"]["run"] == f'uv pip install "polars=={floor[1]}"'
-        assert steps["Execute Core Tests on the Polars Floor"]["run"].startswith(
-            "uv run --no-sync "
+        assert steps["Execute Core Tests on the Floors"]["run"].startswith("uv run --no-sync ")
+
+    def test_the_floor_job_runs_the_oldest_duckdb_the_package_allows(self) -> None:
+        """Ensure the suite runs on the DuckDB floor too, so a 1.x user stays covered.
+
+        DuckDB 1.x and 2.0 answer a statement with no result differently, and
+        the lock pins the newest, so the floor job installs the oldest DuckDB
+        the `duckdb` extra allows before the suite runs. The development group
+        names the same floor, so the two cannot drift apart.
+        """
+        job = _workflow(_CI)["jobs"]["test-floor"]
+        with (_ROOT / "pyproject.toml").open("rb") as file:
+            pyproject = tomllib.load(file)
+        [extra_duckdb] = [
+            dependency
+            for dependency in pyproject["project"]["optional-dependencies"]["duckdb"]
+            if dependency.startswith("duckdb")
+        ]
+        [development_duckdb] = [
+            dependency
+            for dependency in pyproject["dependency-groups"]["dev"]
+            if dependency.startswith("duckdb")
+        ]
+        floor = re.fullmatch(r"duckdb>=([\d.]+)", extra_duckdb)
+        steps = {step["name"]: step for step in job["steps"]}
+        step_names = [step["name"] for step in job["steps"]]
+
+        assert floor is not None, extra_duckdb
+        assert development_duckdb == extra_duckdb
+        assert steps["Install the DuckDB Floor"]["run"] == f'uv pip install "duckdb=={floor[1]}"'
+        assert step_names.index("Install the DuckDB Floor") < step_names.index(
+            "Execute Core Tests on the Floors"
         )
 
     def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
