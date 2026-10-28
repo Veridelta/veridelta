@@ -48,6 +48,9 @@ inputs:
   artifact-name:
     description: Name of the uploaded artifact. Defaults to one built from the job and the configuration path; set it when a matrix runs the same configuration more than once.
     default: ""
+  attest:
+    description: "Attest the JSON summary, Markdown summary, and HTML report with GitHub artifact attestations, so a reviewer can check a report came from this workflow at this commit. Needs `id-token: write`, `attestations: write`, and `artifact-metadata: write`, and on a private repository GitHub Enterprise Cloud."
+    default: "false"
 
 outputs:
   status:
@@ -192,6 +195,15 @@ runs:
         name: ${{ steps.run.outputs.artifact-name }}
         path: ${{ steps.run.outputs.reports }}
         if-no-files-found: ignore
+
+    - name: Attest the reports
+      if: inputs.attest == 'true' && steps.run.outputs.summary-json != ''
+      uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+      with:
+        subject-path: |
+          ${{ steps.run.outputs.summary-json }}
+          ${{ steps.run.outputs.summary-markdown }}
+          ${{ steps.run.outputs.report-html }}
 
     - name: Comment on the pull request
       if: always() && inputs.comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')

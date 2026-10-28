@@ -8,9 +8,9 @@ This page lists work that is not built yet. The current release is v{{ config.ex
 
 ## Reviewing a run
 
-These items help a reviewer sign off on a run from its report, in this order, tracked in [issue 440](https://github.com/Veridelta/veridelta/issues/440). Git and GitHub stay the record of who changed a rule and who approved a run, and the [run record](results.md#run-record) ties a verdict to them.
+These items help a reviewer sign off on a run from its report.
 
-- A page on tracing a verdict to a signed commit and an approved review, and an opt-in `attest` input that attests the report from the Action. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
+- A faster [`count_forgiven_values`](configuration.md#counting-forgiven-values). Counting what each column's rules forgave makes a run from Parquet 20 to 50% slower, since each ruled column's original values ride through normalization and the count runs as a second query. Counting inside the comparison's own query, or keeping a copy only where a rule can change a value, could cut that. Serves [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
 
 ## AI workflows
 

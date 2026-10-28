@@ -287,6 +287,30 @@ class TestGitHubAction:
             if "uses" in step:
                 assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", step["uses"]), step["uses"]
 
+    def test_it_attests_the_reports_only_when_asked(self) -> None:
+        """Ensure `attest` is off by default, and the step signs the three reports of a finished run.
+
+        Attestation needs permissions the caller's workflow grants, and a
+        private repository needs GitHub Enterprise Cloud, so it never runs
+        unless the caller asks.
+        """
+        [attest] = [step for step in _steps() if "actions/attest@" in step.get("uses", "")]
+
+        assert _action()["inputs"]["attest"]["default"] == "false"
+        assert attest["if"] == "inputs.attest == 'true' && steps.run.outputs.summary-json != ''"
+        assert attest["with"]["subject-path"].splitlines() == [
+            "${{ steps.run.outputs.summary-json }}",
+            "${{ steps.run.outputs.summary-markdown }}",
+            "${{ steps.run.outputs.report-html }}",
+        ]
+
+    def test_its_docs_name_the_permissions_attestation_needs(self) -> None:
+        """Ensure a caller reads which permissions to grant before turning `attest` on."""
+        guide = (_ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+
+        for permission in ("id-token: write", "attestations: write", "artifact-metadata: write"):
+            assert permission in guide, permission
+
     def test_its_outputs_are_written_by_the_run_step(self) -> None:
         """Ensure each declared output is one the script actually sets."""
         script = _run_script()
@@ -373,6 +397,7 @@ _GITLAB_EXEMPT = {
     "github-token": "The merge request note reads the masked VERIDELTA_GITLAB_TOKEN variable.",
     "artifact-name": "GitLab keeps each job's artifacts apart, so no name can collide.",
     "baseline": "The template is frozen, as decisions/gitlab-template-is-frozen.md records.",
+    "attest": "GitHub artifact attestations exist only in GitHub Actions, and the template is frozen.",
 }
 """Action inputs the GitLab template lacks, and why."""
 
