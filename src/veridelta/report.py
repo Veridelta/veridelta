@@ -46,12 +46,12 @@ Every row is in the markup, so a reader without JavaScript sees them all.
 _STYLE: Final[str] = """
 :root {
   --bg: #ffffff; --fg: #1b1f24; --muted: #5c6773; --line: #d8dee4;
-  --pass: #1a7f37; --fail: #cf222e; --chip: #f2f4f7;
+  --pass: #1a7f37; --fail: #cf222e; --chip: #f2f4f7; --link: #0969da;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
-    --pass: #3fb950; --fail: #f85149; --chip: #161b22;
+    --pass: #3fb950; --fail: #f85149; --chip: #161b22; --link: #4493f8;
   }
 }
 * { box-sizing: border-box; }
@@ -60,6 +60,7 @@ body {
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+a { color: var(--link); }
 h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
 .sub { color: var(--muted); margin: 0 0 1.5rem; font-size: .9rem; }
 .verdict { font-weight: 600; }
