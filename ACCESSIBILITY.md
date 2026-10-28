@@ -32,6 +32,7 @@ A script also drove the report and the documentation site by keyboard in Chromiu
 - Focus stayed on Next at the last page.
 - Tab reached the tabs as one stop, and the arrow keys and End moved between them, showing one kind of row at a time.
 - A column and a key narrowed the mismatched values, the address kept the filter, and Clear filters restored every value.
+- Tab reached each pattern's button, named by the words it shows and then its pattern, and Enter filtered the values to it.
 - With JavaScript off, the report showed every row.
 
 CI's Accessibility job runs the axe-core checks and the report's keyboard checks on every pull request, with `make accessibility`. Its browser reaches only the local site, so it too sees the diagram's source.

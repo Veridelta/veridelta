@@ -10,7 +10,6 @@ This page lists work that is not built yet. The current release is v{{ config.ex
 
 These items help a reviewer sign off on a run from its report, in this order, tracked in [issue 440](https://github.com/Veridelta/veridelta/issues/440). Git and GitHub stay the record of who changed a rule and who approved a run, and the [run record](results.md#run-record) ties a verdict to them.
 
-- Mismatch patterns in the report, such as one value that six rows changed to, or one difference that four amounts share. Serves [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
 - The rules that applied to each column, in the report, as settings and counts without the rules' values. Serves [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
 - A page on tracing a verdict to a signed commit and an approved review, and an opt-in `attest` input that attests the report from the Action. Serves [UC-02](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-02-the-same-verdict-on-every-pull-request).
 

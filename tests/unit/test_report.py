@@ -1151,8 +1151,8 @@ class TestMismatchedValues:
         document = render_html(result)
 
         assert (
-            "<tr data-column='&lt;i&gt;c&lt;/i&gt;' data-key='&lt;b&gt;&#x27;1&#x27;&lt;/b&gt;'>"
-            in document
+            "<tr data-column='&lt;i&gt;c&lt;/i&gt;' data-key='&lt;b&gt;&#x27;1&#x27;&lt;/b&gt;' "
+            "data-target='b' data-difference=''>" in document
         )
         assert "<i>c</i>" not in document
 
@@ -1186,3 +1186,132 @@ class TestMismatchedValues:
         text = render_markdown(result, max_rows=5)
 
         assert "| `1` | `v` | `'a'` | `'A'` |" in text
+
+
+def _orders_like() -> DiffResult:
+    """Compare orders where six statuses became `cancelled` and four amounts rose by 1.00.
+
+    The same drift as the report's screenshots, with one status that changed alone.
+    """
+    keys = [1003, 1015, 1020, 1037, 1044, 1054, 1071, 1073, 1102, 1105, 1110]
+    statuses = [
+        "returned",
+        "returned",
+        "open",
+        "shipped",
+        "open",
+        "delivered",
+        "returned",
+        "shipped",
+        "delivered",
+        "shipped",
+        "open",
+    ]
+    amounts = [121.99, 65.99, 250.99, 379.99, 138.99, 508.99, 137.99, 211.99, 284.99, 99.0, 5.0]
+    new_statuses = [
+        "cancelled",
+        "returned",
+        "cancelled",
+        "cancelled",
+        "open",
+        "cancelled",
+        "cancelled",
+        "shipped",
+        "delivered",
+        "cancelled",
+        "lost",
+    ]
+    new_amounts = [121.99, 66.99, 250.99, 379.99, 139.99, 508.99, 137.99, 212.99, 285.99, 99.0, 5.0]
+    return _drifted(
+        {"id": keys, "status": statuses, "amount": amounts},
+        {"id": keys, "status": new_statuses, "amount": new_amounts},
+    )
+
+
+class TestMismatchPatterns:
+    """Validate the patterns the report finds among the mismatched values it lists."""
+
+    def test_it_names_each_shared_change_largest_first(self) -> None:
+        """Ensure a shared new value and a shared difference each read as one sentence."""
+        document = render_html(_orders_like())
+
+        patterns = re.findall(r"<li class='pattern'[^>]*>(.*?)</li>", document)
+        assert patterns == [
+            "6 values in <code>status</code> changed to <code>cancelled</code>. "
+            "Keys 1003, 1020, 1037, and 3 more.",
+            "4 values in <code>amount</code> rose by <code>1.00</code>. "
+            "Keys 1015, 1044, 1073, and 1 more.",
+        ]
+
+    def test_it_leaves_out_a_change_no_other_value_shares(self) -> None:
+        """Ensure a value that changed alone, such as `lost`, is no pattern."""
+        document = render_html(_orders_like())
+
+        assert (
+            "lost"
+            not in document[
+                document.index("id='patterns'") : document.index("id='mismatched-values'")
+            ]
+        )
+
+    def test_it_tags_each_pattern_with_the_filter_it_applies(self) -> None:
+        """Ensure the script can filter to a pattern from attributes that hold it as text."""
+        document = render_html(_orders_like())
+
+        assert "<li class='pattern' data-column='status' data-target='cancelled'>" in document
+        assert "<li class='pattern' data-column='amount' data-difference='+1.00'>" in document
+        assert "data-target='cancelled' data-difference=''>" in document
+
+    @pytest.mark.parametrize(
+        ("difference", "words"),
+        [
+            pytest.param(-2, "fell by <code>2</code>", id="fell"),
+            pytest.param(3, "rose by <code>3</code>", id="rose"),
+        ],
+    )
+    def test_it_says_which_way_a_number_moved(self, difference: int, words: str) -> None:
+        """Ensure a shared difference reads as a rise or a fall, never a bare sign."""
+        result = _drifted(
+            {"id": [1, 2], "n": [10, 20]}, {"id": [1, 2], "n": [10 + difference, 20 + difference]}
+        )
+
+        assert f"2 values in <code>n</code> {words}." in render_html(result)
+
+    def test_it_says_how_far_a_date_moved(self) -> None:
+        """Ensure a shared interval reads as a move, with its sign."""
+        result = _drifted(
+            {"id": [1, 2], "d": [date(2024, 1, 1), date(2024, 2, 1)]},
+            {"id": [1, 2], "d": [date(2024, 1, 4), date(2024, 2, 4)]},
+        )
+
+        assert "2 values in <code>d</code> moved by <code>+3 days</code>." in render_html(result)
+
+    def test_it_escapes_a_hostile_value_in_a_pattern(self) -> None:
+        """Ensure a shared new value is text in the sentence and in its attribute."""
+        result = _drifted(
+            {"id": [1, 2], "v": ["a", "b"]}, {"id": [1, 2], "v": ["<i>'x'</i>", "<i>'x'</i>"]}
+        )
+
+        document = render_html(result)
+
+        assert "data-target='&lt;i&gt;&#x27;x&#x27;&lt;/i&gt;'" in document
+        assert "changed to <code>&lt;i&gt;&#x27;x&#x27;&lt;/i&gt;</code>" in document
+
+    def test_it_says_when_patterns_cover_only_the_values_listed(self) -> None:
+        """Ensure a capped list says its patterns come from the values it lists."""
+        document = render_html(_orders_like(), max_rows=4)
+
+        assert "Patterns among the first 4 of 11 mismatched values." in document
+
+    def test_it_says_when_no_value_shares_a_change(self) -> None:
+        """Ensure a list with no shared change says so, rather than showing an empty section."""
+        result = _drifted({"id": [1, 2], "v": ["a", "b"]}, {"id": [1, 2], "v": ["x", "y"]})
+
+        assert "No two values share a change." in render_html(result)
+
+    def test_it_finds_no_patterns_without_values(self) -> None:
+        """Ensure a pushdown run without a sample has no patterns section."""
+        local = _orders_like()
+        pushdown = replace(local, changed=local.changed.select("id"), keys_only=True)
+
+        assert "id='patterns'" not in render_html(pushdown)
