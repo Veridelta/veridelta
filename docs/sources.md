@@ -224,6 +224,8 @@ DuckDB lets one process write to a file, or several read it, but not both at onc
 
 ### MotherDuck
 
+MotherDuck's extension supports DuckDB 1.5 but not 2.0, so the `duckdb` extra installs a DuckDB below 2.0. A project that pins DuckDB 2.0 itself cannot reach MotherDuck until MotherDuck supports it.
+
 A MotherDuck database needs a token. Set `motherduck_token`, or the `MOTHERDUCK_TOKEN` or `motherduck_token` environment variable. Without one, MotherDuck opens a browser sign-in, which a CI job cannot finish, so Veridelta refuses to connect. Write `motherduck_token: ${MOTHERDUCK_TOKEN}` rather than the token itself, and never put the token in `database`, which is printed and logged.
 
 The connection opens read-write, because a read-only MotherDuck connection needs a read-scaling token. A `query` therefore runs with all of the token's permissions. The read refuses a `query` that ends with a write, but a write before its last statement still runs, so the token is what keeps the database unchanged. Use a read-scaling token for a source, as you would give a database `query` a role that can only read.
