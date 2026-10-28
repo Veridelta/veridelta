@@ -10,7 +10,7 @@ This page lists work that is not built yet. The current release is v{{ config.ex
 
 These items help a reviewer sign off on a run from its report.
 
-- A faster [`count_forgiven_values`](configuration.md#counting-forgiven-values). Counting what each column's rules forgave makes a run from Parquet 20 to 50% slower, since each ruled column's original values ride through normalization and the count runs as a second query. Counting inside the comparison's own query, or keeping a copy only where a rule can change a value, could cut that. Serves [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
+- A faster [`count_forgiven_values`](configuration.md#counting-forgiven-values) for rules that rewrite values. A tolerance now costs 1 to 2% of a run, but case-insensitive rules on ten text columns still cost 25%, since each carries a hash of every original value through the join. Serves [UC-03](https://github.com/Veridelta/veridelta/blob/main/product/USERS.md#uc-03-sign-off-from-the-report-alone).
 
 ## AI workflows
 
