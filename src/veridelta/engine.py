@@ -1101,7 +1101,7 @@ class DiffEngine:
         `_ORIGINAL_SUFFIX`, 8 bytes rather than the value, so a value the rules
         made match can be told from one that was equal all along. Measured on
         3 million rows, this cut the cost of counting from about 45% of a run to
-        about 5% for tolerances, and to about 23% for case-insensitive text.
+        about 5% for tolerances, and to about 13 to 19% for case-insensitive text.
 
         Returns:
             list[str]: The columns whose forgiven values the run counts.

@@ -101,7 +101,7 @@ count_forgiven_values: true
 ```
 
 !!! warning "Memory and run time"
-    The setting is off by default because a rule that rewrites values, such as `case_insensitive`, a value map, or `datetime_format`, costs memory and time to count. Each such column carries a 64-bit hash of every original value through the join, 8 bytes a row. On 3 million rows, case-insensitive rules on all ten text columns made a run 25% slower, and on three of them, 6%. A rule that only changes the comparison, a tolerance or a similarity limit, keeps nothing: tolerances on all ten numeric columns cost 1 to 2%. Two different values share a hash with odds of about 1 in 2^64, which can only undercount.
+    The setting is off by default because a rule that rewrites values, such as `case_insensitive`, a value map, or `datetime_format`, costs memory and time to count. Each such column carries a 64-bit hash of every original value through the join, 8 bytes a row. On 3 million rows, case-insensitive rules on all ten text columns made a run about 19% slower, and on three of them about 13%; half the runs fell within 6 points of those figures. A rule that only changes the comparison, a tolerance or a similarity limit, keeps nothing: tolerances on all ten numeric columns cost 1 to 2%. Two different values share a hash with odds of about 1 in 2^64, which can only undercount.
 
 Pushdown does not count, since it compares inside the database, so a pushdown run leaves `forgiven_count` empty. Two NULLs count as equal originals, so `treat_null_as_equal` forgives nothing that this counts. Originals of two types, such as text a `datetime_format` parses, compare as text, so `"7"` and `7` under `cast_to` count as equal, and `02/01/2024 10:00` against a timestamp counts as forgiven.
 

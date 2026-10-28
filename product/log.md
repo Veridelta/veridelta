@@ -2,6 +2,10 @@
 
 What changed in the product bundle and why, newest first. A commit's diff shows the change; this file keeps the reason.
 
+## 2026-10-29
+
+- **Update**: [the roadmap](../docs/roadmap.md) and [the feature map](FEATURES.md) drop the faster `count_forgiven_values` for text rules, at the maintainer's decision. Paired runs on 3 million rows put case-insensitive rules at about 13% of a run on three text columns and 19% on ten, against the 6% and 25% the guide stated, so the configuration guide now says 13% and 19%. About 8 points come from the count query, which makes Polars cache the shared join; the rest is hashing. A separate narrow join for the count measured 38 to 60%, a 32-bit hash and Polars' streaming engine no better, and a one-pass filter no better earlier. Normalizing text at compare time instead of rewriting it could save only the hashing share, at the cost of a large change to the engine, so it is not on the roadmap. Serves [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone).
+
 ## 2026-10-28
 
 - **Update**: [the roadmap](../docs/roadmap.md) narrows the faster `count_forgiven_values` to rules that rewrite values. A tolerance no longer keeps a copy of its originals, and a rule that rewrites values keeps a 64-bit hash of each. On 3 million rows, tolerances cost 1 to 2% of a run where they cost 20 to 50%, and case-insensitive rules on ten text columns 25%. Serves [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone).
