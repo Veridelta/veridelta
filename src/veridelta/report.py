@@ -62,10 +62,36 @@ body {
 h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
 a { color: var(--link); }
 h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
-.sub { color: var(--muted); margin: 0 0 1.5rem; font-size: .9rem; }
-.verdict { font-weight: 600; }
+.sub { color: var(--muted); margin: 0; font-size: .9rem; }
+.banner {
+  display: flex; align-items: center; gap: 1rem; margin: .75rem 0 1.5rem;
+  border: 2px solid var(--line); border-radius: 8px; padding: .9rem 1.2rem;
+}
+.banner.pass { border-color: var(--pass); }
+.banner.fail { border-color: var(--fail); }
+.banner p { margin: 0; }
+.glyph { font-size: 2rem; font-weight: 700; line-height: 1; }
+.banner.pass .glyph { color: var(--pass); }
+.banner.fail .glyph { color: var(--fail); }
+.verdict { font-size: 1.6rem; font-weight: 700; letter-spacing: .02em; line-height: 1.2; }
 .verdict.pass { color: var(--pass); }
 .verdict.fail { color: var(--fail); }
+.headline { font-size: 1.05rem; }
+.bar { display: block; width: 100%; height: 6px; margin-top: .4rem; border-radius: 3px; }
+.bar .track { fill: var(--line); }
+.bar .filled { fill: var(--muted); }
+td.share { min-width: 9rem; }
+td.share .bar { display: inline-block; width: 6rem; margin: 0 .6rem 0 0; vertical-align: middle; }
+[role="tablist"] {
+  display: flex; flex-wrap: wrap; gap: .25rem; margin-top: 2rem;
+  border-bottom: 1px solid var(--line);
+}
+[role="tab"] {
+  border: 0; border-bottom: 3px solid transparent; background: none; color: var(--muted);
+  padding: .45rem .9rem; font: inherit; font-size: .95rem; cursor: pointer; margin-bottom: -1px;
+}
+[role="tab"][aria-selected="true"] { color: var(--fg); font-weight: 600; border-bottom-color: var(--link); }
+[role="tabpanel"] > h2 { margin-top: 1rem; }
 .cards { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1rem; }
 .card {
   border: 1px solid var(--line); border-radius: 6px; padding: .75rem 1rem;
@@ -103,6 +129,13 @@ td.null { color: var(--muted); font-style: italic; }
 .pager button[aria-disabled="true"] { opacity: .45; cursor: default; }
 .pager .status { color: var(--muted); font-size: .85rem; }
 .empty { color: var(--muted); padding: .75rem; }
+@media (max-width: 40rem) {
+  body { padding: 1rem; }
+  .card { min-width: 0; flex: 1 1 8rem; }
+  .record dl { grid-template-columns: minmax(0, 1fr); }
+  .record dd { margin-bottom: .4rem; }
+  .verdict { font-size: 1.35rem; }
+}
 """
 
 _SCRIPT: Final[str] = """
@@ -130,6 +163,51 @@ function paginate(root) {
   pager.hidden = false;
 }
 document.querySelectorAll('[data-table]').forEach(paginate);
+
+// One tab per kind of row. Arrow keys, Home, and End move between tabs, and
+// only the selected tab takes Tab focus, as the ARIA tabs pattern asks.
+function tabs(root) {
+  const panels = Array.from(root.querySelectorAll(':scope > section[data-kind]'));
+  if (panels.length < 2) return;
+  const list = document.createElement('div');
+  list.setAttribute('role', 'tablist');
+  list.setAttribute('aria-label', 'Rows by kind');
+  const buttons = panels.map(panel => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.id = panel.id + '-tab';
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-controls', panel.id);
+    const count = Number(panel.dataset.count).toLocaleString('en-US');
+    button.textContent = `${panel.dataset.kind} \u00b7 ${count}`;
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', button.id);
+    list.append(button);
+    return button;
+  });
+  function select(index, focus) {
+    buttons.forEach((button, at) => {
+      const selected = at === index;
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      panels[at].hidden = !selected;
+    });
+    if (focus) buttons[index].focus();
+  }
+  list.addEventListener('keydown', event => {
+    const current = buttons.indexOf(document.activeElement);
+    const last = buttons.length - 1;
+    const target = {ArrowRight: current + 1, ArrowLeft: current - 1, Home: 0, End: last}[event.key];
+    if (current < 0 || target === undefined) return;
+    event.preventDefault();
+    select((target + buttons.length) % buttons.length, true);
+  });
+  buttons.forEach((button, index) => button.addEventListener('click', () => select(index, false)));
+  root.prepend(list);
+  const firstWithRows = panels.findIndex(panel => Number(panel.dataset.count) > 0);
+  select(Math.max(firstWithRows, 0), false);
+}
+document.querySelectorAll('.kinds').forEach(tabs);
 """
 
 
@@ -246,11 +324,88 @@ def _run_record_html(provenance: RunProvenance | None) -> str:
     )
 
 
-def _card(label: str, value: object) -> str:
-    """Render one headline metric."""
+def _card(label: str, value: object, bar: str = "") -> str:
+    """Render one headline metric, with a bar under it when one is given."""
     return (
         f"<div class='card'><div class='label'>{_escape(label)}</div>"
-        f"<div class='value'>{_escape(value)}</div></div>"
+        f"<div class='value'>{_escape(value)}</div>{bar}</div>"
+    )
+
+
+def _bar(percentage: float) -> str:
+    """Draw a share as an SVG bar a screen reader skips, since the number beside it says it.
+
+    The bar's length is the rect's `width` attribute, because a strict content
+    security policy refuses a `style` attribute.
+    """
+    return (
+        '<svg class="bar" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true">'
+        f'<rect class="track" width="100" height="6"></rect>'
+        f'<rect class="filled" width="{percentage}" height="6"></rect></svg>'
+    )
+
+
+def _counted(count: int, singular: str, plural: str) -> str:
+    """Write a count with the noun that agrees with it, such as `1 row differs`."""
+    return f"{count:,} {singular if count == 1 else plural}"
+
+
+def _headline(summary: DiffSummary) -> str:
+    """Say in one sentence how much differs, so the verdict needs no table to read it."""
+    if summary.is_perfect_match:
+        return "Every row matches."
+    rows = _counted(summary.total_mismatches, "row differs", "rows differ")
+    if summary.is_match:
+        return f"{rows}, within the threshold"
+    parts = [rows]
+    if summary.column_mismatches:
+        drifting = len(summary.column_mismatches)
+        parts.append(_counted(drifting, "column drifts", "columns drift"))
+    if summary.accepted_count:
+        parts.append(f"{summary.accepted_count:,} accepted by the baseline")
+    return " &middot; ".join(parts)
+
+
+def _banner(summary: DiffSummary, generated: str) -> str:
+    """Render the verdict as the page's largest text, a word beside a glyph, and its headline."""
+    verdict = "PASSED" if summary.is_match else "FAILED"
+    state = "pass" if summary.is_match else "fail"
+    glyph = "&#10003;" if summary.is_match else "&#10005;"
+    return (
+        f'<header class="banner {state}">'
+        f'<span class="glyph" aria-hidden="true">{glyph}</span>'
+        f'<div><p class="verdict {state}">{verdict}</p>'
+        f'<p class="headline">{_headline(summary)}</p>'
+        f'<p class="sub">Generated {generated}</p></div></header>'
+    )
+
+
+def _drift_table(summary: DiffSummary) -> str:
+    """Rank the drifting columns, each with its share of the changed rows in words and as a bar."""
+    if not summary.column_mismatches:
+        return "<p class='empty'>No column-level drift.</p>"
+    ranked = sorted(summary.column_mismatches.items(), key=lambda item: -item[1])
+    changed_rows = max(summary.changed_count, 1)
+    rows = "".join(
+        f"<tr><td>{_escape(column)}</td><td>{count:,}</td>"
+        f"<td class='share'>{_bar(round(100 * count / changed_rows, 1))}"
+        f"{round(100 * count / changed_rows):d}%</td></tr>"
+        for column, count in ranked
+    )
+    return _scroll_region(
+        "column-level-drift",
+        "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Mismatches</th>"
+        "<th scope='col'>Share of changed rows</th>"
+        f"</tr></thead><tbody>{rows}</tbody></table>",
+    )
+
+
+def _kind_section(title: str, count: int, frame: pl.DataFrame, max_rows: int) -> str:
+    """Wrap one kind of row in a section the script turns into a tab, named and counted."""
+    panel_id = re.sub(r"\W+", "-", title.lower()) + "-panel"
+    return (
+        f"<section class='kind' id='{panel_id}' data-kind='{_escape(title)}' "
+        f"data-count='{count}'>\n{_table(title, frame, max_rows)}\n</section>"
     )
 
 
@@ -275,7 +430,11 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
 
     cards = "".join(
         [
-            _card("Match rate", f"{summary.match_rate_percentage}%"),
+            _card(
+                "Match rate",
+                f"{summary.match_rate_percentage}%",
+                _bar(summary.match_rate_percentage),
+            ),
             _card("Source rows", f"{summary.total_rows_source:,}"),
             _card("Target rows", f"{summary.total_rows_target:,}"),
             _card("Added", f"{summary.added_count:,}"),
@@ -303,23 +462,12 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
             "primary keys rather than values.</p>"
         )
 
-    drift = "<p class='empty'>No column-level drift.</p>"
-    if summary.column_mismatches:
-        ranked = sorted(summary.column_mismatches.items(), key=lambda item: -item[1])
-        rows = "".join(
-            f"<tr><td>{_escape(col)}</td><td>{count:,}</td></tr>" for col, count in ranked
-        )
-        drift = _scroll_region(
-            "column-level-drift",
-            "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Mismatches</th>"
-            f"</tr></thead><tbody>{rows}</tbody></table>",
-        )
-
-    tables = "\n".join(
+    # Without the script, the three sections stay stacked with every row shown.
+    kinds = "\n".join(
         [
-            _table("Changed rows", changed, max_rows),
-            _table("Added rows", result.added, max_rows),
-            _table("Removed rows", result.removed, max_rows),
+            _kind_section("Changed rows", summary.changed_count, changed, max_rows),
+            _kind_section("Added rows", summary.added_count, result.added, max_rows),
+            _kind_section("Removed rows", summary.removed_count, result.removed, max_rows),
         ]
     )
 
@@ -334,15 +482,15 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
 <body>
 <main>
 <h1>Veridelta Report</h1>
-<p class="sub">
-  <span class="verdict {verdict.lower()}">{verdict}</span> &middot; generated {generated}
-</p>
+{_banner(summary, generated)}
 {keys_note}
 {_run_record_html(summary.provenance)}
 <div class="cards">{cards}</div>
 <h2 id="column-level-drift">Column-level drift</h2>
-{drift}
-{tables}
+{_drift_table(summary)}
+<div class="kinds">
+{kinds}
+</div>
 </main>
 <script>{_SCRIPT}</script>
 </body>

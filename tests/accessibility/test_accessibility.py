@@ -275,6 +275,43 @@ class TestReport:
 
         assert focused == ["A", "https://github.com/acme/orders/actions/runs/123"]
 
+    def test_arrow_keys_move_between_the_kinds_of_rows(
+        self, browser: "Browser", base_url: str
+    ) -> None:
+        """Ensure the tabs are one Tab stop, the arrows and End move along them, and the panel follows."""
+        page = _open_local_only(browser, base_url)
+        page.goto(base_url + "report.html")
+        roles: list[str | None] = []
+        while len(roles) < 20 and "tab" not in roles:
+            page.keyboard.press("Tab")
+            roles.append(page.evaluate("() => document.activeElement.getAttribute('role')"))
+        state_script = """() => ({
+          focused: document.activeElement.textContent,
+          selected: document.activeElement.getAttribute('aria-selected'),
+          shown: [...document.querySelectorAll('[role=tabpanel]')]
+            .filter(panel => !panel.hidden).map(panel => panel.dataset.kind),
+        })"""
+
+        page.keyboard.press("ArrowRight")
+        after_arrow = page.evaluate(state_script)
+        page.keyboard.press("End")
+        after_end = page.evaluate(state_script)
+        page.keyboard.press("Tab")
+        left_the_tabs = page.evaluate("() => document.activeElement.getAttribute('role')")
+
+        assert roles[-1] == "tab", roles
+        assert after_arrow == {
+            "focused": "Added rows · 5",
+            "selected": "true",
+            "shown": ["Added rows"],
+        }
+        assert after_end == {
+            "focused": "Removed rows · 5",
+            "selected": "true",
+            "shown": ["Removed rows"],
+        }
+        assert left_the_tabs != "tab"
+
     def test_a_keyboard_pages_a_table_and_hears_each_page(
         self, browser: "Browser", base_url: str
     ) -> None:
