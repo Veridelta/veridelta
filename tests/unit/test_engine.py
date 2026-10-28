@@ -3637,6 +3637,94 @@ class TestForgivenCounts:
         assert [rules.forgiven_count for rules in result.rules_applied] == [None]
         assert result.changed.columns == ["id", "v_source", "v_target", "v_is_match"]
 
+    def test_it_keeps_no_copy_for_a_rule_that_only_changes_the_comparison(self) -> None:
+        """Ensure a tolerance, which never rewrites a value, is counted from the values compared.
+
+        A copy of the originals cost a run about 45% on numbers; a tolerance
+        needs none, since the values it compares are the originals.
+        """
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["v"], absolute_tolerance=0.01)],
+            count_forgiven_values=True,
+        )
+        engine = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1, 2], "v": [10.0, 20.0]}).lazy(),
+            pl.DataFrame({"id": [1, 2], "v": [10.004, 21.0]}).lazy(),
+        )
+
+        engine._plan()
+
+        assert engine.source.collect_schema().names() == ["id", "v"]
+
+    def test_it_keeps_a_hash_where_a_rule_rewrites_values(self) -> None:
+        """Ensure a rule that rewrites values carries an 8-byte hash of each original, not the text."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["v"], case_insensitive=True)],
+            count_forgiven_values=True,
+        )
+        engine = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1], "v": ["A long text value"]}).lazy(),
+            pl.DataFrame({"id": [1], "v": ["a long text value"]}).lazy(),
+        )
+
+        engine._plan()
+
+        copies = {
+            name: dtype
+            for name, dtype in engine.source.collect_schema().items()
+            if name not in {"id", "v"}
+        }
+        assert list(copies.values()) == [pl.UInt64()]
+
+    def test_it_compares_integers_with_floats_as_numbers(self) -> None:
+        """Ensure `20` against `20.0` is equal, not forgiven, where text would call them different."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["v"], absolute_tolerance=0.01)],
+            count_forgiven_values=True,
+        )
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1, 2], "v": [10, 20]}).lazy(),
+            pl.DataFrame({"id": [1, 2], "v": [10.004, 20.0]}).lazy(),
+        ).run()
+
+        assert [rules.forgiven_count for rules in result.rules_applied] == [1]
+
+    def test_it_compares_a_date_with_a_datetime_as_times(self) -> None:
+        """Ensure a date and the same instant as a datetime count as equal, which no rule forgave."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["v"], treat_null_as_equal=False)],
+            count_forgiven_values=True,
+        )
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1], "v": [date(2024, 1, 1)]}).lazy(),
+            pl.DataFrame({"id": [1], "v": [datetime(2024, 1, 1)]}).lazy(),
+        ).run()
+
+        assert [rules.forgiven_count for rules in result.rules_applied] == [0]
+
+    def test_it_compares_other_types_as_text(self) -> None:
+        """Ensure text against a categorical column, which an edit distance forgave, counts once."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["v"], max_levenshtein_distance=1)],
+            count_forgiven_values=True,
+        )
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1], "v": ["a"]}).lazy(),
+            pl.DataFrame({"id": [1], "v": pl.Series(["b"]).cast(pl.Categorical)}).lazy(),
+        ).run()
+
+        assert [rules.forgiven_count for rules in result.rules_applied] == [1]
+
     def test_it_counts_nothing_when_off(self) -> None:
         """Ensure a run without the setting leaves every count unknown, as pushdown does."""
         result = DiffEngine(

@@ -265,6 +265,32 @@ def rules_applied(
     return tuple(summaries)
 
 
+_VALUE_REWRITING_SETTINGS: Final = (
+    "whitespace_mode",
+    "case_insensitive",
+    "null_value_count",
+    "regex_replacement_count",
+    "value_map_size",
+    "pad_zeros",
+    "datetime_format",
+    "timezone",
+    "cast_to",
+)
+"""The `ColumnRules` settings that rewrite a value before the comparison.
+
+The rest, the tolerances, `treat_null_as_equal`, and the similarity limits,
+change only how two values compare, so the values compared are the originals.
+"""
+
+
+def rewrites_values(rules: ColumnRules) -> bool:
+    """Return whether any of a column's settings rewrites a value before the comparison."""
+    return any(
+        getattr(rules, name) != ColumnRules.model_fields[name].default
+        for name in _VALUE_REWRITING_SETTINGS
+    )
+
+
 def has_rule(rules: ColumnRules) -> bool:
     """Return whether any setting differs from its default, so the column's match is changed."""
     return any(
