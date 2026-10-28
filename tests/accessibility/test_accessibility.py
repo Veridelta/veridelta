@@ -65,7 +65,10 @@ _WIDTHS = {"desktop": {"width": 1280, "height": 800}, "phone": {"width": 375, "h
 """Viewport sizes. A narrow screen makes tables and code scroll sideways."""
 
 _PAGE_STATUS = "[data-table] .status"
-"""The live status of the first paged table, the report's changed rows."""
+"""The live status of the first paged table, the report's mismatched values."""
+
+_MISMATCHED_VALUES = 688
+"""Values that differ in the sample: 28 in `amount`, and 55 in each of the 12 wide columns."""
 
 
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -245,21 +248,29 @@ class TestReport:
     """Drive the HTML report as a keyboard user, and read it with JavaScript off."""
 
     def test_it_shows_every_row_without_javascript(self, browser: "Browser", base_url: str) -> None:
-        """Ensure a reader without JavaScript sees all 65 rows, and no pager that does nothing."""
+        """Ensure a reader without JavaScript sees every row, and no pager or filter that does nothing.
+
+        Every mismatched value and every added and removed row shows at once.
+        The 55 full changed rows sit in a native disclosure, which opens
+        without the script.
+        """
         page = _open_local_only(browser, base_url, java_script_enabled=False)
         page.goto(base_url + "report.html")
+        count_shown = """() => ({
+          rows: [...document.querySelectorAll('[data-table] tbody tr')]
+            .filter(row => row.checkVisibility()).length,
+          pagers: [...document.querySelectorAll('.pager')]
+            .filter(pager => pager.checkVisibility()).length,
+          filters: document.querySelectorAll('.filters').length,
+        })"""
 
-        shown = page.evaluate(
-            """() => ({
-              rows: [...document.querySelectorAll('[data-table] tbody tr')]
-                .filter(row => row.getBoundingClientRect().height > 0).length,
-              pagers: [...document.querySelectorAll('.pager')]
-                .filter(pager => pager.getBoundingClientRect().height > 0).length,
-            })"""
-        )
+        before = page.evaluate(count_shown)
+        page.click("details.full-rows summary")
+        after = page.evaluate(count_shown)
         page.context.close()
 
-        assert shown == {"rows": 65, "pagers": 0}
+        assert before == {"rows": _MISMATCHED_VALUES + 10, "pagers": 0, "filters": 0}
+        assert after["rows"] == _MISMATCHED_VALUES + 65
 
     def test_the_first_tab_reaches_the_ci_run_named_by_its_address(
         self, browser: "Browser", base_url: str
@@ -322,7 +333,7 @@ class TestReport:
         """
         page = _open_local_only(browser, base_url)
         page.goto(base_url + "report.html")
-        assert page.text_content(_PAGE_STATUS) == "Page 1 of 3 · 55 rows"
+        assert page.text_content(_PAGE_STATUS) == f"Page 1 of 28 · {_MISMATCHED_VALUES} values"
         page.evaluate(
             """selector => {
               window.statusChanges = [];
@@ -334,35 +345,82 @@ class TestReport:
         )
 
         names: list[str | None] = []
-        while len(names) < 20 and "Next page of changed rows" not in names:
+        while len(names) < 20 and "Next page of mismatched values" not in names:
             page.keyboard.press("Tab")
             names.append(page.evaluate("() => document.activeElement.getAttribute('aria-label')"))
-        for _ in range(3):
+        for _ in range(28):
             page.keyboard.press("Enter")
         after = page.evaluate(
             """() => ({
               focused: document.activeElement.getAttribute('aria-label'),
               disabled: document.activeElement.getAttribute('aria-disabled'),
               ring: getComputedStyle(document.activeElement).outlineStyle,
-              shown: [...document.querySelectorAll('[data-table] tbody tr')]
-                .slice(0, 55).map((row, index) => row.hidden ? null : index).filter(i => i !== null),
+              shown: [...document.querySelectorAll('[data-filterable] tbody tr')]
+                .map((row, index) => row.hidden ? null : index).filter(i => i !== null),
               changes: window.statusChanges,
             })"""
         )
         page.context.close()
 
-        assert names[-1] == "Next page of changed rows", names
-        assert after["focused"] == "Next page of changed rows"
+        assert names[-1] == "Next page of mismatched values", names
+        assert after["focused"] == "Next page of mismatched values"
         assert after["disabled"] == "true"
         assert after["ring"] != "none"
-        assert after["shown"] == list(range(50, 55))
-        assert after["changes"] == ["Page 2 of 3 · 55 rows", "Page 3 of 3 · 55 rows"]
+        assert after["shown"] == list(range(675, _MISMATCHED_VALUES))
+        assert after["changes"] == [
+            f"Page {number} of 28 · {_MISMATCHED_VALUES} values" for number in range(2, 29)
+        ]
+
+    def test_the_filters_narrow_the_values_and_keep_the_view_in_the_address(
+        self, browser: "Browser", base_url: str
+    ) -> None:
+        """Ensure a column and a key narrow the values, the status says so, and Clear restores them.
+
+        The filter's state lands in the address's fragment, and opening that
+        address applies it again, so a reviewer can link the view they mean.
+        """
+        page = _open_local_only(browser, base_url)
+        page.goto(base_url + "report.html")
+        read_state = """() => ({
+          status: document.querySelector('.filter-status').textContent,
+          page: document.querySelector('[data-filterable] .status').textContent,
+          hash: location.hash,
+        })"""
+
+        page.select_option("#filter-column", "amount")
+        by_column = page.evaluate(read_state)
+        page.fill("#filter-key", "1")
+        by_column_and_key = page.evaluate(read_state)
+        linked = _open_local_only(browser, base_url)
+        linked.goto(base_url + "report.html#column=amount")
+        opened_from_link = linked.evaluate(read_state)
+        linked.context.close()
+        page.focus("#filter-key")
+        page.keyboard.press("Tab")
+        page.keyboard.press("Enter")
+        cleared = page.evaluate(read_state)
+        page.context.close()
+
+        assert by_column == {
+            "status": f"Showing 28 of {_MISMATCHED_VALUES} mismatched values",
+            "page": "Page 1 of 2 · 28 values",
+            "hash": "#column=amount",
+        }
+        assert by_column_and_key["hash"] == "#column=amount&key=1"
+        assert by_column_and_key["status"].startswith("Showing ")
+        assert opened_from_link == by_column
+        assert cleared == {
+            "status": f"Showing {_MISMATCHED_VALUES} of {_MISMATCHED_VALUES} mismatched values",
+            "page": f"Page 1 of 28 · {_MISMATCHED_VALUES} values",
+            "hash": "",
+        }
 
     def test_arrow_keys_scroll_a_wide_table(self, browser: "Browser", base_url: str) -> None:
         """Ensure a table wider than the screen takes focus, so arrow keys can scroll it."""
         page = _open_local_only(browser, base_url)
         page.goto(base_url + "report.html")
         region = "[aria-labelledby='changed-rows']"
+        page.click("details.full-rows summary")
 
         page.focus(region)
         page.keyboard.press("ArrowRight")
