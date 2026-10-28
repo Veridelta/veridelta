@@ -81,7 +81,6 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Item | Use case | Metric it would move |
 | :--- | :--- | :--- |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
-| A faster `count_forgiven_values` for rules that rewrite values, which still cost up to 25% of a run | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | None measures run time yet. |
 
 ## Served by no use case, and why they stay
 
