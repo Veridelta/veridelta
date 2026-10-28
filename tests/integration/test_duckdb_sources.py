@@ -102,6 +102,17 @@ class TestDuckDBSources:
         assert by_table.collect().equals(by_query.collect())
         assert by_name.collect().equals(by_query.collect())
 
+    def test_it_reads_a_query_that_selects_no_rows(self, tmp_path: Path) -> None:
+        """Ensure a SELECT that matches nothing reads as an empty frame, not as no result."""
+        database = _orders(tmp_path / "legacy.duckdb")
+
+        frame = LoaderFactory.load(
+            DuckDBConfig(database=database, query="SELECT * FROM sales.orders WHERE false")
+        ).collect()
+
+        assert frame.height == 0
+        assert "id" in frame.columns
+
     def test_it_compares_a_duckdb_table_with_a_parquet_file(self, tmp_path: Path) -> None:
         """Ensure a DuckDB source runs through the same local comparison as a file."""
         database = _duckdb(
@@ -185,12 +196,24 @@ class TestDuckDBReadFailures:
 
         assert "does not exist" in str(info.value)
 
-    def test_it_refuses_a_query_that_returns_nothing(self, tmp_path: Path) -> None:
-        """Ensure a statement DuckDB answers with no result fails rather than comparing nothing."""
+    @pytest.mark.parametrize(
+        "query",
+        [
+            pytest.param("SET threads = 1", id="set"),
+            pytest.param("-- no statement", id="comment"),
+            pytest.param("SELECT * FROM sales.orders; SET threads = 1", id="ends-with-set"),
+        ],
+    )
+    def test_it_refuses_a_query_that_returns_nothing(self, tmp_path: Path, query: str) -> None:
+        """Ensure a statement DuckDB answers with no result fails rather than comparing nothing.
+
+        DuckDB 1.x answers a SET with no relation, and 2.0 with a placeholder
+        `Success` column, so both must fail the same way.
+        """
         database = _orders(tmp_path / "legacy.duckdb")
 
         with pytest.raises(ConnectorError, match="returned no rows to compare"):
-            LoaderFactory.load(DuckDBConfig(database=database, query="SET threads = 1"))
+            LoaderFactory.load(DuckDBConfig(database=database, query=query))
 
     def test_it_explains_a_file_another_connection_holds(self, tmp_path: Path) -> None:
         """Ensure a file open read-write elsewhere fails with DuckDB's reason, not a crash."""
@@ -435,8 +458,12 @@ class TestDuckDBPushdown:
             table = read("SELECT * FROM t")
             with pytest.raises(ConnectorError, match="Permission Error") as refused:
                 read(f"SELECT content FROM read_text('{beside / 'secret.txt'}')")
-            with pytest.raises(ConnectorError, match="lock"):
+            # A lone SET is refused before it runs, so the lock is reached by a SET
+            # that a SELECT follows.
+            with pytest.raises(ConnectorError, match="returned no rows to compare"):
                 read("SET enable_external_access = true")
+            with pytest.raises(ConnectorError, match="lock"):
+                read("SET enable_external_access = true; SELECT 1 AS id")
 
         assert inside["id"].to_list() == [1]
         assert table["id"].to_list() == [1]

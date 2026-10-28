@@ -273,6 +273,52 @@ class TestDuckDBReadErrors:
         with pytest.raises(ConnectorError, match="returned no rows to compare"):
             DuckDBConnector(DuckDBConfig(database="warehouse.duckdb", query="SET x = 1")).connect()
 
+    def test_it_refuses_a_statement_that_parses_as_returning_nothing(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a SET fails before it runs, where DuckDB 2.0 would answer it with a placeholder.
+
+        DuckDB 2.0 answers SET with a one-column `Success` relation rather than
+        none, so the read asks the parser what the last statement returns.
+        """
+        driver = _driver(mocker)
+        driver.extract_statements.return_value = [
+            MagicMock(expected_result_type=[driver.ExpectedResultType.NOTHING])
+        ]
+
+        with pytest.raises(ConnectorError, match="returned no rows to compare"):
+            DuckDBConnector(DuckDBConfig(database="warehouse.duckdb", query="SET x = 1")).connect()
+
+        driver.connect.return_value.sql.assert_not_called()
+
+    def test_it_refuses_a_query_that_parses_as_no_statement(self, mocker: MockerFixture) -> None:
+        """Ensure a query of only a comment, which DuckDB answers with no relation, fails."""
+        driver = _driver(mocker)
+        driver.extract_statements.return_value = []
+        driver.connect.return_value.sql.return_value = None
+
+        with pytest.raises(ConnectorError, match="returned no rows to compare"):
+            DuckDBConnector(
+                DuckDBConfig(database="warehouse.duckdb", query="-- no statement")
+            ).connect()
+
+    def test_it_reads_a_statement_that_parses_as_returning_rows(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a SELECT, whose last statement returns a query result, is read."""
+        frame = pl.DataFrame({"id": [1, 2]})
+        driver = _driver(mocker, frame)
+        driver.extract_statements.return_value = [
+            MagicMock(expected_result_type=[driver.ExpectedResultType.NOTHING]),
+            MagicMock(expected_result_type=[driver.ExpectedResultType.QUERY_RESULT]),
+        ]
+
+        with DuckDBConnector(
+            DuckDBConfig(database="warehouse.duckdb", query="SET x = 1; SELECT 1 AS id")
+        ) as connector:
+            connector.connect()
+            assert connector.lazyframe().collect().equals(frame)
+
     def test_it_names_a_column_polars_cannot_read(self, mocker: MockerFixture) -> None:
         """Ensure an INTERVAL column fails with its name before the conversion can panic."""
         driver = _driver(
