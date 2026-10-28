@@ -107,6 +107,7 @@ nav:
     - Results: results.md
     - Sources: sources.md
     - CI integrations: ci.md
+    - Tracing a verdict: traceability.md
     - Pushdown: pushdown.md
     - AI agents: agents.md
   - Compared with other tools: compared.md

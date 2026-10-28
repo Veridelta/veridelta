@@ -74,6 +74,7 @@ The comment looks like this one, from an [example pull request](https://github.c
 | `github-token` | `github.token` | Token used to comment. |
 | `upload-artifact` | `true` | Upload the reports as an artifact. |
 | `artifact-name` | derived | Artifact name. Set it when a matrix runs one configuration more than once, since artifact names must be unique within a run. |
+| `attest` | `false` | Attest the reports with GitHub artifact attestations. See [Attesting the reports](#attesting-the-reports). |
 
 `extras` takes lowercase extra names, `version` a release number, and `artifact-name` letters, digits, spaces, dots, underscores, and hyphens. The action refuses any other value before it installs anything: `exit-code` is `2`, the command line's code for invalid arguments, and `status` is `error`.
 
@@ -105,6 +106,20 @@ A change made on purpose, such as an account closed for good, fails every pull r
 ```
 
 The run then fails only on drift the file does not list, and the summary counts the rows it accepted. A missing or invalid file ends the run with `status` set to `error`.
+
+### Attesting the reports
+
+`attest: true` attests the JSON summary, the Markdown summary, and the HTML report, so anyone with the report can check that this workflow wrote it at this commit. The job needs these permissions:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+```
+
+GitHub supports attestations on public repositories on every current plan, and on private or internal ones only on GitHub Enterprise Cloud. [Tracing a verdict](traceability.md#attesting-the-reports) shows how to verify one.
 
 ### Values in the summary
 

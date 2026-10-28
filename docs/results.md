@@ -73,7 +73,7 @@ The run record ties a verdict to the files it judged, the commit they came from,
 | `working_tree_clean` | Whether no tracked file differed from that commit, from `git status`. Untracked files, such as the run's own reports, do not count. `null` when git cannot tell. |
 | `ci_run_url` | The GitHub Actions run, built from `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`. `null` outside GitHub Actions, or when a variable has an unexpected shape. |
 
-The record holds no user name, and a path stays as it was given, so a relative path names no folder outside the project. A field Veridelta cannot fill stays `null` and never fails the run. To check a hash, run `sha256sum` on the file at the recorded commit:
+[Tracing a verdict](traceability.md) shows how the record joins signed commits, code owner reviews, and attestations. The record holds no user name, and a path stays as it was given, so a relative path names no folder outside the project. A field Veridelta cannot fill stays `null` and never fails the run. To check a hash, run `sha256sum` on the file at the recorded commit:
 
 ```bash
 git show abc1234:veridelta.yaml | sha256sum

@@ -225,6 +225,7 @@ Link to the page that owns a topic instead of repeating it:
 - `DiffResult`, reports, OpenTelemetry metrics, and artifacts: `docs/results.md`.
 - Files, lakehouse tables, databases, warehouses, their extras, connection fields, and logging: `docs/sources.md`.
 - The GitHub Action and the GitLab template: `docs/ci.md`, where macros are off so `${{ }}` renders as written.
+- Tracing a verdict to signed commits, code owner reviews, the run record, and attestations: `docs/traceability.md`.
 - Comparing inside a warehouse, Postgres, or DuckDB, and how that differs from a local run: `docs/pushdown.md`.
 - How an agent runs Veridelta: `docs/agents.md`. The build writes `llms.txt` and `llms-full.txt` from every page through `hooks/llms_txt.py`.
 - The public Python surface: `docs/api.md`, generated from docstrings and never hand-copied.

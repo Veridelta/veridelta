@@ -66,6 +66,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Feature | Use case | Described in | Metric |
 | :--- | :--- | :--- | :--- |
 | The GitHub Action, with one comment per configuration on the pull request, and a `baseline` input that accepts the drift a file lists | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md), [DR-03](metrics/DR-03.md) |
+| Tracing a verdict to signed commits, code owner reviews, and the run record, and an opt-in `attest` input that attests the reports from the Action | [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request), [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | [Tracing a verdict](../docs/traceability.md), [CI integrations](../docs/ci.md) | [GR-02](metrics/GR-02.md) |
 | The JSON Schema for configuration files, for completion and checking in an editor | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The schema mapped to `veridelta*.yaml` in VS Code, the YAML extension recommended, and a task that runs `veridelta validate` on the open file with its verdict in the Problems panel | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
 | The VS Code extension's validate command, released from its own repository, which runs `veridelta validate --json` on the open file and puts each finding in the Problems panel on the line it points to | [UC-01](USERS.md#uc-01-a-first-verdict-on-two-files) | [Configuration](../docs/configuration.md) | [DR-02](metrics/DR-02.md) |
@@ -80,7 +81,7 @@ Every feature Veridelta ships, and every item on [the roadmap](../docs/roadmap.m
 | Item | Use case | Metric it would move |
 | :--- | :--- | :--- |
 | Matching text by meaning, and a run summary written by a model | None yet, as the roadmap says | None |
-| A page on tracing a verdict to a signed commit and an approved review, and an opt-in input that attests the report from the Action ([issue 440](https://github.com/Veridelta/veridelta/issues/440)) | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone), [UC-02](USERS.md#uc-02-the-same-verdict-on-every-pull-request) | None measures sign-off yet. [GR-03](metrics/GR-03.md) must stay at zero as the report changes. |
+| A faster `count_forgiven_values`, which now makes a run 20 to 50% slower | [UC-03](USERS.md#uc-03-sign-off-from-the-report-alone) | None measures run time yet. |
 
 ## Served by no use case, and why they stay
 
