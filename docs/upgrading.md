@@ -23,7 +23,9 @@ Then run a comparison whose verdict you already know, and confirm the new releas
 
 ## 0.42.0
 
-Three things change:
+Four things change:
+
+- The `duckdb` extra installs DuckDB below 2.0, since MotherDuck's extension refuses 2.0. A project that pins DuckDB 2.0 itself keeps it, and cannot reach MotherDuck until MotherDuck supports 2.0.
 
 - A DuckDB source's `query` is refused before it runs when its last statement does not read rows, such as `INSERT`, `UPDATE`, `DELETE`, `CREATE`, or `COPY`. A write with `RETURNING` is refused too, where 0.41 read its rows. Read with a `SELECT`, and make any change to the data before the run.
 - `veridelta run --json` prints a `provenance` object, the [run record](results.md#run-record), and the Markdown summary's JSON comment holds it too. A script that compares the JSON's keys exactly sees one more.
