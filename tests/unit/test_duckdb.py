@@ -52,6 +52,8 @@ def _driver(
 ) -> MagicMock:
     """Replace the DuckDB module; its connection's statements return `frame`.
 
+    Its parser reads every statement as a SELECT, unless a test says otherwise.
+
     Returns:
         MagicMock: The module mock. `connect.return_value` is the connection.
     """
@@ -61,6 +63,12 @@ def _driver(
         relation.types = [_Type("INTEGER") for _ in result.columns]
     relation.pl.return_value = result
     module = MagicMock()
+    module.extract_statements.return_value = [
+        MagicMock(
+            type=module.StatementType.SELECT,
+            expected_result_type=[module.ExpectedResultType.QUERY_RESULT],
+        )
+    ]
     module.connect.return_value.sql.return_value = relation
     mocker.patch("veridelta.connectors.duckdb.duckdb", module)
     return module
@@ -291,6 +299,36 @@ class TestDuckDBReadErrors:
 
         driver.connect.return_value.sql.assert_not_called()
 
+    def test_it_refuses_a_write_before_it_runs(self, mocker: MockerFixture) -> None:
+        """Ensure an INSERT is refused by its kind and never reaches a read-write connection.
+
+        The parser expects rows from an INSERT, since it may carry RETURNING, so
+        only the statement's kind tells a write from a read.
+        """
+        driver = _driver(mocker)
+        insert_kind = MagicMock()
+        insert_kind.name = "INSERT"
+        driver.extract_statements.return_value = [
+            MagicMock(
+                type=insert_kind,
+                expected_result_type=[
+                    driver.ExpectedResultType.CHANGED_ROWS,
+                    driver.ExpectedResultType.QUERY_RESULT,
+                ],
+            )
+        ]
+
+        with pytest.raises(ConnectorError, match="ends with an INSERT statement"):
+            DuckDBConnector(
+                DuckDBConfig(
+                    database="md:warehouse",
+                    query="INSERT INTO t VALUES (1)",
+                    motherduck_token=_SECRET,
+                ),
+            ).connect()
+
+        driver.connect.return_value.sql.assert_not_called()
+
     def test_it_refuses_a_query_that_parses_as_no_statement(self, mocker: MockerFixture) -> None:
         """Ensure a query of only a comment, which DuckDB answers with no relation, fails."""
         driver = _driver(mocker)
@@ -310,7 +348,10 @@ class TestDuckDBReadErrors:
         driver = _driver(mocker, frame)
         driver.extract_statements.return_value = [
             MagicMock(expected_result_type=[driver.ExpectedResultType.NOTHING]),
-            MagicMock(expected_result_type=[driver.ExpectedResultType.QUERY_RESULT]),
+            MagicMock(
+                type=driver.StatementType.SELECT,
+                expected_result_type=[driver.ExpectedResultType.QUERY_RESULT],
+            ),
         ]
 
         with DuckDBConnector(

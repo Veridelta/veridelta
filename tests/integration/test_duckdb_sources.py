@@ -113,6 +113,35 @@ class TestDuckDBSources:
         assert frame.height == 0
         assert "id" in frame.columns
 
+    @pytest.mark.parametrize(
+        "query",
+        [
+            pytest.param("SELECT id FROM sales.orders", id="select"),
+            pytest.param("FROM sales.orders", id="from"),
+            pytest.param("VALUES (1), (2)", id="values"),
+            pytest.param("SHOW ALL TABLES", id="show"),
+            pytest.param("DESCRIBE sales.orders", id="describe"),
+            pytest.param("PRAGMA table_info('sales.orders')", id="pragma"),
+            pytest.param("EXPLAIN SELECT id FROM sales.orders", id="explain"),
+            pytest.param("CALL duckdb_tables()", id="call"),
+            pytest.param("PIVOT sales.orders ON paid USING count(*) GROUP BY id", id="pivot"),
+            pytest.param("SET threads = 1; SELECT id FROM sales.orders", id="set-then-select"),
+        ],
+    )
+    def test_it_reads_every_kind_of_statement_that_returns_rows(
+        self, tmp_path: Path, query: str
+    ) -> None:
+        """Ensure each statement DuckDB answers with rows reads, PIVOT included.
+
+        DuckDB 2.0 parses PIVOT as several statements, so this also fails if a
+        later release types it as something the read refuses.
+        """
+        database = _orders(tmp_path / "legacy.duckdb")
+
+        frame = LoaderFactory.load(DuckDBConfig(database=database, query=query)).collect()
+
+        assert frame.height > 0
+
     def test_it_compares_a_duckdb_table_with_a_parquet_file(self, tmp_path: Path) -> None:
         """Ensure a DuckDB source runs through the same local comparison as a file."""
         database = _duckdb(
@@ -174,18 +203,56 @@ class TestDuckDBReadFailures:
         assert not missing.exists()
 
     def test_it_refuses_to_write_to_a_file(self, tmp_path: Path) -> None:
-        """Ensure a `query` that writes fails, because a file opens read-only."""
+        """Ensure a `query` that writes fails, because a file opens read-only.
+
+        A write that ends the query is refused before it runs, so the read-only
+        connection is reached by a write that a SELECT follows.
+        """
         database = _orders(tmp_path / "legacy.duckdb")
 
         with pytest.raises(ConnectorError, match="read-only mode"):
             LoaderFactory.load(
-                DuckDBConfig(database=database, query="CREATE TABLE copied AS SELECT 1 AS id")
+                DuckDBConfig(
+                    database=database,
+                    query="CREATE TABLE copied AS SELECT 1 AS id; SELECT 1 AS id",
+                )
             )
 
         with duckdb.connect(database, read_only=True) as connection:
             assert connection.execute(
                 "SELECT count(*) FROM information_schema.tables WHERE table_name = 'copied'"
             ).fetchone() == (0,)
+
+    @pytest.mark.parametrize(
+        ("query", "kind"),
+        [
+            pytest.param("INSERT INTO sales.orders (id) VALUES (3)", "INSERT", id="insert"),
+            pytest.param(
+                "UPDATE sales.orders SET status = 'lost' RETURNING id", "UPDATE", id="returning"
+            ),
+            pytest.param("DELETE FROM sales.orders", "DELETE", id="delete"),
+            pytest.param("CREATE TABLE copied AS SELECT 1 AS id", "CREATE", id="create"),
+            pytest.param("COPY sales.orders TO '{folder}/orders.csv'", "COPY", id="copy"),
+        ],
+    )
+    def test_it_refuses_a_query_that_ends_with_a_write_before_it_runs(
+        self, tmp_path: Path, query: str, kind: str
+    ) -> None:
+        """Ensure a write is refused by its kind, before DuckDB runs it, RETURNING included.
+
+        A MotherDuck connection opens read-write, so there the write would run.
+        A read-only file still lets COPY write a file, so its target sits in
+        this test's folder, which must stay without it.
+        """
+        database = _orders(tmp_path / "legacy.duckdb")
+        query_in_test_folder = query.format(folder=tmp_path.as_posix())
+
+        with pytest.raises(ConnectorError, match=f"ends with an? {kind} statement") as refused:
+            LoaderFactory.load(DuckDBConfig(database=database, query=query_in_test_folder))
+
+        assert not (tmp_path / "orders.csv").exists()
+
+        assert "read-only" not in str(refused.value)
 
     def test_it_names_a_table_that_does_not_exist(self, tmp_path: Path) -> None:
         """Ensure a missing table fails with the table named and DuckDB's reason."""

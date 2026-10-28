@@ -214,7 +214,7 @@ primary_keys: ["order_id"]
 `database` is a file path, which resolves from the working directory, or a MotherDuck database written as `md:name` or `motherduck:name`. Set exactly one of `table` and `query`:
 
 - `table` is one to three identifier segments, such as `main.orders` or `warehouse.main.orders`. Each segment is double-quoted, which keeps its case.
-- `query` is sent to DuckDB as written, so it can also read files, as in `SELECT * FROM read_parquet('orders/*.parquet')`. A statement that returns no result, such as `SET`, fails the read before it runs, and so does a `query` whose last statement is one.
+- `query` is sent to DuckDB as written, so it can also read files, as in `SELECT * FROM read_parquet('orders/*.parquet')`. A `query` whose last statement returns no result, such as `SET`, or writes, such as `INSERT`, `UPDATE`, `DELETE`, `CREATE`, or `COPY`, fails the read before it runs. A write with `RETURNING` fails too. The last statement must read rows: a `SELECT`, which includes `FROM`, `VALUES`, `SHOW`, `DESCRIBE`, and `SUMMARIZE`, or a `PIVOT`, `PRAGMA`, `EXPLAIN`, or `CALL`.
 
 ### DuckDB files
 
@@ -226,7 +226,7 @@ DuckDB lets one process write to a file, or several read it, but not both at onc
 
 A MotherDuck database needs a token. Set `motherduck_token`, or the `MOTHERDUCK_TOKEN` or `motherduck_token` environment variable. Without one, MotherDuck opens a browser sign-in, which a CI job cannot finish, so Veridelta refuses to connect. Write `motherduck_token: ${MOTHERDUCK_TOKEN}` rather than the token itself, and never put the token in `database`, which is printed and logged.
 
-The connection opens read-write, because a read-only MotherDuck connection needs a read-scaling token. A `query` therefore runs with all of the token's permissions. Use a read-scaling token for a source, as you would give a database `query` a role that can only read.
+The connection opens read-write, because a read-only MotherDuck connection needs a read-scaling token. A `query` therefore runs with all of the token's permissions. The read refuses a `query` that ends with a write, but a write before its last statement still runs, so the token is what keeps the database unchanged. Use a read-scaling token for a source, as you would give a database `query` a role that can only read.
 
 Connecting downloads MotherDuck's DuckDB extension, so the machine needs network access to DuckDB's extension repository. The connection has run against a live account: the parity suite passed there on 2026-10-16 ([run](https://github.com/Veridelta/veridelta/actions/runs/38974225978)).
 

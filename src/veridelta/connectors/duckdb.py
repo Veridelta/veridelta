@@ -68,6 +68,13 @@ _TOKEN_VARIABLES: Final = ("MOTHERDUCK_TOKEN", "motherduck_token")
 MotherDuck's own documentation spells the variable in lowercase.
 """
 
+_READ_STATEMENT_KINDS: Final = ("SELECT", "PRAGMA", "EXPLAIN", "CALL", "MULTI")
+"""The `duckdb.StatementType` names a query may end with: the kinds that read rows.
+
+SHOW, DESCRIBE, SUMMARIZE, FROM, and VALUES parse as SELECT. DuckDB 2.0
+parses PIVOT as MULTI, the several statements it expands into, so MULTI stays.
+"""
+
 _UNREADABLE_TYPES: Final = frozenset({"interval", "union"})
 """DuckDB types Polars cannot import: it raises on some results and panics on others."""
 
@@ -329,15 +336,27 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
 def _read(connection: Any, statement: str, subject: str) -> pl.DataFrame:
     """Run the statement and convert its result, refusing a column Polars cannot hold.
 
-    A statement whose last part returns no result, such as SET, is refused
-    before it runs.
+    A statement whose last part returns no result, such as SET, or does not
+    read, such as INSERT, is refused before it runs.
     """
     no_result = ConnectorError(
         "The configured query returned no rows to compare. Write a statement that "
         "returns rows, such as a SELECT."
     )
-    if _returns_nothing(statement):
-        raise no_result
+    parsed_statements = duckdb.extract_statements(statement)
+    if parsed_statements:
+        last_statement = parsed_statements[-1]
+        expected_result_types = list(last_statement.expected_result_type)
+        if expected_result_types == [duckdb.ExpectedResultType.NOTHING]:
+            raise no_result
+        if not _reads_rows(last_statement):
+            kind_name = last_statement.type.name
+            article = "an" if kind_name[:1] in "AEIOU" else "a"
+            raise ConnectorError(
+                f"The configured query ends with {article} {kind_name} statement, which "
+                "Veridelta does not run: a source is read, never written. Write a query "
+                "whose last statement reads rows, such as a SELECT."
+            )
     relation = connection.sql(statement)
     if relation is None:
         # DuckDB 1.x answers any other statement without a result, such as a plain
@@ -352,17 +371,14 @@ def _read(connection: Any, statement: str, subject: str) -> pl.DataFrame:
     return cast("pl.DataFrame", relation.pl())
 
 
-def _returns_nothing(statement: str) -> bool:
-    """Return whether DuckDB parses the statement's last part as one with no result.
+def _reads_rows(parsed_statement: Any) -> bool:
+    """Return whether DuckDB parses a statement as one of the kinds that read rows.
 
-    DuckDB 1.x answers such a statement with no relation and 2.0 with a
-    placeholder `Success` column, so only the parser tells them apart from rows.
+    The parser expects rows from an INSERT, an UPDATE, or a DELETE too, since
+    each may carry RETURNING, so only the statement's kind tells a write apart.
     """
-    parsed_statements = duckdb.extract_statements(statement)
-    if not parsed_statements:
-        return False
-    expected_result_types = list(parsed_statements[-1].expected_result_type)
-    return expected_result_types == [duckdb.ExpectedResultType.NOTHING]
+    read_kinds = {getattr(duckdb.StatementType, name) for name in _READ_STATEMENT_KINDS}
+    return parsed_statement.type in read_kinds
 
 
 def _unreadable(kind: Any) -> bool:
