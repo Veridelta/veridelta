@@ -451,6 +451,21 @@ class TestDuckDBPushdown:
         assert result.summary.provenance == record
         assert result.summary.column_mismatches == {"tier": 1}
 
+    def test_it_reports_the_same_rules_wherever_it_compares(self, tmp_path: Path) -> None:
+        """Ensure a pushdown run and a local run summarize the same rules for each column."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["tier"], case_insensitive=True)],
+        )
+
+        pushdown = DiffEngine.run_from_configs(config, *_sides(database, pushdown=True))
+        local = DiffEngine.run_from_configs(config, *_sides(database, pushdown=False))
+
+        assert pushdown.rules_applied == local.rules_applied
+        assert [rules.column for rules in local.rules_applied] == list(local.compared_columns)
+        assert any(rules.case_insensitive for rules in local.rules_applied)
+
     def test_it_fetches_a_row_sample_with_values(self, tmp_path: Path) -> None:
         """Ensure `pushdown_sample_rows` brings back the changed row's values."""
         database = _pair(tmp_path / "warehouse.duckdb")

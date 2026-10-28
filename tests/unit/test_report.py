@@ -17,9 +17,24 @@ import pytest
 
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffConfig, DiffResult, DiffSummary, HashedFile, RunProvenance
+from veridelta.models import (
+    ColumnRules,
+    DiffConfig,
+    DiffResult,
+    DiffRule,
+    DiffSummary,
+    HashedFile,
+    RunProvenance,
+)
 from veridelta.outputs import output_json_schema
-from veridelta.report import _difference, render_html, render_markdown, write_html, write_markdown
+from veridelta.report import (
+    _RULE_PHRASES,
+    _difference,
+    render_html,
+    render_markdown,
+    write_html,
+    write_markdown,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -1328,3 +1343,99 @@ class TestMismatchPatterns:
         pushdown = replace(local, changed=local.changed.select("id"), keys_only=True)
 
         assert "id='patterns'" not in render_html(pushdown)
+
+
+_MARKER = "SECRET-SHAPE-7781"
+"""Text a rule's body holds, which neither the result's rule summary nor the report may show."""
+
+
+def _with_rules(rules: list[DiffRule], **defaults: Any) -> DiffResult:
+    """Compare a small frame under rules, as a local run does."""
+    frame = pl.DataFrame(
+        {
+            "id": [1, 2],
+            "amount": [10.0, 20.0],
+            "status": ["o", "c"],
+            "name": ["Ann", "Bo"],
+            "code": ["7", "8"],
+        }
+    )
+    changed = frame.with_columns(pl.Series("amount", [10.004, 25.0]))
+    return DiffEngine(
+        DiffConfig(primary_keys=["id"], rules=rules, **defaults), frame.lazy(), changed.lazy()
+    ).run()
+
+
+class TestRulesApplied:
+    """Validate the report's summary of the rules each compared column ran under."""
+
+    def test_it_lists_each_columns_rules_in_words(self) -> None:
+        """Ensure a reviewer reads which rules applied, column by column, as settings and counts."""
+        result = _with_rules(
+            [
+                DiffRule(column_names=["amount"], absolute_tolerance=0.01),
+                DiffRule(column_names=["status"], value_map={"o": "open", "c": "closed"}),
+                DiffRule(
+                    column_names=["name"],
+                    case_insensitive=True,
+                    whitespace_mode="both",
+                    regex_replace={r"\s+": " "},
+                ),
+            ]
+        )
+        tables = _Tables()
+
+        document = render_html(result)
+        tables.feed(document)
+
+        assert tables.tables["rules-applied"] == [
+            ["amount", "absolute tolerance 0.01"],
+            ["name", "case-insensitive; whitespace trimmed at both ends; 1 regex replacement"],
+            ["status", "value map of 2 entries"],
+        ]
+        assert "1 other column is compared exactly." in document
+
+    def test_it_says_when_every_column_is_compared_exactly(self) -> None:
+        """Ensure a run with no rules says so, rather than showing an empty table."""
+        document = render_html(_with_rules([]))
+
+        assert "Every compared column is compared exactly." in document
+        assert "aria-labelledby='rules-applied'" not in document
+
+    def test_it_shows_a_default_on_every_column_it_reaches(self) -> None:
+        """Ensure a configuration-wide default reads as a rule on each column."""
+        result = _with_rules([], default_absolute_tolerance=0.5, default_treat_null_as_equal=False)
+        tables = _Tables()
+
+        tables.feed(render_html(result))
+
+        assert tables.tables["rules-applied"][0] == [
+            "amount",
+            "absolute tolerance 0.5; NULL does not match NULL",
+        ]
+
+    def test_every_rule_setting_has_words(self) -> None:
+        """Ensure a setting added to `ColumnRules` cannot reach the report without a phrase."""
+        assert set(_RULE_PHRASES) == set(ColumnRules.model_fields) - {"column"}
+
+    def test_it_never_shows_a_rules_values(self) -> None:
+        """Ensure a value map's entries, a regex's text, and null sentinels stay out of the result and the report.
+
+        A regex can describe the shape of private data, such as a mask, and a
+        value map or a sentinel can hold the data itself.
+        """
+        result = _with_rules(
+            [
+                # No value in the data is a key here, so the marker can only leak from the rule.
+                DiffRule(column_names=["status"], value_map={_MARKER: "open", "never": _MARKER}),
+                DiffRule(column_names=["name"], regex_replace={_MARKER: _MARKER}),
+                DiffRule(column_names=["code"], null_values=[_MARKER, "-"]),
+            ]
+        )
+
+        document = render_html(result)
+
+        assert _MARKER not in document
+        assert _MARKER not in repr(result.rules_applied)
+        assert "value map of 2 entries" in document
+        assert "2 null sentinels" in document

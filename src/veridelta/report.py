@@ -18,17 +18,17 @@ import html
 import json
 import math
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from itertools import islice
 from pathlib import Path
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 import polars as pl
 
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffResult, DiffSummary, HashedFile, RunProvenance
+from veridelta.models import ColumnRules, DiffResult, DiffSummary, HashedFile, RunProvenance
 from veridelta.outputs import output_schema_url
 
 _NUMBERS: Final = (int, float, Decimal)
@@ -136,6 +136,7 @@ td.null { color: var(--muted); font-style: italic; }
 .empty { color: var(--muted); padding: .75rem; }
 h3 { font-size: 1rem; margin: 1.25rem 0 .25rem; }
 .hint { color: var(--muted); font-size: .85rem; margin: 0 0 .6rem; }
+.wrap + .hint { margin-top: .4rem; }
 td.differs { font-weight: 600; background: var(--chip); }
 td.differs .sign { color: var(--fail); margin-right: .15rem; }
 td.difference { font-variant-numeric: tabular-nums; }
@@ -781,6 +782,81 @@ def _drift_table(summary: DiffSummary) -> str:
     )
 
 
+_WHITESPACE_WORDS: Final = {
+    "left": "whitespace trimmed on the left",
+    "right": "whitespace trimmed on the right",
+    "both": "whitespace trimmed at both ends",
+}
+"""How a whitespace mode reads in the rules table. `none` trims nothing, so it is no rule."""
+
+
+_RULE_PHRASES: Final[dict[str, Callable[[Any], str]]] = {
+    "absolute_tolerance": lambda tolerance: f"absolute tolerance {tolerance}",
+    "relative_tolerance": lambda tolerance: f"relative tolerance {tolerance}",
+    "null_matches_null": lambda _: "NULL does not match NULL",
+    "case_insensitive": lambda _: "case-insensitive",
+    "whitespace_mode": lambda mode: _WHITESPACE_WORDS[mode],
+    "regex_replacement_count": lambda count: _counted(
+        count, "regex replacement", "regex replacements"
+    ),
+    "value_map_size": lambda size: f"value map of {_counted(size, 'entry', 'entries')}",
+    "null_value_count": lambda count: _counted(count, "null sentinel", "null sentinels"),
+    "pad_zeros": lambda width: f"padded to {width} digits",
+    "datetime_format": lambda text_format: f"parsed as {text_format}",
+    "timezone": lambda zone: f"read in {zone}",
+    "cast_to": lambda target: f"cast to {target}",
+    "max_levenshtein_distance": lambda edits: f"up to {_counted(edits, 'edit', 'edits')} apart",
+    "min_jaro_winkler_similarity": lambda floor: f"Jaro-Winkler similarity at least {floor}",
+}
+"""How each `ColumnRules` setting reads, in the order a run applies them.
+
+A setting at its default, such as a tolerance of 0, changes no match, so it
+reads as no rule.
+"""
+
+
+def _rule_words(rules: ColumnRules) -> list[str]:
+    """Say each setting that loosens or changes a column's match."""
+    return [
+        phrase(getattr(rules, name))
+        for name, phrase in _RULE_PHRASES.items()
+        if getattr(rules, name) != ColumnRules.model_fields[name].default
+    ]
+
+
+def _rules_section(result: DiffResult) -> str:
+    """List the rules each compared column ran under, so a reviewer sees what was forgiven.
+
+    Columns with no rule are counted in one line, since a wide table would
+    otherwise list every one of them as exact.
+    """
+    if not result.rules_applied:
+        return ""
+    heading = "<h2 id='rules-applied'>Rules applied</h2>"
+    described = sorted(
+        (rules.column, words) for rules in result.rules_applied if (words := _rule_words(rules))
+    )
+    if not described:
+        return f"{heading}\n<p class='empty'>Every compared column is compared exactly.</p>"
+    rows = "".join(
+        f"<tr><td>{_escape(column)}</td><td>{_escape('; '.join(words))}</td></tr>"
+        for column, words in described
+    )
+    table = _scroll_region(
+        "rules-applied",
+        "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Rules</th></tr></thead>"
+        f"<tbody>{rows}</tbody></table>",
+    )
+    exact = len(result.rules_applied) - len(described)
+    rest = ""
+    if exact:
+        rest = (
+            f"\n<p class='hint'>{_counted(exact, 'other column is', 'other columns are')} "
+            "compared exactly.</p>"
+        )
+    return f"{heading}\n{table}{rest}"
+
+
 def _kind_section(title: str, count: int, content: str) -> str:
     """Wrap one kind of row in a section the script turns into a tab, named and counted."""
     return (
@@ -883,6 +959,7 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
 <div class="cards">{cards}</div>
 <h2 id="column-level-drift">Column-level drift</h2>
 {_drift_table(summary)}
+{_rules_section(result)}
 <div class="kinds">
 {kinds}
 </div>

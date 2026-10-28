@@ -63,6 +63,7 @@ from veridelta._resolution import (
     normalize_header_names,
     polars_datetime_format,
     reject_unzoned_timezone,
+    rules_applied,
     unusable_sentinel_error,
 )
 from veridelta._results import (
@@ -1116,4 +1117,5 @@ class DiffEngine:
             primary_keys=tuple(self.config.primary_keys),
             compared_columns=tuple(compared_columns),
             accepted=accepted,
+            rules_applied=rules_applied(self.config, compared_columns),
         )
