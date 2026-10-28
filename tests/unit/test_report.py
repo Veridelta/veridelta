@@ -212,12 +212,101 @@ class TestHTMLReport:
         assert "Match rate" in document
         assert "Changed" in document
 
+    def test_it_leads_with_the_verdict_in_words_and_how_much_differs(self) -> None:
+        """Ensure the banner states the verdict as a word, with a glyph a screen reader skips."""
+        document = render_html(_result())
+
+        banner = document[document.index('class="banner fail"') : document.index("</header>")]
+        assert '<p class="verdict fail">FAILED</p>' in banner
+        assert '<span class="glyph" aria-hidden="true">&#10005;</span>' in banner
+        assert '<p class="headline">3 rows differ &middot; 1 column drifts</p>' in banner
+
+    @pytest.mark.parametrize(
+        ("overrides", "headline"),
+        [
+            pytest.param(
+                {
+                    "added_count": 0,
+                    "removed_count": 0,
+                    "changed_count": 0,
+                    "column_mismatches": {},
+                    "is_match": True,
+                },
+                "Every row matches.",
+                id="perfect",
+            ),
+            pytest.param(
+                {
+                    "added_count": 1,
+                    "removed_count": 0,
+                    "changed_count": 0,
+                    "column_mismatches": {},
+                    "is_match": True,
+                },
+                "1 row differs, within the threshold",
+                id="within-threshold",
+            ),
+            pytest.param(
+                {"accepted_count": 4},
+                "10 rows differ &middot; 2 columns drift &middot; 4 accepted by the baseline",
+                id="accepted",
+            ),
+        ],
+    )
+    def test_its_headline_says_how_much_differs(
+        self, overrides: dict[str, object], headline: str
+    ) -> None:
+        """Ensure the headline reads as a sentence for a match, a pass within the threshold, and a baseline."""
+        document = render_html(_with_summary(_summary(**overrides)))
+
+        assert f'<p class="headline">{headline}</p>' in document
+
+    def test_it_marks_a_pass_with_a_check(self) -> None:
+        """Ensure a passing run shows its own glyph, beside the word."""
+        document = render_html(_with_summary(_summary(is_match=True)))
+
+        assert '<p class="verdict pass">PASSED</p>' in document
+        assert '<span class="glyph" aria-hidden="true">&#10003;</span>' in document
+
+    def test_it_draws_the_match_rate_as_a_bar_of_its_own_length(self) -> None:
+        """Ensure the bar is drawn by its width attribute, never a style the policy refuses."""
+        document = render_html(_with_summary(_summary()))
+
+        rate = _summary().match_rate_percentage
+        assert f'<rect class="filled" width="{rate}" height="6"></rect>' in document
+
+    def test_it_ranks_drift_with_each_columns_share_of_changed_rows(self) -> None:
+        """Ensure each drifting column shows its share in words beside a bar a screen reader skips."""
+        tables = _Tables()
+        tables.feed(render_html(_with_summary(_summary())))
+
+        assert tables.tables["column-level-drift"] == [
+            ["amount", "4", "80%"],
+            ["status", "1", "20%"],
+        ]
+        document = render_html(_with_summary(_summary()))
+        assert '<rect class="filled" width="80.0" height="6"></rect>' in document
+
+    def test_it_groups_the_rows_by_kind_for_the_script_to_make_tabs(self) -> None:
+        """Ensure each kind of row sits in its own section, named and counted, in reading order."""
+        document = render_html(_with_summary(_summary()))
+
+        sections = re.findall(
+            r"<section class='kind' id='([\w-]+)' data-kind='([^']+)' data-count='(\d+)'>", document
+        )
+        assert sections == [
+            ("changed-rows-panel", "Changed rows", "5"),
+            ("added-rows-panel", "Added rows", "3"),
+            ("removed-rows-panel", "Removed rows", "2"),
+        ]
+        assert "role', 'tablist'" in document
+
     def test_it_renders_every_row_in_the_markup(self) -> None:
         """Ensure the rows show without JavaScript, as a screen reader reads a table."""
         document = render_html(_result())
 
         assert _rendered_rows(document) == {
-            "column-level-drift": [["val", "1"]],
+            "column-level-drift": [["val", "1", "100%"]],
             "changed-rows": [["2", "B", "CHANGED", "false"]],
             "added-rows": [["3", "C"]],
             "removed-rows": [["1", "A"]],

@@ -95,10 +95,10 @@ A run with `pushdown_sample_rows` set also carries `changed_sample`: up to that 
 
 ## HTML report
 
-![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-light.png#only-light)
-![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-dark.png#only-dark)
+![The top of an HTML report from a comparison of 120 orders: a FAILED banner that says 15 rows differ and 2 columns drift, a match rate of 87.5% with a bar, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status in 60% of the changed rows and in amount in 40%, and tabs for the changed, added, and removed rows, open on the changed rows with both values side by side.](assets/report-light.png#only-light)
+![The top of an HTML report from a comparison of 120 orders: a FAILED banner that says 15 rows differ and 2 columns drift, a match rate of 87.5% with a bar, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status in 60% of the changed rows and in amount in 40%, and tabs for the changed, added, and removed rows, open on the changed rows with both values side by side.](assets/report-dark.png#only-dark)
 
-`write_html` writes the standalone report that `veridelta run` writes with `--html`. It embeds its own styles and script, so it opens offline. A result with a [run record](#run-record) shows it under the verdict. Every row it shows is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
+`write_html` writes the standalone report that `veridelta run` writes with `--html`. It embeds its own styles and script, so it opens offline. It opens on the verdict in words, with how many rows differ and how many columns drift, then the [run record](#run-record) when the result has one, and the counts. The column-level drift table gives each column's share of the changed rows. The changed, added, and removed rows sit behind three tabs. Without JavaScript, the three tables follow one another. Every row it shows is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
 
 ```python
 from veridelta.report import write_html, write_markdown

@@ -25,7 +25,7 @@ import tempfile
 from pathlib import Path
 
 import polars as pl
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import ViewportSize, sync_playwright
 
 from veridelta.config import load_config
 from veridelta.engine import DiffEngine
@@ -37,7 +37,7 @@ _DEMO = _ROOT / "demo"
 _ASSETS = _ROOT / "docs" / "assets"
 _VIDEO = _DEMO / "video"
 _CARD = _DEMO / "social-card.html"
-_VIEWPORT = {"width": 1280, "height": 800}
+_VIEWPORT: ViewportSize = {"width": 1280, "height": 800}
 
 
 def _orders() -> DiffResult:
@@ -133,7 +133,8 @@ def main() -> int:
                 page.goto(report.as_uri())
                 page.screenshot(path=_ASSETS / f"report-{scheme}.png")
                 page.close()
-            card = browser.new_page(viewport={"width": 1280, "height": 640})
+            card_viewport: ViewportSize = {"width": 1280, "height": 640}
+            card = browser.new_page(viewport=card_viewport)
             card.goto(_CARD.as_uri())
             card.screenshot(path=_ASSETS / "social-card.png")
         finally:
