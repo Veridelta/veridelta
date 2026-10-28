@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 from urllib.parse import quote
@@ -22,9 +23,24 @@ from veridelta.cli import build_parser, crosswalk, main, mcp, run, validate
 from veridelta.config import config_json_schema
 from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
 from veridelta.mcp_server import Settings
-from veridelta.models import DiffConfig, DiffRule, ValueMapEntry, ValueMapProposal
+from veridelta.models import DiffConfig, DiffRule, RunProvenance, ValueMapEntry, ValueMapProposal
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
+
+_RUN_RECORD = RunProvenance(
+    veridelta_version="0.0.0", started_at=datetime(2026, 10, 28, tzinfo=UTC)
+)
+"""The run record every `run` in this module gets, since collecting one reads files and git."""
+
+
+@pytest.fixture(autouse=True)
+def recorded_run(mocker: MockerFixture) -> MagicMock:
+    """Replace `collect_provenance`, which hashes files and runs git, with a fixed record.
+
+    Returns:
+        MagicMock: The mock, which a test reads to check what `run` passed.
+    """
+    return mocker.patch("veridelta.cli.collect_provenance", return_value=_RUN_RECORD)
 
 
 class TestCommandLineInterface:
@@ -69,8 +85,39 @@ class TestCommandLineInterface:
         assert exit_code == 0
         mock_load.assert_called_once_with("dummy.yaml")
         mock_engine.run_from_configs.assert_called_once_with(
-            mock_diff_config, mock_source, mock_target, baseline=None
+            mock_diff_config, mock_source, mock_target, baseline=None, provenance=_RUN_RECORD
         )
+
+    def test_it_records_the_files_it_was_given_and_when_it_started(
+        self, mocker: MockerFixture, default_args: argparse.Namespace, recorded_run: MagicMock
+    ) -> None:
+        """Ensure the run record hashes the paths as given, with a start time that names its zone."""
+        mocker.patch("veridelta.cli.load_config", return_value=(MagicMock(output_path=None), 1, 2))
+        mocker.patch("veridelta.cli.Baseline.read")
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_engine.run_from_configs.return_value = MagicMock(summary=MagicMock(is_match=True))
+        default_args.baseline = "accepted.json"
+
+        run(default_args)
+
+        recorded_run.assert_called_once()
+        assert recorded_run.call_args.args == ("dummy.yaml", "accepted.json")
+        assert recorded_run.call_args.kwargs["started_at"].tzinfo is UTC
+
+    def test_it_records_no_configuration_file_for_two_files(
+        self, mocker: MockerFixture, default_args: argparse.Namespace, recorded_run: MagicMock
+    ) -> None:
+        """Ensure a run of two files and `--key` hashes no configuration file."""
+        mocker.patch("veridelta.cli.files_config", return_value=(MagicMock(output_path=None), 1, 2))
+        mock_engine = mocker.patch("veridelta.cli.DiffEngine")
+        mock_engine.run_from_configs.return_value = MagicMock(summary=MagicMock(is_match=True))
+        default_args.config = None
+        default_args.files = ["legacy.csv", "modern.csv"]
+        default_args.key = ["id"]
+
+        run(default_args)
+
+        assert recorded_run.call_args.args == (None, None)
 
     def test_it_returns_exit_code_one_when_datasets_do_not_match(
         self, mocker: MockerFixture, default_args: argparse.Namespace

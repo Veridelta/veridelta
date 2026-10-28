@@ -4,6 +4,7 @@
 """Execute the tutorial and how-to notebooks and hold them to the output they document."""
 
 import difflib
+import re
 import shutil
 from pathlib import Path
 
@@ -18,6 +19,18 @@ NOTEBOOKS = sorted((REPO_ROOT / "docs").glob("*/*.ipynb"))
 """The tutorials under `docs/examples/` and the how-to guides under `docs/how-to/`."""
 OUTPUT_MARKER = "# Output:"
 
+_VARYING_RECORD_FIELDS = re.compile(r'("(?:started_at|veridelta_version)": ?")[^"]+(")')
+"""A run record's start time and release, which the clock and the next release change."""
+
+_GITHUB_ACTIONS_VARIABLES = (
+    "GITHUB_SHA",
+    "GITHUB_SERVER_URL",
+    "GITHUB_REPOSITORY",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_ATTEMPT",
+)
+"""What the run record reads in CI, cleared so a tutorial prints what it prints on a laptop."""
+
 
 def _recorded_output(source: str) -> list[str] | None:
     """Return the lines a cell documents after its `# Output:` marker, if it has one."""
@@ -29,8 +42,12 @@ def _recorded_output(source: str) -> list[str] | None:
 
 
 def _trimmed(lines: list[str]) -> list[str]:
-    """Drop trailing whitespace and trailing blank lines, which a reader cannot see."""
-    stripped = [line.rstrip() for line in lines]
+    """Drop trailing whitespace and trailing blank lines, which a reader cannot see.
+
+    A run record's start time and release read as `<varies>`, since the clock
+    and the next release set them.
+    """
+    stripped = [_VARYING_RECORD_FIELDS.sub(r"\1<varies>\2", line.rstrip()) for line in lines]
     while stripped and not stripped[-1]:
         stripped.pop()
     return stripped
@@ -71,6 +88,8 @@ def test_it_prints_what_the_tutorial_documents(
     # `Path.home()` reads USERPROFILE on Windows and HOME everywhere else.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    for variable in _GITHUB_ACTIONS_VARIABLES:
+        monkeypatch.delenv(variable, raising=False)
     workdir = tmp_path / "run"
     workdir.mkdir()
 

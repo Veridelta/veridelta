@@ -25,6 +25,8 @@ import tarfile
 import threading
 import urllib.request
 from collections.abc import Iterator
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,7 +34,7 @@ import polars as pl
 import pytest
 
 from veridelta.engine import DiffEngine
-from veridelta.models import DiffConfig, DiffResult
+from veridelta.models import DiffConfig, DiffResult, HashedFile, RunProvenance
 from veridelta.report import write_html
 
 if TYPE_CHECKING:
@@ -76,8 +78,11 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
 def _sample_result() -> DiffResult:
     """Compare frames whose changed rows fill three pages, in a table wider than any screen.
 
+    The result carries a run record, as `veridelta run` sets one, so its
+    section and its link to the CI run are checked too.
+
     Returns:
-        DiffResult: 55 changed rows, 5 added, and 5 removed.
+        DiffResult: 55 changed rows, 5 added, and 5 removed, with a run record.
     """
     rows = 60
     wide = {
@@ -99,7 +104,16 @@ def _sample_result() -> DiffResult:
             },
         }
     )
-    return DiffEngine(DiffConfig(primary_keys=["id"]), source.lazy(), target.lazy()).run()
+    result = DiffEngine(DiffConfig(primary_keys=["id"]), source.lazy(), target.lazy()).run()
+    record = RunProvenance(
+        veridelta_version="0.41.2",
+        started_at=datetime(2026, 10, 28, 9, 30, tzinfo=UTC),
+        config_file=HashedFile(path="veridelta.yaml", sha256="9f2c" + "0" * 60),
+        commit_sha="abc1234" + "0" * 33,
+        working_tree_clean=True,
+        ci_run_url="https://github.com/acme/orders/actions/runs/123",
+    )
+    return replace(result, summary=result.summary.model_copy(update={"provenance": record}))
 
 
 @pytest.fixture(scope="session")
@@ -246,6 +260,20 @@ class TestReport:
         page.context.close()
 
         assert shown == {"rows": 65, "pagers": 0}
+
+    def test_the_first_tab_reaches_the_ci_run_named_by_its_address(
+        self, browser: "Browser", base_url: str
+    ) -> None:
+        """Ensure the run record's link takes focus before the tables, named by the run it opens."""
+        page = _open_local_only(browser, base_url)
+        page.goto(base_url + "report.html")
+
+        page.keyboard.press("Tab")
+        focused = page.evaluate(
+            "() => [document.activeElement.tagName, document.activeElement.textContent]"
+        )
+
+        assert focused == ["A", "https://github.com/acme/orders/actions/runs/123"]
 
     def test_a_keyboard_pages_a_table_and_hears_each_page(
         self, browser: "Browser", base_url: str

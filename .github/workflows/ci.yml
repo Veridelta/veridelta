@@ -171,7 +171,7 @@ jobs:
 
       - name: Gate core-module branch coverage
         if: matrix.coverage
-        run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/_resolution.py,src/veridelta/_suggest.py,src/veridelta/_matching.py,src/veridelta/_reading.py,src/veridelta/_warehouses.py,src/veridelta/_results.py,src/veridelta/_pushdown.py,src/veridelta/_checks.py,src/veridelta/_value_maps.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py' --fail-under=100
+        run: uv run coverage report --include='src/veridelta/engine.py,src/veridelta/_resolution.py,src/veridelta/_suggest.py,src/veridelta/_matching.py,src/veridelta/_reading.py,src/veridelta/_warehouses.py,src/veridelta/_results.py,src/veridelta/_pushdown.py,src/veridelta/_checks.py,src/veridelta/_value_maps.py,src/veridelta/_provenance.py,src/veridelta/models.py,src/veridelta/sentinels.py,src/veridelta/telemetry.py,src/veridelta/connectors/sql.py,src/veridelta/connectors/warehouse.py,src/veridelta/connectors/lakehouse.py,src/veridelta/connectors/database.py,src/veridelta/connectors/duckdb.py,src/veridelta/mcp_server.py' --fail-under=100
 
       - name: Upload Coverage to Codecov
         if: matrix.coverage
@@ -462,6 +462,7 @@ jobs:
           ACCEPTED_STATUS: ${{ steps.accepted.outputs.status }}
           ACCEPTED_EXIT_CODE: ${{ steps.accepted.outputs.exit-code }}
           ACCEPTED_SUMMARY: ${{ steps.accepted.outputs.summary-markdown }}
+          ACCEPTED_JSON: ${{ steps.accepted.outputs.summary-json }}
           BROKEN_OUTCOME: ${{ steps.broken.outcome }}
           BROKEN_STATUS: ${{ steps.broken.outputs.status }}
           BROKEN_EXIT_CODE: ${{ steps.broken.outputs.exit-code }}
@@ -481,6 +482,10 @@ jobs:
           test "$ACCEPTED_STATUS" = match
           test "$ACCEPTED_EXIT_CODE" = 0
           grep -q "| Accepted by the baseline | 3 |" "$ACCEPTED_SUMMARY"
+          # The run record names both files by hash, the commit, and this run.
+          grep -q 'Run record: `tests/fixtures/ci/drift.yaml` SHA-256 `[0-9a-f]\{64\}`, baseline `tests/fixtures/ci/accepted.json` SHA-256 `[0-9a-f]\{64\}`' "$ACCEPTED_SUMMARY"
+          grep -q "\[CI run\](https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" "$ACCEPTED_SUMMARY"
+          grep -q "\"commit_sha\": \"$GITHUB_SHA\"" "$ACCEPTED_JSON"
           test "$BROKEN_OUTCOME" = failure
           test "$BROKEN_STATUS" = error
           test "$BROKEN_EXIT_CODE" = 3

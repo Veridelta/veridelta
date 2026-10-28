@@ -199,6 +199,8 @@ class RunReport(TypedDict):
     `drift` otherwise, and `exit_code` is what `veridelta run` exits with, 0
     or 1. `artifacts_written` says whether the rows that differ were written
     to `output_path`. The fields between them are `DiffSummary`'s.
+    `provenance` is always null: the server keeps no run record, which
+    `veridelta run` writes.
     """
 
     verdict: Literal["match", "drift"]
@@ -211,6 +213,7 @@ class RunReport(TypedDict):
     column_mismatches: dict[str, int]
     is_match: bool
     accepted_count: int
+    provenance: None
     total_mismatches: int
     mismatch_ratio: float
     match_rate_percentage: float

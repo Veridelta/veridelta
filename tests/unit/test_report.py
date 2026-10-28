@@ -5,6 +5,8 @@
 
 import json
 import re
+from dataclasses import replace
+from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ import pytest
 
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffConfig, DiffResult, DiffSummary
+from veridelta.models import DiffConfig, DiffResult, DiffSummary, HashedFile, RunProvenance
 from veridelta.outputs import output_json_schema
 from veridelta.report import render_html, render_markdown, write_html, write_markdown
 
@@ -31,6 +33,23 @@ def _result() -> DiffResult:
     src = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
     tgt = pl.DataFrame({"id": [2, 3], "val": ["CHANGED", "C"]})
     return DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run()
+
+
+_CONFIG_SHA256 = "9f2c" + "0" * 56 + "e41a"
+_COMMIT_SHA = "abc1234" + "0" * 33
+_RUN_RECORD = RunProvenance(
+    veridelta_version="0.41.2",
+    started_at=datetime(2026, 10, 7, 8, 50, 13, tzinfo=UTC),
+    config_file=HashedFile(path="veridelta.yaml", sha256=_CONFIG_SHA256),
+    commit_sha=_COMMIT_SHA,
+    working_tree_clean=True,
+    ci_run_url="https://github.com/acme/orders/actions/runs/123",
+)
+
+
+def _recorded(result: DiffResult, record: RunProvenance) -> DiffResult:
+    """Return the result with a run record on its summary, as `veridelta run` sets one."""
+    return replace(result, summary=result.summary.model_copy(update={"provenance": record}))
 
 
 class _Tables(HTMLParser):
@@ -441,6 +460,56 @@ class TestHTMLReport:
         assert raw not in document
         assert escaped in document
 
+    def test_it_shows_the_run_record_under_the_verdict(self) -> None:
+        """Ensure the reviewer sees what the run read, its commit, and its CI run, in that order."""
+        page = render_html(_recorded(_result(), _RUN_RECORD))
+
+        record = page[page.index('id="run-record"') : page.index("</dl>")]
+        assert page.index('id="run-record"') < page.index('class="cards"')
+        assert "veridelta.yaml" in record
+        assert _CONFIG_SHA256 in record
+        assert _COMMIT_SHA in record
+        assert "tracked files match this commit" in record
+        assert '<a href="https://github.com/acme/orders/actions/runs/123">' in record
+        assert "Veridelta 0.41.2" in record
+
+    @pytest.mark.parametrize(
+        ("clean", "words"),
+        [
+            pytest.param(False, "tracked files differ from this commit", id="dirty"),
+            pytest.param(None, "whether tracked files match is unknown", id="unknown"),
+        ],
+    )
+    def test_it_says_whether_the_tree_matched_the_commit(
+        self, clean: bool | None, words: str
+    ) -> None:
+        """Ensure a run from changed files says so, in words."""
+        record = _RUN_RECORD.model_copy(update={"working_tree_clean": clean})
+
+        assert words in render_html(_recorded(_result(), record))
+
+    def test_it_says_what_the_run_record_lacks(self) -> None:
+        """Ensure an empty field reads as absent, so a reviewer never guesses at it."""
+        record = RunProvenance(veridelta_version="0.41.2", started_at=_RUN_RECORD.started_at)
+
+        page = render_html(_recorded(_result(), record))
+
+        assert page.count("None recorded") == 4
+
+    def test_it_escapes_a_hostile_path_in_the_run_record(self) -> None:
+        """Ensure a configuration path is text, never markup."""
+        hostile = HashedFile(path="<img src=x onerror=alert(1)>.yaml", sha256=_CONFIG_SHA256)
+        record = _RUN_RECORD.model_copy(update={"config_file": hostile, "baseline_file": hostile})
+
+        page = render_html(_recorded(_result(), record))
+
+        assert "<img" not in page
+        assert "&lt;img src=x onerror=alert(1)&gt;.yaml" in page
+
+    def test_it_shows_no_run_record_without_one(self) -> None:
+        """Ensure a result from Python, which has no record, shows no empty section."""
+        assert "run-record" not in render_html(_result())
+
     def test_it_writes_the_file_and_creates_parent_directories(self, tmp_path: Path) -> None:
         """Ensure a nested output path does not require pre-creating the tree."""
         destination = tmp_path / "reports" / "nested" / "diff.html"
@@ -580,6 +649,51 @@ class TestMarkdownSummary:
         document = render_markdown(_with_summary(_summary(column_mismatches={column: 2})))
 
         assert f"| {cell} | 2 |" in document
+
+    def test_it_names_the_run_record_under_the_counts(self) -> None:
+        """Ensure the pull request comment names the configuration's hash, the commit, and the run."""
+        text = render_markdown(_recorded(_result(), _RUN_RECORD))
+
+        line = next(line for line in text.splitlines() if line.startswith("Run record:"))
+        assert line == (
+            f"Run record: `veridelta.yaml` SHA-256 `{_CONFIG_SHA256}`, "
+            f"commit `{_COMMIT_SHA}`, "
+            "[CI run](https://github.com/acme/orders/actions/runs/123)."
+        )
+
+    def test_it_names_the_baseline_in_the_run_record(self) -> None:
+        """Ensure the baseline's hash follows the configuration's, so accepted drift is traceable."""
+        baseline = HashedFile(path="accepted.json", sha256="1" * 64)
+        record = _RUN_RECORD.model_copy(update={"baseline_file": baseline})
+
+        text = render_markdown(_recorded(_result(), record))
+
+        assert f"baseline `accepted.json` SHA-256 `{'1' * 64}`" in text
+
+    def test_it_keeps_a_path_from_breaking_the_run_record(self) -> None:
+        """Ensure a backtick in a path cannot end its code span."""
+        hostile = HashedFile(path="a`b.yaml", sha256=_CONFIG_SHA256)
+        record = _RUN_RECORD.model_copy(update={"config_file": hostile})
+
+        text = render_markdown(_recorded(_result(), record))
+
+        assert "``a`b.yaml``" in text
+
+    def test_it_leaves_out_an_empty_run_record(self) -> None:
+        """Ensure a record with nothing to trace adds no line, and no record adds none."""
+        empty = RunProvenance(veridelta_version="0.41.2", started_at=_RUN_RECORD.started_at)
+
+        assert "Run record:" not in render_markdown(_recorded(_result(), empty))
+        assert "Run record:" not in render_markdown(_result())
+
+    def test_its_json_carries_the_run_record(self) -> None:
+        """Ensure the hidden comment holds the record, valid under the run schema."""
+        result = _recorded(_result(), _RUN_RECORD)
+
+        printed = _comment_json(render_markdown(result))
+
+        assert printed["provenance"] == json.loads(_RUN_RECORD.model_dump_json())
+        jsonschema.Draft202012Validator(output_json_schema("run")).validate(printed)
 
     def test_it_ends_with_the_summary_as_json_under_its_schema(self) -> None:
         """Ensure the hidden comment parses back to the run's summary, valid under the run schema.

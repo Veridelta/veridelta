@@ -1,6 +1,119 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://veridelta.github.io/veridelta/schema/run.schema.json",
+  "$defs": {
+    "HashedFile": {
+      "additionalProperties": false,
+      "description": "A file a run read: the path it was given, and the SHA-256 of its bytes.\n\nAttributes:\n    path (str): The path as given on the command line, so a relative path\n        stays relative and names no folder outside the project.\n    sha256 (str): The SHA-256 of the file's bytes, as 64 lowercase hex\n        digits, the form `sha256sum` prints.",
+      "properties": {
+        "path": {
+          "description": "The path as given on the command line.",
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "The SHA-256 of the file's bytes, as `sha256sum` prints it.",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "title": "HashedFile",
+      "type": "object"
+    },
+    "RunProvenance": {
+      "additionalProperties": false,
+      "description": "What a run read and where it ran, so a verdict can be traced to its inputs.\n\nGit and GitHub keep who changed a rule and who approved a run. The hashes\nand the commit here tie a verdict to them: a reviewer recomputes a hash, or\nopens the commit, to check that the report judged what was approved. A field\nstays empty when its source is missing, such as git outside a repository.\n\nAttributes:\n    veridelta_version (str): The Veridelta release that ran.\n    started_at (datetime): When the run started, with its time zone.\n    config_file (HashedFile | None): The configuration file, or None for a\n        run of two files and `--key`.\n    baseline_file (HashedFile | None): The `--baseline` file, or None.\n    commit_sha (str | None): The commit checked out where the run started,\n        or GitHub Actions' `GITHUB_SHA` without git.\n    working_tree_clean (bool | None): Whether no tracked file differed from\n        that commit, or None when git could not tell.\n    ci_run_url (str | None): The GitHub Actions run, over https, or None\n        outside one. It holds no space, quote, bracket, or parenthesis, so it\n        links safely in Markdown and HTML.",
+      "properties": {
+        "veridelta_version": {
+          "description": "The Veridelta release that ran.",
+          "title": "Veridelta Version",
+          "type": "string"
+        },
+        "started_at": {
+          "description": "When the run started, with its time zone.",
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "config_file": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HashedFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The configuration file, or null for a run of two files."
+        },
+        "baseline_file": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HashedFile"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The `--baseline` file, or null."
+        },
+        "commit_sha": {
+          "anyOf": [
+            {
+              "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The commit checked out where the run started, or null.",
+          "title": "Commit Sha"
+        },
+        "working_tree_clean": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whether no tracked file differed from the commit, or null when unknown.",
+          "title": "Working Tree Clean"
+        },
+        "ci_run_url": {
+          "anyOf": [
+            {
+              "pattern": "^https://[^\\s\\\"'<>()\\[\\]`]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The GitHub Actions run, or null outside one.",
+          "title": "Ci Run Url"
+        }
+      },
+      "required": [
+        "veridelta_version",
+        "started_at"
+      ],
+      "title": "RunProvenance",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "description": "The summary of a comparison: the row counts, the verdict, and the drifting columns.",
   "properties": {
@@ -40,6 +153,17 @@
       "minimum": 0,
       "title": "Accepted Count",
       "type": "integer"
+    },
+    "provenance": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunProvenance"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "total_mismatches": {
       "description": "Count added, removed, and changed rows together.\n\nReturns:\n    int: The total.",

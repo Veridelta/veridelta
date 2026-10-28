@@ -98,5 +98,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [Pushdown to another database goes through the database source, by URI scheme](decisions/database-pushdown-through-connectorx.md)
 - [The docs site is one build of main](decisions/docs-site-from-main.md)
 - [Schema checks read no rows](decisions/schema-checks-read-no-rows.md)
+- [Git and GitHub are the ledger, and a run record ties a verdict to them](decisions/git-and-github-are-the-ledger.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

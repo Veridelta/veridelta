@@ -8,6 +8,7 @@ Polars. Its helpers live in private modules beside it, and `__all__` lists the
 public names, the file loaders from `_reading.py` among them.
 """
 
+from dataclasses import replace
 from pathlib import Path
 
 import polars as pl
@@ -111,6 +112,7 @@ from veridelta.models import (
     DiffResult,
     DuckDBConfig,
     RuleSuggestion,
+    RunProvenance,
     SourceRef,
     ValueMapProposal,
 )
@@ -210,6 +212,7 @@ class DiffEngine:
         target: SourceRef,
         *,
         baseline: Baseline | None = None,
+        provenance: RunProvenance | None = None,
     ) -> DiffResult:
         """Route a comparison to pushdown or local Polars evaluation.
 
@@ -221,6 +224,8 @@ class DiffEngine:
                 out of the counts and the verdict. A pair compared where it is
                 stored fetches a match flag per column for the changed rows the
                 baseline names, and no value.
+            provenance (RunProvenance | None): What the run read and where it
+                ran, set on the summary unchanged. `veridelta run` passes one.
 
         Returns:
             DiffResult: The result. A pushdown pair returns counts and keys, and a
@@ -241,16 +246,20 @@ class DiffEngine:
         """
         pair = check_backend_pairing(source, target)
         if pair is not None:
-            return pair.with_session(
+            result = pair.with_session(
                 lambda session, source_table, target_table: collect_pushdown_summary(
                     session, source_table, target_table, diff, baseline=baseline
                 )
             )
-
-        # `run()` normalizes headers and applies renames exactly once, so the
-        # frames go to it straight from the loaders: aligning them first and
-        # renaming again would undo a swap and collapse a chain.
-        return cls._on_sources(diff, source, target).run(baseline=baseline)
+        else:
+            # `run()` normalizes headers and applies renames exactly once, so the
+            # frames go to it straight from the loaders: aligning them first and
+            # renaming again would undo a swap and collapse a chain.
+            result = cls._on_sources(diff, source, target).run(baseline=baseline)
+        if provenance is None:
+            return result
+        recorded_summary = result.summary.model_copy(update={"provenance": provenance})
+        return replace(result, summary=recorded_summary)
 
     @classmethod
     def validate_schemas(

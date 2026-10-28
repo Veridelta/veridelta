@@ -20,7 +20,7 @@ from veridelta.connectors import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError
-from veridelta.models import DiffConfig, DiffRule, DuckDBConfig, SourceConfig
+from veridelta.models import DiffConfig, DiffRule, DuckDBConfig, RunProvenance, SourceConfig
 
 pytestmark = [pytest.mark.integration]
 
@@ -433,6 +433,23 @@ class TestDuckDBPushdown:
         assert local.keys_only is False
         assert pushdown.summary.model_dump() == local.summary.model_dump()
         assert pushdown.summary.column_mismatches == {"tier": 1}
+
+    @pytest.mark.parametrize("pushdown", [True, False], ids=["pushdown", "local"])
+    def test_it_carries_the_run_record_on_either_engine(
+        self, tmp_path: Path, pushdown: bool
+    ) -> None:
+        """Ensure a run record given to the engine reaches the summary, wherever it compares."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        record = RunProvenance(
+            veridelta_version="0.0.0", started_at=datetime(2026, 10, 28, tzinfo=UTC)
+        )
+
+        result = DiffEngine.run_from_configs(
+            DiffConfig(primary_keys=["id"]), *_sides(database, pushdown=pushdown), provenance=record
+        )
+
+        assert result.summary.provenance == record
+        assert result.summary.column_mismatches == {"tier": 1}
 
     def test_it_fetches_a_row_sample_with_values(self, tmp_path: Path) -> None:
         """Ensure `pushdown_sample_rows` brings back the changed row's values."""

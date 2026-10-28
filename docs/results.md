@@ -43,8 +43,43 @@ result.to_pandas()
 | `is_perfect_match` | Whether nothing differs. |
 | `volume_shift` | `total_rows_target` minus `total_rows_source`. |
 | `report_summary` | A plain-text report of these counts and the most drifting columns. |
+| `provenance` | The [run record](#run-record): what the run read and where it ran. `veridelta run` fills it, and a run from Python leaves it `null` unless given one. |
 
 [`schema/run.schema.json`](schema/run.schema.json) is the JSON Schema of this object, and `veridelta schema run` prints it; see [Printing the schema](cli.md#printing-the-schema).
+
+### Run record
+
+The run record ties a verdict to the files it judged, the commit they came from, and the CI run that judged them. Git and GitHub keep who changed a rule and who approved a run. The record's hashes and commit point at those, so a reviewer can check that a report judged what they approve. `veridelta run` writes it under `provenance`:
+
+```json
+"provenance": {
+  "veridelta_version": "0.41.2",
+  "started_at": "2026-10-07T08:50:13Z",
+  "config_file": {"path": "veridelta.yaml", "sha256": "9f2c...e41a"},
+  "baseline_file": null,
+  "commit_sha": "abc1234...",
+  "working_tree_clean": true,
+  "ci_run_url": "https://github.com/acme/orders/actions/runs/123/attempts/1"
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `veridelta_version` | The Veridelta release that ran. |
+| `started_at` | When the run started, in UTC. |
+| `config_file` | The configuration file's path as given and the SHA-256 of its bytes. `null` for a run of two files and `--key`. |
+| `baseline_file` | The `--baseline` file's path and SHA-256, or `null`. |
+| `commit_sha` | The commit checked out where the run started, from `git rev-parse HEAD`. Without git, GitHub Actions' `GITHUB_SHA`. `null` outside both. |
+| `working_tree_clean` | Whether no tracked file differed from that commit, from `git status`. Untracked files, such as the run's own reports, do not count. `null` when git cannot tell. |
+| `ci_run_url` | The GitHub Actions run, built from `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`. `null` outside GitHub Actions, or when a variable has an unexpected shape. |
+
+The record holds no user name, and a path stays as it was given, so a relative path names no folder outside the project. A field Veridelta cannot fill stays `null` and never fails the run. To check a hash, run `sha256sum` on the file at the recorded commit:
+
+```bash
+git show abc1234:veridelta.yaml | sha256sum
+```
+
+`DiffEngine.run_from_configs` takes a record as `provenance`, and sets it on the summary unchanged. `HashedFile` and `RunProvenance` import from `veridelta.models`.
 
 ## Rows
 
@@ -63,7 +98,7 @@ A run with `pushdown_sample_rows` set also carries `changed_sample`: up to that 
 ![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-light.png#only-light)
 ![The top of an HTML report from a comparison of 120 orders: a FAILED verdict, a match rate of 87.5%, 120 source and 121 target rows, 3 added, 2 removed, and 10 changed, drift in status and amount, and the changed rows with both values side by side.](assets/report-dark.png#only-dark)
 
-`write_html` writes the standalone report that `veridelta run` writes with `--html`. It embeds its own styles and script, so it opens offline. Every row it shows is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
+`write_html` writes the standalone report that `veridelta run` writes with `--html`. It embeds its own styles and script, so it opens offline. A result with a [run record](#run-record) shows it under the verdict. Every row it shows is in the page itself, and the script splits long tables into pages of 25 rows. `max_rows` caps every table, as `--html-max-rows` does:
 
 ```python
 from veridelta.report import write_html, write_markdown
@@ -74,7 +109,7 @@ write_markdown(result, "reports/summary.md")
 
 ## Markdown summary
 
-`write_markdown` writes the short summary that CI posts to a job summary or a pull request, and `render_markdown` returns it as text. It holds the verdict, a table of counts, and the drifting columns, up to `report_top_columns_limit`. Column names are written as code, so a name from the data cannot break the table or the page it lands on.
+`write_markdown` writes the short summary that CI posts to a job summary or a pull request, and `render_markdown` returns it as text. It holds the verdict, a table of counts, a line naming the [run record](#run-record)'s hashes, commit, and CI run, and the drifting columns, up to `report_top_columns_limit`. Column names are written as code, so a name from the data cannot break the table or the page it lands on.
 
 The summary ends with the same counts as JSON, inside an HTML comment that GitHub and GitLab hide from readers. Its first line names the [run schema](schema/run.schema.json) the JSON follows:
 

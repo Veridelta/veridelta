@@ -91,6 +91,8 @@ To act on drift in a later step instead of failing, set `fail-on-mismatch: false
 
 The pull request comment ends with the run's counts as JSON, in an HTML comment that readers never see, so an agent that reads the pull request through the API can parse the result; see [Markdown summary](results.md#markdown-summary).
 
+The comment and the report also name the [run record](results.md#run-record): the SHA-256 of the configuration and the baseline, the commit, and a link to the run. A reviewer who approves the pull request can check that the report judged the files at that commit. The action needs no input for it.
+
 ### Accepting drift
 
 A change made on purpose, such as an account closed for good, fails every pull request until a baseline accepts it. Write the file once with [`veridelta run --save-baseline accepted.json`](cli.md#accepting-drift), read it, commit it next to the configuration, and pass it to the action:
