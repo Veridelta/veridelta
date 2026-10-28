@@ -415,6 +415,39 @@ class TestReport:
             "hash": "",
         }
 
+    def test_a_pattern_button_shows_its_values_and_names_its_pattern(
+        self, browser: "Browser", base_url: str
+    ) -> None:
+        """Ensure Tab reaches a pattern's button, named by its pattern, and Enter filters to it.
+
+        The sample's one pattern is the 28 amounts that each rose by 1.0.
+        """
+        page = _open_local_only(browser, base_url)
+        page.goto(base_url + "report.html")
+        names: list[str | None] = []
+        while len(names) < 20 and not any(
+            name and name.startswith("Show these values") for name in names
+        ):
+            page.keyboard.press("Tab")
+            names.append(page.evaluate("() => document.activeElement.getAttribute('aria-label')"))
+
+        page.keyboard.press("Enter")
+        state = page.evaluate(
+            """() => ({
+              status: document.querySelector('.filter-status').textContent,
+              column: document.querySelector('#filter-column').value,
+              hash: decodeURIComponent(location.hash),
+            })"""
+        )
+        page.context.close()
+
+        assert names[-1] == "Show these values: 28 values in amount rose by 1.0", names
+        assert state == {
+            "status": f"Showing 28 of {_MISMATCHED_VALUES} mismatched values, in one pattern",
+            "column": "amount",
+            "hash": "#column=amount&difference=+1.0",
+        }
+
     def test_arrow_keys_scroll_a_wide_table(self, browser: "Browser", base_url: str) -> None:
         """Ensure a table wider than the screen takes focus, so arrow keys can scroll it."""
         page = _open_local_only(browser, base_url)

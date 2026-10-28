@@ -148,6 +148,12 @@ td.difference { font-variant-numeric: tabular-nums; }
 .filters button { background: var(--chip); cursor: pointer; }
 .filter-status { color: var(--muted); font-size: .85rem; margin: 0 0 .5rem; }
 details.full-rows { margin-top: 1.25rem; }
+ul.patterns { margin: 0 0 .5rem; padding-left: 1.2rem; font-size: .9rem; }
+ul.patterns li { margin: .3rem 0; }
+.show-pattern {
+  font: inherit; font-size: .8rem; color: var(--link); background: none; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 5px; padding: .1rem .5rem; margin-left: .25rem;
+}
 details.full-rows summary { cursor: pointer; color: var(--link); margin-bottom: .6rem; }
 @media (max-width: 40rem) {
   body { padding: 1rem; }
@@ -225,19 +231,26 @@ function filters(root) {
   group.append(columnLabel, keyLabel, clear);
   root.before(group, status);
   const all = rows.length.toLocaleString('en-US');
+  // A pattern narrows the values to one new value or one difference in a column.
+  let pattern = {target: '', difference: ''};
   function apply() {
     const wanted = key.value.trim().toLowerCase();
     let kept = 0;
     rows.forEach(row => {
       const keep = (!column.value || row.dataset.column === column.value)
-        && (!wanted || row.dataset.key.toLowerCase().includes(wanted));
+        && (!wanted || row.dataset.key.toLowerCase().includes(wanted))
+        && (!pattern.target || row.dataset.target === pattern.target)
+        && (!pattern.difference || row.dataset.difference === pattern.difference);
       if (keep) { delete row.dataset.filteredOut; kept++; } else { row.dataset.filteredOut = '1'; }
     });
-    status.textContent = `Showing ${kept.toLocaleString('en-US')} of ${all} mismatched values`;
+    const scope = pattern.target || pattern.difference ? ', in one pattern' : '';
+    status.textContent = `Showing ${kept.toLocaleString('en-US')} of ${all} mismatched values${scope}`;
     root.redraw();
     const state = new URLSearchParams();
     if (column.value) state.set('column', column.value);
     if (wanted) state.set('key', key.value.trim());
+    if (pattern.target) state.set('target', pattern.target);
+    if (pattern.difference) state.set('difference', pattern.difference);
     const fragment = state.toString();
     try {
       history.replaceState(null, '', fragment ? `#${fragment}` : location.pathname + location.search);
@@ -248,9 +261,28 @@ function filters(root) {
   const linked = new URLSearchParams(location.hash.slice(1));
   if (columns.includes(linked.get('column'))) column.value = linked.get('column');
   key.value = linked.get('key') || '';
-  column.addEventListener('change', apply);
-  key.addEventListener('input', apply);
-  clear.addEventListener('click', () => { column.value = ''; key.value = ''; apply(); });
+  pattern = {target: linked.get('target') || '', difference: linked.get('difference') || ''};
+  const ownFilter = () => { pattern = {target: '', difference: ''}; apply(); };
+  column.addEventListener('change', ownFilter);
+  key.addEventListener('input', ownFilter);
+  clear.addEventListener('click', () => { column.value = ''; key.value = ''; ownFilter(); });
+  const panel = root.closest('section') || document;
+  panel.querySelectorAll('li.pattern').forEach(item => {
+    const show = document.createElement('button');
+    show.type = 'button';
+    show.className = 'show-pattern';
+    show.textContent = 'Show these values';
+    // The name starts with the visible words, for voice control, and the
+    // sentence's first clause tells one button from the next.
+    show.setAttribute('aria-label', `Show these values: ${item.textContent.split('. ')[0]}`);
+    show.addEventListener('click', () => {
+      column.value = item.dataset.column;
+      key.value = '';
+      pattern = {target: item.dataset.target || '', difference: item.dataset.difference || ''};
+      apply();
+    });
+    item.append(' ', show);
+  });
   apply();
 }
 document.querySelectorAll('[data-filterable]').forEach(filters);
@@ -451,6 +483,118 @@ def _differing_cell(value: object) -> str:
     return f"<td class='differs{null}'><span class='sign' aria-hidden='true'>&#8800;</span> {text}</td>"
 
 
+_PATTERN_LIMIT: Final = 10
+"""Patterns the report names, largest first, before it says how many more it found."""
+
+_PATTERN_SAMPLE_KEYS: Final = 3
+"""Keys a pattern names before it counts the rest."""
+
+
+class _Pattern(NamedTuple):
+    """A change that two or more mismatched values share, in one column.
+
+    `kind` is `target` for a shared new value, `rise` or `fall` for a shared
+    difference between numbers, and `move` for one between dates or times.
+    """
+
+    column: str
+    kind: str
+    shown_value: str
+    difference: str
+    keys: list[str]
+
+
+def _value_text(value: object) -> str:
+    """Write a value as the text a filter compares, with `null` for a missing one."""
+    return "null" if value is None else str(value)
+
+
+def _patterns(listed: Sequence[_MismatchedValue]) -> list[_Pattern]:
+    """Group mismatched values that share a new value or a difference, largest group first.
+
+    A group needs two values. Ties sort by column, then kind, then value, so the
+    order never depends on the data's order.
+    """
+    groups: dict[tuple[str, str, str, str], list[str]] = {}
+    for value in listed:
+        key_text = ", ".join(map(str, value.key_values))
+        target_text = _value_text(value.target_value)
+        groups.setdefault((value.column, "target", target_text, ""), []).append(key_text)
+        difference = _difference(value.source_value, value.target_value)
+        if not difference:
+            continue
+        if isinstance(value.source_value, _NUMBERS):
+            kind = "rise" if difference.startswith("+") else "fall"
+            shown = difference[1:]
+        else:
+            kind, shown = "move", difference
+        groups.setdefault((value.column, kind, shown, difference), []).append(key_text)
+    shared = [
+        _Pattern(column, kind, shown, difference, keys)
+        for (column, kind, shown, difference), keys in groups.items()
+        if len(keys) >= 2
+    ]
+    return sorted(
+        shared,
+        key=lambda pattern: (-len(pattern.keys), pattern.column, pattern.kind, pattern.shown_value),
+    )
+
+
+_PATTERN_VERBS: Final = {
+    "target": "changed to",
+    "rise": "rose by",
+    "fall": "fell by",
+    "move": "moved by",
+}
+"""How a pattern's sentence says what its values share."""
+
+
+def _pattern_sentence(pattern: _Pattern) -> str:
+    """Say a pattern in words: how many values, which column, what they share, and which keys."""
+    count = len(pattern.keys)
+    sample = ", ".join(_escape(key) for key in pattern.keys[:_PATTERN_SAMPLE_KEYS])
+    rest = count - _PATTERN_SAMPLE_KEYS
+    keys = f"Keys {sample}, and {rest:,} more." if rest > 0 else f"Keys {sample}."
+    return (
+        f"{count:,} values in <code>{_escape(pattern.column)}</code> "
+        f"{_PATTERN_VERBS[pattern.kind]} <code>{_escape(pattern.shown_value)}</code>. {keys}"
+    )
+
+
+def _patterns_html(listed: Sequence[_MismatchedValue], total: int) -> str:
+    """List the patterns among the listed values, each tagged with the filter that shows it.
+
+    Without the script, a pattern is a sentence. The script adds a button that
+    filters the mismatched values to it.
+    """
+    heading = "<h3 id='patterns'>Patterns</h3>"
+    scope = "<p class='hint'>Changes that two or more of the mismatched values share.</p>"
+    if len(listed) < total:
+        scope = (
+            f"<p class='note'>Patterns among the first {len(listed):,} of {total:,} "
+            "mismatched values.</p>"
+        )
+    found = _patterns(listed)
+    if not found:
+        return f"{heading}\n{scope}\n<p class='empty'>No two values share a change.</p>"
+    items = "".join(
+        f"<li class='pattern' data-column='{_escape(pattern.column)}' "
+        + (
+            f"data-target='{_escape(pattern.shown_value)}'>"
+            if pattern.kind == "target"
+            else f"data-difference='{pattern.difference}'>"
+        )
+        + f"{_pattern_sentence(pattern)}</li>"
+        for pattern in found[:_PATTERN_LIMIT]
+    )
+    more = ""
+    if len(found) > _PATTERN_LIMIT:
+        more = (
+            f"<p class='hint'>{len(found) - _PATTERN_LIMIT:,} smaller patterns are not shown.</p>"
+        )
+    return f"{heading}\n{scope}\n<ul class='patterns'>{items}</ul>{more}"
+
+
 def _mismatch_view(changed: pl.DataFrame, result: DiffResult, max_rows: int) -> str:
     """List each mismatched value of the changed rows, the report's default view of them.
 
@@ -479,7 +623,9 @@ def _mismatch_view(changed: pl.DataFrame, result: DiffResult, max_rows: int) -> 
     )
     body = "".join(
         f"<tr data-column='{_escape(value.column)}' "
-        f"data-key='{_escape(', '.join(map(str, value.key_values)))}'>"
+        f"data-key='{_escape(', '.join(map(str, value.key_values)))}' "
+        f"data-target='{_escape(_value_text(value.target_value))}' "
+        f"data-difference='{_difference(value.source_value, value.target_value)}'>"
         f"{''.join(map(_cell, value.key_values))}<td>{_escape(value.column)}</td>"
         f"{_cell(value.source_value)}{_differing_cell(value.target_value)}"
         f"<td class='difference'>{_difference(value.source_value, value.target_value)}</td></tr>"
@@ -487,7 +633,7 @@ def _mismatch_view(changed: pl.DataFrame, result: DiffResult, max_rows: int) -> 
     )
     table = f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
     return (
-        f"{heading}\n{hint}\n{truncated}"
+        f"{_patterns_html(listed, total)}\n{heading}\n{hint}\n{truncated}"
         f"{_paged('mismatched-values', 'Mismatched values', table, len(listed), 'values', ' data-filterable')}"
     )
 
