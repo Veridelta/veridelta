@@ -1,3 +1,38 @@
+## v0.42.0 (2026-10-28)
+
+A reviewer can sign off on a run from its report alone. `veridelta run` writes a run record
+under `provenance`: the SHA-256 of the configuration and the baseline, the commit and whether
+tracked files matched it, and the CI run, so an approval traces to the files it judged. The
+HTML report opens on the verdict in words, then the rules each column ran under, the patterns
+mismatched values share, such as six statuses that changed to `cancelled`, and one row per
+mismatched value with its difference, filtered by column, key, or pattern. The opt-in
+`count_forgiven_values` counts what each column's rules made match, at a cost in memory and
+run time the configuration guide states. The Action's opt-in `attest` input attests the
+reports, and a new page shows how to trace a verdict to signed commits and code owner
+reviews.
+
+A DuckDB `query` that ends with a write is refused before it runs, `RETURNING` included,
+where DuckDB 2.0 ran it and 1.x refused it only afterwards. Veridelta now runs on DuckDB 2.0,
+and CI also tests the 1.5.0 floor. The lockfile moves to patched versions of certifi,
+oauthlib, filelock, virtualenv, nbconvert, and opentelemetry-api. The upgrading page lists
+what to change.
+
+### Feat
+
+- **action**: attest the reports on request, and document tracing a verdict (#449)
+- count the values each column's rules forgave, when asked (#448)
+- **report**: show the rules each column ran under (#447)
+- **report**: name the changes mismatched values share (#446)
+- **report**: list each mismatched value, filtered by column and key (#445)
+- **report**: lead with the verdict, and put each kind of row behind a tab (#444)
+- record what each run read and where it ran (#443)
+
+### Fix
+
+- **duckdb**: refuse a query that ends with a write before it runs (#441)
+- **duckdb**: refuse a no-result query on DuckDB 2.0 before it runs (#438)
+- **deps**: lock patched versions for the open Dependabot alerts (#435)
+
 ## v0.41.2 (2026-10-16)
 
 A tolerance now forgives a float difference written at the tolerance. Floats hold `1.00`,

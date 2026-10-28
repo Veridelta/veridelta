@@ -21,6 +21,14 @@ veridelta validate -c veridelta.yaml
 
 Then run a comparison whose verdict you already know, and confirm the new release agrees. In CI, move the GitHub Action's `@v` ref, and the tag in the GitLab template's `remote` URL, to the new release, as [CI integrations](ci.md) shows.
 
+## 0.42.0
+
+Three things change:
+
+- A DuckDB source's `query` is refused before it runs when its last statement does not read rows, such as `INSERT`, `UPDATE`, `DELETE`, `CREATE`, or `COPY`. A write with `RETURNING` is refused too, where 0.41 read its rows. Read with a `SELECT`, and make any change to the data before the run.
+- `veridelta run --json` prints a `provenance` object, the [run record](results.md#run-record), and the Markdown summary's JSON comment holds it too. A script that compares the JSON's keys exactly sees one more.
+- The HTML report opens on a verdict banner, and its changed rows open on their mismatched values. The full changed rows, every column side by side, sit in a disclosure under them. A script that reads the report's tables finds the mismatched values first.
+
 ## 0.41.0
 
 Veridelta runs on Polars 2.0 as well as on 1.x, and no longer holds Polars below 2.0. Three things change, on every Polars:
