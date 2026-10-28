@@ -17,6 +17,7 @@ import polars as pl
 from veridelta.exceptions import ConfigError, DataIntegrityError
 from veridelta.models import (
     CastTarget,
+    ColumnRules,
     DiffConfig,
     DiffRule,
     SentinelValue,
@@ -224,6 +225,37 @@ def fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRule
     effective["max_levenshtein_distance"] = rule.max_levenshtein_distance
     effective["min_jaro_winkler_similarity"] = rule.min_jaro_winkler_similarity
     return effective
+
+
+def rules_applied(diff: DiffConfig, compared_columns: Sequence[str]) -> tuple[ColumnRules, ...]:
+    """Summarize the rules each compared column ran under, as both engines resolve them.
+
+    A rule's values become counts here, so the result never carries a value
+    map's entries, a regex's text, or a null sentinel.
+    """
+    summaries: list[ColumnRules] = []
+    for column in compared_columns:
+        effective = fold_rule_defaults(match_rule(diff.rules, column), diff)
+        summaries.append(
+            ColumnRules(
+                column=column,
+                absolute_tolerance=effective["abs_tol"],
+                relative_tolerance=effective["rel_tol"],
+                null_matches_null=effective["treat_null"],
+                whitespace_mode=effective["whitespace"],
+                case_insensitive=effective["case_insensitive"],
+                null_value_count=len(effective["null_values"]),
+                regex_replacement_count=len(effective["regex_replace"] or {}),
+                value_map_size=len(effective["value_map"] or {}),
+                pad_zeros=effective["pad_zeros"],
+                datetime_format=effective["datetime_format"],
+                timezone=effective["timezone"],
+                cast_to=effective["cast_to"],
+                max_levenshtein_distance=effective["max_levenshtein_distance"],
+                min_jaro_winkler_similarity=effective["min_jaro_winkler_similarity"],
+            )
+        )
+    return tuple(summaries)
 
 
 CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {

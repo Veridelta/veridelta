@@ -24,6 +24,7 @@ from veridelta._resolution import (
     parsed_dtype,
     reject_unzoned_timezone,
     rename_pairs,
+    rules_applied,
     unusable_sentinel_error,
     validate_probe_schemas,
 )
@@ -725,6 +726,7 @@ def collect_pushdown_summary(
         keys_only=True,
         changed_sample=kept.changed_sample,
         accepted=kept.accepted,
+        rules_applied=rules_applied(diff, compared_columns),
     )
 
 

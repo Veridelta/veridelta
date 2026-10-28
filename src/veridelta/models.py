@@ -934,6 +934,50 @@ def _noun(count: int, one: str, many: str) -> str:
     return one if abs(count) == 1 else many
 
 
+class ColumnRules(BaseModel):
+    """The rules one compared column ran under, as settings and counts, never their values.
+
+    A value map, a regex replacement, and a null sentinel can hold data or
+    describe its shape, so they appear only as counts. A neutral setting, such
+    as a tolerance of 0, reads as no rule.
+
+    Attributes:
+        column (str): The compared column, under its target name.
+        absolute_tolerance (float): The largest difference two numbers may have.
+        relative_tolerance (float): The largest difference as a share of the larger value.
+        null_matches_null (bool): Whether two NULLs match.
+        whitespace_mode (WhitespaceMode): Which ends of text are trimmed before comparing.
+        case_insensitive (bool): Whether text compares without case.
+        null_value_count (int): How many values read as NULL.
+        regex_replacement_count (int): How many regex replacements apply.
+        value_map_size (int): How many entries the value map holds.
+        pad_zeros (int | None): The width text is padded to with leading zeros.
+        datetime_format (str | None): The format text is parsed as a datetime with.
+        timezone (str | None): The time zone a datetime is read in.
+        cast_to (CastTarget | None): The type both values are cast to.
+        max_levenshtein_distance (int | None): The most edits two texts may differ by.
+        min_jaro_winkler_similarity (float | None): The least similarity two texts must have.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    column: str
+    absolute_tolerance: float = 0.0
+    relative_tolerance: float = 0.0
+    null_matches_null: bool = True
+    whitespace_mode: WhitespaceMode = "none"
+    case_insensitive: bool = False
+    null_value_count: int = 0
+    regex_replacement_count: int = 0
+    value_map_size: int = 0
+    pad_zeros: int | None = None
+    datetime_format: str | None = None
+    timezone: str | None = None
+    cast_to: CastTarget | None = None
+    max_levenshtein_distance: int | None = None
+    min_jaro_winkler_similarity: float | None = None
+
+
 @dataclass(frozen=True)
 class DiffResult:
     """A completed comparison: the counts plus the rows behind them.
@@ -965,6 +1009,8 @@ class DiffResult:
         accepted (Baseline | None): What a baseline accepted in this run: the
             rows it matched, and on each changed row the columns it accepted.
             None when the run had no baseline.
+        rules_applied (tuple[ColumnRules, ...]): The rules each compared column
+            ran under, in `compared_columns` order, as settings and counts.
     """
 
     summary: DiffSummary
@@ -976,6 +1022,7 @@ class DiffResult:
     keys_only: bool = False
     changed_sample: pl.DataFrame | None = None
     accepted: "Baseline | None" = None
+    rules_applied: tuple[ColumnRules, ...] = ()
 
     def get_mismatches(self, column: str) -> pl.DataFrame:
         """Isolate the rows where one column disagreed.
