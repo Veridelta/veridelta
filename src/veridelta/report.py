@@ -26,7 +26,7 @@ from typing import Final
 import polars as pl
 
 from veridelta.exceptions import ConfigError
-from veridelta.models import DiffResult, DiffSummary
+from veridelta.models import DiffResult, DiffSummary, HashedFile, RunProvenance
 from veridelta.outputs import output_schema_url
 
 DEFAULT_MAX_ROWS: Final[int] = 1000
@@ -46,12 +46,12 @@ Every row is in the markup, so a reader without JavaScript sees them all.
 _STYLE: Final[str] = """
 :root {
   --bg: #ffffff; --fg: #1b1f24; --muted: #5c6773; --line: #d8dee4;
-  --pass: #1a7f37; --fail: #cf222e; --chip: #f2f4f7;
+  --pass: #1a7f37; --fail: #cf222e; --chip: #f2f4f7; --link: #0969da;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
-    --pass: #3fb950; --fail: #f85149; --chip: #161b22;
+    --pass: #3fb950; --fail: #f85149; --chip: #161b22; --link: #4493f8;
   }
 }
 * { box-sizing: border-box; }
@@ -60,6 +60,7 @@ body {
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+a { color: var(--link); }
 h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
 .sub { color: var(--muted); margin: 0 0 1.5rem; font-size: .9rem; }
 .verdict { font-weight: 600; }
@@ -72,6 +73,15 @@ h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
 }
 .card .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; }
 .card .value { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.record { margin: 0 0 1.5rem; }
+.record h2 { margin-top: 0; }
+.record dl {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem 1rem;
+  margin: 0; font-size: .9rem;
+}
+.record dt { color: var(--muted); }
+.record dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.record .absent { color: var(--muted); }
 .note {
   border-left: 3px solid var(--line); padding: .5rem .9rem; margin: 1rem 0;
   color: var(--muted); font-size: .9rem;
@@ -187,6 +197,55 @@ def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
     )
 
 
+_ABSENT: Final = "<span class='absent'>None recorded</span>"
+"""What the run record shows for a field it has no value for."""
+
+_TREE_STATES: Final = {
+    True: "tracked files match this commit",
+    False: "tracked files differ from this commit",
+    None: "whether tracked files match is unknown",
+}
+"""The words for `working_tree_clean`, so the state never rests on a symbol."""
+
+
+def _hashed_file_html(file: HashedFile | None) -> str:
+    """Render a file the run read as its path and SHA-256, or as absent."""
+    if file is None:
+        return _ABSENT
+    return f"<code>{_escape(file.path)}</code> &middot; SHA-256 <code>{file.sha256}</code>"
+
+
+def _run_record_html(provenance: RunProvenance | None) -> str:
+    """Render what the run read and where it ran, or nothing for a result without a record.
+
+    Each value is escaped, and the CI run's URL is one the model holds to https
+    with no quote, so it can sit in an `href`.
+    """
+    if provenance is None:
+        return ""
+    commit = _ABSENT
+    if provenance.commit_sha is not None:
+        tree_state = _TREE_STATES[provenance.working_tree_clean]
+        commit = f"<code>{provenance.commit_sha}</code>, {tree_state}"
+    ci_run = _ABSENT
+    if provenance.ci_run_url is not None:
+        url = _escape(provenance.ci_run_url)
+        ci_run = f'<a href="{url}">{url}</a>'
+    started = provenance.started_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+    fields = [
+        ("Configuration", _hashed_file_html(provenance.config_file)),
+        ("Baseline", _hashed_file_html(provenance.baseline_file)),
+        ("Commit", commit),
+        ("CI run", ci_run),
+        ("Run by", f"Veridelta {_escape(provenance.veridelta_version)}, started {started}"),
+    ]
+    rows = "".join(f"<dt>{label}</dt><dd>{value}</dd>" for label, value in fields)
+    return (
+        '<section class="record" aria-labelledby="run-record">'
+        f'<h2 id="run-record">Run record</h2><dl>{rows}</dl></section>'
+    )
+
+
 def _card(label: str, value: object) -> str:
     """Render one headline metric."""
     return (
@@ -279,6 +338,7 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
   <span class="verdict {verdict.lower()}">{verdict}</span> &middot; generated {generated}
 </p>
 {keys_note}
+{_run_record_html(summary.provenance)}
 <div class="cards">{cards}</div>
 <h2 id="column-level-drift">Column-level drift</h2>
 {drift}
@@ -389,6 +449,7 @@ def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
     ]
     if summary.accepted_count:
         lines.append(f"| Accepted by the baseline | {summary.accepted_count:,} |")
+    lines += _run_record_lines(summary.provenance)
     if result.keys_only:
         lines += [
             "",
@@ -404,6 +465,24 @@ def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
         used = len("\n".join([*lines, *comment]).encode()) + 1
         lines += _value_lines(result, max_rows, _MARKDOWN_BUDGET - used)
     return "\n".join([*lines, *comment]) + "\n"
+
+
+def _run_record_lines(provenance: RunProvenance | None) -> list[str]:
+    """Name the run record's hashes, commit, and CI run in one line, or nothing when it has none."""
+    if provenance is None:
+        return []
+    parts: list[str] = []
+    if provenance.config_file is not None:
+        config = provenance.config_file
+        parts.append(f"{_markdown_code(config.path)} SHA-256 `{config.sha256}`")
+    if provenance.baseline_file is not None:
+        baseline = provenance.baseline_file
+        parts.append(f"baseline {_markdown_code(baseline.path)} SHA-256 `{baseline.sha256}`")
+    if provenance.commit_sha is not None:
+        parts.append(f"commit `{provenance.commit_sha}`")
+    if provenance.ci_run_url is not None:
+        parts.append(f"[CI run]({provenance.ci_run_url})")
+    return ["", f"Run record: {', '.join(parts)}."] if parts else []
 
 
 def _top_columns(summary: DiffSummary) -> list[tuple[str, int]]:

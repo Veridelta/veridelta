@@ -17,6 +17,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import polars as pl
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -719,6 +720,75 @@ class DiffConfig(BaseModel):
         return self
 
 
+class HashedFile(BaseModel):
+    """A file a run read: the path it was given, and the SHA-256 of its bytes.
+
+    Attributes:
+        path (str): The path as given on the command line, so a relative path
+            stays relative and names no folder outside the project.
+        sha256 (str): The SHA-256 of the file's bytes, as 64 lowercase hex
+            digits, the form `sha256sum` prints.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    path: str = Field(..., description="The path as given on the command line.")
+    sha256: str = Field(
+        ...,
+        pattern=r"^[0-9a-f]{64}$",
+        description="The SHA-256 of the file's bytes, as `sha256sum` prints it.",
+    )
+
+
+class RunProvenance(BaseModel):
+    """What a run read and where it ran, so a verdict can be traced to its inputs.
+
+    Git and GitHub keep who changed a rule and who approved a run. The hashes
+    and the commit here tie a verdict to them: a reviewer recomputes a hash, or
+    opens the commit, to check that the report judged what was approved. A field
+    stays empty when its source is missing, such as git outside a repository.
+
+    Attributes:
+        veridelta_version (str): The Veridelta release that ran.
+        started_at (datetime): When the run started, with its time zone.
+        config_file (HashedFile | None): The configuration file, or None for a
+            run of two files and `--key`.
+        baseline_file (HashedFile | None): The `--baseline` file, or None.
+        commit_sha (str | None): The commit checked out where the run started,
+            or GitHub Actions' `GITHUB_SHA` without git.
+        working_tree_clean (bool | None): Whether no tracked file differed from
+            that commit, or None when git could not tell.
+        ci_run_url (str | None): The GitHub Actions run, over https, or None
+            outside one. It holds no space, quote, bracket, or parenthesis, so it
+            links safely in Markdown and HTML.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    veridelta_version: str = Field(..., description="The Veridelta release that ran.")
+    started_at: AwareDatetime = Field(..., description="When the run started, with its time zone.")
+    config_file: HashedFile | None = Field(
+        default=None, description="The configuration file, or null for a run of two files."
+    )
+    baseline_file: HashedFile | None = Field(
+        default=None, description="The `--baseline` file, or null."
+    )
+    commit_sha: str | None = Field(
+        default=None,
+        pattern=r"^([0-9a-f]{40}|[0-9a-f]{64})$",
+        description="The commit checked out where the run started, or null.",
+    )
+    working_tree_clean: bool | None = Field(
+        default=None,
+        description="Whether no tracked file differed from the commit, or null when unknown.",
+    )
+    ci_run_url: str | None = Field(
+        default=None,
+        pattern=r"^https://[^\s\"'<>()\[\]`]+$",
+        description="The GitHub Actions run, or null outside one.",
+    )
+
+
 class DiffSummary(BaseModel):
     """Counts and verdict for one comparison.
 
@@ -733,6 +803,8 @@ class DiffSummary(BaseModel):
         is_match (bool): Whether the mismatch ratio is within `threshold`.
         accepted_count (int): Rows of drift a baseline accepted, which the counts
             above leave out. Zero without `--baseline`.
+        provenance (RunProvenance | None): What the run read and where it ran.
+            `veridelta run` fills it, and a run from Python leaves it None.
         total_mismatches (int): Added, removed, and changed rows together.
         mismatch_ratio (float): `total_mismatches` divided by the source row count.
         match_rate_percentage (float): Match rate as a percentage, such as `99.98`.
@@ -755,6 +827,7 @@ class DiffSummary(BaseModel):
     column_mismatches: dict[str, int] = Field(default_factory=dict)
     is_match: bool
     accepted_count: int = Field(default=0, ge=0)
+    provenance: RunProvenance | None = None
 
     report_limit: int = Field(default=5, exclude=True)
     artifacts_written: bool = Field(default=False, exclude=True)

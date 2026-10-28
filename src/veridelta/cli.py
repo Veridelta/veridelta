@@ -19,6 +19,7 @@ import sys
 import time
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ import yaml
 from polars.exceptions import PanicException
 
 from veridelta import __version__
+from veridelta._provenance import collect_provenance
 from veridelta.config import config_json_schema, files_config, load_config
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -239,13 +241,16 @@ def _compare(args: argparse.Namespace) -> int:
     # them separate means `run --json` can still report where it wrote files.
     quiet = bool(args.quiet)
 
+    started_at = datetime.now(UTC)
     try:
         config_path, diff_config, source_config, target_config = _run_configs(args, quiet=quiet)
 
         baseline = None if args.baseline is None else Baseline.read(args.baseline)
+        baseline_path = None if args.baseline is None else str(args.baseline)
+        provenance = collect_provenance(config_path, baseline_path, started_at=started_at)
         _progress("Comparing...", quiet=quiet)
         result = DiffEngine.run_from_configs(
-            diff_config, source_config, target_config, baseline=baseline
+            diff_config, source_config, target_config, baseline=baseline, provenance=provenance
         )
         summary = result.summary
 
