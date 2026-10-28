@@ -1309,6 +1309,19 @@ class TestMismatchPatterns:
 
         assert "No two values share a change." in render_html(result)
 
+    def test_it_names_ten_patterns_and_counts_the_rest(self) -> None:
+        """Ensure a list with many shared changes names the ten largest and says how many it left out."""
+        columns = [f"c{index:02d}" for index in range(12)]
+        result = _drifted(
+            {"id": [1, 2], **{column: ["a", "a"] for column in columns}},
+            {"id": [1, 2], **{column: ["b", "b"] for column in columns}},
+        )
+
+        document = render_html(result)
+
+        assert document.count("<li class='pattern'") == 10
+        assert "2 smaller patterns are not shown." in document
+
     def test_it_finds_no_patterns_without_values(self) -> None:
         """Ensure a pushdown run without a sample has no patterns section."""
         local = _orders_like()
