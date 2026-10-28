@@ -466,6 +466,26 @@ class TestDuckDBPushdown:
         assert [rules.column for rules in local.rules_applied] == list(local.compared_columns)
         assert any(rules.case_insensitive for rules in local.rules_applied)
 
+    def test_only_a_local_run_counts_forgiven_values(self, tmp_path: Path) -> None:
+        """Ensure pushdown leaves `forgiven_count` empty under `count_forgiven_values`, as the docs say."""
+        database = _pair(tmp_path / "warehouse.duckdb")
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["tier"], case_insensitive=True)],
+            count_forgiven_values=True,
+        )
+
+        pushdown = DiffEngine.run_from_configs(config, *_sides(database, pushdown=True))
+        local = DiffEngine.run_from_configs(config, *_sides(database, pushdown=False))
+
+        tier_rules = {
+            run: next(rules for rules in result.rules_applied if rules.column == "tier")
+            for run, result in (("pushdown", pushdown), ("local", local))
+        }
+        assert tier_rules["pushdown"].forgiven_count is None
+        assert tier_rules["local"].forgiven_count is not None
+        assert pushdown.summary == local.summary
+
     def test_it_fetches_a_row_sample_with_values(self, tmp_path: Path) -> None:
         """Ensure `pushdown_sample_rows` brings back the changed row's values."""
         database = _pair(tmp_path / "warehouse.duckdb")

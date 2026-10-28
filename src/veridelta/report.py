@@ -834,18 +834,25 @@ def _rules_section(result: DiffResult) -> str:
         return ""
     heading = "<h2 id='rules-applied'>Rules applied</h2>"
     described = sorted(
-        (rules.column, words) for rules in result.rules_applied if (words := _rule_words(rules))
+        (rules.column, words, rules.forgiven_count)
+        for rules in result.rules_applied
+        if (words := _rule_words(rules))
     )
     if not described:
         return f"{heading}\n<p class='empty'>Every compared column is compared exactly.</p>"
+    # A run with `count_forgiven_values` counted each ruled column; any other run counted none.
+    counted = any(forgiven is not None for _, _, forgiven in described)
+    count_header = "<th scope='col'>Values forgiven</th>" if counted else ""
     rows = "".join(
-        f"<tr><td>{_escape(column)}</td><td>{_escape('; '.join(words))}</td></tr>"
-        for column, words in described
+        f"<tr><td>{_escape(column)}</td><td>{_escape('; '.join(words))}</td>"
+        + (f"<td>{forgiven or 0:,}</td>" if counted else "")
+        + "</tr>"
+        for column, words, forgiven in described
     )
     table = _scroll_region(
         "rules-applied",
-        "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Rules</th></tr></thead>"
-        f"<tbody>{rows}</tbody></table>",
+        "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Rules</th>"
+        f"{count_header}</tr></thead><tbody>{rows}</tbody></table>",
     )
     exact = len(result.rules_applied) - len(described)
     rest = ""

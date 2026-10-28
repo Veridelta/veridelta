@@ -43,6 +43,7 @@ Every setting except `primary_keys` is optional:
 | `rules` | `[]` | Rules for particular columns. See [Rules](rules.md). |
 | `report_top_columns_limit` | `5` | Drifting columns to list in `report_summary` and the Markdown summary. `0` hides the list in both. |
 | `pushdown_sample_rows` | `0` | Pushdown only. Changed rows to fetch with their values. `0` fetches none, and no value leaves the warehouse. Local runs ignore it, since they hold every row. See [Row samples](pushdown.md#row-samples). |
+| `count_forgiven_values` | `false` | Local runs only. Count, for each column with a rule, the values its rules made match although the original values differ. See [Counting forgiven values](#counting-forgiven-values). |
 | `output_path` | none | Directory for discrepancy files. Without it, no files are written. See [Artifacts](results.md#artifacts). |
 | `output_format` | `parquet` | Format of the discrepancy files: `parquet`, `csv`, `json`, `ndjson`, or `arrow`. |
 
@@ -90,6 +91,19 @@ With `strict_types: true`, a column whose two sides hold different types after n
 `normalize_column_names: true` strips whitespace from every column name and lowercases it before the two sides are aligned. It applies on every entry point, `DiffEngine(...).run()` and `validate_schemas` included.
 
 The names in `primary_keys`, `column_names`, and `rename_to` are normalized the same way. A `pattern` is not: write it against the lowercase names. Two names that become equal once normalized raise `ConfigError`. Pushdown refuses the setting when it would rename a stored column; see [Columns](pushdown.md#columns).
+
+### Counting forgiven values
+
+`count_forgiven_values: true` counts, for each column with a rule, the values the rule made match although the original values differ: a price inside its tolerance, or a status a value map translated. The HTML report shows each count beside the column's rules, and `DiffResult.rules_applied` holds it as `forgiven_count`. A large count tells a reviewer which rule to question first.
+
+```yaml
+count_forgiven_values: true
+```
+
+!!! warning "Memory and run time"
+    The setting is off by default because it costs memory and time. Each column with a rule keeps a second copy of its original values through the join, so memory grows with the rows and with the number of columns with rules. On a million rows of ten numeric columns read from Parquet, a whole run took 20% longer with rules on three columns, and 50% longer with rules on all ten. A column with no rule keeps no copy and costs nothing. Turn it on for a run you want to review, rather than for every run in CI.
+
+Pushdown does not count, since it compares inside the database, so a pushdown run leaves `forgiven_count` empty. Two NULLs count as equal originals, so `treat_null_as_equal` forgives nothing that this counts. Originals of two types, such as text a `datetime_format` parses, compare as text, so `"7"` and `7` under `cast_to` count as equal, and `02/01/2024 10:00` against a timestamp counts as forgiven.
 
 ## Environment variables
 

@@ -589,6 +589,11 @@ class DiffConfig(BaseModel):
             sides' values, so the HTML report and the result can show values
             instead of keys. Defaults to 0, which fetches none, so no value leaves
             the warehouse. A local run holds every row already.
+        count_forgiven_values (bool): Whether a local run counts, per column
+            with a rule, the values its rules made match although the original
+            values differ. Off by default: each such column keeps a copy of its
+            original values through the join, which costs memory and some run
+            time. Pushdown never counts.
         output_path (str | None): Folder to write the added, removed, and changed
             rows to. None, the default, writes nothing.
         output_format (ArtifactFormat): File format of those rows. Defaults to
@@ -664,6 +669,15 @@ class DiffConfig(BaseModel):
         description=(
             "Pushdown only: fetch up to this many changed rows with both "
             "sides' values. 0 fetches none, so no value leaves the warehouse."
+        ),
+    )
+
+    count_forgiven_values: bool = Field(
+        default=False,
+        strict=True,
+        description=(
+            "Local runs only: count, per column with a rule, the values its rules made "
+            "match although the original values differ. Costs memory and some run time."
         ),
     )
 
@@ -957,6 +971,10 @@ class ColumnRules(BaseModel):
         cast_to (CastTarget | None): The type both values are cast to.
         max_levenshtein_distance (int | None): The most edits two texts may differ by.
         min_jaro_winkler_similarity (float | None): The least similarity two texts must have.
+        forgiven_count (int | None): How many values the rules made match although
+            the original values differ, or None when the run did not count:
+            `count_forgiven_values` was off, the column has no rule, or the run
+            was pushdown.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -976,6 +994,7 @@ class ColumnRules(BaseModel):
     cast_to: CastTarget | None = None
     max_levenshtein_distance: int | None = None
     min_jaro_winkler_similarity: float | None = None
+    forgiven_count: int | None = None
 
 
 @dataclass(frozen=True)

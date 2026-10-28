@@ -10,6 +10,7 @@ public names, the file loaders from `_reading.py` among them.
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Final
 
 import polars as pl
 
@@ -58,6 +59,7 @@ from veridelta._resolution import (
     drop_and_rename,
     duplicate_keys_error,
     fold_rule_defaults,
+    has_rule,
     match_rule,
     mixed_key_types_error,
     normalize_header_names,
@@ -137,6 +139,23 @@ __all__ = [
 ]
 
 
+_ORIGINAL_SUFFIX: Final = "__veridelta_original"
+"""The suffix of a ruled column's copy of its original values, under `count_forgiven_values`."""
+
+
+def _originals_differ(column: str, schema: pl.Schema) -> pl.Expr:
+    """Say whether a row's two original values differ, a NULL on both sides counting as equal.
+
+    A rule such as `datetime_format` or `cast_to` lets the two sides hold
+    different types, so those compare as text.
+    """
+    source = pl.col(f"{column}{_ORIGINAL_SUFFIX}_source")
+    target = pl.col(f"{column}{_ORIGINAL_SUFFIX}_target")
+    if schema[f"{column}{_ORIGINAL_SUFFIX}_source"] != schema[f"{column}{_ORIGINAL_SUFFIX}_target"]:
+        source, target = source.cast(pl.String), target.cast(pl.String)
+    return source.ne_missing(target)
+
+
 class DiffEngine:
     """Compare two datasets on their primary keys and report what differs.
 
@@ -192,8 +211,12 @@ class DiffEngine:
             target_df (pl.LazyFrame): Target rows, as stored.
         """
         self.config = config
-        self.source = source_df
-        self.target = target_df
+        self.source: pl.LazyFrame = source_df
+        self.target: pl.LazyFrame = target_df
+        # The columns whose original values ride along for `count_forgiven_values`,
+        # and what the run counted for them.
+        self._counted_columns: list[str] = []
+        self._forgiven_counts: dict[str, int] = {}
         # How each side was read, set by the entry points that load a `SourceRef`,
         # so an error can name the file and its format rather than only a column.
         self._sides: dict[str, str] | None = None
@@ -797,7 +820,8 @@ class DiffEngine:
         rules = {
             column: rule
             for column in schema.names()
-            if not (rule := self._get_effective_rule(column))["ignore"]
+            if not column.endswith(_ORIGINAL_SUFFIX)
+            and not (rule := self._get_effective_rule(column))["ignore"]
         }
 
         value_exprs: list[pl.Expr] = []
@@ -1018,13 +1042,15 @@ class DiffEngine:
         # Each join keeps its left side's order, so the rows come back as their
         # side holds them on every Polars. Before 2.0 that order was incidental.
         keys = self.config.primary_keys
-        added_df = self.target.join(
-            self.source, on=keys, how="anti", maintain_order="left"
-        ).collect()
-        removed_df = self.source.join(
-            self.target, on=keys, how="anti", maintain_order="left"
-        ).collect()
-        changed_df = self._collect_changed_rows(compared_columns, match_expressions)
+        added_df = self._without_originals(
+            self.target.join(self.source, on=keys, how="anti", maintain_order="left").collect()
+        )
+        removed_df = self._without_originals(
+            self.source.join(self.target, on=keys, how="anti", maintain_order="left").collect()
+        )
+        changed_df, self._forgiven_counts = self._collect_changed_rows(
+            compared_columns, match_expressions
+        )
         if baseline is None:
             return self._build_result(added_df, removed_df, changed_df, compared_columns)
         kept = accept_baseline(
@@ -1038,8 +1064,45 @@ class DiffEngine:
         """Align, validate, and normalize both frames, then build the comparisons."""
         self._align_structure()
         self._validate_schema()
+        self._counted_columns = self._keep_original_values()
         self._normalize_sides()
         return self._match_expressions()
+
+    def _keep_original_values(self) -> list[str]:
+        """Copy each ruled column's values before normalization, when counts are asked for.
+
+        The copies ride through the join under `_ORIGINAL_SUFFIX`, so a value the
+        rules made match can be told from one that was equal all along. A
+        column with no rule keeps no copy, so it costs nothing.
+
+        Returns:
+            list[str]: The columns whose forgiven values the run counts.
+        """
+        if not self.config.count_forgiven_values:
+            return []
+        target_columns = set(self.target.collect_schema().names())
+        keys = set(self.config.primary_keys)
+        candidates = [
+            column
+            for column in self.source.collect_schema().names()
+            if column in target_columns
+            and column not in keys
+            and not self._get_effective_rule(column)["ignore"]
+        ]
+        counted = [
+            rules.column for rules in rules_applied(self.config, candidates) if has_rule(rules)
+        ]
+        copies = [pl.col(column).alias(column + _ORIGINAL_SUFFIX) for column in counted]
+        if copies:
+            self.source = self.source.with_columns(copies)
+            self.target = self.target.with_columns(copies)
+        return counted
+
+    def _without_originals(self, frame: pl.DataFrame) -> pl.DataFrame:
+        """Drop the copies `_keep_original_values` added, so no result frame shows them."""
+        return frame.drop(
+            [column + _ORIGINAL_SUFFIX for column in self._counted_columns], strict=False
+        )
 
     def _match_expressions(self) -> tuple[list[str], list[pl.Expr]]:
         """Build one boolean match expression per compared column."""
@@ -1051,7 +1114,7 @@ class DiffEngine:
         compared: list[str] = []
         expressions: list[pl.Expr] = []
         for column in source_schema.names():
-            if column in keys or column not in target_columns:
+            if column in keys or column not in target_columns or column.endswith(_ORIGINAL_SUFFIX):
                 continue
             rule = self._get_effective_rule(column)
             if rule["ignore"]:
@@ -1063,18 +1126,43 @@ class DiffEngine:
 
     def _collect_changed_rows(
         self, compared_columns: list[str], match_expressions: list[pl.Expr]
-    ) -> pl.DataFrame:
-        """Inner-join both sides and keep the rows where any compared column differs."""
+    ) -> tuple[pl.DataFrame, dict[str, int]]:
+        """Inner-join both sides, keep the rows where any compared column differs, and count.
+
+        With `count_forgiven_values`, one more query over the same join counts,
+        per ruled column, the matches whose original values differ. Both run in
+        one `collect_all`, so Polars joins once.
+
+        Returns:
+            tuple[pl.DataFrame, dict[str, int]]: The changed rows, and the
+                forgiven values by column, empty when nothing was counted.
+        """
         if not match_expressions:
-            return pl.DataFrame()
+            return pl.DataFrame(), {}
 
         keys = self.config.primary_keys
         source = self.source.rename(lambda col: col if col in keys else f"{col}_source")
         target = self.target.rename(lambda col: col if col in keys else f"{col}_target")
-        common_lazy = source.join(target, on=keys, how="inner", maintain_order="left")
-
+        matched = source.join(target, on=keys, how="inner", maintain_order="left").with_columns(
+            match_expressions
+        )
+        originals = [
+            f"{column}{_ORIGINAL_SUFFIX}{side}"
+            for column in self._counted_columns
+            for side in ("_source", "_target")
+        ]
         all_matched = pl.all_horizontal([f"{col}_is_match" for col in compared_columns])
-        return common_lazy.with_columns(match_expressions).filter(~all_matched).collect()
+        changed_lazy = matched.filter(~all_matched).drop(originals)
+        counted = [column for column in self._counted_columns if column in compared_columns]
+        if not counted:
+            return changed_lazy.collect(), {}
+        schema = matched.collect_schema()
+        forgiven_lazy = matched.select(
+            (pl.col(f"{column}_is_match") & _originals_differ(column, schema)).sum().alias(column)
+            for column in counted
+        )
+        changed_df, forgiven_df = pl.collect_all([changed_lazy, forgiven_lazy])
+        return changed_df, {column: int(forgiven_df[column][0]) for column in counted}
 
     def _build_result(
         self,
@@ -1117,5 +1205,5 @@ class DiffEngine:
             primary_keys=tuple(self.config.primary_keys),
             compared_columns=tuple(compared_columns),
             accepted=accepted,
-            rules_applied=rules_applied(self.config, compared_columns),
+            rules_applied=rules_applied(self.config, compared_columns, self._forgiven_counts),
         )

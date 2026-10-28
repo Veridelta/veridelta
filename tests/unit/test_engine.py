@@ -3528,3 +3528,179 @@ class TestCastRefusal:
             assert outcome in {"cast", "refused"}, outcome
         else:
             assert (outcome == "refused") == refused, outcome
+
+
+def _forgiven(rule: DiffRule, source: list[object], target: list[object]) -> dict[str, int | None]:
+    """Run three rows of `v` under one rule, counting forgiven values, and return the counts."""
+    config = DiffConfig(primary_keys=["id"], rules=[rule], count_forgiven_values=True)
+    result = DiffEngine(
+        config,
+        pl.DataFrame({"id": [1, 2, 3], "v": source}).lazy(),
+        pl.DataFrame({"id": [1, 2, 3], "v": target}).lazy(),
+    ).run()
+    return {rules.column: rules.forgiven_count for rules in result.rules_applied}
+
+
+class TestForgivenCounts:
+    """Validate `count_forgiven_values`: how many values each column's rules made match."""
+
+    @pytest.mark.parametrize(
+        ("rule", "source", "target"),
+        [
+            pytest.param(
+                DiffRule(column_names=["v"], absolute_tolerance=0.01),
+                [10.0, 20.0, 30.0],
+                [10.004, 20.0, 31.0],
+                id="absolute-tolerance",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], relative_tolerance=0.01),
+                [100.0, 20.0, 30.0],
+                [100.5, 20.0, 40.0],
+                id="relative-tolerance",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], case_insensitive=True),
+                ["Ann", "Bo", "Cy"],
+                ["ann", "Bo", "Di"],
+                id="case",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], whitespace_mode="both"),
+                [" a ", "b", "c"],
+                ["a", "b", "d"],
+                id="whitespace",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], regex_replace={"-": ""}),
+                ["12-34", "56", "78"],
+                ["1234", "56", "79"],
+                id="regex",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], value_map={"o": "open"}),
+                ["o", "open", "c"],
+                ["open", "open", "x"],
+                id="value-map",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], pad_zeros=3),
+                ["7", "123", "8"],
+                ["007", "123", "009"],
+                id="pad-zeros",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], null_values=["N/A"]),
+                [None, "a", "b"],
+                ["N/A", "a", "c"],
+                id="null-sentinel",
+            ),
+            pytest.param(
+                DiffRule(column_names=["v"], max_levenshtein_distance=1),
+                ["colour", "red", "blue"],
+                ["color", "red", "green"],
+                id="edit-distance",
+            ),
+        ],
+    )
+    def test_it_counts_the_values_each_rule_kind_forgives(
+        self, rule: DiffRule, source: list[object], target: list[object]
+    ) -> None:
+        """Ensure each rule kind counts the one value it made match, not the equal or the differing one."""
+        assert _forgiven(rule, source, target) == {"v": 1}
+
+    def test_it_counts_a_date_parsed_from_text(self) -> None:
+        """Ensure originals of two types compare as text, so a date read from legacy text counts."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["v"], datetime_format="%d/%m/%Y %H:%M")],
+            count_forgiven_values=True,
+        )
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1, 2], "v": ["02/01/2024 10:00", "03/01/2024 11:00"]}).lazy(),
+            pl.DataFrame(
+                {"id": [1, 2], "v": [datetime(2024, 1, 2, 10), datetime(2024, 1, 3, 12)]}
+            ).lazy(),
+        ).run()
+
+        assert [rules.forgiven_count for rules in result.rules_applied] == [1]
+
+    def test_it_counts_nothing_without_a_rule(self) -> None:
+        """Ensure the setting with no rule keeps no copies and counts nothing."""
+        result = DiffEngine(
+            DiffConfig(primary_keys=["id"], count_forgiven_values=True),
+            pl.DataFrame({"id": [1], "v": ["a"]}).lazy(),
+            pl.DataFrame({"id": [1], "v": ["b"]}).lazy(),
+        ).run()
+
+        assert [rules.forgiven_count for rules in result.rules_applied] == [None]
+        assert result.changed.columns == ["id", "v_source", "v_target", "v_is_match"]
+
+    def test_it_counts_nothing_when_off(self) -> None:
+        """Ensure a run without the setting leaves every count unknown, as pushdown does."""
+        result = DiffEngine(
+            DiffConfig(
+                primary_keys=["id"], rules=[DiffRule(column_names=["v"], absolute_tolerance=1.0)]
+            ),
+            pl.DataFrame({"id": [1], "v": [1.0]}).lazy(),
+            pl.DataFrame({"id": [1], "v": [1.5]}).lazy(),
+        ).run()
+
+        assert [rules.forgiven_count for rules in result.rules_applied] == [None]
+
+    def test_it_counts_only_columns_with_a_rule(self) -> None:
+        """Ensure a column compared exactly keeps no copy and no count."""
+        config = DiffConfig(
+            primary_keys=["id"],
+            rules=[DiffRule(column_names=["v"], absolute_tolerance=1.0)],
+            count_forgiven_values=True,
+        )
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"id": [1], "v": [1.0], "w": ["a"]}).lazy(),
+            pl.DataFrame({"id": [1], "v": [1.5], "w": ["b"]}).lazy(),
+        ).run()
+
+        assert {rules.column: rules.forgiven_count for rules in result.rules_applied} == {
+            "v": 1,
+            "w": None,
+        }
+
+    def test_its_rows_are_the_rows_of_a_run_without_it(self) -> None:
+        """Ensure the copies the count needs never reach the added, removed, or changed rows."""
+        rule = DiffRule(column_names=["v"], case_insensitive=True)
+        source = pl.DataFrame({"id": [1, 2, 3], "v": ["A", "B", "C"]})
+        target = pl.DataFrame({"id": [2, 3, 4], "v": ["b", "X", "D"]})
+
+        counted = DiffEngine(
+            DiffConfig(primary_keys=["id"], rules=[rule], count_forgiven_values=True),
+            source.lazy(),
+            target.lazy(),
+        ).run()
+        plain = DiffEngine(
+            DiffConfig(primary_keys=["id"], rules=[rule]), source.lazy(), target.lazy()
+        ).run()
+
+        assert counted.added.equals(plain.added)
+        assert counted.removed.equals(plain.removed)
+        assert counted.changed.equals(plain.changed)
+        assert counted.summary == plain.summary
+
+    def test_it_pairs_rows_on_keys_a_rule_normalizes(self) -> None:
+        """Ensure a key that only matches after its rule still pairs the rows whose values it counts."""
+        config = DiffConfig(
+            primary_keys=["code"],
+            rules=[
+                DiffRule(column_names=["code"], case_insensitive=True),
+                DiffRule(column_names=["v"], absolute_tolerance=0.5),
+            ],
+            count_forgiven_values=True,
+        )
+        result = DiffEngine(
+            config,
+            pl.DataFrame({"code": ["A", "B"], "v": [1.0, 2.0]}).lazy(),
+            pl.DataFrame({"code": ["a", "b"], "v": [1.2, 2.0]}).lazy(),
+        ).run()
+
+        assert {rules.column: rules.forgiven_count for rules in result.rules_applied} == {"v": 1}
