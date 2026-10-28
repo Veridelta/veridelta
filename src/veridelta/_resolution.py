@@ -227,12 +227,18 @@ def fold_rule_defaults(rule: DiffRule | None, diff: DiffConfig) -> EffectiveRule
     return effective
 
 
-def rules_applied(diff: DiffConfig, compared_columns: Sequence[str]) -> tuple[ColumnRules, ...]:
+def rules_applied(
+    diff: DiffConfig,
+    compared_columns: Sequence[str],
+    forgiven_counts: Mapping[str, int] | None = None,
+) -> tuple[ColumnRules, ...]:
     """Summarize the rules each compared column ran under, as both engines resolve them.
 
     A rule's values become counts here, so the result never carries a value
-    map's entries, a regex's text, or a null sentinel.
+    map's entries, a regex's text, or a null sentinel. `forgiven_counts` holds
+    what a local run counted under `count_forgiven_values`, by column.
     """
+    counted = forgiven_counts or {}
     summaries: list[ColumnRules] = []
     for column in compared_columns:
         effective = fold_rule_defaults(match_rule(diff.rules, column), diff)
@@ -253,9 +259,19 @@ def rules_applied(diff: DiffConfig, compared_columns: Sequence[str]) -> tuple[Co
                 cast_to=effective["cast_to"],
                 max_levenshtein_distance=effective["max_levenshtein_distance"],
                 min_jaro_winkler_similarity=effective["min_jaro_winkler_similarity"],
+                forgiven_count=counted.get(column),
             )
         )
     return tuple(summaries)
+
+
+def has_rule(rules: ColumnRules) -> bool:
+    """Return whether any setting differs from its default, so the column's match is changed."""
+    return any(
+        getattr(rules, name) != field.default
+        for name, field in ColumnRules.model_fields.items()
+        if name not in {"column", "forgiven_count"}
+    )
 
 
 CAST_TARGETS: Final[dict[CastTarget, pl.DataType]] = {

@@ -1414,9 +1414,27 @@ class TestRulesApplied:
             "absolute tolerance 0.5; NULL does not match NULL",
         ]
 
+    def test_it_counts_the_values_each_columns_rules_forgave(self) -> None:
+        """Ensure a run that counted shows, beside each column's rules, the values they made match."""
+        result = _with_rules(
+            [DiffRule(column_names=["amount"], absolute_tolerance=0.01)],
+            count_forgiven_values=True,
+        )
+        tables = _Tables()
+
+        tables.feed(render_html(result))
+
+        assert tables.tables["rules-applied"] == [["amount", "absolute tolerance 0.01", "1"]]
+
+    def test_it_shows_no_count_column_for_a_run_that_did_not_count(self) -> None:
+        """Ensure the count column appears only when the run counted, so no reader sees an empty one."""
+        result = _with_rules([DiffRule(column_names=["amount"], absolute_tolerance=0.01)])
+
+        assert "Values forgiven" not in render_html(result)
+
     def test_every_rule_setting_has_words(self) -> None:
         """Ensure a setting added to `ColumnRules` cannot reach the report without a phrase."""
-        assert set(_RULE_PHRASES) == set(ColumnRules.model_fields) - {"column"}
+        assert set(_RULE_PHRASES) == set(ColumnRules.model_fields) - {"column", "forgiven_count"}
 
     def test_it_never_shows_a_rules_values(self) -> None:
         """Ensure a value map's entries, a regex's text, and null sentinels stay out of the result and the report.

@@ -1042,6 +1042,12 @@
       "title": "Pushdown Sample Rows",
       "type": "integer"
     },
+    "count_forgiven_values": {
+      "default": false,
+      "description": "Local runs only: count, per column with a rule, the values its rules made match although the original values differ. Costs memory and some run time.",
+      "title": "Count Forgiven Values",
+      "type": "boolean"
+    },
     "output_path": {
       "anyOf": [
         {
