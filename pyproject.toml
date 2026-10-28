@@ -84,9 +84,10 @@ database = [
     "pyarrow>=23.0.1",
 ]
 # 1.5.0 is the release the parity suite runs on, and DuckDB's Polars export
-# reads its results through pyarrow.
+# reads its results through pyarrow. MotherDuck's extension refuses DuckDB 2.0,
+# so the extra stays below it until MotherDuck supports 2.0.
 duckdb = [
-    "duckdb>=1.5.0",
+    "duckdb>=1.5.0,<2",
     "pyarrow>=23.0.1",
 ]
 bigquery = [
@@ -115,7 +116,7 @@ all = [
 [dependency-groups]
 dev = [
     "commitizen>=4.13.10",
-    "duckdb>=1.5.0",
+    "duckdb>=1.5.0,<2",
     "hypothesis>=6.140.0",
     "ipykernel>=7.2.0",
     "jsonschema>=4.26.0",
