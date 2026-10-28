@@ -18,8 +18,8 @@ People read four parts of Veridelta:
 - **Words for every verdict.** The HTML report and the Markdown summary say `PASSED` or `FAILED` in words. Color never carries a result alone.
 - **Structure.** Pages and reports use headings in order, real tables, and link text that names its target. The diagram on the home page is described in the paragraph after it.
 - **Media.** The recording on the README and the documentation home is one animated image with a text alternative that says what happens. GitHub's setting for animated images pauses it on the README. The other recordings, on the command line page and the AI agents page, sit in closed `<details>` blocks, so they play only when opened, and each has its transcript as text beside it.
-- **Keyboard.** Each control in the HTML report is a native button, reached with Tab and shown with the browser's focus ring. The tabs for changed, added, and removed rows are one Tab stop, and arrow keys, Home, and End move between them, as the ARIA tabs pattern asks. A table wider than the screen takes focus too, so arrow keys scroll it.
-- **Without JavaScript.** The HTML report shows every row it holds, with its changed, added, and removed rows one after another. Its script only puts those three behind tabs and splits long tables into pages of 25 rows.
+- **Keyboard.** Each control in the HTML report is a native button, select, or text field, reached with Tab and shown with the browser's focus ring. The filters announce how many values they show through a live region. The tabs for changed, added, and removed rows are one Tab stop, and arrow keys, Home, and End move between them, as the ARIA tabs pattern asks. A table wider than the screen takes focus too, so arrow keys scroll it.
+- **Without JavaScript.** The HTML report shows every row it holds, with its changed, added, and removed rows one after another. The full changed rows sit in a native disclosure, which opens without a script. The script only puts the three kinds behind tabs, adds the filters for mismatched values, and splits long tables into pages of 25 rows.
 
 ## How we checked
 
@@ -31,6 +31,7 @@ A script also drove the report and the documentation site by keyboard in Chromiu
 - Enter paged a table, and the page status changed once per page.
 - Focus stayed on Next at the last page.
 - Tab reached the tabs as one stop, and the arrow keys and End moved between them, showing one kind of row at a time.
+- A column and a key narrowed the mismatched values, the address kept the filter, and Clear filters restored every value.
 - With JavaScript off, the report showed every row.
 
 CI's Accessibility job runs the axe-core checks and the report's keyboard checks on every pull request, with `make accessibility`. Its browser reaches only the local site, so it too sees the diagram's source.

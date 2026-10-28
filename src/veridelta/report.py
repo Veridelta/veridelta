@@ -18,16 +18,21 @@ import html
 import json
 import math
 import re
-from collections.abc import Iterator
-from datetime import UTC, datetime
+from collections.abc import Iterator, Sequence
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
+from itertools import islice
 from pathlib import Path
-from typing import Final
+from typing import Final, NamedTuple
 
 import polars as pl
 
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffResult, DiffSummary, HashedFile, RunProvenance
 from veridelta.outputs import output_schema_url
+
+_NUMBERS: Final = (int, float, Decimal)
+"""The value types whose difference is target minus source, as a decimal."""
 
 DEFAULT_MAX_ROWS: Final[int] = 1000
 """Rows embedded per table before truncation.
@@ -129,6 +134,21 @@ td.null { color: var(--muted); font-style: italic; }
 .pager button[aria-disabled="true"] { opacity: .45; cursor: default; }
 .pager .status { color: var(--muted); font-size: .85rem; }
 .empty { color: var(--muted); padding: .75rem; }
+h3 { font-size: 1rem; margin: 1.25rem 0 .25rem; }
+.hint { color: var(--muted); font-size: .85rem; margin: 0 0 .6rem; }
+td.differs { font-weight: 600; background: var(--chip); }
+td.differs .sign { color: var(--fail); margin-right: .15rem; }
+td.difference { font-variant-numeric: tabular-nums; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 0 0 .5rem; }
+.filters label { font-size: .85rem; color: var(--muted); }
+.filters select, .filters input, .filters button {
+  font: inherit; font-size: .85rem; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 5px; padding: .25rem .5rem;
+}
+.filters button { background: var(--chip); cursor: pointer; }
+.filter-status { color: var(--muted); font-size: .85rem; margin: 0 0 .5rem; }
+details.full-rows { margin-top: 1.25rem; }
+details.full-rows summary { cursor: pointer; color: var(--link); margin-bottom: .6rem; }
 @media (max-width: 40rem) {
   body { padding: 1rem; }
   .card { min-width: 0; flex: 1 1 8rem; }
@@ -139,30 +159,101 @@ td.null { color: var(--muted); font-style: italic; }
 """
 
 _SCRIPT: Final[str] = """
+// Pages a table's rows, counting only the rows its filters keep. A table of
+// one page has no pager, but its rows still follow the filters.
 function paginate(root) {
   const pager = root.querySelector('.pager');
-  if (!pager) return;
   const size = Number(root.dataset.pageSize);
+  const unit = root.dataset.unit;
   const rows = Array.from(root.querySelectorAll('tbody tr'));
-  const pages = Math.ceil(rows.length / size);
-  const status = pager.querySelector('.status');
-  const [prev, next] = pager.querySelectorAll('button');
   let page = 0;
   function draw() {
-    rows.forEach((row, index) => { row.hidden = Math.floor(index / size) !== page; });
+    const kept = rows.filter(row => !row.dataset.filteredOut);
+    const pages = Math.max(1, Math.ceil(kept.length / size));
+    page = Math.min(page, pages - 1);
+    rows.forEach(row => { row.hidden = true; });
+    kept.forEach((row, index) => { row.hidden = Math.floor(index / size) !== page; });
+    if (!pager) return;
+    const [prev, next] = pager.querySelectorAll('button');
+    const status = pager.querySelector('.status');
     // The status is a live region, so its text changes only with the page.
-    const text = `Page ${page + 1} of ${pages} \\u00b7 ${rows.length.toLocaleString('en-US')} rows`;
+    const text = `Page ${page + 1} of ${pages} \\u00b7 ${kept.length.toLocaleString('en-US')} ${unit}`;
     if (status.textContent !== text) status.textContent = text;
     // aria-disabled keeps a button focusable, so focus stays put on the last page.
     prev.setAttribute('aria-disabled', String(page === 0));
     next.setAttribute('aria-disabled', String(page === pages - 1));
   }
-  prev.addEventListener('click', () => { if (page > 0) { page--; draw(); } });
-  next.addEventListener('click', () => { if (page < pages - 1) { page++; draw(); } });
+  root.redraw = () => { page = 0; draw(); };
+  if (pager) {
+    const [prev, next] = pager.querySelectorAll('button');
+    prev.addEventListener('click', () => { if (page > 0) { page--; draw(); } });
+    next.addEventListener('click', () => { page++; draw(); });
+    pager.hidden = false;
+  }
   draw();
-  pager.hidden = false;
 }
 document.querySelectorAll('[data-table]').forEach(paginate);
+
+// Filters for the mismatched values: a column, and text in the key. The state
+// lives in the address's fragment, so a filtered view can be linked.
+function filters(root) {
+  const rows = Array.from(root.querySelectorAll('tbody tr'));
+  const columns = [...new Set(rows.map(row => row.dataset.column))].sort();
+  const group = document.createElement('div');
+  group.className = 'filters';
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', 'Filter mismatched values');
+  const columnLabel = document.createElement('label');
+  columnLabel.textContent = 'Column ';
+  const column = document.createElement('select');
+  column.id = 'filter-column';
+  column.append(new Option('All columns', ''));
+  columns.forEach(name => column.append(new Option(name, name)));
+  columnLabel.append(column);
+  const keyLabel = document.createElement('label');
+  keyLabel.textContent = 'Key contains ';
+  const key = document.createElement('input');
+  key.type = 'search';
+  key.id = 'filter-key';
+  keyLabel.append(key);
+  const clear = document.createElement('button');
+  clear.type = 'button';
+  clear.textContent = 'Clear filters';
+  const status = document.createElement('p');
+  status.className = 'filter-status';
+  status.setAttribute('role', 'status');
+  group.append(columnLabel, keyLabel, clear);
+  root.before(group, status);
+  const all = rows.length.toLocaleString('en-US');
+  function apply() {
+    const wanted = key.value.trim().toLowerCase();
+    let kept = 0;
+    rows.forEach(row => {
+      const keep = (!column.value || row.dataset.column === column.value)
+        && (!wanted || row.dataset.key.toLowerCase().includes(wanted));
+      if (keep) { delete row.dataset.filteredOut; kept++; } else { row.dataset.filteredOut = '1'; }
+    });
+    status.textContent = `Showing ${kept.toLocaleString('en-US')} of ${all} mismatched values`;
+    root.redraw();
+    const state = new URLSearchParams();
+    if (column.value) state.set('column', column.value);
+    if (wanted) state.set('key', key.value.trim());
+    const fragment = state.toString();
+    try {
+      history.replaceState(null, '', fragment ? `#${fragment}` : location.pathname + location.search);
+    } catch (error) {
+      // A page shown inside an editor may refuse a new address; the filter still applies.
+    }
+  }
+  const linked = new URLSearchParams(location.hash.slice(1));
+  if (columns.includes(linked.get('column'))) column.value = linked.get('column');
+  key.value = linked.get('key') || '';
+  column.addEventListener('change', apply);
+  key.addEventListener('input', apply);
+  clear.addEventListener('click', () => { column.value = ''; key.value = ''; apply(); });
+  apply();
+}
+document.querySelectorAll('[data-filterable]').forEach(filters);
 
 // One tab per kind of row. Arrow keys, Home, and End move between tabs, and
 // only the selected tab takes Tab focus, as the ARIA tabs pattern asks.
@@ -235,12 +326,22 @@ def _scroll_region(heading_id: str, table: str) -> str:
     )
 
 
+def _slug(title: str) -> str:
+    """Turn a title into the id its heading carries, such as `changed-rows`."""
+    return re.sub(r"\W+", "-", title.lower())
+
+
 def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
-    """Render one table section, with every embedded row in the markup."""
-    heading_id = re.sub(r"\W+", "-", title.lower())
+    """Render one table section under its heading, with every embedded row in the markup."""
+    heading_id = _slug(title)
     heading = f"<h2 id='{heading_id}'>{_escape(title)}</h2>"
+    return f"{heading}\n{_table_body(heading_id, title, frame, max_rows)}"
+
+
+def _table_body(heading_id: str, title: str, frame: pl.DataFrame, max_rows: int) -> str:
+    """Render a table its heading names, paged by the script, with every embedded row."""
     if frame.height == 0 or not frame.columns:
-        return f"{heading}\n<p class='empty'>No rows.</p>"
+        return "<p class='empty'>No rows.</p>"
 
     shown = frame.head(max_rows)
     truncated = ""
@@ -253,10 +354,16 @@ def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
     header = "".join(f"<th scope='col'>{_escape(name)}</th>" for name in shown.columns)
     body = "".join(f"<tr>{''.join(map(_cell, row))}</tr>" for row in shown.iter_rows())
     table = f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+    return truncated + _paged(heading_id, title, table, shown.height, "rows")
 
-    # The script shows the pager. Without JavaScript, every row shows at once.
+
+def _paged(heading_id: str, title: str, table: str, rows: int, unit: str, extra: str = "") -> str:
+    """Wrap a table in the block the script pages, with a pager it shows past one page.
+
+    Without JavaScript, every row shows at once.
+    """
     pager = ""
-    pages = math.ceil(shown.height / _PAGE_SIZE)
+    pages = math.ceil(rows / _PAGE_SIZE)
     if pages > 1:
         label = _escape(title.lower())
         pager = (
@@ -264,14 +371,142 @@ def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
             f"<button type='button' aria-label='Previous page of {label}'>Previous</button>"
             f"<button type='button' aria-label='Next page of {label}'>Next</button>"
             f"<span class='status' role='status'>Page 1 of {pages} &middot; "
-            f"{shown.height:,} rows</span></div>"
+            f"{rows:,} {unit}</span></div>"
         )
-
     return (
-        f"{heading}\n{truncated}"
-        f"<div data-table data-page-size='{_PAGE_SIZE}'>\n"
+        f"<div data-table data-page-size='{_PAGE_SIZE}' data-unit='{unit}'{extra}>\n"
         f"{_scroll_region(heading_id, table)}{pager}\n"
         "</div>"
+    )
+
+
+class _MismatchedValue(NamedTuple):
+    """One value that differs: its row's key, its column, and the value on each side."""
+
+    key_values: tuple[object, ...]
+    column: str
+    source_value: object
+    target_value: object
+
+
+def _mismatched_values(
+    rows: pl.DataFrame, keys: Sequence[str], columns: Sequence[str]
+) -> Iterator[_MismatchedValue]:
+    """Yield each value whose match flag is false, row by row, in the columns' order.
+
+    A NULL flag is not a mismatch, as the column counts treat it.
+    """
+    for record in rows.iter_rows(named=True):
+        for column in columns:
+            if record[f"{column}_is_match"] is False:
+                yield _MismatchedValue(
+                    tuple(record[key] for key in keys),
+                    column,
+                    record[f"{column}_source"],
+                    record[f"{column}_target"],
+                )
+
+
+def _signed_interval(delta: timedelta) -> str:
+    """Write a time interval with its sign in front, such as `-1:30:00`."""
+    sign = "-" if delta < timedelta(0) else "+"
+    return f"{sign}{abs(delta)}"
+
+
+def _difference(source_value: object, target_value: object) -> str:
+    """Write target minus source for numbers, dates, and times, or nothing for other values.
+
+    Numbers subtract as decimals of the text shown, so `65.99` to `66.99` reads
+    `+1.00`, never a float's rounding error. A boolean, a NULL, text, or a value
+    with no finite difference has none.
+    """
+    if source_value is None or target_value is None:
+        return ""
+    if isinstance(source_value, bool) or isinstance(target_value, bool):
+        return ""
+    if isinstance(source_value, _NUMBERS) and isinstance(target_value, _NUMBERS):
+        try:
+            delta = Decimal(str(target_value)) - Decimal(str(source_value))
+        except InvalidOperation:
+            return ""
+        return f"{delta:+}" if delta.is_finite() else ""
+    if isinstance(source_value, datetime) and isinstance(target_value, datetime):
+        try:
+            return _signed_interval(target_value - source_value)
+        except TypeError:
+            # A zoned time minus a naive one has no difference.
+            return ""
+    if isinstance(source_value, date) and isinstance(target_value, date):
+        days = (target_value - source_value).days
+        return f"{days:+,} {'day' if abs(days) == 1 else 'days'}"
+    if isinstance(source_value, timedelta) and isinstance(target_value, timedelta):
+        return _signed_interval(target_value - source_value)
+    return ""
+
+
+def _differing_cell(value: object) -> str:
+    """Render the target's differing value, marked with a sign and weight as well as color."""
+    text = "null" if value is None else _escape(value)
+    null = " null" if value is None else ""
+    return f"<td class='differs{null}'><span class='sign' aria-hidden='true'>&#8800;</span> {text}</td>"
+
+
+def _mismatch_view(changed: pl.DataFrame, result: DiffResult, max_rows: int) -> str:
+    """List each mismatched value of the changed rows, the report's default view of them.
+
+    `max_rows` caps the values listed, not rows times columns, and the view says
+    when it stops short of every mismatch the run counted. Each row carries its
+    column and key as data, which the script's filters read.
+    """
+    keys = list(result.primary_keys)
+    ordered = changed.sort(keys) if keys else changed
+    listed = list(
+        islice(_mismatched_values(ordered.head(max_rows), keys, result.compared_columns), max_rows)
+    )
+    total = sum(result.summary.column_mismatches.values())
+    heading = "<h3 id='mismatched-values'>Mismatched values</h3>"
+    hint = "<p class='hint'>One row per value that differs, as compared after the rules.</p>"
+    if not listed:
+        return f"{heading}\n<p class='empty'>No mismatched values.</p>"
+    truncated = ""
+    if len(listed) < total:
+        truncated = (
+            f"<p class='note'>Showing the first {len(listed):,} of {total:,} mismatched values.</p>"
+        )
+    header = "".join(
+        f"<th scope='col'>{_escape(name)}</th>"
+        for name in [*keys, "Column", "Source", "Target", "Difference"]
+    )
+    body = "".join(
+        f"<tr data-column='{_escape(value.column)}' "
+        f"data-key='{_escape(', '.join(map(str, value.key_values)))}'>"
+        f"{''.join(map(_cell, value.key_values))}<td>{_escape(value.column)}</td>"
+        f"{_cell(value.source_value)}{_differing_cell(value.target_value)}"
+        f"<td class='difference'>{_difference(value.source_value, value.target_value)}</td></tr>"
+        for value in listed
+    )
+    table = f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+    return (
+        f"{heading}\n{hint}\n{truncated}"
+        f"{_paged('mismatched-values', 'Mismatched values', table, len(listed), 'values', ' data-filterable')}"
+    )
+
+
+def _changed_section(
+    changed: pl.DataFrame, result: DiffResult, max_rows: int, *, has_values: bool
+) -> str:
+    """Render the changed rows: mismatched values first, and the full rows one click away.
+
+    A pushdown run without a sample holds keys alone, so it keeps the one table.
+    """
+    if not has_values or changed.height == 0:
+        return _table("Changed rows", changed, max_rows)
+    full_rows = _table_body("changed-rows", "Changed rows", changed, max_rows)
+    return (
+        "<h2 id='changed-rows'>Changed rows</h2>\n"
+        f"{_mismatch_view(changed, result, max_rows)}\n"
+        "<details class='full-rows'><summary>Show the full changed rows, every column side by "
+        f"side ({changed.height:,} rows)</summary>\n{full_rows}\n</details>"
     )
 
 
@@ -400,12 +635,11 @@ def _drift_table(summary: DiffSummary) -> str:
     )
 
 
-def _kind_section(title: str, count: int, frame: pl.DataFrame, max_rows: int) -> str:
+def _kind_section(title: str, count: int, content: str) -> str:
     """Wrap one kind of row in a section the script turns into a tab, named and counted."""
-    panel_id = re.sub(r"\W+", "-", title.lower()) + "-panel"
     return (
-        f"<section class='kind' id='{panel_id}' data-kind='{_escape(title)}' "
-        f"data-count='{count}'>\n{_table(title, frame, max_rows)}\n</section>"
+        f"<section class='kind' id='{_slug(title)}-panel' data-kind='{_escape(title)}' "
+        f"data-count='{count}'>\n{content}\n</section>"
     )
 
 
@@ -465,9 +699,24 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
     # Without the script, the three sections stay stacked with every row shown.
     kinds = "\n".join(
         [
-            _kind_section("Changed rows", summary.changed_count, changed, max_rows),
-            _kind_section("Added rows", summary.added_count, result.added, max_rows),
-            _kind_section("Removed rows", summary.removed_count, result.removed, max_rows),
+            _kind_section(
+                "Changed rows",
+                summary.changed_count,
+                _changed_section(
+                    changed,
+                    result,
+                    max_rows,
+                    has_values=not result.keys_only or result.changed_sample is not None,
+                ),
+            ),
+            _kind_section(
+                "Added rows", summary.added_count, _table("Added rows", result.added, max_rows)
+            ),
+            _kind_section(
+                "Removed rows",
+                summary.removed_count,
+                _table("Removed rows", result.removed, max_rows),
+            ),
         ]
     )
 
@@ -692,17 +941,14 @@ def _markdown_value(value: object) -> str:
 def _differing_values(
     rows: pl.DataFrame, keys: list[str], columns: tuple[str, ...]
 ) -> Iterator[list[str]]:
-    """Yield the rendered cells of each differing value, row by row."""
-    for record in rows.iter_rows(named=True):
-        for column in columns:
-            # A NULL flag is not a mismatch, as the column counts treat it.
-            if record[f"{column}_is_match"] is False:
-                yield [
-                    *(_markdown_value(record[key]) for key in keys),
-                    _markdown_code(column),
-                    _markdown_value(record[f"{column}_source"]),
-                    _markdown_value(record[f"{column}_target"]),
-                ]
+    """Yield the rendered Markdown cells of each mismatched value, row by row."""
+    for value in _mismatched_values(rows, keys, columns):
+        yield [
+            *map(_markdown_value, value.key_values),
+            _markdown_code(value.column),
+            _markdown_value(value.source_value),
+            _markdown_value(value.target_value),
+        ]
 
 
 def _value_lines(result: DiffResult, max_rows: int, budget: int) -> list[str]:

@@ -6,7 +6,7 @@
 import json
 import re
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -19,7 +19,7 @@ from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import DiffConfig, DiffResult, DiffSummary, HashedFile, RunProvenance
 from veridelta.outputs import output_json_schema
-from veridelta.report import render_html, render_markdown, write_html, write_markdown
+from veridelta.report import _difference, render_html, render_markdown, write_html, write_markdown
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -307,6 +307,7 @@ class TestHTMLReport:
 
         assert _rendered_rows(document) == {
             "column-level-drift": [["val", "1", "100%"]],
+            "mismatched-values": [["2", "val", "B", "≠ CHANGED", ""]],
             "changed-rows": [["2", "B", "CHANGED", "false"]],
             "added-rows": [["3", "C"]],
             "removed-rows": [["1", "A"]],
@@ -382,9 +383,15 @@ class TestHTMLReport:
             document,
         )
 
-        assert regions == ["column-level-drift", "changed-rows", "added-rows", "removed-rows"]
+        assert regions == [
+            "column-level-drift",
+            "mismatched-values",
+            "changed-rows",
+            "added-rows",
+            "removed-rows",
+        ]
         for heading_id in regions:
-            assert re.search(rf"<h2 id=['\"]{heading_id}['\"]>", document), heading_id
+            assert re.search(rf"<h[23] id=['\"]{heading_id}['\"]>", document), heading_id
         assert document.count("<div class='wrap'") == len(regions)
         assert "<th scope='col'>id</th>" in document
 
@@ -399,7 +406,7 @@ class TestHTMLReport:
         document = render_html(_changed_only(changed))
 
         assert len(_rendered_rows(document)["changed-rows"]) == 30
-        assert "<div data-table data-page-size='25'>" in document
+        assert "<div data-table data-page-size='25' data-unit='rows'>" in document
         # The pager's own `display: flex` would otherwise override `hidden`.
         assert ".pager[hidden] { display: none; }" in document
         assert (
@@ -1003,3 +1010,179 @@ class TestMarkdownValues:
         )
 
         assert "Changed values" not in render_markdown(_with_summary(summary), max_rows=10)
+
+
+def _drifted(source: dict[str, list[Any]], target: dict[str, list[Any]]) -> DiffResult:
+    """Compare two frames on `id`, with no rules, as a local run does."""
+    return DiffEngine(
+        DiffConfig(primary_keys=["id"]), pl.DataFrame(source).lazy(), pl.DataFrame(target).lazy()
+    ).run()
+
+
+class TestMismatchedValues:
+    """Validate the report's default view of changed rows: one row per mismatched value."""
+
+    def test_it_lists_each_mismatched_value_in_key_order(self) -> None:
+        """Ensure each value that differs gets a row, with its key, column, both values, and difference."""
+        result = _drifted(
+            {"id": [2, 1], "status": ["open", "returned"], "amount": [10.5, 65.99]},
+            {"id": [2, 1], "status": ["cancelled", "returned"], "amount": [10.5, 66.99]},
+        )
+        tables = _Tables()
+
+        tables.feed(render_html(result))
+
+        assert tables.tables["mismatched-values"] == [
+            ["1", "amount", "65.99", "≠ 66.99", "+1.00"],
+            ["2", "status", "open", "≠ cancelled", ""],
+        ]
+
+    def test_it_lists_exactly_the_cells_whose_flag_is_false(self) -> None:
+        """Ensure the view and the match flags agree, a NULL flag included, as the counts treat it."""
+        result = _drifted(
+            {"id": [1, 2, 3], "a": [1, None, 3], "b": ["x", "y", "z"]},
+            {"id": [1, 2, 3], "a": [9, None, 3], "b": ["x", "Y", "Z"]},
+        )
+        flagged = sorted(
+            (record["id"], column)
+            for record in result.changed.iter_rows(named=True)
+            for column in result.compared_columns
+            if record[f"{column}_is_match"] is False
+        )
+        tables = _Tables()
+
+        tables.feed(render_html(result))
+
+        listed = [(int(row[0]), row[1]) for row in tables.tables["mismatched-values"]]
+        assert listed == flagged
+
+    @pytest.mark.parametrize(
+        ("source", "target", "difference"),
+        [
+            pytest.param(3, 1, "-2", id="integer"),
+            pytest.param(0.1, 0.3, "+0.2", id="float-exact"),
+            pytest.param(date(2024, 1, 1), date(2024, 1, 4), "+3 days", id="date"),
+            pytest.param(
+                datetime(2024, 1, 1, 12), datetime(2024, 1, 1, 10, 30), "-1:30:00", id="datetime"
+            ),
+            pytest.param(True, False, "", id="boolean"),
+            pytest.param("open", "shut", "", id="text"),
+            pytest.param(timedelta(hours=2), timedelta(hours=1), "-1:00:00", id="duration"),
+        ],
+    )
+    def test_it_writes_the_difference_a_reader_can_check(
+        self, source: object, target: object, difference: str
+    ) -> None:
+        """Ensure a difference is exact on the values shown, and empty where none applies."""
+        result = _drifted({"id": [1], "v": [source]}, {"id": [1], "v": [target]})
+        tables = _Tables()
+
+        tables.feed(render_html(result))
+
+        assert tables.tables["mismatched-values"][0][-1] == difference
+
+    @pytest.mark.parametrize(
+        ("source", "target"),
+        [
+            pytest.param(float("inf"), float("inf"), id="infinity-minus-infinity"),
+            pytest.param(
+                datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 1, 1), id="zoned-and-naive"
+            ),
+        ],
+    )
+    def test_it_writes_no_difference_where_none_is_defined(
+        self, source: object, target: object
+    ) -> None:
+        """Ensure a pair with no defined difference renders empty, rather than failing the report."""
+        assert _difference(source, target) == ""
+
+    def test_it_writes_no_difference_beside_a_null(self) -> None:
+        """Ensure a value compared with NULL lists `null`, marked, and no difference."""
+        source = pl.DataFrame({"id": [1], "v": [None]}, schema={"id": pl.Int64, "v": pl.Int64})
+        target = pl.DataFrame({"id": [1], "v": [5]}, schema={"id": pl.Int64, "v": pl.Int64})
+        result = DiffEngine(DiffConfig(primary_keys=["id"]), source.lazy(), target.lazy()).run()
+        tables = _Tables()
+
+        tables.feed(render_html(result))
+
+        assert tables.tables["mismatched-values"] == [["1", "v", "null", "≠ 5", ""]]
+
+    def test_it_marks_the_target_value_with_more_than_color(self) -> None:
+        """Ensure the differing value carries a sign and weight, never a highlight alone."""
+        result = _drifted({"id": [1], "v": ["a"]}, {"id": [1], "v": ["b"]})
+
+        document = render_html(result)
+
+        assert (
+            "<td class='differs'><span class='sign' aria-hidden='true'>&#8800;</span> b</td>"
+            in document
+        )
+
+    def test_it_keeps_the_full_rows_one_click_away(self) -> None:
+        """Ensure the wide table sits in a native disclosure, which opens without the script."""
+        result = _drifted({"id": [1], "v": ["a"]}, {"id": [1], "v": ["b"]})
+        tables = _Tables()
+
+        document = render_html(result)
+        tables.feed(document)
+
+        assert "<details class='full-rows'><summary>Show the full changed rows" in document
+        assert tables.tables["changed-rows"] == [["1", "a", "b", "false"]]
+
+    def test_it_caps_the_values_it_lists_and_says_so(self) -> None:
+        """Ensure `max_rows` caps listed values, not rows times columns, and the cap is stated."""
+        result = _drifted(
+            {"id": [1, 2], "a": [1, 2], "b": [1, 2]}, {"id": [1, 2], "a": [9, 9], "b": [9, 9]}
+        )
+        tables = _Tables()
+
+        document = render_html(result, max_rows=3)
+        tables.feed(document)
+
+        assert len(tables.tables["mismatched-values"]) == 3
+        assert "Showing the first 3 of 4 mismatched values." in document
+
+    def test_it_tags_each_row_for_the_filters_with_escaped_text(self) -> None:
+        """Ensure a hostile column name or key reaches the filter attributes as text."""
+        result = _drifted(
+            {"id": ["<b>'1'</b>"], "<i>c</i>": ["a"]}, {"id": ["<b>'1'</b>"], "<i>c</i>": ["b"]}
+        )
+
+        document = render_html(result)
+
+        assert (
+            "<tr data-column='&lt;i&gt;c&lt;/i&gt;' data-key='&lt;b&gt;&#x27;1&#x27;&lt;/b&gt;'>"
+            in document
+        )
+        assert "<i>c</i>" not in document
+
+    def test_it_lists_a_pushdown_sample_as_values(self) -> None:
+        """Ensure a pushdown run that fetched a sample lists the sample's mismatched values."""
+        local = _drifted({"id": [1], "v": ["a"]}, {"id": [1], "v": ["b"]})
+        pushdown = replace(
+            local, changed=local.changed.select("id"), keys_only=True, changed_sample=local.changed
+        )
+        tables = _Tables()
+
+        tables.feed(render_html(pushdown))
+
+        assert tables.tables["mismatched-values"] == [["1", "v", "a", "≠ b", ""]]
+
+    def test_it_lists_keys_alone_for_a_pushdown_run_without_a_sample(self) -> None:
+        """Ensure a run with no values shows its keys table and no empty value view."""
+        local = _drifted({"id": [1], "v": ["a"]}, {"id": [1], "v": ["b"]})
+        pushdown = replace(local, changed=local.changed.select("id"), keys_only=True)
+        tables = _Tables()
+
+        tables.feed(render_html(pushdown))
+
+        assert "mismatched-values" not in tables.tables
+        assert tables.tables["changed-rows"] == [["1"]]
+
+    def test_the_markdown_summary_lists_the_same_values(self) -> None:
+        """Ensure the summary's changed values come from the same listing as the report's."""
+        result = _drifted({"id": [1, 2], "v": ["a", "b"]}, {"id": [1, 2], "v": ["A", "b"]})
+
+        text = render_markdown(result, max_rows=5)
+
+        assert "| `1` | `v` | `'a'` | `'A'` |" in text
