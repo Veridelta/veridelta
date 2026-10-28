@@ -1464,7 +1464,7 @@ class TestCIWorkflow:
             for dependency in pyproject["dependency-groups"]["dev"]
             if dependency.startswith("duckdb")
         ]
-        floor = re.fullmatch(r"duckdb>=([\d.]+)", extra_duckdb)
+        floor = re.fullmatch(r"duckdb>=([\d.]+)(?:,<[\d.]+)?", extra_duckdb)
         steps = {step["name"]: step for step in job["steps"]}
         step_names = [step["name"] for step in job["steps"]]
 
@@ -1474,6 +1474,20 @@ class TestCIWorkflow:
         assert step_names.index("Install the DuckDB Floor") < step_names.index(
             "Execute Core Tests on the Floors"
         )
+
+    def test_the_duckdb_extra_stays_below_2_until_motherduck_supports_it(self) -> None:
+        """Ensure a fresh install can reach MotherDuck, whose extension refuses DuckDB 2.0.
+
+        On 2026-10-28 the extension said: "Your DuckDB version (v2.0.0) is not
+        yet supported by MotherDuck. The latest supported version is v1.5.6."
+        Lift the cap, and this test, once MotherDuck supports 2.0 and the Live
+        Warehouses workflow passes on it.
+        """
+        with (_ROOT / "pyproject.toml").open("rb") as file:
+            pyproject = tomllib.load(file)
+        extra = pyproject["project"]["optional-dependencies"]["duckdb"]
+
+        assert "duckdb>=1.5.0,<2" in extra
 
     def test_end_to_end_tests_run_on_every_operating_system(self) -> None:
         """Ensure the CLI runs as a real command on each OS the core suite runs on."""
