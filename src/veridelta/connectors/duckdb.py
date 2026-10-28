@@ -327,15 +327,22 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
 
 
 def _read(connection: Any, statement: str, subject: str) -> pl.DataFrame:
-    """Run the statement and convert its result, refusing a column Polars cannot hold."""
+    """Run the statement and convert its result, refusing a column Polars cannot hold.
+
+    A statement whose last part returns no result, such as SET, is refused
+    before it runs.
+    """
+    no_result = ConnectorError(
+        "The configured query returned no rows to compare. Write a statement that "
+        "returns rows, such as a SELECT."
+    )
+    if _returns_nothing(statement):
+        raise no_result
     relation = connection.sql(statement)
     if relation is None:
-        # Only a statement that returns no result, such as SET, gets here: a table read
-        # always selects.
-        raise ConnectorError(
-            "The configured query returned no rows to compare. Write a statement that "
-            "returns rows, such as a SELECT."
-        )
+        # DuckDB 1.x answers any other statement without a result, such as a plain
+        # INSERT, with no relation. A table read always selects.
+        raise no_result
     for name, kind in zip(relation.columns, relation.types, strict=True):
         if _unreadable(kind):
             raise ConnectorError(
@@ -343,6 +350,19 @@ def _read(connection: Any, statement: str, subject: str) -> pl.DataFrame:
                 "Cast it in a view or a 'query', such as to VARCHAR."
             )
     return cast("pl.DataFrame", relation.pl())
+
+
+def _returns_nothing(statement: str) -> bool:
+    """Return whether DuckDB parses the statement's last part as one with no result.
+
+    DuckDB 1.x answers such a statement with no relation and 2.0 with a
+    placeholder `Success` column, so only the parser tells them apart from rows.
+    """
+    parsed_statements = duckdb.extract_statements(statement)
+    if not parsed_statements:
+        return False
+    expected_result_types = list(parsed_statements[-1].expected_result_type)
+    return expected_result_types == [duckdb.ExpectedResultType.NOTHING]
 
 
 def _unreadable(kind: Any) -> bool:

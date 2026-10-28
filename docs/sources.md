@@ -214,7 +214,7 @@ primary_keys: ["order_id"]
 `database` is a file path, which resolves from the working directory, or a MotherDuck database written as `md:name` or `motherduck:name`. Set exactly one of `table` and `query`:
 
 - `table` is one to three identifier segments, such as `main.orders` or `warehouse.main.orders`. Each segment is double-quoted, which keeps its case.
-- `query` is sent to DuckDB as written, so it can also read files, as in `SELECT * FROM read_parquet('orders/*.parquet')`. A statement that returns no rows, such as `SET`, fails the read.
+- `query` is sent to DuckDB as written, so it can also read files, as in `SELECT * FROM read_parquet('orders/*.parquet')`. A statement that returns no result, such as `SET`, fails the read before it runs, and so does a `query` whose last statement is one.
 
 ### DuckDB files
 
