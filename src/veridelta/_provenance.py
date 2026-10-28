@@ -39,6 +39,9 @@ _REPOSITORY: Final = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _DIGITS: Final = re.compile(r"[0-9]+")
 """`GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`."""
 
+_SERVER_HOST: Final = re.compile(r"[A-Za-z0-9.-]+(:[0-9]+)?")
+"""A GitHub server's host and optional port: a name, never an IPv6 literal or user info."""
+
 
 def collect_provenance(
     config_path: str | None,
@@ -131,8 +134,7 @@ def _ci_run_url(environment: Mapping[str, str]) -> str | None:
     run_id = environment.get("GITHUB_RUN_ID", "")
     server_is_plain_https = (
         server.scheme == "https"
-        and bool(server.hostname)
-        and "@" not in server.netloc
+        and _SERVER_HOST.fullmatch(server.netloc) is not None
         and server.path in ("", "/")
         and not server.query
         and not server.fragment

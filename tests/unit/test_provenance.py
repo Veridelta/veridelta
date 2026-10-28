@@ -229,6 +229,7 @@ class TestCollectProvenance:
             pytest.param("GITHUB_SERVER_URL", "https://user:pw@github.com", id="credentials"),
             pytest.param("GITHUB_SERVER_URL", "https://github.com/evil?x=1", id="path-and-query"),
             pytest.param("GITHUB_SERVER_URL", "https://[::1", id="unparsable"),
+            pytest.param("GITHUB_SERVER_URL", "https://[::1]:8443", id="ipv6-literal"),
             pytest.param("GITHUB_REPOSITORY", "acme/orders/../x", id="repository-path"),
             pytest.param("GITHUB_REPOSITORY", "acme orders", id="repository-space"),
             pytest.param("GITHUB_RUN_ID", "12a", id="run-id"),
