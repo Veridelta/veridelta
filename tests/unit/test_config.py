@@ -637,6 +637,22 @@ class TestUnsetEnvironmentTolerance:
 
         assert "unset environment variables: VD_UNSET_URI" in str(exc_info.value)
 
+    def test_it_names_a_variable_once_when_its_block_references_it_twice(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a variable two fields of one block read is listed once, not per reference."""
+        monkeypatch.delenv("VD_UNSET_HOST", raising=False)
+
+        with pytest.raises(ConfigError, match="needs a scheme") as exc_info:
+            _load_yaml(
+                tmp_path,
+                "source:\n  type: database\n  uri: ${VD_UNSET_HOST}\n  table: ${VD_UNSET_HOST}\n"
+                "target:\n  path: b.csv\nprimary_keys: [id]\n",
+                unset_env=[],
+            )
+
+        assert "unset environment variables: VD_UNSET_HOST." in str(exc_info.value)
+
     def test_it_leaves_other_blocks_failures_unannotated(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
