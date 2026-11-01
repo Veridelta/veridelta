@@ -7,6 +7,8 @@ import argparse
 import json
 import logging
 import os
+import runpy
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -19,6 +21,7 @@ from polars.exceptions import PanicException
 from pytest_mock import MockerFixture
 
 from tests.otlp_collector import running_collector
+from veridelta import __version__
 from veridelta.cli import build_parser, crosswalk, main, mcp, run, validate
 from veridelta.config import config_json_schema
 from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
@@ -568,6 +571,22 @@ class TestCommandLineInterface:
         assert args_passed.config == "custom.yaml"
 
         mock_exit.assert_called_once_with(0)
+
+    def test_it_runs_as_a_module(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `python -m veridelta.cli` reaches `main()`, as the console script does."""
+        monkeypatch.setattr(sys, "argv", ["veridelta", "--version"])
+
+        # The module is already imported here, so running it again as `__main__` warns.
+        with (
+            pytest.warns(RuntimeWarning, match="found in sys.modules"),
+            pytest.raises(SystemExit) as stopped,
+        ):
+            runpy.run_module("veridelta.cli", run_name="__main__")
+
+        assert stopped.value.code == 0
+        assert capsys.readouterr().out == f"veridelta {__version__}\n"
 
 
 _CROSSWALK_CONFIG = DiffConfig(
