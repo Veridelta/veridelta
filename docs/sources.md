@@ -55,7 +55,7 @@ The error for a missing local file also names the data files in its folder, up t
 
 ## Lakehouse tables
 
-A Delta Lake or Iceberg table is scanned lazily, as a Polars `LazyFrame`. Install the `delta` or `iceberg` extra. This pair compares version 12 of a Delta table with one snapshot of an Iceberg table:
+A Delta Lake or Iceberg table is scanned lazily, as a Polars `LazyFrame`. Install the `delta` or `iceberg` extra. The `iceberg` extra brings `polars-iceberg`, the plugin Polars 2.1 and later plan an Iceberg scan with; without it, Polars plans the scan with PyIceberg, more slowly, and warns on each one. This pair compares version 12 of a Delta table with one snapshot of an Iceberg table:
 
 ```yaml
 source:
