@@ -72,7 +72,13 @@ databricks = [
     "pyarrow>=23.0.1",
 ]
 delta = ["deltalake>=0.15.0"]
-iceberg = ["pyiceberg>=0.6.0"]
+iceberg = [
+    "pyiceberg>=0.6.0",
+    # Polars 2.1 plans an Iceberg scan with this plugin, and without it falls
+    # back to PyIceberg with a PerformanceWarning on every scan. Older Polars
+    # never imports it. The range is the one Polars' own `iceberg` extra names.
+    "polars-iceberg>=0.1.0,<1",
+]
 excel = ["fastexcel>=0.11.0"]
 # 3.0.0 settled the `score_cutoff` behavior the fuzzy rules rely on.
 fuzzy = ["rapidfuzz>=3.0.0"]
