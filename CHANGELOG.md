@@ -1,3 +1,17 @@
+## v0.42.1 (2026-11-01)
+
+The `iceberg` extra now installs `polars-iceberg`, the plugin Polars 2.1 plans an Iceberg
+scan with. A fresh install of `veridelta[iceberg]` had started to pick up Polars 2.1, which
+without the plugin plans every scan with PyIceberg, more slowly, and warns on each one.
+Older Polars never imports the plugin. The lockfile moves to Polars 2.1.0 and the latest
+release of the other locked packages. The configuration guide now states the cost of
+counting forgiven values under a rule that rewrites text from paired runs: about 13% of a
+run with three text columns and 19% with ten, where 0.42.0 said up to about 25%.
+
+### Fix
+
+- **deps**: install polars-iceberg with the iceberg extra, and move the lockfile to the latest versions (#455)
+
 ## v0.42.0 (2026-10-28)
 
 A reviewer can sign off on a run from its report alone. `veridelta run` writes a run record
