@@ -13,8 +13,9 @@ comes from a real run, and writes three files under `docs/assets/`:
   preview.
 
 With `--promo`, it writes one image for promotional video instead, which git
-ignores: `demo/video/promo-report.png`, 1920 by 1080, the report of the run
-`demo/promo/accounts-baseline.tape` types, on the accounts in `demo/`.
+ignores: `demo/video/promo-report.png`, 1920 wide, the report of the run
+`demo/promo/accounts-baseline.tape` types, on the accounts in `demo/`, from
+its top down to account 17's mismatched value.
 `make demo-video` runs it so.
 """
 
@@ -88,7 +89,11 @@ def _accounts() -> DiffResult:
 
 
 def _promo() -> int:
-    """Write the report of the accounts run, 1920 by 1080, for promotional video.
+    """Write the report of the accounts run for promotional video, 1920 wide.
+
+    The image runs from the top of the report down to the first mismatched value,
+    account 17's region, so a video can scroll from the verdict to the row its
+    narration names.
 
     Returns:
         int: 0 once the image is written.
@@ -105,7 +110,18 @@ def _promo() -> int:
                 color_scheme="light",
             )
             page.goto(report.as_uri())
-            page.screenshot(path=_VIDEO / "promo-report.png")
+            row = page.locator("[aria-labelledby='mismatched-values'] tbody tr").first
+            box = row.bounding_box()
+            if box is None:
+                print("The report shows no mismatched value to end the image on.", file=sys.stderr)
+                return 1
+            # Keep a little of the page under the row, so it does not sit on the edge.
+            bottom = box["y"] + box["height"] + 24
+            page.screenshot(
+                path=_VIDEO / "promo-report.png",
+                full_page=True,
+                clip={"x": 0, "y": 0, "width": 1280, "height": bottom},
+            )
         finally:
             browser.close()
     print("Wrote demo/video/promo-report.png")
