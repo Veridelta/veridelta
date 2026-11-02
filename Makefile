@@ -49,7 +49,7 @@ live:
 	uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py --no-cov -rs
 
 databases:
-	@test -n "$$VERIDELTA_MYSQL_URI$$VERIDELTA_MSSQL_URI" || { echo "Set VERIDELTA_MYSQL_URI or VERIDELTA_MSSQL_URI to a server the tests may create tables on."; exit 1; }
+	@test -n "$$VERIDELTA_MYSQL_URI$$VERIDELTA_MARIADB_URI$$VERIDELTA_MSSQL_URI" || { echo "Set VERIDELTA_MYSQL_URI, VERIDELTA_MARIADB_URI, or VERIDELTA_MSSQL_URI to a server the tests may create tables on."; exit 1; }
 	uv run --group databases pytest tests/integration/test_database_servers.py --no-cov
 
 accessibility:
