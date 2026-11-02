@@ -27,7 +27,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 
 - Work on a branch from `main`. Never commit to `main`.
 - Write commit messages and pull request titles as [Conventional Commits](https://www.conventionalcommits.org/), such as `fix: read empty Avro files`. The `commit-msg` hook rejects any other form.
-- Change behavior together with its tests. The suite fails on any warning, and the core modules keep 100% branch coverage.
+- Change behavior together with its tests. The suite fails on any warning, and on coverage below 100%, lines and branches both.
 - Leave `CHANGELOG.md` alone. The release pull request writes it.
 - Add no dependency without a concrete need.
 - Make the smallest change that meets the need, with no abstraction for a case that does not exist yet.

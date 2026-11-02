@@ -5,8 +5,8 @@
 
 Each test loads rows into a live server through the server's own Python
 driver, then reads them back through Veridelta and ConnectorX. A server is
-used only when its URI is set, in `VERIDELTA_MYSQL_URI` or
-`VERIDELTA_MSSQL_URI`, as `make databases` and the Database Servers CI job
+used only when its URI is set, in `VERIDELTA_MYSQL_URI`,
+`VERIDELTA_MARIADB_URI`, or `VERIDELTA_MSSQL_URI`, as `make databases` and the Database Servers CI job
 set them. Every other run skips these tests. Each read passes the URI's
 password through `password`, so a password holding `@`, `:`, or `/` checks
 the percent-encoding against the real driver.
@@ -15,7 +15,7 @@ the percent-encoding against the real driver.
 import os
 import re
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -46,6 +46,8 @@ class _CreateTable(Protocol):
 class _Server:
     """A database server under test, and how to load rows into it."""
 
+    name: str
+    """The server's name in a test's id."""
     scheme: str
     variable: str
     quotes: tuple[str, str]
@@ -103,6 +105,7 @@ class _Server:
 
 
 _MYSQL = _Server(
+    name="mysql",
     scheme="mysql",
     variable="VERIDELTA_MYSQL_URI",
     quotes=("`", "`"),
@@ -131,6 +134,7 @@ _MYSQL = _Server(
 )
 
 _MSSQL = _Server(
+    name="mssql",
     scheme="mssql",
     variable="VERIDELTA_MSSQL_URI",
     quotes=("[", "]"),
@@ -158,11 +162,14 @@ _MSSQL = _Server(
     },
 )
 
+_MARIADB = replace(_MYSQL, name="mariadb", variable="VERIDELTA_MARIADB_URI")
+"""MariaDB, which speaks MySQL's protocol and is read through a `mysql://` URI."""
+
 _TEXT = "Zoë 🚀 日本"
 """Non-ASCII text, an emoji outside the Basic Multilingual Plane included."""
 
 
-@pytest.fixture(params=[_MYSQL, _MSSQL], ids=lambda server: server.scheme)
+@pytest.fixture(params=[_MYSQL, _MARIADB, _MSSQL], ids=lambda server: server.name)
 def server(request: pytest.FixtureRequest) -> _Server:
     """Return each server whose URI is set, and skip the others."""
     chosen: _Server = request.param

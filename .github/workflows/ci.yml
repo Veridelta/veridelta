@@ -298,7 +298,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
-      # Both passwords hold @, :, / and #, so every read checks that the
+      # Every password holds @, :, / and #, so every read checks that the
       # password Veridelta percent-encodes reaches each driver intact.
       mysql:
         image: mysql:8.4@sha256:6ea90827b1100f8f2ae306a539f86d2c264a26ed435a2a9f75551dd5c3aeb242
@@ -311,6 +311,19 @@ jobs:
         # even one it refuses to sign in.
         options: >-
           --health-cmd "mysqladmin ping --host=127.0.0.1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+      mariadb:
+        image: mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+        env:
+          MARIADB_ROOT_PASSWORD: "Vd@pass:w/rd#1"
+          MARIADB_DATABASE: veridelta
+        ports:
+          - 3307:3306
+        # The image's own check passes once InnoDB is ready and a client connects.
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 30
@@ -328,6 +341,7 @@ jobs:
           --health-retries 30
     env:
       VERIDELTA_MYSQL_URI: mysql://root:Vd%40pass%3Aw%2Frd%231@127.0.0.1:3306/veridelta
+      VERIDELTA_MARIADB_URI: mysql://root:Vd%40pass%3Aw%2Frd%231@127.0.0.1:3307/veridelta
       # The container's certificate is self-signed, so TLS skips its check.
       VERIDELTA_MSSQL_URI: mssql://sa:Vd%40pass%3Aw%2Frd%231@127.0.0.1:1433/master?encrypt=true&trust_server_certificate=true
     steps:
@@ -341,7 +355,7 @@ jobs:
         with:
           group: databases
 
-      - name: Read Real MySQL and SQL Server Tables
+      - name: Read Real MySQL, MariaDB, and SQL Server Tables
         run: make databases
 
       - name: Run the Parity Suite Inside SQL Server

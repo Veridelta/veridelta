@@ -74,17 +74,19 @@ A case whose rule a backend refuses, such as `datetime_format` on Postgres or `r
 
 ### Database servers
 
-`make databases` reads real MySQL and SQL Server tables through the `database` connector. Each test loads its rows with the server's own driver, from the `databases` dependency group, then checks what Veridelta reads back. Set `VERIDELTA_MYSQL_URI`, `VERIDELTA_MSSQL_URI`, or both, to servers the tests may create tables on. Disposable servers work:
+`make databases` reads real MySQL, MariaDB, and SQL Server tables through the `database` connector. Each test loads its rows with the server's own driver, from the `databases` dependency group, then checks what Veridelta reads back. Set `VERIDELTA_MYSQL_URI`, `VERIDELTA_MARIADB_URI`, `VERIDELTA_MSSQL_URI`, or any of them, to servers the tests may create tables on. MariaDB is read through a `mysql://` URI. Disposable servers work:
 
 ```bash
 docker run --rm -d --name veridelta-mysql -p 3306:3306 -e MYSQL_ROOT_PASSWORD=veridelta -e MYSQL_DATABASE=veridelta mysql:8.4
+docker run --rm -d --name veridelta-mariadb -p 3307:3306 -e MARIADB_ROOT_PASSWORD=veridelta -e MARIADB_DATABASE=veridelta mariadb:11.4
 docker run --rm -d --name veridelta-mssql -p 1433:1433 -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=Veridelta-2026 mcr.microsoft.com/mssql/server:2022-latest
 export VERIDELTA_MYSQL_URI=mysql://root:veridelta@127.0.0.1:3306/veridelta
+export VERIDELTA_MARIADB_URI=mysql://root:veridelta@127.0.0.1:3307/veridelta
 export VERIDELTA_MSSQL_URI='mssql://sa:Veridelta-2026@127.0.0.1:1433/master?encrypt=true&trust_server_certificate=true'
 make databases
 ```
 
-A server whose variable is not set is skipped. CI runs the tests against a `mysql:8.4` service and a SQL Server 2022 service on every pull request. Both passwords there hold `@`, `:`, `/`, and `#`, so each read checks that a password reaches the driver intact.
+A server whose variable is not set is skipped. CI runs the tests against a `mysql:8.4` service, a `mariadb:11.4` service, and a SQL Server 2022 service on every pull request. Every password there holds `@`, `:`, `/`, and `#`, so each read checks that a password reaches the driver intact.
 
 ### Accessibility
 
