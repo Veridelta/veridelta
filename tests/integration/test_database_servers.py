@@ -549,8 +549,17 @@ class TestDatabaseServers:
         )
         source = server.source(table=table)
         if server.scheme == "clickhouse":
+            client = server.connect()
+            stored = client.query(f"SELECT id, toString(amount) FROM {server.quoted(table)}").result_rows
+            client.close()
             frame = LoaderFactory.load(source).collect()
-            pytest.fail(f"DIAGNOSTIC schema={dict(frame.schema)} rows={frame.rows()}")
+            ids = LoaderFactory.load(
+                server.source(query=f"SELECT id FROM {server.quoted(table)}")
+            ).collect()
+            pytest.fail(
+                f"DIAGNOSTIC stored={stored} read_schema={dict(frame.schema)} "
+                f"read_rows={frame.rows()} ids_only={ids.rows()}"
+            )
 
         with pytest.raises(ConnectorError, match=re.escape(source.redacted_uri)):
             LoaderFactory.load(source)
