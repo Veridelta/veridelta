@@ -548,6 +548,9 @@ class TestDatabaseServers:
             [[1, Decimal("12345678901234567890.1234")]],
         )
         source = server.source(table=table)
+        if server.scheme == "clickhouse":
+            frame = LoaderFactory.load(source).collect()
+            pytest.fail(f"DIAGNOSTIC schema={dict(frame.schema)} rows={frame.rows()}")
 
         with pytest.raises(ConnectorError, match=re.escape(source.redacted_uri)):
             LoaderFactory.load(source)
