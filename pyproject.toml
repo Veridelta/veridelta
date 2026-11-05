@@ -230,6 +230,8 @@ module = [
     "pymysql.*",
     "pymssql",
     "pymssql.*",
+    "clickhouse_connect",
+    "clickhouse_connect.*",
     "opentelemetry",
     "opentelemetry.*",
     "google.protobuf",
