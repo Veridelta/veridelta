@@ -563,6 +563,92 @@ class TestDatabaseConnector:
 
         read.assert_called_once_with(query, uri)
 
+    @staticmethod
+    def _clickhouse_read(mocker: MockerFixture, rows: pl.DataFrame, held: int) -> MagicMock:
+        """Answer a ClickHouse read with `rows`, and a count of the same statement with `held`."""
+
+        def _answer(statement: str, uri: str) -> pl.DataFrame:
+            if statement.startswith("SELECT count() AS held FROM ("):
+                return pl.DataFrame({"held": [held]})
+            return rows
+
+        return mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri", side_effect=_answer
+        )
+
+    def test_it_refuses_a_clickhouse_read_that_drops_every_row(self, mocker: MockerFixture) -> None:
+        """Ensure an empty ClickHouse read fails when ClickHouse counts rows for it.
+
+        ConnectorX returns no rows and no error when a column is a `Decimal`
+        with precision above 18, which would compare an empty table.
+        """
+        empty = pl.DataFrame(schema={"id": pl.Int32(), "amount": pl.Decimal(38, 10)})
+        read = self._clickhouse_read(mocker, empty, held=3)
+        config = DatabaseConfig(
+            uri="clickhouse://analyst@ch.internal:8123/sales",
+            password=_DATABASE_SECRET,
+            query="SELECT id, amount FROM payments;",
+        )
+
+        with pytest.raises(ConnectorError) as info:
+            DatabaseConnector(config).connect()
+
+        message = str(info.value)
+        assert message.startswith(
+            "Database read of the configured query from 'clickhouse://analyst@ch.internal:8123/sales' "
+            "returned no rows, but ClickHouse holds 3."
+        )
+        assert "Decimal with precision above 18" in message
+        assert "toString()" in message
+        assert _DATABASE_SECRET not in message
+        assert quote(_DATABASE_SECRET, safe="") not in message
+        assert read.call_args_list[-1].args[0] == (
+            "SELECT count() AS held FROM (SELECT id, amount FROM payments)"
+        )
+
+    def test_it_keeps_a_clickhouse_read_that_is_truly_empty(self, mocker: MockerFixture) -> None:
+        """Ensure an empty ClickHouse read stands when ClickHouse counts no rows either."""
+        empty = pl.DataFrame(schema={"id": pl.Int32()})
+        read = self._clickhouse_read(mocker, empty, held=0)
+        connector = DatabaseConnector(
+            DatabaseConfig(uri="clickhouse://analyst@ch.internal/sales", table="payments")
+        )
+
+        connector.connect()
+
+        assert connector.lazyframe().collect().height == 0
+        assert read.call_count == 2
+
+    def test_it_counts_no_clickhouse_read_that_returns_rows(self, mocker: MockerFixture) -> None:
+        """Ensure only an empty read costs the extra count."""
+        read = self._clickhouse_read(mocker, pl.DataFrame({"id": [1]}), held=1)
+
+        DatabaseConnector(
+            DatabaseConfig(uri="clickhouse://analyst@ch.internal/sales", table="payments")
+        ).connect()
+
+        assert read.call_count == 1
+
+    @pytest.mark.parametrize(
+        ("uri", "probe"),
+        [
+            pytest.param("postgresql://analyst@db.internal/sales", False, id="other-database"),
+            pytest.param("clickhouse://analyst@ch.internal/sales", True, id="clickhouse-probe"),
+        ],
+    )
+    def test_it_counts_no_empty_read_but_a_clickhouse_one(
+        self, mocker: MockerFixture, uri: str, probe: bool
+    ) -> None:
+        """Ensure other databases, and a probe that reads no rows by design, are never counted."""
+        read = mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            return_value=pl.DataFrame(schema={"id": pl.Int32()}),
+        )
+
+        DatabaseConnector(DatabaseConfig(uri=uri, table="payments"), probe=probe).connect()
+
+        assert not any("count()" in call.args[0] for call in read.call_args_list)
+
     def test_it_percent_encodes_the_password_into_the_uri(self, mocker: MockerFixture) -> None:
         """Ensure a password with URI syntax in it still reaches the driver intact.
 

@@ -541,49 +541,49 @@ class TestDatabaseServers:
         """Ensure a decimal too wide for `Decimal(38, 10)` fails the read with its source named.
 
         ConnectorX reads every decimal at scale 10, so a value with 20 digits
-        before the point cannot be held. The docs state the limit.
+        before the point cannot be held. On ClickHouse, ConnectorX returns no
+        rows instead, and the connector refuses the empty read. The docs state
+        both limits.
         """
         table = create_table(
             {"id": "INT NOT NULL PRIMARY KEY", "amount": "DECIMAL(30, 4)"},
             [[1, Decimal("12345678901234567890.1234")]],
         )
         source = server.source(table=table)
-        if server.scheme == "clickhouse":
-            pytest.skip("ClickHouse drops the rows instead; see the test below.")
 
         with pytest.raises(ConnectorError, match=re.escape(source.redacted_uri)):
             LoaderFactory.load(source)
 
-    def test_it_reads_no_rows_from_a_wide_clickhouse_decimal(
+    def test_it_refuses_a_clickhouse_read_that_drops_every_row(
         self, server: _Server, create_table: _CreateTable
     ) -> None:
-        """Pin that ConnectorX drops every row of a ClickHouse decimal above precision 18.
+        """Ensure the empty read a wide ClickHouse decimal causes is refused, and a cast reads it.
 
-        ClickHouse holds the row and a read of the other column returns it, but
-        a read that includes the `Decimal(30, 4)` column returns no rows and no
-        error. The docs state the limit. If ConnectorX starts reading or
-        refusing such a column, this test fails and the docs need the change.
+        ConnectorX returns no rows and no error when a column is a `Decimal`
+        with precision above 18. The connector counts the rows ClickHouse holds
+        for the same statement and refuses the read, naming the cast that
+        reads the column instead. If ConnectorX starts reading such a column,
+        the read succeeds, this test fails, and the docs need the change.
         """
         if server.scheme != "clickhouse":
-            pytest.skip("Only ClickHouse reads a wide decimal as no rows.")
+            pytest.skip("Only ConnectorX's ClickHouse source drops every row.")
         table = create_table(
             {"id": "INT NOT NULL PRIMARY KEY", "amount": "DECIMAL(30, 4)"},
             [[1, Decimal("12345678901234567890.1234")]],
         )
-        client = server.connect()
-        try:
-            stored = client.query(
-                f"SELECT id, toString(amount) FROM {server.quoted(table)}"
-            ).result_rows
-        finally:
-            client.close()
-        assert stored == [(1, "12345678901234567890.1234")]
-        ids = LoaderFactory.load(
-            server.source(query=f"SELECT id FROM {server.quoted(table)}")
-        ).collect()
-        assert ids.rows() == [(1,)]
+        source = server.source(table=table)
 
-        frame = LoaderFactory.load(server.source(table=table)).collect()
+        with pytest.raises(
+            ConnectorError, match="returned no rows, but ClickHouse holds 1"
+        ) as info:
+            LoaderFactory.load(source)
 
-        assert frame.schema == pl.Schema({"id": pl.Int32(), "amount": pl.Decimal(38, 10)})
-        assert frame.height == 0
+        message = str(info.value)
+        assert source.redacted_uri in message
+        password = unquote(urlsplit(server.uri or "").password or "")
+        assert password, f"{server.variable} needs a password for this test."
+        assert password not in message
+        cast = server.source(
+            query=f"SELECT id, toString(amount) AS amount FROM {server.quoted(table)}"
+        )
+        assert LoaderFactory.load(cast).collect().rows() == [(1, "12345678901234567890.1234")]

@@ -68,6 +68,9 @@ _UNCONNECTED = "Database connector is not connected. Call connect() first."
 _SQLITE_PREFIX = "sqlite://"
 _LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value"
 
+_CLICKHOUSE_SCHEME: Final = "clickhouse"
+"""URI scheme whose empty reads are counted, since ConnectorX can drop every row."""
+
 _MSSQL_SCHEME: Final = "mssql"
 """URI scheme whose `table` reads move each `DATETIMEOFFSET` column to offset zero."""
 
@@ -127,6 +130,8 @@ class DatabaseConnector(ReaderConnector):
             elif scheme == _MSSQL_SCHEME and self._config.table is not None and not self._probe:
                 statement = self._utc_statement(self._config.table, statement, uri)
             frame = self._read(scheme, statement, uri)
+            if scheme == _CLICKHOUSE_SCHEME and frame.height == 0 and not self._probe:
+                self._refuse_dropped_rows(statement, uri)
         except ConnectorError:
             raise
         except ImportError:
@@ -200,6 +205,23 @@ class DatabaseConnector(ReaderConnector):
             partition_num=partitions,
             partition_range=(low, high),
         )
+
+    def _refuse_dropped_rows(self, statement: str, uri: str) -> None:
+        """Refuse a ClickHouse read that returned no rows while ClickHouse holds some.
+
+        ConnectorX returns no rows and no error when a column is a `Decimal`
+        with precision above 18. Counting the same statement tells an empty
+        result from a dropped one, at the cost of one query when a read is empty.
+        """
+        held = pl.read_database_uri(_clickhouse_count(statement), uri).item()
+        if held:
+            raise ConnectorError(
+                f"Database read of {self._subject} from '{self._config.redacted_uri}' "
+                f"returned no rows, but ClickHouse holds {held:,}. ConnectorX returns no "
+                "rows when a column is a Decimal with precision above 18. Read it with a "
+                "'query' that casts each such column: to a Decimal of precision 18 or less "
+                "when its values fit, or with toString() or toFloat64()."
+            )
 
     def _declared_statement(
         self, table: str, statement: str, uri: str
@@ -534,6 +556,11 @@ class RedshiftPushdownSession(_ConnectorXPushdownSession):
         for refused, reason in refusals:
             if refused:
                 raise ConnectorError(f"{where} {reason}. Compare locally (pushdown: false).")
+
+
+def _clickhouse_count(statement: str) -> str:
+    """Return a ClickHouse statement that counts the rows `statement` selects."""
+    return f"SELECT count() AS held FROM ({statement.rstrip().rstrip(';')})"
 
 
 def _declared_decimals(catalog: pl.DataFrame) -> dict[str, pl.Decimal]:
