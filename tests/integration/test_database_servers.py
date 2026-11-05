@@ -549,19 +549,41 @@ class TestDatabaseServers:
         )
         source = server.source(table=table)
         if server.scheme == "clickhouse":
-            client = server.connect()
-            stored = client.query(
-                f"SELECT id, toString(amount) FROM {server.quoted(table)}"
-            ).result_rows
-            client.close()
-            frame = LoaderFactory.load(source).collect()
-            ids = LoaderFactory.load(
-                server.source(query=f"SELECT id FROM {server.quoted(table)}")
-            ).collect()
-            pytest.fail(
-                f"DIAGNOSTIC stored={stored} read_schema={dict(frame.schema)} "
-                f"read_rows={frame.rows()} ids_only={ids.rows()}"
-            )
+            pytest.skip("ClickHouse drops the rows instead; see the test below.")
 
         with pytest.raises(ConnectorError, match=re.escape(source.redacted_uri)):
             LoaderFactory.load(source)
+
+    def test_it_reads_no_rows_from_a_wide_clickhouse_decimal(
+        self, server: _Server, create_table: _CreateTable
+    ) -> None:
+        """Pin that ConnectorX drops every row of a ClickHouse decimal above precision 18.
+
+        ClickHouse holds the row and a read of the other column returns it, but
+        a read that includes the `Decimal(30, 4)` column returns no rows and no
+        error. The docs state the limit. If ConnectorX starts reading or
+        refusing such a column, this test fails and the docs need the change.
+        """
+        if server.scheme != "clickhouse":
+            pytest.skip("Only ClickHouse reads a wide decimal as no rows.")
+        table = create_table(
+            {"id": "INT NOT NULL PRIMARY KEY", "amount": "DECIMAL(30, 4)"},
+            [[1, Decimal("12345678901234567890.1234")]],
+        )
+        client = server.connect()
+        try:
+            stored = client.query(
+                f"SELECT id, toString(amount) FROM {server.quoted(table)}"
+            ).result_rows
+        finally:
+            client.close()
+        assert stored == [(1, "12345678901234567890.1234")]
+        ids = LoaderFactory.load(
+            server.source(query=f"SELECT id FROM {server.quoted(table)}")
+        ).collect()
+        assert ids.rows() == [(1,)]
+
+        frame = LoaderFactory.load(server.source(table=table)).collect()
+
+        assert frame.schema == pl.Schema({"id": pl.Int32(), "amount": pl.Decimal(38, 10)})
+        assert frame.height == 0

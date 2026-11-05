@@ -173,7 +173,7 @@ These ClickHouse types arrive as follows. A column is `Nullable` only when decla
 | `Date` | `Date` |
 | `DateTime64` | `Datetime` in UTC |
 
-A ClickHouse `Decimal` with a precision above 18 fails the read.
+A ClickHouse `Decimal` with a precision above 18 reads as no rows, with no error: ConnectorX drops every row of a table or query that includes one. Leave such a column out of the query, or cast it to a narrower type in ClickHouse.
 
 SQL Server has a boolean type, `BIT`. These SQL Server types arrive as follows:
 
