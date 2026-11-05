@@ -173,7 +173,7 @@ These ClickHouse types arrive as follows. A column is `Nullable` only when decla
 | `Date` | `Date` |
 | `DateTime64` | `Datetime` in UTC |
 
-A ClickHouse `Decimal` with a precision above 18 reads as no rows, with no error: ConnectorX drops every row of a table or query that includes one. Leave such a column out of the query, or cast it to a narrower type in ClickHouse.
+ConnectorX returns no rows, and no error, for a ClickHouse table or query that includes a `Decimal` with a precision above 18. So when a ClickHouse read comes back empty, Veridelta counts the rows ClickHouse holds for the same statement, and refuses the read if there are any, rather than compare an empty table. Read such a column with a `query` that casts it: to a `Decimal` with a precision of 18 or less when its values fit, or with `toString()` or `toFloat64()`. Only an empty read costs the extra count.
 
 SQL Server has a boolean type, `BIT`. These SQL Server types arrive as follows:
 
