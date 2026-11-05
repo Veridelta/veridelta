@@ -550,7 +550,9 @@ class TestDatabaseServers:
         source = server.source(table=table)
         if server.scheme == "clickhouse":
             client = server.connect()
-            stored = client.query(f"SELECT id, toString(amount) FROM {server.quoted(table)}").result_rows
+            stored = client.query(
+                f"SELECT id, toString(amount) FROM {server.quoted(table)}"
+            ).result_rows
             client.close()
             frame = LoaderFactory.load(source).collect()
             ids = LoaderFactory.load(
