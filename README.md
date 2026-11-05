@@ -13,9 +13,11 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs under the rules you declare. Nothing is forgiven unless a rule says so, and the exit code tells CI whether the datasets match. Use it to verify a migration, a pipeline change, or a model's new evaluation run, on a laptop, in CI, or inside a warehouse.
 
+[![The 25-second ad's first frame: "Your migration is done. Does the data match?" over two tables, Before and After. Play it on the documentation home.](https://veridelta.github.io/veridelta/assets/ad-poster.jpg)](https://veridelta.github.io/veridelta/)
+
 ![A terminal prints a five-line veridelta.yaml and two three-row CSV files, validates the configuration, runs the comparison, shows one added, one removed, and one changed row, and prints the exit code for CI, 1, beside what 0, 1, and 3 mean.](https://veridelta.github.io/veridelta/assets/demo.gif)
 
-[Watch the 60-second demo](https://github.com/Veridelta/veridelta-media/releases/latest): a port from IDL to Python must match one to one, every row differs, and only the real bug fails CI.
+[Watch the 60-second demo](https://github.com/Veridelta/veridelta-media/releases/latest): a pipeline rewrite must match one to one, every row differs, and only the real bug fails CI.
 
 It runs on [Polars](https://pola.rs/). Read the [documentation](https://veridelta.github.io/veridelta/).
 
