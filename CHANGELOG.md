@@ -1,3 +1,17 @@
+## v0.42.2 (2026-11-05)
+
+A ClickHouse read no longer comes back empty when ClickHouse holds rows. ConnectorX returns
+no rows, and no error, when a column is a `Decimal` with precision above 18, so a comparison
+saw an empty table. When a ClickHouse read returns no rows, Veridelta now counts the rows of
+the same query, and if there are any, raises `ConnectorError` naming the fix: a `query` that
+casts each such column to a `Decimal` of precision 18 or less, or reads it with `toString()`
+or `toFloat64()`. A table that really is empty still reads as empty. CI now reads a real
+ClickHouse server, which found the loss, and a MariaDB server beside MySQL and SQL Server.
+
+### Fix
+
+- **database**: refuse a ClickHouse read that drops every row (#464)
+
 ## v0.42.1 (2026-11-01)
 
 The `iceberg` extra now installs `polars-iceberg`, the plugin Polars 2.1 plans an Iceberg
