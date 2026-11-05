@@ -2,6 +2,13 @@
 
 Veridelta compares two datasets on their primary keys and reports every row that differs under the rules you declare. Nothing is forgiven unless a rule says so, and the exit code tells CI whether the datasets match. Use it to verify a migration, a pipeline change, or a model's new evaluation run, on a laptop, in CI, or inside a warehouse.
 
+<video controls muted playsinline preload="none" poster="assets/ad-poster.jpg" width="100%" aria-describedby="ad-description">
+  <source src="assets/ad.mp4" type="video/mp4">
+  <a href="assets/ad.mp4">Download the 25-second ad</a>.
+</video>
+
+<p id="ad-description">The 25-second ad, with music and no voice: "Your migration is done. Does the data match?" over two tables, Before and After. They glide together, and their rows pair up by key. Five pairs that differ glow orange. "Your rules forgive the noise": with a tolerance and a case rule, four of them settle. "The real bug fails CI": one cell still glows, and CI shows exit code 1. "Fix it, and CI passes": the cell turns blue and CI shows exit code 0. It ends on the Veridelta logo, pip install veridelta, and the docs address. Music: Sascha Ende, ende.app, under CC BY 4.0.</p>
+
 ![A terminal prints a five-line veridelta.yaml and two three-row CSV files, validates the configuration, runs the comparison, shows one added, one removed, and one changed row, and prints the exit code for CI, 1, beside what 0, 1, and 3 mean.](assets/demo.gif)
 
 [Watch the 60-second demo](https://github.com/Veridelta/veridelta-media/releases/latest): a port from IDL to Python must match one to one, every row differs, and only the real bug fails CI.
