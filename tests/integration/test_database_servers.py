@@ -1,15 +1,18 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration tests that read real MySQL and SQL Server tables.
+"""Integration tests that read real MySQL, MariaDB, SQL Server, and ClickHouse tables.
 
 Each test loads rows into a live server through the server's own Python
 driver, then reads them back through Veridelta and ConnectorX. A server is
 used only when its URI is set, in `VERIDELTA_MYSQL_URI`,
-`VERIDELTA_MARIADB_URI`, or `VERIDELTA_MSSQL_URI`, as `make databases` and the Database Servers CI job
-set them. Every other run skips these tests. Each read passes the URI's
+`VERIDELTA_MARIADB_URI`, `VERIDELTA_MSSQL_URI`, or
+`VERIDELTA_CLICKHOUSE_URI`, as `make databases` and the Database Servers CI
+job set them. Every other run skips these tests. Each read passes the URI's
 password through `password`, so a password holding `@`, `:`, or `/` checks
-the percent-encoding against the real driver.
+the percent-encoding against the real driver. ConnectorX sends a ClickHouse
+password without decoding it, so ClickHouse's own password needs no
+encoding, and one test pins that limit.
 """
 
 import os
@@ -72,6 +75,16 @@ class _Server:
         user = unquote(parts.username or "")
         password = unquote(parts.password or "")
         database = parts.path.lstrip("/")
+        if self.scheme == "clickhouse":
+            import clickhouse_connect
+
+            return clickhouse_connect.get_client(
+                host=parts.hostname or "",
+                port=parts.port or 8123,
+                username=user,
+                password=password,
+                database=database,
+            )
         if self.scheme == "mysql":
             import pymysql
 
@@ -165,11 +178,39 @@ _MSSQL = _Server(
 _MARIADB = replace(_MYSQL, name="mariadb", variable="VERIDELTA_MARIADB_URI")
 """MariaDB, which speaks MySQL's protocol and is read through a `mysql://` URI."""
 
+_CLICKHOUSE = _Server(
+    name="clickhouse",
+    scheme="clickhouse",
+    variable="VERIDELTA_CLICKHOUSE_URI",
+    quotes=("`", "`"),
+    types={
+        "id": "Int32",
+        "amount": "Nullable(Decimal(10, 2))",
+        "ratio": "Nullable(Float64)",
+        "flag": "Nullable(Bool)",
+        "name": "Nullable(String)",
+        "opened": "Nullable(Date)",
+        "seen": "Nullable(DateTime64(6, 'UTC'))",
+        "counter": "Nullable(UInt32)",
+    },
+    dtypes={
+        "id": pl.Int32(),
+        "amount": pl.Decimal(38, 10),
+        "ratio": pl.Float64(),
+        "flag": pl.Boolean(),
+        "name": pl.String(),
+        "opened": pl.Date(),
+        "seen": pl.Datetime("us", "UTC"),
+        "counter": pl.UInt32(),
+    },
+)
+"""ClickHouse, which ConnectorX reads over HTTP, on port 8123 unless the URI names one."""
+
 _TEXT = "Zoë 🚀 日本"
 """Non-ASCII text, an emoji outside the Basic Multilingual Plane included."""
 
 
-@pytest.fixture(params=[_MYSQL, _MARIADB, _MSSQL], ids=lambda server: server.name)
+@pytest.fixture(params=[_MYSQL, _MARIADB, _MSSQL, _CLICKHOUSE], ids=lambda server: server.name)
 def server(request: pytest.FixtureRequest) -> _Server:
     """Return each server whose URI is set, and skip the others."""
     chosen: _Server = request.param
@@ -188,6 +229,8 @@ def create_table(server: _Server) -> Iterator[_CreateTable]:
         columns: dict[str, str], rows: Sequence[Sequence[Any]], name: str | None = None
     ) -> str:
         name = name or f"vd_{uuid4().hex[:12]}"
+        if server.scheme == "clickhouse":
+            return _create_clickhouse_table(connection, server, name, columns, rows, created)
         definition = ", ".join(
             f"{server.quoted(column)} {kind}" for column, kind in columns.items()
         )
@@ -203,11 +246,41 @@ def create_table(server: _Server) -> Iterator[_CreateTable]:
     try:
         yield create
     finally:
-        cursor = connection.cursor()
-        for name in created:
-            cursor.execute(f"DROP TABLE {server.quoted(name)}")
-        cursor.close()
+        if server.scheme == "clickhouse":
+            for name in created:
+                connection.command(f"DROP TABLE {server.quoted(name)}")
+        else:
+            cursor = connection.cursor()
+            for name in created:
+                cursor.execute(f"DROP TABLE {server.quoted(name)}")
+            cursor.close()
         connection.close()
+
+
+def _create_clickhouse_table(
+    client: Any,
+    server: _Server,
+    name: str,
+    columns: dict[str, str],
+    rows: Sequence[Sequence[Any]],
+    created: list[str],
+) -> str:
+    """Create a ClickHouse table, which needs an engine, and insert its rows.
+
+    ClickHouse declares its keys in the engine, so a column's `PRIMARY KEY`
+    is dropped, and the table keeps rows in the order they arrive.
+    """
+    definition = ", ".join(
+        f"{server.quoted(column)} {kind.replace(' PRIMARY KEY', '')}"
+        for column, kind in columns.items()
+    )
+    client.command(
+        f"CREATE TABLE {server.quoted(name)} ({definition}) ENGINE = MergeTree ORDER BY tuple()"
+    )
+    created.append(name)
+    if rows:
+        client.insert(name, [list(row) for row in rows], column_names=list(columns))
+    return name
 
 
 def _types_rows(server: _Server) -> list[list[Any]]:
@@ -218,6 +291,13 @@ def _types_rows(server: _Server) -> list[list[Any]]:
     two stamps differ only in their offsets, `+02:00` and `+00:00`.
     """
     seen = datetime(2026, 1, 1, 12, 0, 0, 123456)
+    if server.scheme == "clickhouse":
+        utc = seen.replace(tzinfo=UTC)
+        return [
+            [1, Decimal("10.50"), 0.25, True, _TEXT, date(2026, 1, 1), utc, 4_000_000_000],
+            [2, None, None, None, None, None, None, None],
+            [3, Decimal("-1.05"), 2.0, False, "plain", date(2026, 1, 2), utc, 0],
+        ]
     if server.scheme == "mysql":
         return [
             [1, Decimal("10.50"), 0.25, 1, b"\x01", _TEXT, date(2026, 1, 1), seen, 4_000_000_000],
@@ -252,7 +332,10 @@ class TestDatabaseServers:
         first, empty, third = frame.to_dicts()
         assert first["amount"] == Decimal("10.50")
         assert first["name"] == _TEXT
-        assert first["seen"] == datetime(2026, 1, 1, 12, 0, 0, 123456)
+        seen = datetime(2026, 1, 1, 12, 0, 0, 123456)
+        # ClickHouse stores a `DateTime64` as an instant, which ConnectorX reads in UTC.
+        expected_seen = seen.replace(tzinfo=UTC) if server.scheme == "clickhouse" else seen
+        assert first["seen"] == expected_seen
         if "stamp" in first:
             assert first["stamp"] == datetime(2026, 1, 1, 10, 0, 0, 123000, tzinfo=UTC)
             assert third["stamp"] == datetime(2026, 1, 1, 12, 0, 0, 123000, tzinfo=UTC)
@@ -418,6 +501,40 @@ class TestDatabaseServers:
         assert password not in str(info.value)
         assert quote(password, safe="") not in str(info.value)
 
+    def test_it_cannot_send_a_clickhouse_password_that_needs_percent_encoding(
+        self, server: _Server, create_table: _CreateTable
+    ) -> None:
+        """Pin the ConnectorX limit the sources guide states for ClickHouse.
+
+        ConnectorX passes a ClickHouse URI's password on still percent-encoded,
+        so a password holding `@`, `:`, `/`, or `#` reaches the server encoded
+        and the server refuses it. When ConnectorX decodes it, this read
+        succeeds, this test fails, and the guide needs updating.
+        """
+        if server.scheme != "clickhouse":
+            pytest.skip("The limit is ConnectorX's ClickHouse source's.")
+        table = create_table({"id": "Int32"}, [[1]])
+        user = f"vd_{uuid4().hex[:12]}"
+        password = "Vd@pass:w/rd#1"
+        database = urlsplit(server.uri or "").path.lstrip("/")
+        client = server.connect()
+        client.command(f"CREATE USER {user} IDENTIFIED BY '{password}'")
+        try:
+            client.command(f"GRANT SELECT ON {database}.{server.quoted(table)} TO {user}")
+            host = urlsplit(server.uri or "").netloc.rpartition("@")[2]
+            source = DatabaseConfig(
+                uri=f"clickhouse://{user}@{host}/{database}", password=password, table=table
+            )
+
+            with pytest.raises(ConnectorError, match=re.escape(source.redacted_uri)) as info:
+                LoaderFactory.load(source)
+
+            assert password not in str(info.value)
+            assert quote(password, safe="") not in str(info.value)
+        finally:
+            client.command(f"DROP USER {user}")
+            client.close()
+
     def test_it_refuses_a_decimal_beyond_the_read_precision(
         self, server: _Server, create_table: _CreateTable
     ) -> None:
@@ -431,6 +548,42 @@ class TestDatabaseServers:
             [[1, Decimal("12345678901234567890.1234")]],
         )
         source = server.source(table=table)
+        if server.scheme == "clickhouse":
+            pytest.skip("ClickHouse drops the rows instead; see the test below.")
 
         with pytest.raises(ConnectorError, match=re.escape(source.redacted_uri)):
             LoaderFactory.load(source)
+
+    def test_it_reads_no_rows_from_a_wide_clickhouse_decimal(
+        self, server: _Server, create_table: _CreateTable
+    ) -> None:
+        """Pin that ConnectorX drops every row of a ClickHouse decimal above precision 18.
+
+        ClickHouse holds the row and a read of the other column returns it, but
+        a read that includes the `Decimal(30, 4)` column returns no rows and no
+        error. The docs state the limit. If ConnectorX starts reading or
+        refusing such a column, this test fails and the docs need the change.
+        """
+        if server.scheme != "clickhouse":
+            pytest.skip("Only ClickHouse reads a wide decimal as no rows.")
+        table = create_table(
+            {"id": "INT NOT NULL PRIMARY KEY", "amount": "DECIMAL(30, 4)"},
+            [[1, Decimal("12345678901234567890.1234")]],
+        )
+        client = server.connect()
+        try:
+            stored = client.query(
+                f"SELECT id, toString(amount) FROM {server.quoted(table)}"
+            ).result_rows
+        finally:
+            client.close()
+        assert stored == [(1, "12345678901234567890.1234")]
+        ids = LoaderFactory.load(
+            server.source(query=f"SELECT id FROM {server.quoted(table)}")
+        ).collect()
+        assert ids.rows() == [(1,)]
+
+        frame = LoaderFactory.load(server.source(table=table)).collect()
+
+        assert frame.schema == pl.Schema({"id": pl.Int32(), "amount": pl.Decimal(38, 10)})
+        assert frame.height == 0
