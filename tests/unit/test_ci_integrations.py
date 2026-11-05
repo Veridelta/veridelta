@@ -1053,7 +1053,7 @@ class TestWorkflowPins:
         dockerfile = (_ROOT / ".devcontainer" / "Dockerfile").read_text(encoding="utf-8")
         images += re.findall(r"^(?:FROM\s+|COPY --from=)(\S+)", dockerfile, re.MULTILINE)
 
-        assert len(images) == 6
+        assert len(images) == 7
         for image in images:
             assert re.fullmatch(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", image), image
 

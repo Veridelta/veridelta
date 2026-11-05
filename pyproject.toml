@@ -155,6 +155,9 @@ databases = [
     "pymysql[rsa]>=1.1.1",
     # 2.3.8 is the first release with wheels for Python 3.11 to 3.14.
     "pymssql>=2.3.8",
+    # Loads the ClickHouse test tables over HTTP. 0.10.0 is the first release
+    # with wheels for Python 3.14.
+    "clickhouse-connect>=0.10.0",
 ]
 # Drives Chromium for the accessibility checks. Only `make accessibility` and the
 # Accessibility CI job install it.

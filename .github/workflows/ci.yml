@@ -327,6 +327,22 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 30
+      # ConnectorX sends a ClickHouse password without decoding it, so this
+      # one needs no percent-encoding; a test pins the limit with a second user.
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.8@sha256:d426d2f612e1e189c90f9a3f8dcd85a03c6851273833817a296bb327e63aa7a7
+        env:
+          CLICKHOUSE_USER: veridelta
+          CLICKHOUSE_PASSWORD: "Vd-pass_w0rd.1"
+          CLICKHOUSE_DB: veridelta
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "clickhouse-client --user veridelta --password Vd-pass_w0rd.1 --query 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
       sqlserver:
         image: mcr.microsoft.com/mssql/server:2022-latest@sha256:4402d880dd4c34bfa7d8705e56a86cd6c88da80a1f6bbbe741f999e76264a090
         env:
@@ -342,6 +358,7 @@ jobs:
     env:
       VERIDELTA_MYSQL_URI: mysql://root:Vd%40pass%3Aw%2Frd%231@127.0.0.1:3306/veridelta
       VERIDELTA_MARIADB_URI: mysql://root:Vd%40pass%3Aw%2Frd%231@127.0.0.1:3307/veridelta
+      VERIDELTA_CLICKHOUSE_URI: clickhouse://veridelta:Vd-pass_w0rd.1@127.0.0.1:8123/veridelta
       # The container's certificate is self-signed, so TLS skips its check.
       VERIDELTA_MSSQL_URI: mssql://sa:Vd%40pass%3Aw%2Frd%231@127.0.0.1:1433/master?encrypt=true&trust_server_certificate=true
     steps:
@@ -355,7 +372,7 @@ jobs:
         with:
           group: databases
 
-      - name: Read Real MySQL, MariaDB, and SQL Server Tables
+      - name: Read Real MySQL, MariaDB, SQL Server, and ClickHouse Tables
         run: make databases
 
       - name: Run the Parity Suite Inside SQL Server

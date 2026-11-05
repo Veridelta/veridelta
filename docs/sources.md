@@ -107,6 +107,8 @@ Two Postgres, SQL Server, or Redshift tables on one server can instead be compar
 
 A SQLite URI is followed by a file path, as in `sqlite:///srv/data/legacy.db`, or `sqlite://C:/data/legacy.db` on Windows. The path must name an existing file. Veridelta refuses a missing one, which ConnectorX would otherwise create as an empty database.
 
+A ClickHouse URI is read over ClickHouse's HTTP interface, as in `clickhouse://analyst@ch.internal:8123/sales`, and the port defaults to 8123. `?protocol=https` reads over HTTPS. ConnectorX sends a ClickHouse password without decoding it, so a password that holds `@`, `:`, `/`, `#`, or any other character a URI must percent-encode reaches the server encoded, and the server refuses it. Give the reading user a password of letters, digits, `-`, `.`, `_`, and `~` only.
+
 A SQL Server URI takes connection options as parameters. `?encrypt=true` requires TLS for the whole connection. A server with a self-signed certificate, such as a development container, also needs `trust_server_certificate=true`, which accepts the certificate without checking it.
 
 ### Table or query
@@ -157,6 +159,21 @@ MySQL has no boolean type, so a flag arrives as a number. These MySQL types arri
 | `JSON` | `String` |
 
 A `cast_to` rule cannot turn `Binary` into a number or a boolean, and a run refuses one before it reads a row. To compare a `BIT` column as a number, read it with `CAST(column AS UNSIGNED)` in a `query`.
+
+These ClickHouse types arrive as follows. A column is `Nullable` only when declared so, and each type below reads the same either way:
+
+| ClickHouse type | Polars type |
+| :--- | :--- |
+| `Int32` | `Int32` |
+| `UInt32` | `UInt32` |
+| `Float64` | `Float64` |
+| `Bool` | `Boolean` |
+| `Decimal(P, S)` with `P` up to 18 | `Decimal(38, 10)` |
+| `String` | `String` |
+| `Date` | `Date` |
+| `DateTime64` | `Datetime` in UTC |
+
+A ClickHouse `Decimal` with a precision above 18 fails the read.
 
 SQL Server has a boolean type, `BIT`. These SQL Server types arrive as follows:
 
