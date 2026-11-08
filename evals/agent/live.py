@@ -24,7 +24,7 @@ from evals.agent.agents import AgentRun, ToolCall
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from claude_agent_sdk.types import McpStdioServerConfig
+    from claude_agent_sdk.types import McpServerConfig
 
     from evals.agent.fixtures import Fixture
     from evals.agent.tasks import Task
@@ -256,7 +256,7 @@ class LiveAgent:
             allowed_tools=session.allowed_tools,
             # The session holds the server as a plain dict, so a test reads it without
             # the SDK; `plan_session` builds it in the SDK's stdio shape.
-            mcp_servers=cast("dict[str, McpStdioServerConfig]", session.mcp_servers),
+            mcp_servers=cast("dict[str, McpServerConfig]", session.mcp_servers),
             strict_mcp_config=True,
             permission_mode=session.permission_mode,
             system_prompt=session.system_prompt,
