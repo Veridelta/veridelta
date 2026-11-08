@@ -212,6 +212,7 @@ class RunReport(TypedDict):
     changed_count: int
     column_mismatches: dict[str, int]
     is_match: bool
+    threshold: float
     accepted_count: int
     provenance: None
     total_mismatches: int

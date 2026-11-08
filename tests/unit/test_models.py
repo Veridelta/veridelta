@@ -1341,3 +1341,45 @@ class TestValueMapProposalModels:
             "column_names": ["gender"],
             "value_map": {"F": "Female", "M": "Male"},
         }
+
+
+class TestDiffSummaryThreshold:
+    """Validate the threshold a summary carries beside its verdict."""
+
+    def _summary(self, **overrides: object) -> DiffSummary:
+        """Build a clean summary of one row, overridable per field."""
+        fields: dict[str, object] = {
+            "total_rows_source": 1,
+            "total_rows_target": 1,
+            "added_count": 0,
+            "removed_count": 0,
+            "changed_count": 0,
+            "is_match": True,
+        }
+        fields.update(overrides)
+        return DiffSummary.model_validate(fields)
+
+    def test_it_defaults_to_zero_and_prints_with_the_counts(self) -> None:
+        """Ensure a summary built without a threshold reads as the strictest, and the JSON names it."""
+        summary = self._summary()
+
+        assert summary.threshold == 0.0
+        assert summary.model_dump(mode="json")["threshold"] == 0.0
+
+    @pytest.mark.parametrize("threshold", [-0.1, 1.5])
+    def test_it_stays_between_zero_and_one(self, threshold: float) -> None:
+        """Ensure a threshold outside the configuration's range is refused, as the configuration refuses it."""
+        with pytest.raises(ValidationError, match="threshold"):
+            self._summary(threshold=threshold)
+
+    def test_a_run_carries_the_threshold_its_verdict_was_held_to(self) -> None:
+        """Ensure the summary names the configuration's threshold, so a report can say what passed."""
+        config = DiffConfig(primary_keys=["id"], threshold=0.5)
+        source = pl.LazyFrame({"id": [1, 2, 3, 4]})
+        target = pl.LazyFrame({"id": [1, 2, 3, 5]})
+
+        summary = DiffEngine(config, source, target).run().summary
+
+        assert summary.threshold == 0.5
+        assert summary.mismatch_ratio == 0.5
+        assert summary.is_match

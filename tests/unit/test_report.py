@@ -3,6 +3,7 @@
 
 """Unit tests for the standalone HTML report generator."""
 
+import base64
 import json
 import re
 from dataclasses import replace
@@ -18,6 +19,8 @@ import pytest
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError
 from veridelta.models import (
+    AcceptedChange,
+    Baseline,
     ColumnRules,
     DiffConfig,
     DiffResult,
@@ -30,6 +33,7 @@ from veridelta.outputs import output_json_schema
 from veridelta.report import (
     _RULE_PHRASES,
     _difference,
+    _percent,
     render_html,
     render_markdown,
     write_html,
@@ -220,21 +224,29 @@ class TestHTMLReport:
             assert "@import" not in tags.style
 
     def test_it_reports_the_verdict_and_headline_metrics(self) -> None:
-        """Ensure a reader sees the outcome without scrolling to a table."""
+        """Ensure a reader sees the outcome and the counts without scrolling to a table."""
         document = render_html(_result())
 
         assert "FAILED" in document
-        assert "Match rate" in document
-        assert "Changed" in document
+        assert "<span class='count'>0</span> matched" in document
+        assert "<span class='count'>1</span> changed" in document
 
     def test_it_leads_with_the_verdict_in_words_and_how_much_differs(self) -> None:
-        """Ensure the banner states the verdict as a word, with a glyph a screen reader skips."""
+        """Ensure the banner states the verdict as a word, with a glyph a screen reader skips.
+
+        The headline says how many rows differ, their share of the source rows,
+        and the threshold that share was held to, so a reader knows how far the
+        run is from passing.
+        """
         document = render_html(_result())
 
-        banner = document[document.index('class="banner fail"') : document.index("</header>")]
-        assert '<p class="verdict fail">FAILED</p>' in banner
+        banner = document[document.index('class="banner fail"') : document.index("</section>")]
+        assert '<p class="verdict fail" id="verdict">FAILED</p>' in banner
         assert '<span class="glyph" aria-hidden="true">&#10005;</span>' in banner
-        assert '<p class="headline">3 rows differ &middot; 1 column drifts</p>' in banner
+        assert (
+            '<p class="headline">3 rows differ, 150% of the 2 source rows, above the threshold '
+            "of 0%. 1 column drifts.</p>"
+        ) in banner
 
     @pytest.mark.parametrize(
         ("overrides", "headline"),
@@ -257,14 +269,22 @@ class TestHTMLReport:
                     "changed_count": 0,
                     "column_mismatches": {},
                     "is_match": True,
+                    "threshold": 0.01,
                 },
-                "1 row differs, within the threshold",
+                "1 row differs, 0.1% of the 1,000 source rows, within the threshold of 1%.",
                 id="within-threshold",
             ),
             pytest.param(
                 {"accepted_count": 4},
-                "10 rows differ &middot; 2 columns drift &middot; 4 accepted by the baseline",
+                "10 rows differ, 1% of the 1,000 source rows, above the threshold of 0%. "
+                "2 columns drift. 4 more rows were accepted by the baseline.",
                 id="accepted",
+            ),
+            pytest.param(
+                {"accepted_count": 1, "threshold": 0.00005},
+                "10 rows differ, 1% of the 1,000 source rows, above the threshold of 0.005%. "
+                "2 columns drift. 1 more row was accepted by the baseline.",
+                id="one-accepted",
             ),
         ],
     )
@@ -280,22 +300,68 @@ class TestHTMLReport:
         """Ensure a passing run shows its own glyph, beside the word."""
         document = render_html(_with_summary(_summary(is_match=True)))
 
-        assert '<p class="verdict pass">PASSED</p>' in document
+        assert '<p class="verdict pass" id="verdict">PASSED</p>' in document
         assert '<span class="glyph" aria-hidden="true">&#10003;</span>' in document
 
-    def test_it_draws_the_match_rate_as_a_bar_of_its_own_length(self) -> None:
-        """Ensure the bar is drawn by its width attribute, never a style the policy refuses."""
-        document = render_html(_with_summary(_summary()))
+    @pytest.mark.parametrize(
+        ("threshold", "filled", "tick"),
+        [
+            # A threshold of zero scales the meter to the whole, with the tick at its start.
+            pytest.param(0.0, "1.0", "0.0", id="zero"),
+            # A threshold the ratio stays under scales the meter to four times the threshold.
+            pytest.param(0.02, "12.5", "25.0", id="room-left"),
+            # A ratio past four times the threshold fills the meter, and the tick moves in.
+            pytest.param(0.001, "100.0", "10.0", id="far-over"),
+        ],
+    )
+    def test_it_draws_the_ratio_against_the_threshold_by_width(
+        self, threshold: float, filled: str, tick: str
+    ) -> None:
+        """Ensure the meter is drawn by attributes, never a style the policy refuses.
 
-        rate = _summary().match_rate_percentage
-        assert f'<rect class="filled" width="{rate}" height="6"></rect>' in document
+        The summary's ratio is 10 in 1,000, so 1%.
+        """
+        document = render_html(_with_summary(_summary(threshold=threshold)))
+
+        assert f'<rect class="filled" width="{filled}" height="8"></rect>' in document
+        assert f'<rect class="tick" x="{tick}" width="0.6" height="8"></rect>' in document
+
+    def test_it_draws_no_meter_for_a_perfect_match(self) -> None:
+        """Ensure a run with nothing to measure shows no empty meter."""
+        summary = _summary(
+            added_count=0, removed_count=0, changed_count=0, column_mismatches={}, is_match=True
+        )
+
+        assert 'class="meter"' not in render_html(_with_summary(summary))
+
+    @pytest.mark.parametrize(
+        ("ratio", "places", "text"),
+        [
+            pytest.param(0.125, 2, "12.5%", id="half"),
+            pytest.param(0.01, 2, "1%", id="whole"),
+            pytest.param(1.0, 2, "100%", id="all"),
+            pytest.param(1.5, 2, "150%", id="over"),
+            pytest.param(0.0, 4, "0%", id="zero"),
+            pytest.param(0.000001, 2, "under 0.01%", id="tiny"),
+            pytest.param(0.000001, 4, "0.0001%", id="tiny-with-places"),
+            pytest.param(1 / 3, 2, "33.33%", id="third"),
+        ],
+    )
+    def test_it_writes_a_ratio_as_a_short_percentage(
+        self, ratio: float, places: int, text: str
+    ) -> None:
+        """Ensure a percentage drops its trailing zeros, and a tiny one never reads as zero."""
+        assert _percent(ratio, places) == text
 
     def test_it_ranks_drift_with_each_columns_share_of_changed_rows(self) -> None:
-        """Ensure each drifting column shows its share in words beside a bar a screen reader skips."""
+        """Ensure each drifting column shows its share in words beside a bar a screen reader skips.
+
+        A result with no record of its rules and no values shows the drift alone.
+        """
         tables = _Tables()
         tables.feed(render_html(_with_summary(_summary())))
 
-        assert tables.tables["column-level-drift"] == [
+        assert tables.tables["columns"] == [
             ["amount", "4", "80%"],
             ["status", "1", "20%"],
         ]
@@ -321,9 +387,9 @@ class TestHTMLReport:
         document = render_html(_result())
 
         assert _rendered_rows(document) == {
-            "column-level-drift": [["val", "1", "100%"]],
+            "columns": [["val", "exactly", "1", "100%", "a single value"]],
             "mismatched-values": [["2", "val", "B", "≠ CHANGED", ""]],
-            "changed-rows": [["2", "B", "CHANGED", "false"]],
+            "changed-rows": [["2", "source B≠ target CHANGED", "val"]],
             "added-rows": [["3", "C"]],
             "removed-rows": [["1", "A"]],
         }
@@ -399,7 +465,7 @@ class TestHTMLReport:
         )
 
         assert regions == [
-            "column-level-drift",
+            "columns",
             "mismatched-values",
             "changed-rows",
             "added-rows",
@@ -461,7 +527,23 @@ class TestHTMLReport:
         assert len(_rendered_rows(document)["changed-rows"]) == 10
         assert "Showing the first 10 of 50 rows" in document
 
-    def test_it_labels_a_pushdown_report_as_keys_only(self) -> None:
+    def test_it_caps_the_added_rows_and_says_so(self) -> None:
+        """Ensure a table of whole rows stops at the cap and states the count it left out."""
+        result = _drifted({"id": [1], "v": ["a"]}, {"id": [1, 2, 3, 4], "v": ["a", "b", "c", "d"]})
+
+        document = render_html(result, max_rows=2)
+
+        assert len(_rendered_rows(document)["added-rows"]) == 2
+        assert "Showing the first 2 of 3 rows." in document
+
+    def test_it_lists_no_values_under_a_cap_of_zero(self) -> None:
+        """Ensure a report asked for no rows says so in place of each table, and still renders."""
+        document = render_html(_result(), max_rows=0)
+
+        assert "No mismatched values." in document
+        assert "Showing the first 0 of 1 rows." in document
+        assert "mismatched-values" not in _rendered_rows(document)
+
         """Ensure nobody reads a primary-key table as though it held values."""
         summary = DiffSummary(
             total_rows_source=2,
@@ -524,10 +606,10 @@ class TestHTMLReport:
 
         assert "values for the first 2 of 3" in document
         assert "primary keys rather than values" not in document
-        assert "<th scope='col'>val_source</th><th scope='col'>val_target</th>" in document
+        assert "<th scope='col'>val</th><th scope='col'>Differs in</th>" in document
         assert _rendered_rows(document)["changed-rows"] == [
-            ["2", "b", "B", "false"],
-            ["3", "c", "C", "false"],
+            ["2", "source b≠ target B", "val"],
+            ["3", "source c≠ target C", "val"],
         ]
 
     def test_it_handles_a_perfect_match(self) -> None:
@@ -539,7 +621,7 @@ class TestHTMLReport:
 
         assert "PASSED" in document
         assert "No rows." in document
-        assert "No column-level drift." in document
+        assert "No column-level drift, and every compared column is compared exactly." in document
 
     @pytest.mark.parametrize(
         ("column", "value", "raw", "escaped"),
@@ -571,12 +653,23 @@ class TestHTMLReport:
         assert raw not in document
         assert escaped in document
 
-    def test_it_shows_the_run_record_under_the_verdict(self) -> None:
-        """Ensure the reviewer sees what the run read, its commit, and its CI run, in that order."""
+    def test_it_names_the_run_in_the_header_and_lists_the_record_at_the_foot(self) -> None:
+        """Ensure the title line says what ran, and links to the whole record under the rows.
+
+        The record's hashes and CI link matter to an auditor after the verdict,
+        so they sit last, and the header names the version, the configuration,
+        and a short commit.
+        """
         page = render_html(_recorded(_result(), _RUN_RECORD))
 
+        header = page[page.index('<header class="top">') : page.index("</header>")]
+        assert "Veridelta 0.41.2" in header
+        assert "<code>veridelta.yaml</code>" in header
+        assert f"commit <code>{_COMMIT_SHA[:7]}</code>" in header
+        assert _COMMIT_SHA not in header
+        assert '<a href="#run-record">Run record</a>' in header
         record = page[page.index('id="run-record"') : page.index("</dl>")]
-        assert page.index('id="run-record"') < page.index('class="cards"')
+        assert page.index('class="kinds"') < page.index('id="run-record"')
         assert "veridelta.yaml" in record
         assert _CONFIG_SHA256 in record
         assert _COMMIT_SHA in record
@@ -614,12 +707,62 @@ class TestHTMLReport:
 
         page = render_html(_recorded(_result(), record))
 
-        assert "<img" not in page
+        tags = _Tags()
+        tags.feed(page)
+        assert tags.hazards == []
+        assert "<img src=x" not in page
         assert "&lt;img src=x onerror=alert(1)&gt;.yaml" in page
 
     def test_it_shows_no_run_record_without_one(self) -> None:
-        """Ensure a result from Python, which has no record, shows no empty section."""
-        assert "run-record" not in render_html(_result())
+        """Ensure a result from Python, which has no record, shows no empty section or link."""
+        page = render_html(_result())
+
+        assert "run-record" not in page
+        assert re.search(r'<p class="sub">Generated \d{4}-\d\d-\d\d [\d:]+ UTC</p>', page)
+
+    def test_it_names_what_the_header_has_and_leaves_out_the_rest(self) -> None:
+        """Ensure a record without a configuration or a commit shows neither in the header."""
+        record = RunProvenance(veridelta_version="0.41.2", started_at=_RUN_RECORD.started_at)
+
+        page = render_html(_recorded(_result(), record))
+
+        header = page[page.index('<header class="top">') : page.index("</header>")]
+        assert 'Veridelta 0.41.2 &middot; <a href="#run-record">Run record</a>' in header
+        assert "commit" not in header
+        assert "<code>" not in header
+
+    def test_it_carries_the_symbol_inside_the_page(self) -> None:
+        """Ensure the brand's symbol is embedded, decorative, and small.
+
+        A data URI keeps the file standalone, an empty `alt` keeps it out of a
+        screen reader's way, and the size bound keeps the page light.
+        """
+        document = render_html(_result())
+
+        found = re.search(
+            r'<img class="symbol" src="data:image/png;base64,([A-Za-z0-9+/=]+)" alt="" '
+            r'width="69" height="64">',
+            document,
+        )
+        assert found
+        image = base64.b64decode(found.group(1))
+        assert image.startswith(b"\x89PNG")
+        assert len(image) < 10_000
+        assert document.count("data:image") == 1
+
+        """Ensure the page follows the system's theme, and the script's control overrides it.
+
+        The dark tokens apply under the system's preference unless the control
+        chose light, and under the control's dark choice whatever the system says.
+        """
+        tags = _Tags()
+        tags.feed(render_html(_result()))
+
+        assert "@media (prefers-color-scheme: dark)" in tags.style
+        assert ':root:not([data-theme="light"])' in tags.style
+        assert ':root[data-theme="dark"]' in tags.style
+        assert tags.style.count("--bg: #0d1117") == 2
+        assert "const key = 'veridelta-theme';" in render_html(_result())
 
     def test_it_writes_the_file_and_creates_parent_directories(self, tmp_path: Path) -> None:
         """Ensure a nested output path does not require pre-creating the tree."""
@@ -1141,8 +1284,8 @@ class TestMismatchedValues:
         document = render_html(result)
         tables.feed(document)
 
-        assert "<details class='full-rows'><summary>Show the full changed rows" in document
-        assert tables.tables["changed-rows"] == [["1", "a", "b", "false"]]
+        assert "<details class='full-rows'><summary>Show the changed rows side by side" in document
+        assert tables.tables["changed-rows"] == [["1", "source a≠ target b", "v"]]
 
     def test_it_caps_the_values_it_lists_and_says_so(self) -> None:
         """Ensure `max_rows` caps listed values, not rows times columns, and the cap is stated."""
@@ -1273,8 +1416,14 @@ class TestMismatchPatterns:
         """Ensure the script can filter to a pattern from attributes that hold it as text."""
         document = render_html(_orders_like())
 
-        assert "<li class='pattern' data-column='status' data-target='cancelled'>" in document
-        assert "<li class='pattern' data-column='amount' data-difference='+1.00'>" in document
+        assert (
+            "<li class='pattern' data-column='status' data-label='status changed to cancelled' "
+            "data-count='6' data-target='cancelled'>"
+        ) in document
+        assert (
+            "<li class='pattern' data-column='amount' data-label='amount rose by 1.00' "
+            "data-count='4' data-difference='+1.00'>"
+        ) in document
         assert "data-target='cancelled' data-difference=''>" in document
 
     @pytest.mark.parametrize(
@@ -1366,15 +1515,20 @@ def _with_rules(rules: list[DiffRule], **defaults: Any) -> DiffResult:
     ).run()
 
 
-class TestRulesApplied:
-    """Validate the report's summary of the rules each compared column ran under."""
+class TestColumns:
+    """Validate the columns table: each compared column's rules, its drift, and its pattern."""
 
     def test_it_lists_each_columns_rules_in_words(self) -> None:
-        """Ensure a reviewer reads which rules applied, column by column, as settings and counts."""
+        """Ensure a reviewer reads which rules applied, column by column, beside the column's drift.
+
+        Drifting columns come first, then the columns a rule reaches without
+        drift, and the columns compared exactly that match are counted.
+        """
         result = _with_rules(
             [
                 DiffRule(column_names=["amount"], absolute_tolerance=0.01),
-                DiffRule(column_names=["status"], value_map={"o": "open", "c": "closed"}),
+                # No value is a key of the map, so the map changes nothing and reads as a rule.
+                DiffRule(column_names=["status"], value_map={"x": "open", "y": "closed"}),
                 DiffRule(
                     column_names=["name"],
                     case_insensitive=True,
@@ -1388,19 +1542,64 @@ class TestRulesApplied:
         document = render_html(result)
         tables.feed(document)
 
-        assert tables.tables["rules-applied"] == [
-            ["amount", "absolute tolerance 0.01"],
-            ["name", "case-insensitive; whitespace trimmed at both ends; 1 regex replacement"],
-            ["status", "value map of 2 entries"],
+        assert tables.tables["columns"] == [
+            ["amount", "absolute tolerance 0.01", "1", "100%", "a single value"],
+            [
+                "name",
+                "case-insensitive; whitespace trimmed at both ends; 1 regex replacement",
+                "0",
+                "",
+                "matches in every row",
+            ],
+            ["status", "value map of 2 entries", "0", "", "matches in every row"],
         ]
-        assert "1 other column is compared exactly." in document
+        assert "<p class='hint'>4 columns compared, 1 drifts.</p>" in document
+        assert "1 other column is compared exactly and matches in every row." in document
 
-    def test_it_says_when_every_column_is_compared_exactly(self) -> None:
-        """Ensure a run with no rules says so, rather than showing an empty table."""
+    def test_it_says_a_column_with_no_rule_is_compared_exactly(self) -> None:
+        """Ensure a drifting column under no rule reads as exact, and the rest are counted."""
+        tables = _Tables()
+
         document = render_html(_with_rules([]))
+        tables.feed(document)
 
-        assert "Every compared column is compared exactly." in document
-        assert "aria-labelledby='rules-applied'" not in document
+        assert tables.tables["columns"] == [["amount", "exactly", "2", "100%", "no shared change"]]
+        assert "3 other columns are compared exactly and match in every row." in document
+
+    def test_it_names_the_largest_pattern_of_each_column(self) -> None:
+        """Ensure a column's row says its most common change, which its patterns list in full."""
+        tables = _Tables()
+
+        tables.feed(render_html(_orders_like()))
+
+        assert tables.tables["columns"] == [
+            ["status", "exactly", "7", "64%", "6 changed to cancelled"],
+            ["amount", "exactly", "4", "36%", "4 rose by 1.00"],
+        ]
+
+    def test_it_shows_no_pattern_for_a_run_without_values(self) -> None:
+        """Ensure a pushdown run without a sample shows its drift and rules, and no pattern column."""
+        local = _orders_like()
+        pushdown = replace(local, changed=local.changed.select("id"), keys_only=True)
+        tables = _Tables()
+
+        document = render_html(pushdown)
+        tables.feed(document)
+
+        assert "Most common change" not in document
+        assert tables.tables["columns"] == [
+            ["status", "exactly", "7", "64%"],
+            ["amount", "exactly", "4", "36%"],
+        ]
+
+    def test_it_marks_a_column_without_drift_as_quiet(self) -> None:
+        """Ensure a ruled column with no drift reads apart from the drifting ones, in more than color."""
+        document = render_html(
+            _with_rules([DiffRule(column_names=["status"], value_map={"x": "open", "y": "closed"})])
+        )
+
+        assert "<tr class='quiet'><td>status</td>" in document
+        assert "<tr><td>amount</td>" in document
 
     def test_it_shows_a_default_on_every_column_it_reaches(self) -> None:
         """Ensure a configuration-wide default reads as a rule on each column."""
@@ -1409,9 +1608,12 @@ class TestRulesApplied:
 
         tables.feed(render_html(result))
 
-        assert tables.tables["rules-applied"][0] == [
+        assert tables.tables["columns"][0] == [
             "amount",
             "absolute tolerance 0.5; NULL does not match NULL",
+            "1",
+            "100%",
+            "a single value",
         ]
 
     def test_it_counts_the_values_each_columns_rules_forgave(self) -> None:
@@ -1424,7 +1626,9 @@ class TestRulesApplied:
 
         tables.feed(render_html(result))
 
-        assert tables.tables["rules-applied"] == [["amount", "absolute tolerance 0.01", "1"]]
+        assert tables.tables["columns"] == [
+            ["amount", "absolute tolerance 0.01", "1", "100%", "1", "a single value"]
+        ]
 
     def test_it_shows_no_count_column_for_a_run_that_did_not_count(self) -> None:
         """Ensure the count column appears only when the run counted, so no reader sees an empty one."""
@@ -1457,3 +1661,292 @@ class TestRulesApplied:
         assert _MARKER not in repr(result.rules_applied)
         assert "value map of 2 entries" in document
         assert "2 null sentinels" in document
+
+
+def _with_baseline(baseline: Baseline) -> DiffResult:
+    """Compare frames with one added, one removed, and one changed row, under a baseline."""
+    src = pl.DataFrame({"id": [1, 2, 3], "val": ["A", "B", "C"]})
+    tgt = pl.DataFrame({"id": [2, 3, 4], "val": ["CHANGED", "C", "D"]})
+    return DiffEngine(DiffConfig(primary_keys=["id"]), src.lazy(), tgt.lazy()).run(
+        baseline=baseline
+    )
+
+
+class TestLedger:
+    """Validate the row ledger: one bar of every key on either side, and a legend of counts."""
+
+    def test_it_counts_every_key_on_either_side_once(self) -> None:
+        """Ensure the matched, changed, removed, and added rows add up to the keys of both sides.
+
+        The result has 2 source rows, of which 1 changed and 1 was removed, and
+        1 added row, so nothing matched and each kind is a third of the bar.
+        """
+        document = render_html(_result())
+
+        assert (
+            '<rect class="changed" x="0.0" width="33.33" height="18"></rect>'
+            '<rect class="removed" x="33.33" width="33.33" height="18"></rect>'
+            '<rect class="added" x="66.66" width="33.33" height="18"></rect></svg>'
+        ) in document
+        assert "<span class='count'>0</span> matched" in document
+        assert "<a href='#changed-rows-panel'><span class='count'>1</span> changed</a>" in document
+        assert (
+            "<a href='#removed-rows-panel'><span class='count'>1</span> removed, only in the "
+            "source</a>"
+        ) in document
+        assert (
+            "<a href='#added-rows-panel'><span class='count'>1</span> added, only in the target</a>"
+        ) in document
+        assert "accepted by the baseline" not in document
+
+    @pytest.mark.parametrize(
+        ("target_rows", "words"),
+        [
+            pytest.param(1001, "1 row more", id="more"),
+            pytest.param(998, "2 rows fewer", id="fewer"),
+            pytest.param(1000, "the same count", id="same"),
+        ],
+    )
+    def test_it_says_the_volume_shift_in_words(self, target_rows: int, words: str) -> None:
+        """Ensure the two row counts come with their difference, and the key the rows matched on."""
+        document = render_html(_with_summary(_summary(total_rows_target=target_rows)))
+
+        assert (
+            f"<p class='hint'>1,000 source rows and {target_rows:,} target rows, {words}, "
+            "matched on <code>id</code>.</p>"
+        ) in document
+
+    def test_it_greys_a_kind_with_no_rows_and_links_no_empty_panel(self) -> None:
+        """Ensure a count of zero reads as absent, and leads nowhere."""
+        summary = _summary(added_count=0)
+
+        document = render_html(_with_summary(summary))
+
+        assert (
+            "<span class='count'>0</span> <span class='absent'>added, only in the target</span>"
+            in document
+        )
+        assert "href='#added-rows-panel'" not in document
+        assert "<span class='count'>993</span> matched" in document
+
+    def test_it_draws_no_bar_without_rows(self) -> None:
+        """Ensure two empty datasets show their counts and no bar of nothing."""
+        summary = _summary(
+            total_rows_source=0,
+            total_rows_target=0,
+            added_count=0,
+            removed_count=0,
+            changed_count=0,
+            column_mismatches={},
+            is_match=True,
+        )
+
+        document = render_html(_with_summary(summary))
+
+        assert 'class="ledger"' not in document
+        assert (
+            "<p class='hint'>0 source rows and 0 target rows, the same count, matched on"
+            in document
+        )
+
+    def test_it_counts_accepted_rows_on_the_side_they_came_from(self) -> None:
+        """Ensure an accepted added row leaves the source side's count alone.
+
+        The baseline accepts the added row 4 and the changed row 2, so the
+        source's 3 rows are 1 matched, 1 removed, and 1 accepted, and the
+        accepted added row sits with them, apart from the added rows.
+        """
+        baseline = Baseline(
+            primary_keys=["id"],
+            added=[{"id": 4}],
+            changed=[AcceptedChange(key={"id": 2}, columns=["val"])],
+        )
+
+        document = render_html(_with_baseline(baseline))
+
+        assert (
+            '<rect class="matched" x="0.0" width="25.0" height="18"></rect>'
+            '<rect class="removed" x="25.0" width="25.0" height="18"></rect>'
+            '<rect class="accepted" x="50.0" width="50.0" height="18"></rect></svg>'
+        ) in document
+        assert "<span class='count'>1</span> matched" in document
+        assert (
+            "<a href='#accepted-rows-panel'><span class='count'>2</span> accepted by the "
+            "baseline</a>"
+        ) in document
+
+    def test_it_counts_every_accepted_row_on_the_source_side_without_the_entries(self) -> None:
+        """Ensure a result that lost its baseline's entries still keeps the bar whole."""
+        document = render_html(_with_summary(_summary(accepted_count=4)))
+
+        assert "<span class='count'>989</span> matched" in document
+        assert '<rect class="accepted" x="99.3" width="0.4" height="18"></rect>' in document
+
+
+class TestSideBySide:
+    """Validate the changed rows side by side, one click away from the mismatched values."""
+
+    def test_it_shows_both_values_where_they_differ_and_one_where_they_match(self) -> None:
+        """Ensure a differing cell carries both values, a matching cell one, and the row names its columns.
+
+        The sign is hidden from a screen reader, which hears the words instead.
+        """
+        result = _drifted(
+            {"id": [2, 1], "status": ["open", "returned"], "amount": [10.5, 65.99]},
+            {"id": [2, 1], "status": ["cancelled", "returned"], "amount": [10.5, 66.99]},
+        )
+        tables = _Tables()
+
+        document = render_html(result)
+        tables.feed(document)
+
+        assert tables.tables["changed-rows"] == [
+            ["1", "returned", "source 65.99≠ target 66.99", "amount"],
+            ["2", "source open≠ target cancelled", "10.5", "status"],
+        ]
+        assert (
+            "<td class='differs'><span class='was'><span class='sr-only'>source </span>open</span>"
+            "<span class='sign' aria-hidden='true'>&#8800;</span> "
+            "<span class='sr-only'>target </span>cancelled</td>"
+        ) in document
+        assert "<th scope='col'>Differs in</th>" in document
+
+    def test_it_shows_a_value_the_rules_forgave_beside_what_it_matched(self) -> None:
+        """Ensure a value that matched only through a rule shows both texts, with no mismatch sign."""
+        result = DiffEngine(
+            DiffConfig(
+                primary_keys=["id"],
+                rules=[DiffRule(column_names=["amount"], absolute_tolerance=0.01)],
+            ),
+            pl.DataFrame({"id": [1], "amount": [10.0], "status": ["open"]}).lazy(),
+            pl.DataFrame({"id": [1], "amount": [10.004], "status": ["shut"]}).lazy(),
+        ).run()
+        tables = _Tables()
+
+        document = render_html(result)
+        tables.feed(document)
+
+        assert tables.tables["changed-rows"] == [
+            ["1", "10.0≈matches, within the rules, 10.004", "source open≠ target shut", "status"]
+        ]
+        assert (
+            "<td class='forgiven'>10.0<span class='sign' aria-hidden='true'>&#8776;</span>"
+            "<span class='sr-only'>matches, within the rules, </span>10.004</td>"
+        ) in document
+
+    def test_it_lists_a_null_on_either_side(self) -> None:
+        """Ensure a NULL reads as `null` in a differing cell, and a NULL that matched as a null cell."""
+        source = pl.DataFrame(
+            {"id": [1, 2], "v": [None, None]}, schema={"id": pl.Int64, "v": pl.Int64}
+        )
+        target = pl.DataFrame(
+            {"id": [1, 2], "v": [5, None]}, schema={"id": pl.Int64, "v": pl.Int64}
+        )
+        result = DiffEngine(DiffConfig(primary_keys=["id"]), source.lazy(), target.lazy()).run()
+        tables = _Tables()
+
+        tables.feed(render_html(result))
+
+        assert tables.tables["changed-rows"] == [["1", "source null≠ target 5", "v"]]
+
+    def test_it_caps_the_rows_and_says_so(self) -> None:
+        """Ensure the side-by-side table stops at `max_rows`, lowest keys first, and says it did."""
+        result = _drifted(
+            {"id": [3, 1, 2], "v": ["a", "a", "a"]}, {"id": [3, 1, 2], "v": ["b", "b", "b"]}
+        )
+        tables = _Tables()
+
+        document = render_html(result, max_rows=2)
+        tables.feed(document)
+
+        assert [row[0] for row in tables.tables["changed-rows"]] == ["1", "2"]
+        assert "Showing the first 2 of 3 rows." in document
+
+
+class TestAcceptedRows:
+    """Validate the panel that lists the drift a baseline accepted."""
+
+    def test_it_lists_each_accepted_row_by_kind_and_key(self) -> None:
+        """Ensure an auditor reads which rows the baseline took out of the verdict, and which columns."""
+        baseline = Baseline(
+            primary_keys=["id"],
+            added=[{"id": 4}],
+            removed=[{"id": 1}],
+            changed=[AcceptedChange(key={"id": 2}, columns=["val"])],
+        )
+        tables = _Tables()
+
+        document = render_html(_with_baseline(baseline))
+        tables.feed(document)
+
+        assert (
+            "<section class='kind' id='accepted-rows-panel' data-kind='Accepted rows' "
+            "data-count='3'>"
+        ) in document
+        assert tables.tables["accepted-rows"] == [
+            ["Added", "4", "whole row"],
+            ["Removed", "1", "whole row"],
+            ["Changed", "2", "val"],
+        ]
+        assert "<span class='count'>0</span> <span class='absent'>changed</span>" in document
+
+    def test_it_lists_only_the_entries_that_accepted_a_row(self) -> None:
+        """Ensure an entry for a row that did not drift stays out of the panel, as it is out of the count."""
+        baseline = Baseline(primary_keys=["id"], removed=[{"id": 1}, {"id": 99}])
+        tables = _Tables()
+
+        document = render_html(_with_baseline(baseline))
+        tables.feed(document)
+
+        assert tables.tables["accepted-rows"] == [["Removed", "1", "whole row"]]
+        assert "data-kind='Accepted rows' data-count='1'" in document
+
+    def test_it_shows_no_panel_without_accepted_drift(self) -> None:
+        """Ensure a run without a baseline, or whose baseline accepted nothing, has no fourth kind."""
+        assert "accepted-rows-panel" not in render_html(_result())
+        assert "accepted-rows-panel" not in render_html(
+            _with_baseline(Baseline(primary_keys=["id"], removed=[{"id": 99}]))
+        )
+
+    def test_it_says_when_a_result_kept_no_entries(self) -> None:
+        """Ensure a summary that counts accepted rows without the baseline's entries says so."""
+        document = render_html(_with_summary(_summary(accepted_count=4)))
+
+        assert "data-kind='Accepted rows' data-count='4'" in document
+        assert "The baseline's entries were not kept." in document
+
+
+class TestMarkdownVerdict:
+    """Validate the sentence under the Markdown summary's heading."""
+
+    def test_it_says_how_far_the_run_is_from_passing(self) -> None:
+        """Ensure the pull request comment states the share and the threshold, as the report does."""
+        document = render_markdown(_with_summary(_summary(threshold=0.005)))
+
+        assert document.startswith(
+            "### Veridelta: FAILED\n"
+            "\n"
+            "10 rows differ, 1% of the 1,000 source rows, above the threshold of 0.5%. "
+            "2 columns drift.\n"
+            "\n"
+            "| Metric | Value |\n"
+        )
+
+    def test_it_counts_no_columns_when_the_limit_hides_them(self) -> None:
+        """Ensure `report_top_columns_limit: 0` keeps the count of drifting columns out too."""
+        document = render_markdown(_with_summary(_summary(report_limit=0)))
+
+        assert (
+            "10 rows differ, 1% of the 1,000 source rows, above the threshold of 0%.\n" in document
+        )
+        assert "column" not in _visible(document).lower().replace("| column |", "")
+
+    def test_it_says_every_row_matches(self) -> None:
+        """Ensure a clean run reads as one sentence."""
+        summary = _summary(
+            added_count=0, removed_count=0, changed_count=0, column_mismatches={}, is_match=True
+        )
+
+        document = render_markdown(_with_summary(summary))
+
+        assert "### Veridelta: PASSED (Perfect Match)\n\nEvery row matches.\n\n" in document

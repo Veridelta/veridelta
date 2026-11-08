@@ -139,6 +139,7 @@ def build_summary(
         changed_count=changed_count,
         column_mismatches=column_mismatches,
         is_match=mismatch_ratio_of(total_mismatches, source_total) <= diff.threshold,
+        threshold=diff.threshold,
         accepted_count=accepted_count,
         report_limit=diff.report_top_columns_limit,
         artifacts_written=artifacts_written,

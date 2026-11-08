@@ -251,8 +251,8 @@ class TestReport:
         """Ensure a reader without JavaScript sees every row, and no pager or filter that does nothing.
 
         Every mismatched value and every added and removed row shows at once.
-        The 55 full changed rows sit in a native disclosure, which opens
-        without the script.
+        The 55 changed rows side by side sit in a native disclosure, which
+        opens without the script.
         """
         page = _open_local_only(browser, base_url, java_script_enabled=False)
         page.goto(base_url + "report.html")
@@ -272,19 +272,63 @@ class TestReport:
         assert before == {"rows": _MISMATCHED_VALUES + 10, "pagers": 0, "filters": 0}
         assert after["rows"] == _MISMATCHED_VALUES + 65
 
-    def test_the_first_tab_reaches_the_ci_run_named_by_its_address(
+    def test_the_first_tab_reaches_the_run_record_and_then_its_ci_run(
         self, browser: "Browser", base_url: str
     ) -> None:
-        """Ensure the run record's link takes focus before the tables, named by the run it opens."""
+        """Ensure the header's link takes focus first, and following it leads to the CI run.
+
+        The CI run's link is named by the address it opens.
+        """
+        page = _open_local_only(browser, base_url)
+        page.goto(base_url + "report.html")
+        focused = "() => [document.activeElement.tagName, document.activeElement.textContent]"
+
+        page.keyboard.press("Tab")
+        first = page.evaluate(focused)
+        page.keyboard.press("Enter")
+        page.keyboard.press("Tab")
+        after_the_link = page.evaluate(focused)
+        page.context.close()
+
+        assert first == ["A", "Run record"]
+        assert after_the_link == ["A", "https://github.com/acme/orders/actions/runs/123"]
+
+    def test_the_theme_control_overrides_the_system_and_is_remembered(
+        self, browser: "Browser", base_url: str
+    ) -> None:
+        """Ensure a reader on a light system can choose dark, and finds it again on the next open."""
+        page = _open_local_only(browser, base_url, color_scheme="light")
+        page.goto(base_url + "report.html")
+        background = "() => getComputedStyle(document.body).backgroundColor"
+
+        before = page.evaluate(background)
+        page.select_option(".theme select", "dark")
+        after = page.evaluate(background)
+        page.reload()
+        remembered = page.evaluate(
+            f"() => [document.documentElement.dataset.theme, ({background})()]"
+        )
+        page.context.close()
+
+        assert before == "rgb(255, 255, 255)"
+        assert after == "rgb(13, 17, 23)"
+        assert remembered == ["dark", "rgb(13, 17, 23)"]
+
+    def test_a_count_in_the_ledger_opens_the_tab_it_counts(
+        self, browser: "Browser", base_url: str
+    ) -> None:
+        """Ensure the link under a count shows those rows, which a tab otherwise hides."""
         page = _open_local_only(browser, base_url)
         page.goto(base_url + "report.html")
 
-        page.keyboard.press("Tab")
-        focused = page.evaluate(
-            "() => [document.activeElement.tagName, document.activeElement.textContent]"
+        page.click(".legend a[href='#removed-rows-panel']")
+        shown = page.evaluate(
+            """() => [...document.querySelectorAll('[role=tabpanel]')]
+              .filter(panel => !panel.hidden).map(panel => panel.dataset.kind)"""
         )
+        page.context.close()
 
-        assert focused == ["A", "https://github.com/acme/orders/actions/runs/123"]
+        assert shown == ["Removed rows"]
 
     def test_arrow_keys_move_between_the_kinds_of_rows(
         self, browser: "Browser", base_url: str
@@ -415,37 +459,44 @@ class TestReport:
             "hash": "",
         }
 
-    def test_a_pattern_button_shows_its_values_and_names_its_pattern(
+    def test_a_pattern_chip_filters_to_its_values_and_presses_again_to_clear(
         self, browser: "Browser", base_url: str
     ) -> None:
-        """Ensure Tab reaches a pattern's button, named by its pattern, and Enter filters to it.
+        """Ensure Tab reaches a pattern's chip, named by its pattern, and Enter toggles its filter.
 
         The sample's one pattern is the 28 amounts that each rose by 1.0.
         """
         page = _open_local_only(browser, base_url)
         page.goto(base_url + "report.html")
         names: list[str | None] = []
-        while len(names) < 20 and not any(
-            name and name.startswith("Show these values") for name in names
-        ):
+        while len(names) < 20 and "amount rose by 1.0 \u00b7 28 values" not in names:
             page.keyboard.press("Tab")
-            names.append(page.evaluate("() => document.activeElement.getAttribute('aria-label')"))
+            names.append(page.evaluate("() => document.activeElement.textContent"))
+        read_state = """() => ({
+          status: document.querySelector('.filter-status').textContent,
+          column: document.querySelector('#filter-column').value,
+          pressed: document.activeElement.getAttribute('aria-pressed'),
+          hash: decodeURIComponent(location.hash),
+        })"""
 
         page.keyboard.press("Enter")
-        state = page.evaluate(
-            """() => ({
-              status: document.querySelector('.filter-status').textContent,
-              column: document.querySelector('#filter-column').value,
-              hash: decodeURIComponent(location.hash),
-            })"""
-        )
+        pressed = page.evaluate(read_state)
+        page.keyboard.press("Enter")
+        released = page.evaluate(read_state)
         page.context.close()
 
-        assert names[-1] == "Show these values: 28 values in amount rose by 1.0", names
-        assert state == {
+        assert names[-1] == "amount rose by 1.0 \u00b7 28 values", names
+        assert pressed == {
             "status": f"Showing 28 of {_MISMATCHED_VALUES} mismatched values, in one pattern",
             "column": "amount",
+            "pressed": "true",
             "hash": "#column=amount&difference=+1.0",
+        }
+        assert released == {
+            "status": f"Showing {_MISMATCHED_VALUES} of {_MISMATCHED_VALUES} mismatched values",
+            "column": "",
+            "pressed": "false",
+            "hash": "",
         }
 
     def test_arrow_keys_scroll_a_wide_table(self, browser: "Browser", base_url: str) -> None:

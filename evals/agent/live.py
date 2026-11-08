@@ -15,7 +15,7 @@ from the command line alone, and no run starts without one.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import anyio
 
@@ -23,6 +23,8 @@ from evals.agent.agents import AgentRun, ToolCall
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from claude_agent_sdk.types import McpServerConfig
 
     from evals.agent.fixtures import Fixture
     from evals.agent.tasks import Task
@@ -87,7 +89,8 @@ class Session:
         mcp_servers (dict[str, dict[str, Any]]): The one server, started over
             stdio from the fixture's folder with its folder as the root.
         system_prompt (str): What the model is told first.
-        permission_mode (str): `dontAsk`, so nothing outside `allowed_tools` runs.
+        permission_mode (Literal["dontAsk"]): `dontAsk`, so nothing outside
+            `allowed_tools` runs.
     """
 
     prompt: str
@@ -99,7 +102,7 @@ class Session:
     allowed_tools: list[str]
     mcp_servers: dict[str, dict[str, Any]]
     system_prompt: str = SYSTEM_PROMPT
-    permission_mode: str = "dontAsk"
+    permission_mode: Literal["dontAsk"] = "dontAsk"
 
 
 def plan_session(task: Task, fixture: Fixture, model: str) -> Session:
@@ -251,7 +254,9 @@ class LiveAgent:
             max_budget_usd=session.max_budget_usd,
             tools=session.tools,
             allowed_tools=session.allowed_tools,
-            mcp_servers=session.mcp_servers,
+            # The session holds the server as a plain dict, so a test reads it without
+            # the SDK; `plan_session` builds it in the SDK's stdio shape.
+            mcp_servers=cast("dict[str, McpServerConfig]", session.mcp_servers),
             strict_mcp_config=True,
             permission_mode=session.permission_mode,
             system_prompt=session.system_prompt,

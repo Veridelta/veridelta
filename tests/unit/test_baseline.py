@@ -269,10 +269,12 @@ class TestAcceptedDrift:
 
         assert "Accepted:      1\n" in accepted.summary.report_summary
         assert "| Accepted by the baseline | 1 |" in render_markdown(accepted)
-        assert ">Accepted<" in render_html(accepted)
+        assert "<span class='count'>1</span> accepted by the baseline" in render_html(accepted)
+        assert "data-kind='Accepted rows' data-count='1'" in render_html(accepted)
         assert "Accepted" not in plain.summary.report_summary
         assert "Accepted by the baseline" not in render_markdown(plain)
-        assert ">Accepted<" not in render_html(plain)
+        assert "accepted by the baseline" not in render_html(plain)
+        assert "accepted-rows-panel" not in render_html(plain)
 
 
 class TestBaselineFile:
