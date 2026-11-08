@@ -14,6 +14,7 @@ lists changed values only when asked, and ends with the same counts as JSON in
 an HTML comment, which a reader never sees and a script can parse.
 """
 
+import base64
 import html
 import json
 import math
@@ -21,6 +22,7 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from importlib.resources import files
 from itertools import islice
 from pathlib import Path
 from typing import Any, Final, NamedTuple
@@ -48,6 +50,16 @@ _PAGE_SIZE: Final[int] = 25
 Every row is in the markup, so a reader without JavaScript sees them all.
 """
 
+_SYMBOL: Final[str] = base64.b64encode(
+    files("veridelta").joinpath("symbol.png").read_bytes()
+).decode()
+"""The Veridelta symbol, embedded in the page as a data URI, so the file stays standalone.
+
+`symbol.png` is `docs/assets/veridelta-symbol.png` resized to 64 pixels tall,
+twice the height it shows at, which keeps the page under 10 KB larger. An
+inline SVG replaces it once the brand has one.
+"""
+
 _DARK_TOKENS: Final[str] = """
     color-scheme: dark;
     --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
@@ -73,6 +85,8 @@ body {{
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }}
 h1 {{ font-size: 1.35rem; margin: 0; }}
+.brand {{ display: flex; align-items: center; gap: .75rem; }}
+.symbol {{ height: 2rem; width: auto; flex: none; }}
 a {{ color: var(--link); }}
 h2 {{ font-size: 1.1rem; margin: 2rem 0 .5rem; }}
 h3 {{ font-size: 1rem; margin: 1.25rem 0 .25rem; }}
@@ -923,8 +937,10 @@ def _header(provenance: RunProvenance | None, generated: str) -> str:
             parts.append(f"commit <code>{provenance.commit_sha[:_SHORT_SHA]}</code>")
         parts.append('<a href="#run-record">Run record</a>')
     return (
-        '<header class="top"><div><h1>Veridelta report</h1>'
-        f'<p class="sub">{" &middot; ".join(parts)}</p></div></header>'
+        '<header class="top"><div class="brand">'
+        f'<img class="symbol" src="data:image/png;base64,{_SYMBOL}" alt="" width="69" height="64">'
+        "<div><h1>Veridelta report</h1>"
+        f'<p class="sub">{" &middot; ".join(parts)}</p></div></div></header>'
     )
 
 

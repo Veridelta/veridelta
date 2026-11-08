@@ -3,6 +3,7 @@
 
 """Unit tests for the standalone HTML report generator."""
 
+import base64
 import json
 import re
 from dataclasses import replace
@@ -706,7 +707,10 @@ class TestHTMLReport:
 
         page = render_html(_recorded(_result(), record))
 
-        assert "<img" not in page
+        tags = _Tags()
+        tags.feed(page)
+        assert tags.hazards == []
+        assert "<img src=x" not in page
         assert "&lt;img src=x onerror=alert(1)&gt;.yaml" in page
 
     def test_it_shows_no_run_record_without_one(self) -> None:
@@ -727,7 +731,25 @@ class TestHTMLReport:
         assert "commit" not in header
         assert "<code>" not in header
 
-    def test_it_offers_light_and_dark_from_one_set_of_tokens(self) -> None:
+    def test_it_carries_the_symbol_inside_the_page(self) -> None:
+        """Ensure the brand's symbol is embedded, decorative, and small.
+
+        A data URI keeps the file standalone, an empty `alt` keeps it out of a
+        screen reader's way, and the size bound keeps the page light.
+        """
+        document = render_html(_result())
+
+        found = re.search(
+            r'<img class="symbol" src="data:image/png;base64,([A-Za-z0-9+/=]+)" alt="" '
+            r'width="69" height="64">',
+            document,
+        )
+        assert found
+        image = base64.b64decode(found.group(1))
+        assert image.startswith(b"\x89PNG")
+        assert len(image) < 10_000
+        assert document.count("data:image") == 1
+
         """Ensure the page follows the system's theme, and the script's control overrides it.
 
         The dark tokens apply under the system's preference unless the control
