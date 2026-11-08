@@ -148,6 +148,13 @@
       "title": "Is Match",
       "type": "boolean"
     },
+    "threshold": {
+      "default": 0.0,
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Threshold",
+      "type": "number"
+    },
     "accepted_count": {
       "default": 0,
       "minimum": 0,

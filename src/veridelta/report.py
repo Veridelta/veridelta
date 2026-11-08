@@ -48,124 +48,195 @@ _PAGE_SIZE: Final[int] = 25
 Every row is in the markup, so a reader without JavaScript sees them all.
 """
 
-_STYLE: Final[str] = """
-:root {
-  --bg: #ffffff; --fg: #1b1f24; --muted: #5c6773; --line: #d8dee4;
-  --pass: #1a7f37; --fail: #cf222e; --chip: #f2f4f7; --link: #0969da;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
+_DARK_TOKENS: Final[str] = """
+    color-scheme: dark;
     --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
     --pass: #3fb950; --fail: #f85149; --chip: #161b22; --link: #4493f8;
-  }
-}
-* { box-sizing: border-box; }
-body {
+    --matched: #8b949e; --removed: #e6edf3; --added: #f85149;
+"""
+"""The colors of the dark theme, which the system's preference or the theme control selects."""
+
+_STYLE: Final[str] = f"""
+:root {{
+  color-scheme: light;
+  --bg: #ffffff; --fg: #1b1f24; --muted: #5c6773; --line: #d8dee4;
+  --pass: #1a7f37; --fail: #cf222e; --chip: #f2f4f7; --link: #0969da;
+  --matched: #6e7781; --removed: #1b1f24; --added: #cf222e;
+}}
+@media (prefers-color-scheme: dark) {{
+  :root:not([data-theme="light"]) {{{_DARK_TOKENS}  }}
+}}
+:root[data-theme="dark"] {{{_DARK_TOKENS}}}
+* {{ box-sizing: border-box; }}
+body {{
   margin: 0; padding: 2rem; background: var(--bg); color: var(--fg);
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-}
-h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-a { color: var(--link); }
-h2 { font-size: 1.1rem; margin: 2rem 0 .75rem; }
-.sub { color: var(--muted); margin: 0; font-size: .9rem; }
-.banner {
-  display: flex; align-items: center; gap: 1rem; margin: .75rem 0 1.5rem;
+}}
+h1 {{ font-size: 1.35rem; margin: 0; }}
+a {{ color: var(--link); }}
+h2 {{ font-size: 1.1rem; margin: 2rem 0 .5rem; }}
+h3 {{ font-size: 1rem; margin: 1.25rem 0 .25rem; }}
+code {{ font-size: .9em; }}
+.top {{
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end;
+  gap: .5rem 1.5rem; padding-bottom: .75rem; border-bottom: 1px solid var(--line);
+}}
+.sub {{ color: var(--muted); margin: 0; font-size: .9rem; overflow-wrap: anywhere; }}
+.theme {{ font-size: .85rem; color: var(--muted); }}
+.theme select {{
+  font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 5px; padding: .2rem .4rem; margin-left: .3rem;
+}}
+.banner {{
+  display: flex; align-items: flex-start; gap: 1rem; margin: 1.25rem 0 0;
   border: 2px solid var(--line); border-radius: 8px; padding: .9rem 1.2rem;
-}
-.banner.pass { border-color: var(--pass); }
-.banner.fail { border-color: var(--fail); }
-.banner p { margin: 0; }
-.glyph { font-size: 2rem; font-weight: 700; line-height: 1; }
-.banner.pass .glyph { color: var(--pass); }
-.banner.fail .glyph { color: var(--fail); }
-.verdict { font-size: 1.6rem; font-weight: 700; letter-spacing: .02em; line-height: 1.2; }
-.verdict.pass { color: var(--pass); }
-.verdict.fail { color: var(--fail); }
-.headline { font-size: 1.05rem; }
-.bar { display: block; width: 100%; height: 6px; margin-top: .4rem; border-radius: 3px; }
-.bar .track { fill: var(--line); }
-.bar .filled { fill: var(--muted); }
-td.share { min-width: 9rem; }
-td.share .bar { display: inline-block; width: 6rem; margin: 0 .6rem 0 0; vertical-align: middle; }
-[role="tablist"] {
+}}
+.banner.pass {{ border-color: var(--pass); }}
+.banner.fail {{ border-color: var(--fail); }}
+.banner > div {{ flex: 1; min-width: 0; }}
+.banner p {{ margin: 0; }}
+.glyph {{ font-size: 2rem; font-weight: 700; line-height: 1; }}
+.banner.pass .glyph {{ color: var(--pass); }}
+.banner.fail .glyph {{ color: var(--fail); }}
+.verdict {{ font-size: 1.6rem; font-weight: 700; letter-spacing: .02em; line-height: 1.2; }}
+.verdict.pass {{ color: var(--pass); }}
+.verdict.fail {{ color: var(--fail); }}
+.headline {{ font-size: 1.05rem; }}
+.meter {{ display: block; width: 100%; max-width: 32rem; height: 8px; margin-top: .6rem; }}
+.meter .track {{ fill: var(--line); }}
+.banner.pass .meter .filled {{ fill: var(--pass); }}
+.banner.fail .meter .filled {{ fill: var(--fail); }}
+.meter .tick {{ fill: var(--fg); }}
+.hint {{ color: var(--muted); font-size: .85rem; margin: 0 0 .6rem; }}
+.wrap + .hint {{ margin-top: .4rem; }}
+.ledger {{ display: block; width: 100%; height: 18px; border-radius: 4px; margin: .25rem 0 .5rem; }}
+.ledger .matched {{ fill: var(--matched); }}
+.ledger .changed {{ fill: var(--fail); }}
+.ledger .removed {{ fill: var(--removed); }}
+.ledger .accepted {{ fill: var(--line); }}
+.ledger .added {{ fill: var(--added); fill-opacity: .35; }}
+.legend {{ display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; margin: 0; padding: 0; list-style: none; }}
+.legend li {{ display: flex; align-items: center; gap: .45rem; }}
+.legend .count {{ font-weight: 600; font-variant-numeric: tabular-nums; }}
+.legend .absent {{ color: var(--muted); }}
+.swatch {{ width: 12px; height: 12px; border-radius: 2px; flex: none; }}
+.swatch.matched {{ background: var(--matched); }}
+.swatch.changed {{ background: var(--fail); }}
+.swatch.removed {{ background: var(--removed); }}
+.swatch.accepted {{ background: var(--line); }}
+.swatch.added {{ background: var(--added); opacity: .35; }}
+.bar {{ display: inline-block; width: 6rem; height: 6px; margin: 0 .6rem 0 0; vertical-align: middle; }}
+.bar .track {{ fill: var(--line); }}
+.bar .filled {{ fill: var(--muted); }}
+td.share {{ min-width: 9rem; }}
+tr.quiet td {{ color: var(--muted); }}
+[role="tablist"] {{
   display: flex; flex-wrap: wrap; gap: .25rem; margin-top: 2rem;
   border-bottom: 1px solid var(--line);
-}
-[role="tab"] {
+}}
+[role="tab"] {{
   border: 0; border-bottom: 3px solid transparent; background: none; color: var(--muted);
   padding: .45rem .9rem; font: inherit; font-size: .95rem; cursor: pointer; margin-bottom: -1px;
-}
-[role="tab"][aria-selected="true"] { color: var(--fg); font-weight: 600; border-bottom-color: var(--link); }
-[role="tabpanel"] > h2 { margin-top: 1rem; }
-.cards { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1rem; }
-.card {
-  border: 1px solid var(--line); border-radius: 6px; padding: .75rem 1rem;
-  min-width: 8.5rem; background: var(--chip);
-}
-.card .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; }
-.card .value { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.record { margin: 0 0 1.5rem; }
-.record h2 { margin-top: 0; }
-.record dl {
+}}
+[role="tab"][aria-selected="true"] {{ color: var(--fg); font-weight: 600; border-bottom-color: var(--link); }}
+[role="tabpanel"] > h2 {{ margin-top: 1rem; }}
+.sr-only {{
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}}
+.record {{
+  margin: 2rem 0 0; padding: .9rem 1.2rem; border: 1px dashed var(--line); border-radius: 6px;
+}}
+.record h2 {{ margin-top: 0; }}
+.record dl {{
   display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .3rem 1rem;
   margin: 0; font-size: .9rem;
-}
-.record dt { color: var(--muted); }
-.record dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.record .absent { color: var(--muted); }
-.note {
+}}
+.record dt {{ color: var(--muted); }}
+.record dd {{ margin: 0; min-width: 0; overflow-wrap: anywhere; }}
+.record .absent {{ color: var(--muted); }}
+.note {{
   border-left: 3px solid var(--line); padding: .5rem .9rem; margin: 1rem 0;
   color: var(--muted); font-size: .9rem;
-}
-table { border-collapse: collapse; width: 100%; font-size: .9rem; }
-th, td {
+}}
+table {{ border-collapse: collapse; width: 100%; font-size: .9rem; }}
+th, td {{
   border-bottom: 1px solid var(--line); padding: .4rem .6rem;
   text-align: left; white-space: nowrap;
-}
-th { color: var(--muted); font-weight: 600; }
-td.null { color: var(--muted); font-style: italic; }
-.wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
-.pager { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; }
-.pager[hidden] { display: none; }
-.pager button {
+}}
+th {{ color: var(--muted); font-weight: 600; }}
+td.null {{ color: var(--muted); font-style: italic; }}
+.wrap {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }}
+.pager {{ display: flex; align-items: center; gap: .5rem; margin-top: .6rem; }}
+.pager[hidden] {{ display: none; }}
+.pager button {{
   border: 1px solid var(--line); background: var(--chip); color: var(--fg);
   border-radius: 5px; padding: .3rem .7rem; cursor: pointer; font-size: .85rem;
-}
-.pager button[aria-disabled="true"] { opacity: .45; cursor: default; }
-.pager .status { color: var(--muted); font-size: .85rem; }
-.empty { color: var(--muted); padding: .75rem; }
-h3 { font-size: 1rem; margin: 1.25rem 0 .25rem; }
-.hint { color: var(--muted); font-size: .85rem; margin: 0 0 .6rem; }
-.wrap + .hint { margin-top: .4rem; }
-td.differs { font-weight: 600; background: var(--chip); }
-td.differs .sign { color: var(--fail); margin-right: .15rem; }
-td.difference { font-variant-numeric: tabular-nums; }
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 0 0 .5rem; }
-.filters label { font-size: .85rem; color: var(--muted); }
-.filters select, .filters input, .filters button {
+}}
+.pager button[aria-disabled="true"] {{ opacity: .45; cursor: default; }}
+.pager .status {{ color: var(--muted); font-size: .85rem; }}
+.empty {{ color: var(--muted); padding: .75rem; }}
+td.differs {{ font-weight: 600; background: var(--chip); }}
+td.differs .sign {{ color: var(--fail); margin-right: .15rem; }}
+td.differs .was {{ font-weight: 400; color: var(--muted); margin-right: .35rem; }}
+td.forgiven .sign {{ color: var(--muted); margin: 0 .15rem; }}
+td.difference {{ font-variant-numeric: tabular-nums; }}
+.filters {{ display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 0 0 .5rem; }}
+.filters label {{ font-size: .85rem; color: var(--muted); }}
+.filters select, .filters input, .filters button {{
   font: inherit; font-size: .85rem; color: var(--fg); background: var(--bg);
   border: 1px solid var(--line); border-radius: 5px; padding: .25rem .5rem;
-}
-.filters button { background: var(--chip); cursor: pointer; }
-.filter-status { color: var(--muted); font-size: .85rem; margin: 0 0 .5rem; }
-details.full-rows { margin-top: 1.25rem; }
-ul.patterns { margin: 0 0 .5rem; padding-left: 1.2rem; font-size: .9rem; }
-ul.patterns li { margin: .3rem 0; }
-.show-pattern {
-  font: inherit; font-size: .8rem; color: var(--link); background: none; cursor: pointer;
-  border: 1px solid var(--line); border-radius: 5px; padding: .1rem .5rem; margin-left: .25rem;
-}
-details.full-rows summary { cursor: pointer; color: var(--link); margin-bottom: .6rem; }
-@media (max-width: 40rem) {
-  body { padding: 1rem; }
-  .card { min-width: 0; flex: 1 1 8rem; }
-  .record dl { grid-template-columns: minmax(0, 1fr); }
-  .record dd { margin-bottom: .4rem; }
-  .verdict { font-size: 1.35rem; }
-}
+}}
+.filters button {{ background: var(--chip); cursor: pointer; }}
+.filter-status {{ color: var(--muted); font-size: .85rem; margin: 0 0 .5rem; }}
+details.full-rows {{ margin-top: 1.25rem; }}
+ul.patterns {{ margin: 0 0 .5rem; padding-left: 1.2rem; font-size: .9rem; }}
+ul.patterns li {{ margin: .3rem 0; }}
+ul.patterns.chips {{ display: flex; flex-wrap: wrap; gap: .4rem; padding: 0; list-style: none; }}
+ul.patterns.chips li {{ margin: 0; }}
+.chip {{
+  font: inherit; font-size: .85rem; color: var(--fg); background: var(--bg); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 999px; padding: .2rem .7rem;
+}}
+.chip[aria-pressed="true"] {{ background: var(--fg); color: var(--bg); border-color: var(--fg); }}
+details.full-rows summary {{ cursor: pointer; color: var(--link); margin-bottom: .6rem; }}
+@media (max-width: 40rem) {{
+  body {{ padding: 1rem; }}
+  .record dl {{ grid-template-columns: minmax(0, 1fr); }}
+  .record dd {{ margin-bottom: .4rem; }}
+  .verdict {{ font-size: 1.35rem; }}
+}}
 """
 
 _SCRIPT: Final[str] = """
+// A theme control in the header: the system's preference, light, or dark. The
+// choice is kept in this browser, and without the script the page follows the system.
+function theme() {
+  const key = 'veridelta-theme';
+  let chosen = '';
+  try { chosen = localStorage.getItem(key) || ''; } catch (error) { /* Storage may be off. */ }
+  const label = document.createElement('label');
+  label.className = 'theme';
+  label.textContent = 'Theme';
+  const select = document.createElement('select');
+  [['', 'System'], ['light', 'Light'], ['dark', 'Dark']].forEach(([value, name]) => {
+    select.append(new Option(name, value, false, value === chosen));
+  });
+  function apply() {
+    if (select.value) document.documentElement.dataset.theme = select.value;
+    else delete document.documentElement.dataset.theme;
+    try {
+      if (select.value) localStorage.setItem(key, select.value);
+      else localStorage.removeItem(key);
+    } catch (error) { /* The choice lasts for this page alone. */ }
+  }
+  select.addEventListener('change', apply);
+  label.append(select);
+  document.querySelector('.top').append(label);
+  apply();
+}
+theme();
+
 // Pages a table's rows, counting only the rows its filters keep. A table of
 // one page has no pager, but its rows still follow the filters.
 function paginate(root) {
@@ -201,8 +272,9 @@ function paginate(root) {
 }
 document.querySelectorAll('[data-table]').forEach(paginate);
 
-// Filters for the mismatched values: a column, and text in the key. The state
-// lives in the address's fragment, so a filtered view can be linked.
+// Filters for the mismatched values: a column, text in the key, and a pattern,
+// which becomes a pressed chip. The state lives in the address's fragment, so
+// a filtered view can be linked.
 function filters(root) {
   const rows = Array.from(root.querySelectorAll('tbody tr'));
   const columns = [...new Set(rows.map(row => row.dataset.column))].sort();
@@ -233,7 +305,21 @@ function filters(root) {
   root.before(group, status);
   const all = rows.length.toLocaleString('en-US');
   // A pattern narrows the values to one new value or one difference in a column.
-  let pattern = {target: '', difference: ''};
+  let pattern = {column: '', target: '', difference: ''};
+  const panel = root.closest('section') || document;
+  const chips = Array.from(panel.querySelectorAll('li.pattern')).map(item => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'chip';
+    chip.textContent = `${item.dataset.label} \\u00b7 ${item.dataset.count} values`;
+    chip.setAttribute('aria-pressed', 'false');
+    item.textContent = '';
+    item.append(chip);
+    return [chip, item.dataset];
+  });
+  panel.querySelectorAll('ul.patterns').forEach(list => list.classList.add('chips'));
+  const samePattern = data => data.column === pattern.column
+    && (data.target || '') === pattern.target && (data.difference || '') === pattern.difference;
   function apply() {
     const wanted = key.value.trim().toLowerCase();
     let kept = 0;
@@ -246,6 +332,7 @@ function filters(root) {
     });
     const scope = pattern.target || pattern.difference ? ', in one pattern' : '';
     status.textContent = `Showing ${kept.toLocaleString('en-US')} of ${all} mismatched values${scope}`;
+    chips.forEach(([chip, data]) => chip.setAttribute('aria-pressed', String(samePattern(data))));
     root.redraw();
     const state = new URLSearchParams();
     if (column.value) state.set('column', column.value);
@@ -262,34 +349,30 @@ function filters(root) {
   const linked = new URLSearchParams(location.hash.slice(1));
   if (columns.includes(linked.get('column'))) column.value = linked.get('column');
   key.value = linked.get('key') || '';
-  pattern = {target: linked.get('target') || '', difference: linked.get('difference') || ''};
-  const ownFilter = () => { pattern = {target: '', difference: ''}; apply(); };
+  pattern = {
+    column: column.value,
+    target: linked.get('target') || '',
+    difference: linked.get('difference') || '',
+  };
+  const ownFilter = () => { pattern = {column: '', target: '', difference: ''}; apply(); };
   column.addEventListener('change', ownFilter);
   key.addEventListener('input', ownFilter);
   clear.addEventListener('click', () => { column.value = ''; key.value = ''; ownFilter(); });
-  const panel = root.closest('section') || document;
-  panel.querySelectorAll('li.pattern').forEach(item => {
-    const show = document.createElement('button');
-    show.type = 'button';
-    show.className = 'show-pattern';
-    show.textContent = 'Show these values';
-    // The name starts with the visible words, for voice control, and the
-    // sentence's first clause tells one button from the next.
-    show.setAttribute('aria-label', `Show these values: ${item.textContent.split('. ')[0]}`);
-    show.addEventListener('click', () => {
-      column.value = item.dataset.column;
-      key.value = '';
-      pattern = {target: item.dataset.target || '', difference: item.dataset.difference || ''};
-      apply();
-    });
-    item.append(' ', show);
-  });
+  chips.forEach(([chip, data]) => chip.addEventListener('click', () => {
+    // Pressing a chip again lets go of the column it chose as well as the pattern.
+    if (samePattern(data)) { column.value = ''; ownFilter(); return; }
+    column.value = data.column;
+    key.value = '';
+    pattern = {column: data.column, target: data.target || '', difference: data.difference || ''};
+    apply();
+  }));
   apply();
 }
 document.querySelectorAll('[data-filterable]').forEach(filters);
 
 // One tab per kind of row. Arrow keys, Home, and End move between tabs, and
-// only the selected tab takes Tab focus, as the ARIA tabs pattern asks.
+// only the selected tab takes Tab focus, as the ARIA tabs pattern asks. A
+// panel's own heading leaves the screen, since its tab now names it.
 function tabs(root) {
   const panels = Array.from(root.querySelectorAll(':scope > section[data-kind]'));
   if (panels.length < 2) return;
@@ -303,9 +386,10 @@ function tabs(root) {
     button.setAttribute('role', 'tab');
     button.setAttribute('aria-controls', panel.id);
     const count = Number(panel.dataset.count).toLocaleString('en-US');
-    button.textContent = `${panel.dataset.kind} \u00b7 ${count}`;
+    button.textContent = `${panel.dataset.kind} \\u00b7 ${count}`;
     panel.setAttribute('role', 'tabpanel');
     panel.setAttribute('aria-labelledby', button.id);
+    panel.querySelector(':scope > h2').classList.add('sr-only');
     list.append(button);
     return button;
   });
@@ -327,6 +411,11 @@ function tabs(root) {
     select((target + buttons.length) % buttons.length, true);
   });
   buttons.forEach((button, index) => button.addEventListener('click', () => select(index, false)));
+  // A count in the row ledger links to its panel, so the link opens that tab.
+  document.querySelectorAll('.legend a').forEach(link => link.addEventListener('click', () => {
+    const index = panels.findIndex(panel => `#${panel.id}` === link.getAttribute('href'));
+    if (index >= 0) select(index, false);
+  }));
   root.prepend(list);
   const firstWithRows = panels.findIndex(panel => Number(panel.dataset.count) > 0);
   select(Math.max(firstWithRows, 0), false);
@@ -364,10 +453,12 @@ def _slug(title: str) -> str:
     return re.sub(r"\W+", "-", title.lower())
 
 
-def _table(title: str, frame: pl.DataFrame, max_rows: int) -> str:
+def _table(title: str, frame: pl.DataFrame, max_rows: int, *, hint: str = "") -> str:
     """Render one table section under its heading, with every embedded row in the markup."""
     heading_id = _slug(title)
     heading = f"<h2 id='{heading_id}'>{_escape(title)}</h2>"
+    if hint:
+        heading += f"\n<p class='hint'>{hint}</p>"
     return f"{heading}\n{_table_body(heading_id, title, frame, max_rows)}"
 
 
@@ -562,11 +653,16 @@ def _pattern_sentence(pattern: _Pattern) -> str:
     )
 
 
+def _pattern_label(pattern: _Pattern) -> str:
+    """Say a pattern in a few words, for the chip the script makes of it."""
+    return f"{pattern.column} {_PATTERN_VERBS[pattern.kind]} {pattern.shown_value}"
+
+
 def _patterns_html(listed: Sequence[_MismatchedValue], total: int) -> str:
     """List the patterns among the listed values, each tagged with the filter that shows it.
 
-    Without the script, a pattern is a sentence. The script adds a button that
-    filters the mismatched values to it.
+    Without the script, a pattern is a sentence. The script turns each into a
+    chip that filters the mismatched values to it.
     """
     heading = "<h3 id='patterns'>Patterns</h3>"
     scope = "<p class='hint'>Changes that two or more of the mismatched values share.</p>"
@@ -580,6 +676,7 @@ def _patterns_html(listed: Sequence[_MismatchedValue], total: int) -> str:
         return f"{heading}\n{scope}\n<p class='empty'>No two values share a change.</p>"
     items = "".join(
         f"<li class='pattern' data-column='{_escape(pattern.column)}' "
+        f"data-label='{_escape(_pattern_label(pattern))}' data-count='{len(pattern.keys)}' "
         + (
             f"data-target='{_escape(pattern.shown_value)}'>"
             if pattern.kind == "target"
@@ -596,18 +693,27 @@ def _patterns_html(listed: Sequence[_MismatchedValue], total: int) -> str:
     return f"{heading}\n{scope}\n<ul class='patterns'>{items}</ul>{more}"
 
 
-def _mismatch_view(changed: pl.DataFrame, result: DiffResult, max_rows: int) -> str:
-    """List each mismatched value of the changed rows, the report's default view of them.
+def _listed_values(
+    changed: pl.DataFrame, result: DiffResult, max_rows: int
+) -> list[_MismatchedValue]:
+    """List the mismatched values the report shows, in key order, up to `max_rows` of them.
 
-    `max_rows` caps the values listed, not rows times columns, and the view says
-    when it stops short of every mismatch the run counted. Each row carries its
-    column and key as data, which the script's filters read.
+    `max_rows` caps the values listed, not rows times columns.
     """
     keys = list(result.primary_keys)
     ordered = changed.sort(keys) if keys else changed
-    listed = list(
+    return list(
         islice(_mismatched_values(ordered.head(max_rows), keys, result.compared_columns), max_rows)
     )
+
+
+def _mismatch_view(listed: Sequence[_MismatchedValue], result: DiffResult) -> str:
+    """List each mismatched value of the changed rows, the report's default view of them.
+
+    The view says when it stops short of every mismatch the run counted. Each
+    row carries its column and key as data, which the script's filters read.
+    """
+    keys = list(result.primary_keys)
     total = sum(result.summary.column_mismatches.values())
     heading = "<h3 id='mismatched-values'>Mismatched values</h3>"
     hint = "<p class='hint'>One row per value that differs, as compared after the rules.</p>"
@@ -639,22 +745,116 @@ def _mismatch_view(changed: pl.DataFrame, result: DiffResult, max_rows: int) -> 
     )
 
 
+def _pair_cell(source_value: object, target_value: object, *, differs: bool) -> str:
+    """Render one compared column of a changed row, with both values where they read apart.
+
+    A value that differs carries the source value, muted, before the sign and
+    the target value. A value the rules made match, such as `10.0` and `10.004`
+    within a tolerance, shows both with an approximation sign. Words a screen
+    reader hears replace what the signs say.
+    """
+    source_text = _value_text(source_value)
+    target_text = _value_text(target_value)
+    if differs:
+        return (
+            f"<td class='differs'><span class='was'><span class='sr-only'>source </span>"
+            f"{_escape(source_text)}</span><span class='sign' aria-hidden='true'>&#8800;</span> "
+            f"<span class='sr-only'>target </span>{_escape(target_text)}</td>"
+        )
+    if source_text != target_text:
+        return (
+            f"<td class='forgiven'>{_escape(source_text)}<span class='sign' aria-hidden='true'>"
+            f"&#8776;</span><span class='sr-only'>matches, within the rules, </span>"
+            f"{_escape(target_text)}</td>"
+        )
+    return _cell(target_value)
+
+
+def _side_by_side(changed: pl.DataFrame, result: DiffResult, max_rows: int) -> str:
+    """Render the changed rows one per row, each compared column in one cell with both values.
+
+    The last column names the columns that differ, so a reader hears them
+    without reading every cell.
+    """
+    keys = list(result.primary_keys)
+    shown = (changed.sort(keys) if keys else changed).head(max_rows)
+    truncated = ""
+    if changed.height > max_rows:
+        truncated = (
+            f"<p class='note'>Showing the first {max_rows:,} of {changed.height:,} rows. "
+            "Export artifacts with <code>output_path</code> for the complete set.</p>"
+        )
+    header = "".join(
+        f"<th scope='col'>{_escape(name)}</th>"
+        for name in [*keys, *result.compared_columns, "Differs in"]
+    )
+    rows: list[str] = []
+    for record in shown.iter_rows(named=True):
+        cells = "".join(_cell(record[key]) for key in keys)
+        differing: list[str] = []
+        for column in result.compared_columns:
+            differs = record[f"{column}_is_match"] is False
+            if differs:
+                differing.append(column)
+            cells += _pair_cell(
+                record[f"{column}_source"], record[f"{column}_target"], differs=differs
+            )
+        rows.append(f"<tr>{cells}<td>{_escape(', '.join(differing))}</td></tr>")
+    table = f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+    return truncated + _paged("changed-rows", "Changed rows", table, shown.height, "rows")
+
+
 def _changed_section(
-    changed: pl.DataFrame, result: DiffResult, max_rows: int, *, has_values: bool
+    changed: pl.DataFrame,
+    result: DiffResult,
+    max_rows: int,
+    listed: Sequence[_MismatchedValue] | None,
 ) -> str:
-    """Render the changed rows: mismatched values first, and the full rows one click away.
+    """Render the changed rows: mismatched values first, and the rows side by side one click away.
 
     A pushdown run without a sample holds keys alone, so it keeps the one table.
     """
-    if not has_values or changed.height == 0:
+    if listed is None or changed.height == 0:
         return _table("Changed rows", changed, max_rows)
-    full_rows = _table_body("changed-rows", "Changed rows", changed, max_rows)
     return (
         "<h2 id='changed-rows'>Changed rows</h2>\n"
-        f"{_mismatch_view(changed, result, max_rows)}\n"
-        "<details class='full-rows'><summary>Show the full changed rows, every column side by "
-        f"side ({changed.height:,} rows)</summary>\n{full_rows}\n</details>"
+        f"{_mismatch_view(listed, result)}\n"
+        "<details class='full-rows'><summary>Show the changed rows side by side, every "
+        f"column with both values ({changed.height:,} rows)</summary>\n"
+        f"{_side_by_side(changed, result, max_rows)}\n</details>"
     )
+
+
+def _accepted_section(result: DiffResult) -> str:
+    """List the drift the baseline accepted, by kind and key, with the columns of a changed row.
+
+    A result built without the baseline's entries says so, since the count on
+    its summary still names them.
+    """
+    heading = "<h2 id='accepted-rows'>Accepted rows</h2>"
+    hint = (
+        "<p class='hint'>Drift the baseline accepts, which the counts and the verdict leave out."
+        "</p>"
+    )
+    accepted = result.accepted
+    if accepted is None:
+        return f"{heading}\n{hint}\n<p class='empty'>The baseline's entries were not kept.</p>"
+    keys = accepted.primary_keys
+    entries = [
+        *(("Added", key, "whole row") for key in accepted.added),
+        *(("Removed", key, "whole row") for key in accepted.removed),
+        *((("Changed", entry.key, ", ".join(entry.columns))) for entry in accepted.changed),
+    ]
+    header = "".join(
+        f"<th scope='col'>{_escape(name)}</th>" for name in ["Kind", *keys, "Columns accepted"]
+    )
+    body = "".join(
+        f"<tr><td>{kind}</td>{''.join(_cell(key[name]) for name in keys)}"
+        f"<td>{_escape(columns)}</td></tr>"
+        for kind, key, columns in entries
+    )
+    table = f"<table><thead><tr>{header}</tr></thead><tbody>{body}</tbody></table>"
+    return f"{heading}\n{hint}\n{_paged('accepted-rows', 'Accepted rows', table, len(entries), 'rows')}"
 
 
 _ABSENT: Final = "<span class='absent'>None recorded</span>"
@@ -666,6 +866,9 @@ _TREE_STATES: Final = {
     None: "whether tracked files match is unknown",
 }
 """The words for `working_tree_clean`, so the state never rests on a symbol."""
+
+_SHORT_SHA: Final = 7
+"""Characters of a commit hash the header shows. The run record holds the whole hash."""
 
 
 def _hashed_file_html(file: HashedFile | None) -> str:
@@ -706,11 +909,22 @@ def _run_record_html(provenance: RunProvenance | None) -> str:
     )
 
 
-def _card(label: str, value: object, bar: str = "") -> str:
-    """Render one headline metric, with a bar under it when one is given."""
+def _header(provenance: RunProvenance | None, generated: str) -> str:
+    """Render the title line: when the page was made, and what the run read, in a few words.
+
+    The run record at the foot of the page holds the whole of each value.
+    """
+    parts = [f"Generated {generated}"]
+    if provenance is not None:
+        parts.append(f"Veridelta {_escape(provenance.veridelta_version)}")
+        if provenance.config_file is not None:
+            parts.append(f"<code>{_escape(provenance.config_file.path)}</code>")
+        if provenance.commit_sha is not None:
+            parts.append(f"commit <code>{provenance.commit_sha[:_SHORT_SHA]}</code>")
+        parts.append('<a href="#run-record">Run record</a>')
     return (
-        f"<div class='card'><div class='label'>{_escape(label)}</div>"
-        f"<div class='value'>{_escape(value)}</div>{bar}</div>"
+        '<header class="top"><div><h1>Veridelta report</h1>'
+        f'<p class="sub">{" &middot; ".join(parts)}</p></div></header>'
     )
 
 
@@ -732,53 +946,168 @@ def _counted(count: int, singular: str, plural: str) -> str:
     return f"{count:,} {singular if count == 1 else plural}"
 
 
-def _headline(summary: DiffSummary) -> str:
-    """Say in one sentence how much differs, so the verdict needs no table to read it."""
+def _percent(ratio: float, places: int) -> str:
+    """Write a ratio as a percentage with up to `places` decimals, such as `12.5%` or `0%`.
+
+    A ratio too small for the places shows as under the smallest it could show,
+    so a run that differs never reads as one that does not.
+    """
+    rounded = round(Decimal(str(ratio)) * 100, places)
+    if rounded == 0 and ratio > 0:
+        return f"under {Decimal(1).scaleb(-places)}%"
+    return f"{format(rounded.normalize(), 'f')}%"
+
+
+def _headline(summary: DiffSummary, *, columns: bool = True) -> str:
+    """Say in a sentence how much differs, against what, so the verdict needs no table to read it.
+
+    The Markdown summary leaves the count of drifting columns out when
+    `report_top_columns_limit` is 0, as it leaves out the drift table.
+    """
     if summary.is_perfect_match:
         return "Every row matches."
     rows = _counted(summary.total_mismatches, "row differs", "rows differ")
-    if summary.is_match:
-        return f"{rows}, within the threshold"
-    parts = [rows]
-    if summary.column_mismatches:
+    side = "within" if summary.is_match else "above"
+    sentence = (
+        f"{rows}, {_percent(summary.mismatch_ratio, 2)} of the {summary.total_rows_source:,} "
+        f"source rows, {side} the threshold of {_percent(summary.threshold, 4)}."
+    )
+    if columns and summary.column_mismatches:
         drifting = len(summary.column_mismatches)
-        parts.append(_counted(drifting, "column drifts", "columns drift"))
+        sentence += f" {_counted(drifting, 'column drifts', 'columns drift')}."
     if summary.accepted_count:
-        parts.append(f"{summary.accepted_count:,} accepted by the baseline")
-    return " &middot; ".join(parts)
+        more = _counted(summary.accepted_count, "more row was", "more rows were")
+        sentence += f" {more} accepted by the baseline."
+    return sentence
 
 
-def _banner(summary: DiffSummary, generated: str) -> str:
+def _meter(summary: DiffSummary) -> str:
+    """Draw the mismatch ratio against the threshold, which the headline says in words.
+
+    The scale runs to four times the threshold, so a pass shows the room left,
+    or to the whole when the threshold is zero, and always holds the ratio.
+    """
+    scale = max(summary.mismatch_ratio, 4 * summary.threshold if summary.threshold else 1.0)
+    filled = round(100 * summary.mismatch_ratio / scale, 1)
+    tick = round(100 * summary.threshold / scale, 1)
+    return (
+        '<svg class="meter" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true">'
+        '<rect class="track" width="100" height="8"></rect>'
+        f'<rect class="filled" width="{filled}" height="8"></rect>'
+        f'<rect class="tick" x="{min(tick, 99.4)}" width="0.6" height="8"></rect></svg>'
+    )
+
+
+def _banner(summary: DiffSummary) -> str:
     """Render the verdict as the page's largest text, a word beside a glyph, and its headline."""
     verdict = "PASSED" if summary.is_match else "FAILED"
     state = "pass" if summary.is_match else "fail"
     glyph = "&#10003;" if summary.is_match else "&#10005;"
+    meter = "" if summary.is_perfect_match else _meter(summary)
     return (
-        f'<header class="banner {state}">'
+        f'<section class="banner {state}" aria-labelledby="verdict">'
         f'<span class="glyph" aria-hidden="true">{glyph}</span>'
-        f'<div><p class="verdict {state}">{verdict}</p>'
-        f'<p class="headline">{_headline(summary)}</p>'
-        f'<p class="sub">Generated {generated}</p></div></header>'
+        f'<div><p class="verdict {state}" id="verdict">{verdict}</p>'
+        f'<p class="headline">{_headline(summary)}</p>{meter}</div></section>'
     )
 
 
-def _drift_table(summary: DiffSummary) -> str:
-    """Rank the drifting columns, each with its share of the changed rows in words and as a bar."""
-    if not summary.column_mismatches:
-        return "<p class='empty'>No column-level drift.</p>"
-    ranked = sorted(summary.column_mismatches.items(), key=lambda item: -item[1])
-    changed_rows = max(summary.changed_count, 1)
-    rows = "".join(
-        f"<tr><td>{_escape(column)}</td><td>{count:,}</td>"
-        f"<td class='share'>{_bar(round(100 * count / changed_rows, 1))}"
-        f"{round(100 * count / changed_rows):d}%</td></tr>"
-        for column, count in ranked
+class _Ledger(NamedTuple):
+    """The rows of a run by what became of them, which together are every key on either side."""
+
+    matched: int
+    changed: int
+    removed: int
+    accepted: int
+    added: int
+
+
+def _ledger_counts(result: DiffResult) -> _Ledger:
+    """Count the rows by kind, so the five counts add up to the keys on either side.
+
+    The source rows are the matched, changed, and removed rows, plus the rows
+    the baseline accepted on the source side. The added rows, and any accepted
+    added rows, are on the target side alone. A result without the baseline's
+    entries counts every accepted row on the source side.
+    """
+    summary = result.summary
+    accepted_added = len(result.accepted.added) if result.accepted is not None else 0
+    in_source = summary.accepted_count - accepted_added
+    matched = max(
+        summary.total_rows_source - summary.changed_count - summary.removed_count - in_source, 0
     )
-    return _scroll_region(
-        "column-level-drift",
-        "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Mismatches</th>"
-        "<th scope='col'>Share of changed rows</th>"
-        f"</tr></thead><tbody>{rows}</tbody></table>",
+    return _Ledger(
+        matched,
+        summary.changed_count,
+        summary.removed_count,
+        summary.accepted_count,
+        summary.added_count,
+    )
+
+
+_LEDGER_WORDS: Final = {
+    "matched": ("matched", ""),
+    "changed": ("changed", "changed-rows-panel"),
+    "removed": ("removed, only in the source", "removed-rows-panel"),
+    "accepted": ("accepted by the baseline", "accepted-rows-panel"),
+    "added": ("added, only in the target", "added-rows-panel"),
+}
+"""Each kind in the ledger: its words, and the panel its count links to."""
+
+
+def _ledger_html(result: DiffResult) -> str:
+    """Render the rows as one bar of every key on either side, and a legend of counts.
+
+    Added rows have no source row, so their segment is an outline. The legend
+    carries each count in text, and a count links to the rows it counts.
+    """
+    summary = result.summary
+    keys = ", ".join(f"<code>{_escape(key)}</code>" for key in result.primary_keys)
+    shift = summary.volume_shift
+    difference = (
+        "the same count"
+        if shift == 0
+        else _counted(abs(shift), "row more", "rows more")
+        if shift > 0
+        else _counted(abs(shift), "row fewer", "rows fewer")
+    )
+    hint = (
+        f"{summary.total_rows_source:,} source rows and {summary.total_rows_target:,} target rows, "
+        f"{difference}" + (f", matched on {keys}." if keys else ".")
+    )
+    counts = _ledger_counts(result)
+    total = sum(counts)
+    bar = ""
+    if total:
+        position = 0.0
+        segments = ""
+        for kind, count in zip(_Ledger._fields, counts, strict=True):
+            if not count:
+                continue
+            width = round(100 * count / total, 2)
+            segments += f'<rect class="{kind}" x="{position}" width="{width}" height="18"></rect>'
+            position = round(position + width, 2)
+        bar = (
+            '<svg class="ledger" viewBox="0 0 100 18" preserveAspectRatio="none" '
+            f'aria-hidden="true">{segments}</svg>'
+        )
+    items = ""
+    for kind, count in zip(_Ledger._fields, counts, strict=True):
+        if kind == "accepted" and not count:
+            continue
+        words, panel = _LEDGER_WORDS[kind]
+        number = f"<span class='count'>{count:,}</span>"
+        text = (
+            f"{number} {words}"
+            if count or not panel
+            else f"{number} <span class='absent'>{words}</span>"
+        )
+        if count and panel:
+            text = f"<a href='#{panel}'>{text}</a>"
+        items += f"<li><span class='swatch {kind}' aria-hidden='true'></span>{text}</li>"
+    return (
+        '<section aria-labelledby="rows"><h2 id="rows">Rows</h2>'
+        f"<p class='hint'>{hint}</p>{bar}<ul class='legend'>{items}</ul></section>"
     )
 
 
@@ -787,7 +1116,7 @@ _WHITESPACE_WORDS: Final = {
     "right": "whitespace trimmed on the right",
     "both": "whitespace trimmed at both ends",
 }
-"""How a whitespace mode reads in the rules table. `none` trims nothing, so it is no rule."""
+"""How a whitespace mode reads in the columns table. `none` trims nothing, so it is no rule."""
 
 
 _RULE_PHRASES: Final[dict[str, Callable[[Any], str]]] = {
@@ -824,44 +1153,128 @@ def _rule_words(rules: ColumnRules) -> list[str]:
     ]
 
 
-def _rules_section(result: DiffResult) -> str:
-    """List the rules each compared column ran under, so a reviewer sees what was forgiven.
+def _common_change(pattern: _Pattern | None, mismatches: int) -> str:
+    """Say a column's largest pattern in a few words, or that its values share none."""
+    if pattern is None:
+        if mismatches == 1:
+            return "a single value"
+        return "no shared change" if mismatches else "matches in every row"
+    return (
+        f"{len(pattern.keys):,} {_PATTERN_VERBS[pattern.kind]} "
+        f"<code>{_escape(pattern.shown_value)}</code>"
+    )
 
-    Columns with no rule are counted in one line, since a wide table would
-    otherwise list every one of them as exact.
+
+class _ColumnsTable(NamedTuple):
+    """What the columns table shows of each column, and which of its columns the run can fill."""
+
+    mismatches: dict[str, int]
+    rules: dict[str, ColumnRules]
+    ruled: dict[str, list[str]]
+    patterns: dict[str, _Pattern]
+    changed_rows: int
+    counted: bool
+    has_values: bool
+
+    def headers(self) -> list[str]:
+        """Name the table's columns, in order."""
+        return [
+            "Column",
+            *(["Compared"] if self.rules else []),
+            "Rows mismatched",
+            "Share of changed rows",
+            *(["Values forgiven"] if self.counted else []),
+            *(["Most common change"] if self.has_values else []),
+        ]
+
+    def row(self, column: str) -> str:
+        """Render one column's row, quiet when it has no drift."""
+        count = self.mismatches.get(column, 0)
+        cells = f"<td>{_escape(column)}</td>"
+        if self.rules:
+            cells += f"<td>{_escape('; '.join(self.ruled.get(column, ['exactly'])))}</td>"
+        cells += f"<td>{count:,}</td>"
+        share = ""
+        if count:
+            percentage = 100 * count / self.changed_rows
+            share = f"{_bar(round(percentage, 1))}{round(percentage):d}%"
+        cells += f"<td class='share'>{share}</td>"
+        if self.counted:
+            rules = self.rules.get(column)
+            forgiven = None if rules is None else rules.forgiven_count
+            cells += f"<td>{'' if forgiven is None else f'{forgiven:,}'}</td>"
+        if self.has_values:
+            cells += f"<td>{_common_change(self.patterns.get(column), count)}</td>"
+        state = "" if count else " class='quiet'"
+        return f"<tr{state}>{cells}</tr>"
+
+
+def _columns_table(result: DiffResult, listed: Sequence[_MismatchedValue] | None) -> _ColumnsTable:
+    """Gather what the columns table shows from the result and the values the report lists."""
+    rules = {rules.column: rules for rules in result.rules_applied}
+    patterns: dict[str, _Pattern] = {}
+    if listed is not None:
+        # Patterns come largest first, so the last one kept per column is its largest.
+        for pattern in reversed(_patterns(listed)):
+            patterns[pattern.column] = pattern
+    return _ColumnsTable(
+        mismatches=result.summary.column_mismatches,
+        rules=rules,
+        ruled={column: words for column, item in rules.items() if (words := _rule_words(item))},
+        patterns=patterns,
+        changed_rows=max(result.summary.changed_count, 1),
+        # A run with `count_forgiven_values` counted each ruled column; any other run counted none.
+        counted=any(item.forgiven_count is not None for item in rules.values()),
+        has_values=listed is not None,
+    )
+
+
+def _columns_section(result: DiffResult, listed: Sequence[_MismatchedValue] | None) -> str:
+    """Render one table of the compared columns: each column's rules, its drift, and its pattern.
+
+    Drifting columns come first, most mismatches first, then columns a rule
+    reaches without drift, so a reviewer sees in one row what a rule forgave.
+    Columns compared exactly that match in every row are counted in one line.
+    A run with no record of its rules shows its drift alone, and a pushdown run
+    without a sample shows no pattern, since it lists no values.
     """
-    if not result.rules_applied:
-        return ""
-    heading = "<h2 id='rules-applied'>Rules applied</h2>"
-    described = sorted(
-        (rules.column, words, rules.forgiven_count)
-        for rules in result.rules_applied
-        if (words := _rule_words(rules))
-    )
-    if not described:
-        return f"{heading}\n<p class='empty'>Every compared column is compared exactly.</p>"
-    # A run with `count_forgiven_values` counted each ruled column; any other run counted none.
-    counted = any(forgiven is not None for _, _, forgiven in described)
-    count_header = "<th scope='col'>Values forgiven</th>" if counted else ""
-    rows = "".join(
-        f"<tr><td>{_escape(column)}</td><td>{_escape('; '.join(words))}</td>"
-        + (f"<td>{forgiven or 0:,}</td>" if counted else "")
-        + "</tr>"
-        for column, words, forgiven in described
-    )
-    table = _scroll_region(
-        "rules-applied",
-        "<table><thead><tr><th scope='col'>Column</th><th scope='col'>Rules</th>"
-        f"{count_header}</tr></thead><tbody>{rows}</tbody></table>",
-    )
-    exact = len(result.rules_applied) - len(described)
-    rest = ""
-    if exact:
-        rest = (
-            f"\n<p class='hint'>{_counted(exact, 'other column is', 'other columns are')} "
-            "compared exactly.</p>"
+    table = _columns_table(result, listed)
+    heading = "<h2 id='columns'>Columns</h2>"
+    drifting = sorted(table.mismatches.items(), key=lambda item: -item[1])
+    columns = [
+        *(column for column, _ in drifting),
+        *sorted(set(table.ruled) - set(table.mismatches)),
+    ]
+    compared = len(result.rules_applied) or len(result.compared_columns)
+    hint = ""
+    if compared:
+        hint = (
+            f"<p class='hint'>{_counted(compared, 'column compared', 'columns compared')}, "
+            f"{_counted(len(table.mismatches), 'drifts', 'drift')}.</p>"
         )
-    return f"{heading}\n{table}{rest}"
+    if not columns:
+        words = "No column-level drift"
+        if table.rules:
+            words += ", and every compared column is compared exactly"
+        return f"{heading}\n{hint}<p class='empty'>{words}.</p>"
+    header = "".join(f"<th scope='col'>{name}</th>" for name in table.headers())
+    rows = "".join(table.row(column) for column in columns)
+    region = _scroll_region(
+        "columns", f"<table><thead><tr>{header}</tr></thead><tbody>{rows}</tbody></table>"
+    )
+    rest = ""
+    exact = compared - len(columns)
+    if exact > 0:
+        rest = (
+            "\n<p class='hint'>"
+            + _counted(
+                exact,
+                "other column is compared exactly and matches in every row.",
+                "other columns are compared exactly and match in every row.",
+            )
+            + "</p>"
+        )
+    return f"{heading}\n{hint}{region}{rest}"
 
 
 def _kind_section(title: str, count: int, content: str) -> str:
@@ -891,22 +1304,6 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
     verdict = "PASSED" if summary.is_match else "FAILED"
     generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    cards = "".join(
-        [
-            _card(
-                "Match rate",
-                f"{summary.match_rate_percentage}%",
-                _bar(summary.match_rate_percentage),
-            ),
-            _card("Source rows", f"{summary.total_rows_source:,}"),
-            _card("Target rows", f"{summary.total_rows_target:,}"),
-            _card("Added", f"{summary.added_count:,}"),
-            _card("Removed", f"{summary.removed_count:,}"),
-            _card("Changed", f"{summary.changed_count:,}"),
-            *([_card("Accepted", f"{summary.accepted_count:,}")] if summary.accepted_count else []),
-        ]
-    )
-
     changed = result.changed
     keys_note = ""
     if result.keys_only and result.changed_sample is not None:
@@ -924,30 +1321,34 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
             "stores both tables, and never extracts rows. The tables below list "
             "primary keys rather than values.</p>"
         )
-
-    # Without the script, the three sections stay stacked with every row shown.
-    kinds = "\n".join(
-        [
-            _kind_section(
-                "Changed rows",
-                summary.changed_count,
-                _changed_section(
-                    changed,
-                    result,
-                    max_rows,
-                    has_values=not result.keys_only or result.changed_sample is not None,
-                ),
-            ),
-            _kind_section(
-                "Added rows", summary.added_count, _table("Added rows", result.added, max_rows)
-            ),
-            _kind_section(
-                "Removed rows",
-                summary.removed_count,
-                _table("Removed rows", result.removed, max_rows),
-            ),
-        ]
+    has_values = bool(result.compared_columns) and all(
+        f"{column}_is_match" in changed.columns for column in result.compared_columns
     )
+    listed = _listed_values(changed, result, max_rows) if has_values else None
+
+    # Without the script, the sections stay stacked with every row shown.
+    kinds = [
+        _kind_section(
+            "Changed rows",
+            summary.changed_count,
+            _changed_section(changed, result, max_rows, listed),
+        ),
+        _kind_section(
+            "Added rows",
+            summary.added_count,
+            _table("Added rows", result.added, max_rows, hint="Rows only in the target."),
+        ),
+        _kind_section(
+            "Removed rows",
+            summary.removed_count,
+            _table("Removed rows", result.removed, max_rows, hint="Rows only in the source."),
+        ),
+    ]
+    if summary.accepted_count:
+        kinds.append(
+            _kind_section("Accepted rows", summary.accepted_count, _accepted_section(result))
+        )
+    kinds_html = "\n".join(kinds)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -959,17 +1360,15 @@ def render_html(result: DiffResult, *, max_rows: int = DEFAULT_MAX_ROWS) -> str:
 </head>
 <body>
 <main>
-<h1>Veridelta Report</h1>
-{_banner(summary, generated)}
+{_header(summary.provenance, generated)}
+{_banner(summary)}
 {keys_note}
-{_run_record_html(summary.provenance)}
-<div class="cards">{cards}</div>
-<h2 id="column-level-drift">Column-level drift</h2>
-{_drift_table(summary)}
-{_rules_section(result)}
+{_ledger_html(result)}
+{_columns_section(result, listed)}
 <div class="kinds">
-{kinds}
+{kinds_html}
 </div>
+{_run_record_html(summary.provenance)}
 </main>
 <script>{_SCRIPT}</script>
 </body>
@@ -1049,9 +1448,9 @@ def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
             may read it than may read the data.
 
     Returns:
-        str: The verdict, a table of counts, and the top drifting columns,
-            limited to the configured `report_top_columns_limit`, then any
-            changed values asked for.
+        str: The verdict and its sentence, a table of counts, and the top
+            drifting columns, limited to the configured
+            `report_top_columns_limit`, then any changed values asked for.
 
     Raises:
         ConfigError: If `max_rows` is negative.
@@ -1063,6 +1462,8 @@ def render_markdown(result: DiffResult, *, max_rows: int = 0) -> str:
     perfect = " (Perfect Match)" if summary.is_perfect_match else ""
     lines = [
         f"### Veridelta: {verdict}{perfect}",
+        "",
+        _headline(summary, columns=summary.report_limit > 0),
         "",
         "| Metric | Value |",
         "| :--- | ---: |",

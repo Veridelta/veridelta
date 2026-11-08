@@ -815,6 +815,9 @@ class DiffSummary(BaseModel):
             column.
         column_mismatches (dict[str, int]): Mismatched rows per compared column.
         is_match (bool): Whether the mismatch ratio is within `threshold`.
+        threshold (float): The largest mismatch ratio that counts as a match, as
+            the configuration set it. Zero, the default, passes only a perfect
+            match.
         accepted_count (int): Rows of drift a baseline accepted, which the counts
             above leave out. Zero without `--baseline`.
         provenance (RunProvenance | None): What the run read and where it ran.
@@ -840,6 +843,7 @@ class DiffSummary(BaseModel):
     changed_count: int
     column_mismatches: dict[str, int] = Field(default_factory=dict)
     is_match: bool
+    threshold: float = Field(default=0.0, ge=0.0, le=1.0)
     accepted_count: int = Field(default=0, ge=0)
     provenance: RunProvenance | None = None
 
