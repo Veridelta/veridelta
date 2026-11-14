@@ -156,7 +156,9 @@ def _value_map_pairs(result: pl.DataFrame) -> pl.DataFrame:
             pl.col(name).cast(dtype) for name, dtype in _VALUE_MAP_RESULT_COLUMNS.items()
         )
     except pl.exceptions.PolarsError as exc:
-        raise ConnectorError(f"Value map query returned values of the wrong type: {exc}") from exc
+        raise ConnectorError(
+            f"Value map query returned values of the wrong type: {exc}", quotes_data=True
+        ) from exc
     return typed.rename(_VALUE_MAP_FIELDS)
 
 

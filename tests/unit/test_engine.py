@@ -3454,8 +3454,98 @@ class TestTextCasts:
             primary_keys=["id"], rules=[DiffRule(column_names=["day"], cast_to=target)]
         )
 
-        with pytest.raises(pl.exceptions.PolarsError, match="column 'day'"):
+        with pytest.raises(DataIntegrityError, match=f"Column 'day' sets cast_to='{target}'"):
             DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+
+_CANARY: Final = "CANARY-123-45-6789"
+"""A cell value that must never appear in an error."""
+
+
+def _uncastable(source: list[object], target: list[object]) -> DiffEngine:
+    """Build an engine whose `amount` column is cast to Int64 on both sides."""
+    config = DiffConfig(
+        primary_keys=["id"],
+        rules=[DiffRule(column_names=["amount", "label"], cast_to="Int64")],
+    )
+    return DiffEngine(
+        config,
+        pl.LazyFrame({"id": [1, 2, 3], "amount": source, "label": ["1", "2", "3"]}),
+        pl.LazyFrame({"id": [1, 2, 3], "amount": target, "label": ["1", "2", "3"]}),
+    )
+
+
+class TestUnconvertedValues:
+    """Validate that a value a `cast_to` cannot convert fails with a count, never the value.
+
+    Polars quotes such values in its error, and the error reaches logs, CI
+    output, and an agent, which a server without row values keeps them from.
+    """
+
+    def test_it_counts_the_values_on_the_side_that_holds_them(self) -> None:
+        """Ensure the error names the column, the target, the side, and the count alone."""
+        engine = _uncastable(["10", _CANARY, None], ["10", "20", "30"])
+
+        with pytest.raises(DataIntegrityError) as caught:
+            engine.run()
+
+        assert str(caught.value) == (
+            "Column 'amount' sets cast_to='Int64', but 1 value does not convert to it in "
+            "the source dataset. Map such values to null with null_values, or convert the "
+            "column where it is read."
+        )
+        assert caught.value.__cause__ is None
+        assert caught.value.__suppress_context__ is True
+
+    def test_it_finds_them_in_the_target_and_counts_each(self) -> None:
+        """Ensure a target that fails is found after a source that converts, and counted."""
+        engine = _uncastable(["10", "20", "30"], ["10", _CANARY, f"{_CANARY}-2"])
+
+        with pytest.raises(
+            DataIntegrityError, match="2 values do not convert to it in the target"
+        ) as caught:
+            engine.run()
+
+        assert _CANARY not in str(caught.value)
+
+    def test_it_counts_them_when_proposing_value_maps(self) -> None:
+        """Ensure `propose_value_maps`, which collects on its own, fails the same way.
+
+        It reads only the keys and the text columns a map can apply to, so the
+        cast that fails here is the key's.
+        """
+        config = DiffConfig(
+            primary_keys=["id"], rules=[DiffRule(column_names=["id"], cast_to="Int64")]
+        )
+        engine = DiffEngine(
+            config,
+            pl.LazyFrame({"id": ["1", _CANARY, "3"], "sex": ["M", "F", "M"]}),
+            pl.LazyFrame({"id": [1, 2, 3], "sex": ["Male", "Female", "Male"]}),
+        )
+
+        with pytest.raises(
+            DataIntegrityError, match="Column 'id' sets cast_to='Int64', but 1"
+        ) as caught:
+            engine.propose_value_maps()
+
+        assert _CANARY not in str(caught.value)
+
+    def test_it_counts_them_when_suggesting_rules(self) -> None:
+        """Ensure `suggest_rules`, which runs the comparison, fails the same way."""
+        engine = _uncastable(["10", _CANARY, "30"], ["10", "20", "30"])
+
+        with pytest.raises(DataIntegrityError, match="1 value does not convert") as caught:
+            engine.suggest_rules()
+
+        assert _CANARY not in str(caught.value)
+
+    def test_it_passes_on_a_failure_no_cast_explains(self, mocker: MockerFixture) -> None:
+        """Ensure a Polars error from elsewhere is raised as it is, once every cast converts."""
+        failure = pl.exceptions.InvalidOperationError("another failure")
+        mocker.patch.object(DiffEngine, "_collect_changed_rows", side_effect=failure)
+
+        with pytest.raises(pl.exceptions.InvalidOperationError, match="another failure"):
+            _uncastable(["10", "20", "30"], ["10", "20", "30"]).run()
 
 
 class TestCastRefusal:

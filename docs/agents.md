@@ -211,7 +211,7 @@ The person who starts the server decides what it may read, and no tool call can 
 - With `schemas`, a check reads each side's columns as `veridelta validate --schemas` does, and without it a check opens no data. `describe_schema` reads one side's columns the same way. For a warehouse table, it runs the schema probe a run starts with.
 - A host may start the server with only some of the user's environment variables. A `${NAME}` that the configuration references must reach the server, through the host's `env` setting for it if need be, or the check reports it unset. `allow_missing_env` checks a file without them.
 
-A call that fails returns its error's type and message, as `run --json` prints them, such as `ConfigError` for a path outside the roots. [Serving tools to an agent](cli.md#serving-tools-to-an-agent) lists the command's flags.
+A call that fails returns its error's type and message, as `run --json` prints them, such as `ConfigError` for a path outside the roots. Polars, a file reader, or a database driver can quote a value from the data in its message. On a server started without `--allow-row-values`, the call leaves out such a message and returns the error's type and a hint. `validate_config` leaves such a message out of a finding the same way, since reading a JSON file's columns parses the whole file. `veridelta run` and `veridelta validate` print the whole message. A message Veridelta writes names columns and counts, and the call returns it on any server. [Serving tools to an agent](cli.md#serving-tools-to-an-agent) lists the command's flags.
 
 ## Where row values appear
 
@@ -222,7 +222,8 @@ The summary holds counts and column names only. These outputs hold values from t
 - a [Markdown summary](results.md#markdown-summary) with `--markdown-max-rows` above zero;
 - the proposals `veridelta crosswalk` prints;
 - the example keys `veridelta suggest` prints;
-- what `read_discrepancies`, `propose_value_maps`, and `suggest_rules` return, on an MCP server started with `--allow-row-values`.
+- what `read_discrepancies`, `propose_value_maps`, and `suggest_rules` return, on an MCP server started with `--allow-row-values`;
+- the message of an error that Polars, a file reader, or a database driver raises, which `veridelta run` and `veridelta validate` print and an MCP server returns only when started with `--allow-row-values`.
 
 A pair compared in place, such as two warehouse tables, brings back counts and primary keys only, unless it fetches a [row sample](pushdown.md#row-samples).
 

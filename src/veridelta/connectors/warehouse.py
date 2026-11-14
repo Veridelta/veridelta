@@ -93,7 +93,7 @@ def _run_arrow_query(
             query_type,
             time.perf_counter() - started,
         )
-        raise ConnectorError(f"Warehouse statement failed: {exc}") from exc
+        raise ConnectorError(f"Warehouse statement failed: {exc}", quotes_data=True) from exc
     else:
         logger.info(
             "%s %s statement completed in %.3fs",
@@ -120,7 +120,7 @@ def _run_bigquery_query(client: Any, statement: str, job_config: Any, *, query_t
         logger.warning(
             "BigQuery %s statement failed after %.3fs", query_type, time.perf_counter() - started
         )
-        raise ConnectorError(f"Warehouse statement failed: {exc}") from exc
+        raise ConnectorError(f"Warehouse statement failed: {exc}", quotes_data=True) from exc
     logger.info(
         "BigQuery %s statement completed in %.3fs", query_type, time.perf_counter() - started
     )
