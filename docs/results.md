@@ -179,7 +179,7 @@ Resource attributes say which comparison ran:
 - `veridelta.source.type` and `veridelta.target.type`, such as `file` or `snowflake`;
 - `veridelta.source.name` and `veridelta.target.name`: the table, or the file or lakehouse path.
 
-A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run. An Azure `abfss://container@account` path keeps its container, which sits where a user would. A database `query` source has no name.
+A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run. A URL with an `@` after its host has no name, since that `@` can end a password holding an unencoded `/`, `?`, or `#`. An Azure `abfss://container@account` path keeps its container, which sits where a user would. A database `query` source has no name.
 
 Like the Markdown summary by default, the export holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file and sends nothing.
 

@@ -39,20 +39,32 @@ _CONTAINER_SCHEMES: Final[frozenset[str]] = frozenset({"abfs", "abfss", "wasb", 
 """Azure schemes whose `container@account` user part names a container, not a login."""
 
 
+def _has_hidden_user_part(location: str, netloc: str) -> bool:
+    """Tell whether a URL holds an `@` past the host part its parser found.
+
+    An unencoded `/`, `?`, or `#` in a password ends the host part early, so
+    the parser sees no password, and the `@` that ends it lands in the path,
+    query, or fragment.
+    """
+    return location.count("@") > netloc.count("@")
+
+
 def redacted_location(location: str) -> str | None:
     """Return a path or URL with anything secret left out, safe to print or log.
 
     A URL keeps its scheme, host, and path. Its query goes, since it can hold a
     token or the signature of a pre-signed link, and so does its user part,
     which can hold a login, unless an Azure scheme names a container there. A
-    path on this machine comes back as it is.
+    URL with an `@` past its host part comes back as None, since that `@` can
+    end a password that holds an unencoded `/`, `?`, or `#`. A path on this
+    machine comes back as it is.
 
     Args:
         location (str): A file path, or the URL of a file or a table.
 
     Returns:
         str | None: The location without its secrets, or None when it does not
-            parse as a URL.
+            parse as a URL or has an `@` past its host part.
 
     Examples:
         >>> redacted_location("s3://bucket/events.parquet?X-Amz-Signature=abc")
@@ -63,6 +75,9 @@ def redacted_location(location: str) -> str | None:
     try:
         parts = urlsplit(location)
     except ValueError:
+        return None
+    # A one-letter scheme is a Windows drive, as in C:\me@corp\orders.csv, which has no user part.
+    if len(parts.scheme) > 1 and _has_hidden_user_part(location, parts.netloc):
         return None
     if not (parts.scheme and parts.netloc):
         return location
@@ -1862,7 +1877,8 @@ class DatabaseConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set, the
-                URI has no scheme, `password` conflicts with the URI, or
+                URI has no scheme or holds an `@` after its host, `password`
+                conflicts with the URI, or
                 `pushdown` is set on anything but a Postgres, SQL Server, or Redshift
                 table.
         """
@@ -1873,6 +1889,12 @@ class DatabaseConfig(BaseModel):
         parts = urlsplit(self.uri)
         if not parts.scheme:
             raise ValueError("'uri' needs a scheme such as postgresql:// or sqlite://.")
+        if _has_hidden_user_part(self.uri, parts.netloc):
+            # The URI is never echoed: the text before that `@` can be a password.
+            raise ValueError(
+                "'uri' holds an '@' after its host, as a password with an unencoded '/', '?', "
+                "or '#' puts it. Set the password in 'password', or percent-encode it in 'uri'."
+            )
         if self.pushdown and parts.scheme.lower() not in DATABASE_PUSHDOWN_SCHEMES:
             raise ValueError(
                 "'pushdown' compares inside the database and works on postgresql://, "

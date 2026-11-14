@@ -591,6 +591,23 @@ class TestEnvironmentExpansion:
         assert "hunter2-do-not-print" not in str(exc_info.value)
         assert "hunter2-do-not-print" not in str(exc_info.value.__cause__)
 
+    def test_it_checks_an_expanded_password_inside_a_database_uri(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a URI is checked after expansion, so a `/` from the environment is refused."""
+        monkeypatch.setenv("VD_PG_PASSWORD", "hunter2/do-not-print")
+
+        with pytest.raises(ConfigError, match="Set the password in 'password'") as exc_info:
+            _load_yaml(
+                tmp_path,
+                "source:\n  type: database\n"
+                "  uri: postgresql://analyst:${VD_PG_PASSWORD}@db.internal/sales\n"
+                "  table: public.orders\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
+            )
+
+        assert "hunter2" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value.__cause__)
+
 
 class TestUnsetEnvironmentTolerance:
     """Validate `load_config(..., unset_env=[])`, which `veridelta validate` relies on."""
