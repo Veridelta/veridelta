@@ -9,7 +9,9 @@ the same transaction logs and metadata files a lakehouse holds. Object stores
 need an account, so `storage_options` are covered by the unit tests alone.
 """
 
+import json
 import re
+import shutil
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -21,6 +23,7 @@ import pytest
 from pyiceberg.catalog.sql import SqlCatalog
 
 from veridelta.connectors import DeltaLakeConnector, IcebergConnector
+from veridelta.connectors.lakehouse import _static_table  # pyright: ignore[reportPrivateUsage] - pins the table the loader builds
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, DiffConfig, DiffRule, IcebergConfig, SourceConfig
@@ -93,6 +96,30 @@ def _iceberg_table(path: Path) -> _LakehouseTable:
         return IcebergConfig(table_uri=metadata, snapshot_id=first_id if first else None)
 
     return source
+
+
+class MarkerFileIO:
+    """Stand in for a class a table's metadata names in `py-io-impl`, and count each load."""
+
+    loads = 0
+
+    def __init__(self, properties: dict[str, str]) -> None:
+        """Count the load PyIceberg makes when it builds a FileIO from this class."""
+        del properties
+        MarkerFileIO.loads += 1
+
+
+_CLASS_PROPERTIES = ("py-io-impl", "s3.retry-strategy-impl", "write.py-location-provider.impl")
+"""The PyIceberg properties whose class it imports, which a table's metadata can set."""
+
+
+def _name_a_class_in_the_metadata(metadata: str) -> None:
+    """Write each property in `_CLASS_PROPERTIES`, naming `MarkerFileIO`, into a table's metadata file."""
+    path = Path(metadata)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    for key in _CLASS_PROPERTIES:
+        document["properties"][key] = f"{__name__}.{MarkerFileIO.__name__}"
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 @pytest.fixture(params=["delta", "iceberg"])
@@ -169,6 +196,59 @@ class TestEmptyLakehouseTables:
 
         assert frame.height == 0
         assert frame.schema == _EVENTS.schema
+
+
+class TestIcebergMetadataProperties:
+    """Validate that a table's metadata cannot choose a class for PyIceberg to import.
+
+    PyIceberg, and Polars given a path, build a table's FileIO from its
+    metadata properties, and import the class `py-io-impl` names there.
+    """
+
+    @pytest.mark.parametrize("first", [False, True], ids=["latest", "snapshot"])
+    def test_it_reads_a_table_without_loading_the_class_its_metadata_names(
+        self, tmp_path: Path, first: bool
+    ) -> None:
+        """Ensure the table reads its rows, and the class is never imported."""
+        source = _iceberg_table(tmp_path)(first)
+        _name_a_class_in_the_metadata(source.table_uri)
+        MarkerFileIO.loads = 0
+
+        frame = LoaderFactory.load(source).collect()
+
+        assert frame.sort("id").equals(_EVENTS if first else _CHANGED)
+        assert MarkerFileIO.loads == 0
+
+    def test_it_keeps_no_property_that_names_a_class(self, tmp_path: Path) -> None:
+        """Ensure the loaded table drops each class property, so no later reader imports it."""
+        metadata = _iceberg_table(tmp_path)(False).table_uri
+        _name_a_class_in_the_metadata(metadata)
+
+        table = _static_table(metadata, {})
+
+        assert not set(_CLASS_PROPERTIES) & set(table.metadata.properties)
+
+    @pytest.mark.parametrize("hint", ["name", "version", "stem"])
+    def test_it_reads_a_table_folder_through_its_version_hint(
+        self, tmp_path: Path, hint: str
+    ) -> None:
+        """Ensure a folder resolves its metadata file each way PyIceberg's version hint names it."""
+        metadata = Path(_iceberg_table(tmp_path)(False).table_uri)
+        _name_a_class_in_the_metadata(str(metadata))
+        if hint == "version":
+            shutil.copyfile(metadata, metadata.with_name("v7.metadata.json"))
+        text = {
+            "name": metadata.name,
+            "version": "7",
+            "stem": metadata.name.removesuffix(".metadata.json"),
+        }[hint]
+        (metadata.parent / "version-hint.text").write_text(text, encoding="utf-8")
+        MarkerFileIO.loads = 0
+
+        frame = LoaderFactory.load(IcebergConfig(table_uri=str(metadata.parent.parent))).collect()
+
+        assert frame.sort("id").equals(_CHANGED)
+        assert MarkerFileIO.loads == 0
 
 
 class TestLakehouseScanFailures:

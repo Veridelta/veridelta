@@ -3,6 +3,7 @@
 
 """Unit tests for Veridelta configuration and result data models."""
 
+import re
 from typing import get_args
 
 import polars as pl
@@ -225,6 +226,35 @@ class TestStrictNumericFields:
             IcebergConfig.model_validate(
                 {"table_uri": "s3://lake/iceberg/events", "snapshot_id": "12;"}
             )
+
+    @pytest.mark.parametrize(
+        "key", ["py-io-impl", "s3.retry-strategy-impl", "write.py-location-provider.impl"]
+    )
+    def test_it_refuses_an_iceberg_storage_option_that_names_a_class(self, key: str) -> None:
+        """Ensure each key whose class PyIceberg imports is named, but its value is not."""
+        with pytest.raises(ValidationError, match=f"may not set '{re.escape(key)}'") as exc_info:
+            IcebergConfig.model_validate(
+                {
+                    "table_uri": "s3://lake/iceberg/events",
+                    "storage_options": {"s3.region": "us-east-1", key: "marker.FileIO"},
+                }
+            )
+
+        assert "marker.FileIO" not in str(exc_info.value)
+
+    @pytest.mark.parametrize("table_uri", ["orders", "sales.orders"])
+    def test_it_refuses_an_iceberg_catalog_identifier(self, table_uri: str) -> None:
+        """Ensure a name Polars would look up in a catalog is refused, since a catalog cannot be vetted."""
+        with pytest.raises(ValidationError, match="A catalog identifier is not read"):
+            IcebergConfig(table_uri=table_uri)
+
+    @pytest.mark.parametrize(
+        "table_uri",
+        ["s3://lake/events", "warehouse/events", r"C:\lake\events", "/lake/v1.metadata.json"],
+    )
+    def test_it_accepts_an_iceberg_table_path(self, table_uri: str) -> None:
+        """Ensure a path or URI, with either separator, names an Iceberg table."""
+        assert IcebergConfig(table_uri=table_uri).table_uri == table_uri
 
 
 class TestSimilarityThresholds:

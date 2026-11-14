@@ -539,7 +539,10 @@ class TestStructuralAlignment:
                 DeltaLakeConfig(table_uri="s3://lake/orders"),
                 "the `delta` source `s3://lake/orders`",
             ),
-            (IcebergConfig(table_uri="sales.orders"), "the `iceberg` source `sales.orders`"),
+            (
+                IcebergConfig(table_uri="s3://lake/orders"),
+                "the `iceberg` source `s3://lake/orders`",
+            ),
             (
                 DatabaseConfig(uri="postgresql://user:secret@host/db", table="orders"),
                 "the `database` table `orders`",

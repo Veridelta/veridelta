@@ -238,6 +238,11 @@ class TestConnectorInterface:
 class TestLakehouseConnectors:
     """Validate lazy Delta and Iceberg scan wiring without optional extras."""
 
+    @pytest.fixture(autouse=True)
+    def static_table(self, mocker: MockerFixture) -> MagicMock:
+        """Stand in for the Iceberg metadata read, which needs a real table."""
+        return mocker.patch("veridelta.connectors.lakehouse._static_table")
+
     def test_it_raises_when_scanning_before_connect(self) -> None:
         """Ensure a frame is handed out only after `connect()` opened the scan."""
         delta = DeltaLakeConnector(_delta_config())
@@ -297,9 +302,9 @@ class TestLakehouseConnectors:
         assert "Delta Lake scan of s3://lake/events failed" in caplog.text
 
     def test_it_connects_iceberg_via_scan_iceberg_and_returns_schema(
-        self, mocker: MockerFixture
+        self, mocker: MockerFixture, static_table: MagicMock
     ) -> None:
-        """Ensure connect() calls pl.scan_iceberg and the scan stays lazy."""
+        """Ensure connect() scans the table it loaded, and the scan stays lazy."""
         lazy = _sample_lazy_frame()
         scan = mocker.patch("veridelta.connectors.lakehouse.pl.scan_iceberg", return_value=lazy)
         connector = IcebergConnector(
@@ -312,8 +317,11 @@ class TestLakehouseConnectors:
         connector.connect()
         schema = connector.lazyframe().collect_schema()
 
+        static_table.assert_called_once_with(
+            "s3://lake/iceberg/events", {"AWS_REGION": "us-east-1"}
+        )
         scan.assert_called_once_with(
-            "s3://lake/iceberg/events",
+            static_table.return_value,
             snapshot_id=None,
             storage_options={"AWS_REGION": "us-east-1"},
         )
@@ -321,7 +329,7 @@ class TestLakehouseConnectors:
         assert schema.names() == ["id", "amount"]
 
     def test_it_passes_snapshot_id_into_scan_iceberg_when_configured(
-        self, mocker: MockerFixture
+        self, mocker: MockerFixture, static_table: MagicMock
     ) -> None:
         """Ensure Iceberg time travel forwards snapshot_id to Polars."""
         lazy = _sample_lazy_frame()
@@ -333,7 +341,7 @@ class TestLakehouseConnectors:
         connector.connect()
 
         scan.assert_called_once_with(
-            "s3://lake/iceberg/events",
+            static_table.return_value,
             snapshot_id=42,
             storage_options=None,
         )
@@ -391,12 +399,11 @@ class TestLakehouseConnectors:
         with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[delta\]'"):
             connector.connect()
 
-    def test_it_wraps_missing_iceberg_extra_as_connector_error(self, mocker: MockerFixture) -> None:
-        """Ensure ImportError from pl.scan_iceberg becomes an install hint."""
-        mocker.patch(
-            "veridelta.connectors.lakehouse.pl.scan_iceberg",
-            side_effect=ImportError("pyiceberg is required"),
-        )
+    def test_it_wraps_missing_iceberg_extra_as_connector_error(
+        self, static_table: MagicMock
+    ) -> None:
+        """Ensure an ImportError while loading the table becomes an install hint."""
+        static_table.side_effect = ImportError("No module named 'pyiceberg'")
         connector = IcebergConnector(_iceberg_config())
 
         with pytest.raises(ConnectorError, match=r"uv add 'veridelta\[iceberg\]'"):
