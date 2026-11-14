@@ -30,7 +30,8 @@ permissions:
   contents: read
 
 # Each job runs only when its repository variable is `true`, so a service with
-# no account yet shows as skipped.
+# no account yet shows as skipped. Each job holds secrets, so it restores no uv
+# cache, which any job on main can write.
 jobs:
   bigquery:
     name: BigQuery
@@ -48,8 +49,7 @@ jobs:
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.23"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          enable-cache: false
           python-version: "3.12"
 
       - name: Install Dependencies
@@ -85,8 +85,7 @@ jobs:
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.23"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          enable-cache: false
           python-version: "3.12"
 
       - name: Install Dependencies
@@ -116,8 +115,7 @@ jobs:
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.23"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          enable-cache: false
           python-version: "3.12"
 
       - name: Install Dependencies
@@ -145,8 +143,7 @@ jobs:
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.23"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          enable-cache: false
           python-version: "3.12"
 
       - name: Install Dependencies
@@ -177,8 +174,7 @@ jobs:
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.23"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          enable-cache: false
           python-version: "3.12"
 
       - name: Install Dependencies
@@ -219,8 +215,7 @@ jobs:
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.12.23"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+          enable-cache: false
           python-version: "3.12"
 
       # The harness loads Synapse tables through pymssql, from the `databases` group.
