@@ -49,7 +49,7 @@ All nine transform stages compile for compared columns, and stages 1 to 7 for pr
 
 ### Text in SQL
 
-Write `regex_replace` patterns, `value_map` entries, and text `null_values` as you would for a local run. Each is escaped for the warehouse's string literals, so a backslash in `\d` or `\N` and the apostrophe in `O'Brien` arrive intact. Do not double them yourself.
+Write `regex_replace` patterns, `value_map` entries, and text `null_values` as you would for a local run. Each is escaped for the warehouse's string literals, so a backslash in `\d` or `\N` and the apostrophe in `O'Brien` arrive intact. Do not double them yourself. On Databricks, each `$` is written as `\u0024`, so Spark cannot replace text such as `${env:HOME}` with a variable's value.
 
 Escaping keeps the text, but each warehouse runs its own regular expression engine. Capture group references in a replacement, written as Polars reads them, are rewritten in the warehouse's spelling, such as `\1` on Snowflake, BigQuery, DuckDB, and Postgres. Refer to groups by number, 0 to 9. No warehouse can refer to a group by name in a replacement, so a named reference raises `ConfigError`. That includes `$1a`, which Polars reads as the group named `1a`.
 
