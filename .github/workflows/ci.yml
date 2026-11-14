@@ -34,6 +34,14 @@ jobs:
       - name: Run Pyright
         run: uv run pyright src/
 
+      # Fails on a known vulnerability in any package the lockfile pins for this
+      # Python, in every extra and group, so a fix lands before Dependabot's
+      # weekly pull request does.
+      - name: Audit the Lockfile for Known Vulnerabilities
+        run: |
+          uv export --frozen --all-extras --all-groups --no-hashes --no-emit-project --output-file "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit@2.10.1 --no-deps --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
+
   # A push to main builds the site in the docs workflow, which deploys it, so this
   # builds it only for a pull request, and the site is built once per push.
   docs:
