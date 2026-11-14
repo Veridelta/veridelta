@@ -18,6 +18,7 @@ when that person allows queries too. The SDK is imported by the first
 extra.
 """
 
+import glob
 import importlib
 import inspect
 import json
@@ -110,6 +111,10 @@ _REMOTE_SCHEMES: Final = frozenset(
 Hugging Face, lakeFS, and MotherDuck. Any other location counts as a path on
 this machine, so one the readers would open here is never let through
 unchecked."""
+
+_GLOB_CHARACTERS: Final = frozenset("*?[")
+"""Characters that make Polars read a local path as a pattern, which it expands
+into the files it opens."""
 
 _MCP_EXTRA = missing_extra("mcp", "veridelta mcp")
 
@@ -315,6 +320,36 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     return _under_roots(settings, Path(location).expanduser().resolve())
 
 
+def _opened(location: str) -> list[str]:
+    """List the paths a reader may open for a location: itself, and each match of a pattern.
+
+    Polars expands `*`, `?`, and `[...]` in a name, and `**` across folders.
+    A wildcard matches a hidden name too, and `**` follows links. A name such
+    as `lin[k]` does not exist as written, so resolving the pattern cannot
+    follow the link it matches. The standard library lists the matches here,
+    with hidden names and `**` included, and each is resolved on its own.
+    Polars matches `.` and `..` as well, which the standard library never
+    lists, so `_climbs` refuses each pattern that could match them first.
+    """
+    if not _GLOB_CHARACTERS.intersection(location):
+        return [location]
+    pattern = os.path.expanduser(location)
+    return [location, *glob.glob(pattern, recursive=True, include_hidden=True)]
+
+
+def _climbs(location: str) -> bool:
+    """Whether a pattern could reach `..`, which leaves the folder a matched link points to.
+
+    A pattern may not hold `..` as written. Polars matches the entries `.`
+    and `..` only for a name with a glob character that starts with a dot,
+    such as `.*` or `.[.]`, so such a name is refused too, and `*` is not.
+    """
+    return any(
+        name == ".." or (name.startswith(".") and _GLOB_CHARACTERS.intersection(name))
+        for name in Path(location).parts
+    )
+
+
 def _roots(settings: Settings) -> str:
     """List the roots for a message."""
     return ", ".join(str(root) for root in settings.roots)
@@ -356,8 +391,8 @@ def _local_path(location: str) -> str | None:
     return location
 
 
-def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
-    """Name each file or folder on this machine a side reads, with the setting that names it."""
+def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
+    """Name each file or folder on this machine a side reads: its setting, location, and path."""
     named: list[tuple[str, str]] = []
     if isinstance(config, SourceConfig):
         named = [("path", config.path)]
@@ -370,7 +405,7 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
         if parts.scheme.startswith("sqlite"):
             named = [("SQLite file", parts.netloc + parts.path)]
     return [
-        (setting, local)
+        (setting, location, local)
         for setting, location in named
         if (local := _local_path(location)) is not None
     ]
@@ -382,8 +417,12 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     Every tool that opens a side calls this first, since a column name or an
     error message can carry a file's text as a row does. The paths are
     expanded and resolved as the readers do, so neither `~` nor a link leads
-    out. Data on another machine, such as an object store, a database server,
-    or a warehouse, is read as the command line reads it.
+    out. A path that holds a glob character is a pattern, and every file it
+    matches must resolve under a root. A pattern may not reach `..`, since a
+    match can be a link that `..` then leaves from its target. A `file:` URI
+    may not hold a pattern at all, since Polars expands one with another
+    matcher. Data on another machine, such as an object store, a database
+    server, or a warehouse, is read as the command line reads it.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -394,10 +433,24 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
         ConfigError: If a file or folder a side reads is outside every root.
     """
     for side, config in (("source", source), ("target", target)):
-        for setting, location in _data_locations(config):
-            if not _opened_inside(settings, location):
+        for setting, location, local in _data_locations(config):
+            pattern = bool(_GLOB_CHARACTERS.intersection(location + local))
+            if pattern and local != location:  # A `file:` URI, which `_local_path` decoded.
                 raise ConfigError(
-                    f"The {side} {setting} '{location}' is outside the folders this server "
+                    f"The {side} {setting} '{location}' is a file URI with a glob character in "
+                    "it. Polars expands a pattern in a URI with another matcher than a path's, "
+                    "so this server cannot check the files it would open. Write it as a path."
+                )
+            if pattern and _climbs(local):
+                raise ConfigError(
+                    f"The {side} {setting} '{local}' is a glob pattern that can match '..'. "
+                    "A match can be a link, and '..' would then leave the folder the link "
+                    "points to, so this server refuses the pattern. Write the path without "
+                    "'..', and write out each name that starts with a dot."
+                )
+            if not all(_opened_inside(settings, opened) for opened in _opened(local)):
+                raise ConfigError(
+                    f"The {side} {setting} '{local}' is outside the folders this server "
                     f"reads from: {_roots(settings)}. A tool reads data on this machine only "
                     "from under them, so move the data into one, or ask the person who started "
                     "the server to add its folder with --root."
