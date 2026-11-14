@@ -23,7 +23,7 @@ import inspect
 import json
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -47,7 +47,7 @@ from pydantic import Field
 
 from veridelta import __version__
 from veridelta.config import load_config, referenced_variables
-from veridelta.connectors.base import mask_secrets
+from veridelta.connectors.base import mask_secrets, shown_location, without_location
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -55,7 +55,7 @@ from veridelta.engine import (
     DEFAULT_MIN_SUPPORT,
     DiffEngine,
 )
-from veridelta.exceptions import ConfigError, VerideltaError, missing_extra
+from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
 from veridelta.models import (
     DatabaseConfig,
     DeltaLakeConfig,
@@ -376,14 +376,110 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
     ]
 
 
+def _delta_files(config: DeltaLakeConfig) -> Iterator[tuple[str, str]]:
+    """Name each file a scan of a Delta Lake table reads, from the version it reads."""
+    from deltalake import DeltaTable
+
+    table = DeltaTable(
+        config.table_uri, version=config.version, storage_options=config.storage_options or None
+    )
+    for uri in table.file_uris():
+        yield "data file", uri
+
+
+def _iceberg_files(config: IcebergConfig) -> Iterator[tuple[str, str]]:
+    """Name each file a scan of an Iceberg table reads, each before it is opened.
+
+    A table folder's version hint, the manifest list, and each manifest name
+    the next files to read, so the caller checks each name before this reads
+    the file. The data and delete files come from the manifests, as a scan
+    plans them. The FileIO is built from `storage_options` alone, with no
+    `py-` key, and never from the metadata's own properties, so a table cannot
+    choose the code that reads it.
+    """
+    from pyiceberg.io import load_file_io
+    from pyiceberg.serializers import FromInputFile
+    from pyiceberg.table import StaticTable
+
+    properties = {
+        key: value
+        for key, value in (config.storage_options or {}).items()
+        if not key.startswith("py-")
+    }
+    location = config.table_uri
+    if not location.endswith(".metadata.json"):
+        # The lookup `StaticTable.from_metadata` makes, so the check and the scan
+        # read the same metadata file.
+        hint = StaticTable._metadata_location_from_version_hint  # pyright: ignore[reportPrivateUsage] - the scan's own lookup
+        location = hint(location, properties)
+        yield "metadata file", location
+    io = load_file_io(properties, location=location)
+    metadata = FromInputFile.table_metadata(io.new_input(location))
+    snapshot = (
+        metadata.current_snapshot()
+        if config.snapshot_id is None
+        else metadata.snapshot_by_id(config.snapshot_id)
+    )
+    if snapshot is None:
+        # The scan reads no file: an empty table has none, and a snapshot it
+        # cannot find stops it.
+        return
+    yield "manifest list", snapshot.manifest_list
+    for manifest in snapshot.manifests(io):
+        yield "manifest", manifest.manifest_path
+        for entry in manifest.fetch_manifest_entry(io, discard_deleted=True):
+            yield "data file", entry.data_file.file_path
+
+
+def _table_files(side: str, config: DeltaLakeConfig | IcebergConfig) -> Iterator[tuple[str, str]]:
+    """Name each file on this machine that the scan of a lakehouse table reads.
+
+    A table's log or metadata names its files by full URI, so they can lie
+    anywhere. A table whose files cannot be listed is refused, since the scan
+    would read the same log or metadata.
+
+    Raises:
+        ConnectorError: If the extra is missing, or the table cannot be listed.
+    """
+    if isinstance(config, DeltaLakeConfig):
+        files, kind, extra = _delta_files(config), "Delta Lake table", "delta"
+    else:
+        files, kind, extra = _iceberg_files(config), "Iceberg table", "iceberg"
+    try:
+        for setting, location in files:
+            if (local := _local_path(location)) is not None:
+                yield setting, local
+    except ImportError as exc:
+        raise ConnectorError(missing_extra(extra, f"Reading a {kind}")) from exc
+    except Exception as exc:
+        where = shown_location(config.table_uri)
+        raise ConnectorError(
+            f"The files of the {side} {kind} '{where}' could not be listed, so this server "
+            f"reads none of them: {without_location(str(exc), config.table_uri)}"
+        ) from exc
+
+
+def _refuse_outside(settings: Settings, side: str, setting: str, location: str) -> None:
+    """Refuse a file or folder on this machine that lies outside the roots."""
+    if not _opened_inside(settings, location):
+        raise ConfigError(
+            f"The {side} {setting} '{location}' is outside the folders this server "
+            f"reads from: {_roots(settings)}. A tool reads data on this machine only "
+            "from under them, so move the data into one, or ask the person who started "
+            "the server to add its folder with --root."
+        )
+
+
 def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -> None:
     """Refuse a side whose data on this machine lies outside the roots.
 
     Every tool that opens a side calls this first, since a column name or an
     error message can carry a file's text as a row does. The paths are
     expanded and resolved as the readers do, so neither `~` nor a link leads
-    out. Data on another machine, such as an object store, a database server,
-    or a warehouse, is read as the command line reads it.
+    out. A Delta Lake or Iceberg table on this machine has every file its scan
+    reads checked too, since its log or metadata can name a file anywhere.
+    Data on another machine, such as an object store, a database server, or a
+    warehouse, is read as the command line reads it.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -392,16 +488,16 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
 
     Raises:
         ConfigError: If a file or folder a side reads is outside every root.
+        ConnectorError: If the files of a lakehouse table on this machine
+            cannot be listed.
     """
     for side, config in (("source", source), ("target", target)):
-        for setting, location in _data_locations(config):
-            if not _opened_inside(settings, location):
-                raise ConfigError(
-                    f"The {side} {setting} '{location}' is outside the folders this server "
-                    f"reads from: {_roots(settings)}. A tool reads data on this machine only "
-                    "from under them, so move the data into one, or ask the person who started "
-                    "the server to add its folder with --root."
-                )
+        locations = _data_locations(config)
+        for setting, location in locations:
+            _refuse_outside(settings, side, setting, location)
+        if isinstance(config, (DeltaLakeConfig, IcebergConfig)) and locations:
+            for setting, location in _table_files(side, config):
+                _refuse_outside(settings, side, setting, location)
 
 
 def check_configuration(
@@ -423,6 +519,8 @@ def check_configuration(
     Raises:
         ConfigError: If the path is outside the roots, or, with `schemas`, the
             data a side reads on this machine is.
+        ConnectorError: With `schemas`, if the files of a lakehouse table on
+            this machine cannot be listed.
     """
     resolved = resolve_path(settings, path)
     if schemas:

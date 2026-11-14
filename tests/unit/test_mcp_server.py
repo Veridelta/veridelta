@@ -10,8 +10,11 @@ whether a call failed.
 
 import json
 import logging
+import re
 import shutil
-from collections.abc import Awaitable, Callable
+import sys
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -22,9 +25,11 @@ import anyio
 import duckdb
 import polars as pl
 import pytest
+from deltalake import DeltaTable
 from mcp import Client
 from mcp.types import CallToolResult, Tool
 from polars.exceptions import PanicException
+from pyiceberg.catalog.sql import SqlCatalog
 from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
@@ -743,6 +748,246 @@ class TestCheckDataPaths:
     def test_it_leaves_remote_data_alone(self, tmp_path: Path, side: SourceRef) -> None:
         """Ensure data on another machine is read as the command line reads it."""
         check_data_paths(Settings((tmp_path,)), side, side)
+
+
+_ROW = pl.DataFrame({"id": [1], "note": [_SECRET]})
+"""The one row of each lakehouse table, holding the text no tool may return."""
+
+
+@contextmanager
+def _catalog(lake: Path) -> Iterator[SqlCatalog]:
+    """Open an Iceberg catalog with one namespace, kept in a SQLite file under `lake`.
+
+    The catalog's SQLite connections close on exit, since the suite fails on
+    the warning Python gives for one left open.
+    """
+    catalog = SqlCatalog("veridelta", uri=f"sqlite:///{lake / 'catalog.db'}", warehouse=str(lake))
+    try:
+        catalog.create_namespace("lake")
+        yield catalog
+    finally:
+        catalog.engine.dispose()
+
+
+def _iceberg(lake: Path, properties: dict[str, str] | None = None, appends: int = 1) -> str:
+    """Write an Iceberg table that appends `_ROW` `appends` times, and return its metadata file."""
+    with _catalog(lake) as catalog:
+        table = catalog.create_table(
+            "lake.events", schema=_ROW.to_arrow().schema, properties=properties or {}
+        )
+        for _ in range(appends):
+            table.append(_ROW.to_arrow())
+        return str(catalog.load_table("lake.events").metadata_location)
+
+
+def _one_layer_outside(root: Path, outside: Path, layer: str) -> str:
+    """Write an Iceberg table under `root` whose files of one layer lie in `outside`.
+
+    Returns:
+        str: The `table_uri` that reads it, under `root`.
+    """
+    if layer == "data file":
+        return _iceberg(root, {"write.data.path": str(outside)})
+    if layer == "metadata file":
+        metadata = Path(_iceberg(root))
+        moved = shutil.copy(metadata, outside / metadata.name)
+        (metadata.parent / "version-hint.text").write_text(str(moved))
+        return str(metadata.parent.parent)
+    # The table's metadata file, manifest list, and manifest all lie in `outside`.
+    metadata = json.loads(Path(_iceberg(root, {"write.metadata.path": str(outside)})).read_text())
+    if layer == "manifest":
+        for snapshot in metadata["snapshots"]:
+            listed = Path(snapshot["manifest-list"])
+            snapshot["manifest-list"] = str(shutil.copy(listed, root / listed.name))
+    copy = root / "v1.metadata.json"
+    copy.write_text(json.dumps(metadata))
+    return str(copy)
+
+
+class TestLakehouseFiles:
+    """Validate the folder rule on each file a Delta Lake or Iceberg table names."""
+
+    def test_it_accepts_a_delta_table_under_a_root(self, tmp_path: Path) -> None:
+        """Ensure a table whose files all lie under a root passes, at each version."""
+        _ROW.write_delta(tmp_path / "events")
+        _ROW.write_delta(tmp_path / "events", mode="append")
+        settings = Settings((tmp_path,))
+
+        for version in (0, None):
+            target = DeltaLakeConfig(table_uri="events", version=version)
+            check_data_paths(settings, SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    def test_it_refuses_a_delta_data_file_linked_outside(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a data file that links out of a root is refused, at the version that reads it.
+
+        The Delta log keeps every file under the table's folder, so a link is
+        the way out of one.
+        """
+        table = tmp_path / "events"
+        _ROW.write_delta(table)
+        _ROW.write_delta(table, mode="append")
+        (added,) = set(DeltaTable(str(table)).file_uris()) - set(
+            DeltaTable(str(table), version=0).file_uris()
+        )
+        secret = tmp_path_factory.mktemp("outside") / "secret.parquet"
+        Path(added).rename(secret)
+        Path(added).symlink_to(secret)
+        settings = Settings((tmp_path,))
+
+        check_data_paths(
+            settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events", version=0)
+        )
+        with pytest.raises(ConfigError, match=r"The target data file .* is outside the folders"):
+            check_data_paths(
+                settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
+            )
+
+    @pytest.mark.parametrize("by", ["metadata file", "table folder"])
+    def test_it_accepts_an_iceberg_table_under_a_root(self, tmp_path: Path, by: str) -> None:
+        """Ensure a table whose files all lie under a root passes, named either way."""
+        metadata = Path(_iceberg(tmp_path))
+        (metadata.parent / "version-hint.text").write_text(metadata.name)
+        table_uri = str(metadata) if by == "metadata file" else str(metadata.parent.parent)
+
+        check_data_paths(
+            Settings((tmp_path,)), SourceConfig(path="a.csv"), IcebergConfig(table_uri=table_uri)
+        )
+
+    @pytest.mark.parametrize("layer", ["metadata file", "manifest list", "manifest", "data file"])
+    def test_it_refuses_an_iceberg_file_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, layer: str
+    ) -> None:
+        """Ensure each file the scan reads is held to the roots, before it is opened."""
+        outside = tmp_path_factory.mktemp("outside")
+        target = IcebergConfig(table_uri=_one_layer_outside(tmp_path, outside, layer))
+
+        with pytest.raises(
+            ConfigError, match="outside the folders this server reads from"
+        ) as refused:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert str(refused.value).startswith(f"The target {layer} '{outside}")
+
+    def test_it_checks_the_snapshot_a_side_pins(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a file added after the pinned snapshot is no reason to refuse it."""
+        secret = tmp_path_factory.mktemp("outside") / "secret.parquet"
+        _ROW.write_parquet(secret)
+        with _catalog(tmp_path) as catalog:
+            table = catalog.create_table("lake.events", schema=_ROW.to_arrow().schema)
+            table.append(_ROW.to_arrow())
+            first = table.current_snapshot()
+            assert first is not None
+            table.add_files([str(secret)])
+            metadata = catalog.load_table("lake.events").metadata_location
+        settings = Settings((tmp_path,))
+
+        pinned = IcebergConfig(table_uri=metadata, snapshot_id=first.snapshot_id)
+        check_data_paths(settings, SourceConfig(path="a.csv"), pinned)
+        with pytest.raises(
+            ConfigError, match=re.escape(f"The target data file '{secret}' is outside")
+        ):
+            check_data_paths(
+                settings, SourceConfig(path="a.csv"), IcebergConfig(table_uri=metadata)
+            )
+
+    @pytest.mark.parametrize(
+        ("appends", "snapshot_id"),
+        [pytest.param(0, None, id="empty"), pytest.param(1, 1, id="unknown-snapshot")],
+    )
+    def test_it_lists_nothing_without_a_snapshot(
+        self, tmp_path: Path, appends: int, snapshot_id: int | None
+    ) -> None:
+        """Ensure a table with no snapshot to read passes, and the reader then says why."""
+        target = IcebergConfig(
+            table_uri=_iceberg(tmp_path, appends=appends), snapshot_id=snapshot_id
+        )
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_leaves_a_remote_file_to_the_reader(self, tmp_path: Path) -> None:
+        """Ensure a file on another machine is not held to the roots, as a remote table is not."""
+        metadata = json.loads(Path(_iceberg(tmp_path)).read_text())
+        for snapshot in metadata["snapshots"]:
+            snapshot["manifest-list"] = "https://example.invalid/snap.avro"
+        copy = tmp_path / "v1.metadata.json"
+        copy.write_text(json.dumps(metadata))
+
+        # The folder rule lets the manifest list through, and this FileIO opens no web address.
+        with pytest.raises(ConnectorError, match="could not be listed"):
+            check_data_paths(
+                Settings((tmp_path,)),
+                SourceConfig(path="a.csv"),
+                IcebergConfig(table_uri=str(copy)),
+            )
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(DeltaLakeConfig(table_uri="missing"), id="delta"),
+            pytest.param(IcebergConfig(table_uri="missing.metadata.json"), id="iceberg"),
+        ],
+    )
+    def test_it_refuses_a_table_it_cannot_list(
+        self, tmp_path: Path, target: DeltaLakeConfig | IcebergConfig
+    ) -> None:
+        """Ensure a table whose files cannot be listed is refused, naming the table."""
+        with pytest.raises(
+            ConnectorError,
+            match=rf"The files of the target .* table '{re.escape(target.table_uri)}' could not be listed",
+        ):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.parametrize(
+        ("module", "target", "extra"),
+        [
+            pytest.param("deltalake", DeltaLakeConfig(table_uri="events"), "delta", id="delta"),
+            pytest.param(
+                "pyiceberg.io",
+                IcebergConfig(table_uri="events.metadata.json"),
+                "iceberg",
+                id="iceberg",
+            ),
+        ],
+    )
+    def test_it_names_the_missing_extra(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        module: str,
+        target: DeltaLakeConfig | IcebergConfig,
+        extra: str,
+    ) -> None:
+        """Ensure a table read without its extra is refused with the command that installs it."""
+        monkeypatch.setitem(sys.modules, module, None)
+
+        with pytest.raises(ConnectorError, match=rf"uv add 'veridelta\[{extra}\]'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_returns_no_row_of_a_data_file_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure a tool reads no row of a file the table's metadata names outside the roots."""
+        metadata = _one_layer_outside(tmp_path, tmp_path_factory.mktemp("outside"), "data file")
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{metadata}'\nprimary_keys: [id]\n",
+        )
+        compare = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+
+        with pytest.raises(ConfigError, match="The target data file") as refused:
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+        assert _SECRET not in str(refused.value)
+        compare.assert_not_called()
 
 
 class TestEnvironmentValues:
