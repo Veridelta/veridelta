@@ -4,7 +4,9 @@
 """Unit tests for the core DiffEngine and the loaders."""
 
 import logging
+import os
 import re
+import stat
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -38,7 +40,7 @@ from veridelta._resolution import (
     normalized_dtype,
     polars_datetime_format,
 )
-from veridelta._results import _ARTIFACT_WRITERS
+from veridelta._results import _ARTIFACT_WRITERS, export_artifacts
 from veridelta.connectors.base import optional_module
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError, DataIntegrityError
@@ -1269,6 +1271,61 @@ class TestDataIntegrityAndSetDifferences:
 
         with pytest.raises(ConfigError, match="arrow, csv, json"):
             DiffEngine(config, frame.lazy(), frame.lazy()).run()
+
+    @pytest.mark.parametrize("link", ["symbolic", "hard"])
+    def test_it_replaces_a_link_at_an_artifact_name_instead_of_writing_through_it(
+        self, tmp_path: Path, link: str
+    ) -> None:
+        """Ensure a link planted in the output folder cannot lead a write outside it.
+
+        A writer that opens `added_rows.csv` writes to whatever a link there
+        points at, a file outside every root of the MCP server.
+        """
+        outside = tmp_path / "outside.txt"
+        outside.write_text("ORIGINAL")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        artifact = out_dir / "added_rows.csv"
+        if link == "symbolic":
+            artifact.symlink_to(outside)
+        else:
+            artifact.hardlink_to(outside)
+        src = pl.DataFrame({"id": [1], "val": ["A"]})
+        tgt = pl.DataFrame({"id": [1, 2], "val": ["A", "B"]})
+        config = DiffConfig(primary_keys=["id"], output_path=str(out_dir), output_format="csv")
+
+        DiffEngine(config, src.lazy(), tgt.lazy()).run()
+
+        assert outside.read_text() == "ORIGINAL"
+        assert not artifact.is_symlink()
+        assert artifact.stat().st_nlink == 1
+        assert artifact.read_text() == "id,val\n2,B\n"
+        assert [path.name for path in out_dir.iterdir()] == ["added_rows.csv"]
+
+    def test_it_leaves_no_partial_file_when_a_writer_fails(self, tmp_path: Path) -> None:
+        """Ensure a writer that fails removes its new file and keeps the old artifact.
+
+        CSV holds no list, so Polars refuses the frame partway through the write.
+        """
+        artifact = tmp_path / "added_rows.csv"
+        artifact.write_text("id\n1\n")
+
+        with pytest.raises(pl.exceptions.ComputeError):
+            export_artifacts({"added_rows": pl.DataFrame({"id": [[1]]})}, str(tmp_path), "csv")
+
+        assert [path.name for path in tmp_path.iterdir()] == ["added_rows.csv"]
+        assert artifact.read_text() == "id\n1\n"
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows files carry no POSIX mode bits.")
+    def test_it_writes_an_artifact_with_the_mode_a_plain_write_gives(self, tmp_path: Path) -> None:
+        """Ensure an artifact takes 0o666 less the umask, not a temporary file's 0o600."""
+        previous = os.umask(0o027)
+        try:
+            export_artifacts({"added_rows": pl.DataFrame({"id": [1]})}, str(tmp_path), "csv")
+        finally:
+            os.umask(previous)
+
+        assert stat.S_IMODE((tmp_path / "added_rows.csv").stat().st_mode) == 0o640
 
 
 def _normalized(config: DiffConfig, frame: pl.DataFrame) -> pl.DataFrame:
