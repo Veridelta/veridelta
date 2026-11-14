@@ -70,7 +70,7 @@ The run record ties a verdict to the files it judged, the commit they came from,
 | `started_at` | When the run started, in UTC. |
 | `config_file` | The configuration file's path as given and the SHA-256 of its bytes. `null` for a run of two files and `--key`. |
 | `baseline_file` | The `--baseline` file's path and SHA-256, or `null`. |
-| `commit_sha` | The commit checked out where the run started, from `git rev-parse HEAD`. Without git, GitHub Actions' `GITHUB_SHA`. `null` outside both. |
+| `commit_sha` | The commit checked out where the run started, from `git rev-parse HEAD`. With git 2.38 or later, git takes a bare repository only when `GIT_DIR` names it, so a folder of files shaped like one names no commit. Without git, GitHub Actions' `GITHUB_SHA`. `null` outside both. |
 | `working_tree_clean` | Whether no tracked file differed from that commit, from `git status`. Untracked files, such as the run's own reports, do not count. `null` when git cannot tell. |
 | `ci_run_url` | The GitHub Actions run, built from `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`. `null` outside GitHub Actions, or when a variable has an unexpected shape. |
 
