@@ -89,7 +89,7 @@ In VS Code, [the extension](configuration.md#the-vs-code-extension) registers th
 }
 ```
 
-Where Veridelta is installed without uv, the command is `veridelta mcp` itself. To let the agent read rows, add `--allow-row-values` to the command. The server has six tools. Each takes `path`, the configuration file, and resolves a relative path against the first root:
+Where Veridelta is installed without uv, the command is `veridelta mcp` itself. To let the agent read rows, add `--allow-row-values` to the command. To let it read data on another machine, such as a database server or a bucket, add `--allow-host` for each host. The server has six tools. Each takes `path`, the configuration file, and resolves a relative path against the first root:
 
 | Tool | Returns | Reads |
 | :--- | :--- | :--- |
@@ -203,7 +203,9 @@ would make order 1006 pass. That's your decision to make; I haven't added the ru
 The person who starts the server decides what it may read, and no tool call can change that:
 
 - Each `--root` names a folder the tools may read configuration files from, and a path outside every root fails the call. The server runs in the first root, so a relative path resolves there.
-- A tool that opens a side reads files on this machine only from under the roots, after it expands `~` and follows links, since a column name or an error can carry a file's text as a row does. Data elsewhere, such as an object store or a warehouse, is read as the command line reads it.
+- A tool that opens a side reads files on this machine only from under the roots, after it expands `~` and follows links, since a column name or an error can carry a file's text as a row does.
+- A tool that opens a side connects to another machine only when each host the side names is given with `--allow-host`, and refuses the side before it connects otherwise. A side names a URL's host, a bucket or a container, a database server, a Snowflake account's host, a Databricks workspace's host, and any host its `storage_options` name, such as an endpoint. BigQuery, MotherDuck, and Hugging Face need no host, since a configuration cannot choose where they connect.
+- A configuration takes each `${NAME}` from the server's environment, so a host it names could receive a secret, and a host on this machine or its network could answer with what the agent should not reach. That is why no host is allowed by default. The refusal names the setting and not the host, which can hold such a value.
 - A run writes the rows that differ to the configuration's `output_path`, so `run_comparison` and `read_discrepancies` refuse one outside every root before they read a row.
 - A side's `query` runs as written, with the configuration's credentials, so a tool that would run one refuses unless the server is started with `--allow-queries`. Even then, a DuckDB file's connection reads other files, attaches databases, and loads extensions only from under the roots. A MotherDuck connection is not held to the roots.
 - A tool returns findings, counts, and column names. It never returns the configuration, and it returns a value from the data only on a server started with `--allow-row-values`. A password inside an error is masked, as on the command line, and so is every value of four characters or more that the configuration takes from an environment variable, wherever it appears in an answer.

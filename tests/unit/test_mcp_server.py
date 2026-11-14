@@ -79,7 +79,11 @@ _QUERY = (
 )
 """A configuration whose source is a query, which no probe can describe without running it.
 
-The database is on another machine, so no file of it has to lie under a root."""
+The database is on another machine, so no file of it has to lie under a root,
+and a server reaches it only with its host allowed."""
+
+_QUERY_HOST = "db.example.com"
+"""The host of `_QUERY`'s database."""
 
 _SECRET = "hunter2-do-not-print"
 
@@ -233,6 +237,21 @@ class TestSettings:
         """Ensure a cap that would let no row through is refused when the server is built."""
         with pytest.raises(ConfigError, match="at least 1, got 0"):
             Settings((tmp_path,), max_rows=0)
+
+    def test_it_allows_no_host_by_default_and_lowercases_each(self, tmp_path: Path) -> None:
+        """Ensure a server connects to no host unless named, and compares hosts in any case."""
+        settings = Settings((tmp_path,), allowed_hosts=("DB.Example.com", "10.0.0.5", "[::1]"))
+
+        assert Settings((tmp_path,)).allowed_hosts == ()
+        assert settings.allowed_hosts == ("db.example.com", "10.0.0.5", "[::1]")
+
+    @pytest.mark.parametrize(
+        "host", ["https://db.example.com", "db.example.com:5432", "user@db", "", "::1", "a/b"]
+    )
+    def test_it_refuses_an_allowed_host_that_is_not_a_host(self, tmp_path: Path, host: str) -> None:
+        """Ensure an entry with a scheme, a port, or a login is refused, not read in part."""
+        with pytest.raises(ConfigError, match="--allow-host takes a host name"):
+            Settings((tmp_path,), allowed_hosts=(host,))
 
 
 class TestResolvePath:
@@ -621,9 +640,10 @@ class TestDescribeSide:
     def test_it_will_not_run_a_query_to_learn_its_columns(self, tmp_path: Path) -> None:
         """Ensure a query side is refused with the probe's own reason, and nothing connects."""
         _write(tmp_path, _QUERY)
+        settings = Settings((tmp_path,), allowed_hosts=(_QUERY_HOST,))
 
         with pytest.raises(ConfigError, match="A schema probe reads a 'table'"):
-            describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
+            describe_side(settings, "veridelta.yaml", "source")
 
 
 def _snowflake() -> SnowflakeConfig:
@@ -740,9 +760,223 @@ class TestCheckDataPaths:
             pytest.param(_snowflake(), id="warehouse"),
         ],
     )
-    def test_it_leaves_remote_data_alone(self, tmp_path: Path, side: SourceRef) -> None:
-        """Ensure data on another machine is read as the command line reads it."""
+    def test_it_leaves_remote_data_to_the_host_check(self, tmp_path: Path, side: SourceRef) -> None:
+        """Ensure data on another machine is not held to the roots, but to the allowed hosts."""
         check_data_paths(Settings((tmp_path,)), side, side)
+
+
+_ALLOWED = (
+    "example.com",
+    "bucket",
+    "db.internal",
+    "[::1]",
+    "xy12345.snowflakecomputing.com",
+    "adb-1.azuredatabricks.net",
+)
+"""The hosts the host tests' server allows."""
+
+_DATABRICKS = "  type: databricks\n  http_path: /sql/1.0/warehouses/1\n  table: orders\n"
+_SNOWFLAKE = (
+    "  type: snowflake\n  user: analyst\n  warehouse: WH\n  database: DB\n"
+    "  schema_name: PUBLIC\n  table: ORDERS\n"
+)
+
+
+def _remote(root: Path, target: str) -> Path:
+    """Write a configuration whose source is a file under the root and whose target is `target`."""
+    return _write(root, f"source:\n  path: a.csv\ntarget:\n{target}primary_keys: [id]\n")
+
+
+class TestAllowedHosts:
+    """Validate the rule that holds every host a side connects to to the hosts the server allows."""
+
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param("  path: https://elsewhere.example/a.csv\n", "path", id="https"),
+            pytest.param("  path: http://169.254.169.254/a.csv\n", "path", id="link-local"),
+            pytest.param("  path: http://127.0.0.1:8080/a.csv\n", "path", id="loopback"),
+            pytest.param("  path: s3://other/a.parquet\n", "path", id="bucket"),
+            pytest.param(
+                "  path: 'http://elsewhere.example\\@example.com/a.csv'\n",
+                "path",
+                id="backslash",
+            ),
+            pytest.param("  path: 'https:///elsewhere.example/a.csv'\n", "path", id="no-host"),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
+                "    storage_options: {aws_endpoint_url: 'http://127.0.0.1:9000'}\n",
+                "storage option 'aws_endpoint_url'",
+                id="endpoint-url",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'localhost:9000'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-without-scheme",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n"
+                "  storage_options: {azure_storage_account_name: elsewhere}\n",
+                "storage option 'azure_storage_account_name'",
+                id="account-name",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n"
+                "  storage_options: {azure_storage_use_emulator: 'true'}\n",
+                "storage option 'azure_storage_use_emulator'",
+                id="emulator",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {proxy_url: 'http://[elsewhere'}\n",
+                "storage option 'proxy_url'",
+                id="url-that-does-not-parse",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://other/events\n", "table_uri", id="iceberg"
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: https://elsewhere.example/x.duckdb\n  table: t\n",
+                "database",
+                id="duckdb",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@elsewhere.example/db\n  table: t\n",
+                "uri",
+                id="database",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal,elsewhere.example/db\n"
+                "  table: t\n",
+                "uri",
+                id="database-second-host",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal/db?host=elsewhere.example\n"
+                "  table: t\n",
+                "uri",
+                id="database-host-parameter",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u:p@elsewhere.example,@db.internal/db\n"
+                "  table: t\n",
+                "uri",
+                id="database-second-login",
+            ),
+            pytest.param(f"{_SNOWFLAKE}  account: elsewhere\n", "account", id="snowflake"),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: elsewhere.example\n",
+                "server_hostname",
+                id="databricks",
+            ),
+        ],
+    )
+    def test_it_refuses_a_host_the_server_does_not_allow(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, setting: str
+    ) -> None:
+        """Ensure each setting that picks where a side connects is refused before it connects."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, target)
+
+        with pytest.raises(
+            ConfigError, match="names a host this server may not connect"
+        ) as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target {setting} names a host")
+        assert "--allow-host" in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param("  path: https://EXAMPLE.com:8443/a.csv\n", id="https"),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
+                "    storage_options: {aws_endpoint_url: 'http://[::1]:9000', aws_region: x}\n",
+                id="object-store-endpoint",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {bucket: bucket}\n",
+                id="delta",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u:p@db.internal:5432/db?sslmode=require\n"
+                "  table: t\n",
+                id="database",
+            ),
+            pytest.param("  type: database\n  uri: sqlite://x.db\n  table: t\n", id="sqlite"),
+            pytest.param("  type: duckdb\n  database: x.duckdb\n  table: t\n", id="duckdb-file"),
+            pytest.param(f"{_SNOWFLAKE}  account: XY12345\n", id="snowflake"),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: https://adb-1.azuredatabricks.net/\n",
+                id="databricks",
+            ),
+        ],
+    )
+    def test_it_reads_from_a_host_the_server_allows(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure a side whose every host is allowed is read, whatever the case or the port."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        _remote(tmp_path, target)
+
+        report = describe_side(
+            Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target"
+        )
+
+        assert report["columns"] == {"id": "Int64"}
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(
+                "  type: bigquery\n  project: analytics\n  table: sales.orders\n", id="bigquery"
+            ),
+            pytest.param("  type: duckdb\n  database: md:sales\n  table: t\n", id="motherduck"),
+            pytest.param("  path: hf://datasets/org/data/a.parquet\n", id="hugging-face"),
+        ],
+    )
+    def test_it_needs_no_host_for_a_service_that_picks_its_own(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure a side that reaches one service's own hosts needs no `--allow-host`."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        _remote(tmp_path, target)
+
+        report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert report["columns"] == {"id": "Int64"}
+
+    def test_it_names_the_setting_and_not_a_host_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a value a host takes from the environment stays out of the refusal."""
+        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
+        _remote(
+            tmp_path,
+            "  type: database\n  uri: postgresql://u@${VD_MCP_SECRET}.elsewhere.example/db\n"
+            "  table: t\n",
+        )
+
+        with pytest.raises(ConfigError, match="The target uri names a host") as refused:
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert _SECRET not in str(refused.value)
+
+    def test_a_check_with_schemas_connects_to_no_host_it_does_not_allow(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure `schemas` refuses a host before it reads a column."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, "  path: http://127.0.0.1:8080/a.csv\n")
+
+        with pytest.raises(ConfigError, match="The target path names a host"):
+            check_configuration(Settings((tmp_path,)), "veridelta.yaml", schemas=True)
+
+        read.assert_not_called()
 
 
 class TestEnvironmentValues:
@@ -1386,12 +1620,34 @@ class TestServer:
             assert "ConfigError: The source path" in _text(result), tool
             assert _SECRET not in _text(result), tool
 
+    def test_it_fails_the_call_for_a_host_it_does_not_allow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure no tool that opens a side sends an environment value to a host not allowed."""
+        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
+        _remote(tmp_path, "  path: http://127.0.0.1:1/a.csv?t=${VD_MCP_SECRET}\n")
+        settings = Settings((tmp_path,), allow_row_values=True)
+        calls: list[tuple[str, dict[str, Any]]] = [
+            ("validate_config", {"path": "veridelta.yaml", "schemas": True}),
+            ("run_comparison", {"path": "veridelta.yaml"}),
+            ("describe_schema", {"path": "veridelta.yaml", "side": "target"}),
+            ("read_discrepancies", {"path": "veridelta.yaml", "kind": "added"}),
+            ("propose_value_maps", {"path": "veridelta.yaml"}),
+            ("suggest_rules", {"path": "veridelta.yaml"}),
+        ]
+
+        for tool, arguments in calls:
+            result = _call(settings, arguments, tool=tool)
+
+            assert result.is_error is True, tool
+            assert "ConfigError: The target path names a host" in _text(result), tool
+
     def test_it_fails_to_describe_a_query(self, tmp_path: Path) -> None:
         """Ensure a side read through a query fails the call, named as `run --json` names it."""
         _write(tmp_path, _QUERY)
 
         result = _call(
-            Settings((tmp_path,)),
+            Settings((tmp_path,), allowed_hosts=(_QUERY_HOST,)),
             {"path": "veridelta.yaml", "side": "source"},
             tool="describe_schema",
         )
@@ -1505,7 +1761,10 @@ class TestServer:
             "  table: orders\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
         )
 
-        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", "schemas": True})
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=("db.internal",)),
+            {"path": "veridelta.yaml", "schemas": True},
+        )
 
         shown = json.dumps(result.structured_content) + _text(result)
         assert result.structured_content is not None

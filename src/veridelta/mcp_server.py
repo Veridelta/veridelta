@@ -13,7 +13,8 @@ files and data on this machine from, and a tool refuses a path outside them. A
 tool returns findings, counts, and column names, never a value from the file.
 Two tools return values from the data, and only when the person who starts the
 server allows it: then at most a set number of rows. A side's `query` runs only
-when that person allows queries too. The SDK is imported by the first
+when that person allows queries too, and a side connects to another machine only
+when that person names its host. The SDK is imported by the first
 `build_server()`, not with this module, so `veridelta` imports without the
 extra.
 """
@@ -23,7 +24,8 @@ import inspect
 import json
 import logging
 import os
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -38,7 +40,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -58,10 +60,12 @@ from veridelta.engine import (
 from veridelta.exceptions import ConfigError, VerideltaError, missing_extra
 from veridelta.models import (
     DatabaseConfig,
+    DatabricksConfig,
     DeltaLakeConfig,
     DiffConfig,
     DuckDBConfig,
     IcebergConfig,
+    SnowflakeConfig,
     SourceConfig,
     SourceRef,
 )
@@ -110,6 +114,37 @@ _REMOTE_SCHEMES: Final = frozenset(
 Hugging Face, lakeFS, and MotherDuck. Any other location counts as a path on
 this machine, so one the readers would open here is never let through
 unchecked."""
+
+_SERVICE_SCHEMES: Final = frozenset({"hf", "md", "motherduck"})
+"""Remote schemes whose reader reaches one service's own hosts, Hugging Face's or
+MotherDuck's, so a configuration chooses no host with them."""
+
+_HOST_OPTIONS: Final = (
+    "account_name",
+    "bucket",
+    "bucket_name",
+    "container_name",
+    "endpoint",
+    "url",
+)
+"""Endings of the storage option keys that choose where a reader connects, such as
+`aws_endpoint_url`, `bucket`, or `azure_storage_account_name`, with or without a
+scheme. Any other option whose value is a URL names that URL's host too."""
+
+_EMULATOR_OPTION: Final = "use_emulator"
+"""The ending of the storage option key that sends Azure requests to the emulator,
+which listens on this machine."""
+
+_HOST_PARAMETERS: Final = frozenset({"host", "hostaddr", "socket"})
+"""Query parameters of a database URI that name the server to connect to, which a
+driver reads in place of, or beside, the URI's host."""
+
+_HOST: Final = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*|\[[0-9a-f:.]+\]")
+"""An allowed host: DNS labels, an IPv4 address, or an IPv6 address in brackets.
+
+A destination counts as allowed only when it equals one of them, so a host
+written any other way, such as with a percent sign, is refused rather than read
+as a driver might read it."""
 
 _MCP_EXTRA = missing_extra("mcp", "veridelta mcp")
 
@@ -172,24 +207,56 @@ class Settings:
             runs as written with the configuration's credentials. A DuckDB file
             still reads other files only from under the roots. Defaults to
             False.
+        allowed_hosts (tuple[str, ...]): The hosts a side may connect to, in
+            lowercase on creation. A side that names any other host, such as a
+            database server, an object store's bucket, or a URL's host, is
+            refused before it connects. Defaults to none, so every tool reads
+            only data on this machine, BigQuery, MotherDuck, or Hugging Face.
     """
 
     roots: tuple[Path, ...]
     allow_row_values: bool = False
     max_rows: int = DEFAULT_ROW_CAP
     allow_queries: bool = False
+    allowed_hosts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Resolve every root, so a path compares with them as the filesystem does.
 
         Raises:
-            ConfigError: If no root is given, or `max_rows` is below 1.
+            ConfigError: If no root is given, `max_rows` is below 1, or an
+                allowed host is not a host.
         """
         if not self.roots:
             raise ConfigError("The MCP server needs at least one folder to read from.")
         if self.max_rows < 1:
             raise ConfigError(f"The MCP server's row cap must be at least 1, got {self.max_rows}.")
         object.__setattr__(self, "roots", tuple(Path(root).resolve() for root in self.roots))
+        object.__setattr__(
+            self, "allowed_hosts", tuple(allowed_host(host) for host in self.allowed_hosts)
+        )
+
+
+def allowed_host(text: str) -> str:
+    """Check a host the person who starts the server allows, and write it in lowercase.
+
+    Args:
+        text (str): A host name, an IPv4 address, or an IPv6 address in
+            brackets, with no scheme, login, or port.
+
+    Returns:
+        str: The host in lowercase.
+
+    Raises:
+        ConfigError: If the text is not a host written that way.
+    """
+    host = text.lower()
+    if _HOST.fullmatch(host) is None:
+        raise ConfigError(
+            f"--allow-host takes a host name, an IPv4 address, or an IPv6 address in "
+            f"brackets, with no scheme or port, got {text!r}."
+        )
+    return host
 
 
 class RunReport(TypedDict):
@@ -383,7 +450,7 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     error message can carry a file's text as a row does. The paths are
     expanded and resolved as the readers do, so neither `~` nor a link leads
     out. Data on another machine, such as an object store, a database server,
-    or a warehouse, is read as the command line reads it.
+    or a warehouse, is held to the hosts the server allows instead.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -401,6 +468,108 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
                     f"reads from: {_roots(settings)}. A tool reads data on this machine only "
                     "from under them, so move the data into one, or ask the person who started "
                     "the server to add its folder with --root."
+                )
+
+
+def _authority_hosts(authority: str) -> list[str]:
+    """Return each host a URI's authority names, after its login and before its port.
+
+    A Postgres authority can name several hosts, separated by commas. Readers
+    split an authority that holds a backslash or a second `@` in different
+    places, so such an authority comes back whole, which no allowed host equals.
+    """
+    if "\\" in authority or authority.count("@") > 1:
+        return [authority]
+    return [
+        part.partition("]")[0] + "]" if part.startswith("[") else part.partition(":")[0]
+        for part in authority.rpartition("@")[2].split(",")
+    ]
+
+
+def _url_hosts(url: str) -> list[str]:
+    """Return each host a URL names, or the URL whole when it does not parse."""
+    try:
+        return _authority_hosts(urlsplit(url).netloc)
+    except ValueError:
+        return [url]
+
+
+def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
+    """Name the host a data location reaches, or none for a path here or a service's own hosts."""
+    scheme = urlsplit(location).scheme.lower()
+    if scheme not in _REMOTE_SCHEMES or scheme in _SERVICE_SCHEMES:
+        return []
+    return [(setting, host) for host in _url_hosts(location)]
+
+
+def _option_hosts(options: object) -> Iterator[tuple[str, str]]:
+    """Name each host a side's storage options send a reader to, with the option that names it."""
+    if not isinstance(options, Mapping):
+        return
+    for key, value in cast("Mapping[object, object]", options).items():
+        name, text = str(key).lower(), str(value)
+        setting = f"storage option '{key}'"
+        if name.endswith(_EMULATOR_OPTION):
+            yield setting, "127.0.0.1"
+        elif "://" in text:
+            yield from ((setting, host) for host in _url_hosts(text))
+        elif name.endswith(_HOST_OPTIONS):
+            yield from ((setting, host) for host in _authority_hosts(text))
+
+
+def _database_hosts(uri: str) -> list[tuple[str, str]]:
+    """Name each server a database URI connects to, from its host and its query alike."""
+    parts = urlsplit(uri)
+    if parts.scheme.startswith("sqlite"):
+        return []
+    hosts = _authority_hosts(parts.netloc)
+    hosts += [value for key, value in parse_qsl(parts.query) if key.lower() in _HOST_PARAMETERS]
+    return [("uri", host) for host in hosts]
+
+
+def _destinations(config: SourceRef) -> list[tuple[str, str]]:
+    """Name each host a side connects to that its configuration chooses, with the setting.
+
+    BigQuery, MotherDuck, and Hugging Face reach their own service's hosts,
+    which no setting changes, so they name none.
+    """
+    if isinstance(config, SourceConfig):
+        return [
+            *_location_hosts("path", config.path),
+            *_option_hosts(config.options.get("storage_options")),
+        ]
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return [
+            *_location_hosts("table_uri", config.table_uri),
+            *_option_hosts(config.storage_options),
+        ]
+    if isinstance(config, DuckDBConfig):
+        return _location_hosts("database", config.database)
+    if isinstance(config, DatabaseConfig):
+        return _database_hosts(config.uri)
+    if isinstance(config, SnowflakeConfig):
+        return [("account", f"{config.account}.snowflakecomputing.com")]
+    if isinstance(config, DatabricksConfig):
+        return [("server_hostname", config.server_hostname.removeprefix("https://").rstrip("/"))]
+    return []
+
+
+def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> None:
+    """Refuse a side that connects to a host the server does not allow, before it connects.
+
+    A configuration takes `${NAME}` values from the server's environment, so a
+    side that could reach any host could send one there, or reach a service on
+    this machine or its network. The message names the setting and not the
+    host, which can hold such a value.
+    """
+    for side, config in (("source", source), ("target", target)):
+        for setting, host in _destinations(config):
+            if host.lower() not in settings.allowed_hosts:
+                raise ConfigError(
+                    f"The {side} {setting} names a host this server may not connect to. A tool "
+                    "connects only to the hosts the person who started the server names with "
+                    "--allow-host, so read data under the roots instead, or ask them to add "
+                    "the host."
                 )
 
 
@@ -422,7 +591,8 @@ def check_configuration(
 
     Raises:
         ConfigError: If the path is outside the roots, or, with `schemas`, the
-            data a side reads on this machine is.
+            data a side reads on this machine is, or a side names a host the
+            server does not allow.
     """
     resolved = resolve_path(settings, path)
     if schemas:
@@ -433,6 +603,7 @@ def check_configuration(
             pass
         else:
             check_data_paths(settings, source, target)
+            _refuse_hosts(settings, source, target)
     with sandboxed(settings.roots):
         findings = DiffEngine.check_config_file(
             resolved, schemas=schemas, allow_missing_env=allow_missing_env
@@ -441,9 +612,10 @@ def check_configuration(
 
 
 def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
-    """Load a configuration a tool opens, refusing one whose data on this machine is outside the roots."""
+    """Load a configuration a tool opens, refusing data outside the roots or on a host not allowed."""
     diff, source, target = load_config(resolve_path(settings, path))
     check_data_paths(settings, source, target)
+    _refuse_hosts(settings, source, target)
     return diff, source, target
 
 
@@ -483,8 +655,8 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
 
     A run writes the rows that differ to `output_path`, so a configuration
     whose `output_path` or data on this machine lies outside the roots is
-    refused before any row is read, as is a side's `query` unless the server
-    allows queries.
+    refused before any row is read, as is a side on a host the server does not
+    allow, and a side's `query` unless the server allows queries.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -495,8 +667,9 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
 
     Raises:
         ConfigError: If the file, its data, or its `output_path` is outside
-            the roots, a side reads through a `query` the server does not
-            allow, or the configuration cannot run as written.
+            the roots, a side names a host the server does not allow, a side
+            reads through a `query` the server does not allow, or the
+            configuration cannot run as written.
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If a primary key repeats on either side.
     """
@@ -525,9 +698,10 @@ def describe_side(settings: Settings, path: str, side: Literal["source", "target
         SchemaReport: The side, and each of its columns mapped to its type.
 
     Raises:
-        ConfigError: If the file or its data is outside the roots, the file
-            does not load, or it reads the side through a `query`, which would
-            have to run in full.
+        ConfigError: If the file or its data is outside the roots, a side
+            names a host the server does not allow, the file does not load, or
+            it reads the side through a `query`, which would have to run in
+            full.
         ConnectorError: If the side cannot be reached or read.
     """
     _, source, target = _load(settings, path)
@@ -588,8 +762,8 @@ def read_rows(
     Raises:
         ConfigError: If the server does not allow row values, `limit` is below
             1, the file, its data, or its `output_path` is outside the roots,
-            a side reads through a `query` the server does not allow, or the
-            configuration cannot run.
+            a side names a host or reads through a `query` the server does not
+            allow, or the configuration cannot run.
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If a primary key repeats on either side.
     """
@@ -639,8 +813,8 @@ def propose_maps(
 
     Raises:
         ConfigError: If the server does not allow row values, the file or its
-            data is outside the roots, a side reads through a `query` the
-            server does not allow, a threshold is out of range, or the
+            data is outside the roots, a side names a host or reads through a
+            `query` the server does not allow, a threshold is out of range, or the
             configuration cannot be proposed from.
         ConnectorError: If a source cannot be read.
     """
@@ -685,8 +859,8 @@ def suggest(
 
     Raises:
         ConfigError: If the server does not allow row values, the file or its
-            data is outside the roots, a side reads through a `query` the
-            server does not allow, `max_share` is out of range, or the pair is
+            data is outside the roots, a side names a host or reads through a
+            `query` the server does not allow, `max_share` is out of range, or the pair is
             compared where it is stored.
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If either dataset repeats a normalized primary key.

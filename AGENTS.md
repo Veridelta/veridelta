@@ -100,5 +100,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [Schema checks read no rows](decisions/schema-checks-read-no-rows.md)
 - [Git and GitHub are the ledger, and a run record ties a verdict to them](decisions/git-and-github-are-the-ledger.md)
 - [A workflow fixes a vulnerable lockfile in two jobs](decisions/security-updates-in-two-jobs.md)
+- [The MCP server connects only to the hosts its operator allows](decisions/mcp-server-connects-only-to-allowed-hosts.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

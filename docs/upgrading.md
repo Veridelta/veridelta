@@ -23,10 +23,11 @@ Then run a comparison whose verdict you already know, and confirm the new releas
 
 ## 0.43.0
 
-Two things change:
+Three things change:
 
 - `DiffSummary` carries `threshold`, the configuration's threshold the verdict was held to, so `veridelta run --json` prints one more key, and the Markdown summary's JSON comment holds it too. A script that compares the JSON's keys exactly sees one more.
 - The HTML report's tables change shape. One columns table replaces the column-level drift and rules applied tables, the metric cards become a bar of the rows with its counts, and the disclosure under the mismatched values lists the changed rows side by side, one cell per compared column with both values, in place of the `<column>_source`, `<column>_target`, and `<column>_is_match` columns. The mismatched values table is unchanged. A script that reads the report's tables reads the mismatched values, or the JSON summary.
+- `veridelta mcp` connects to no host that a configuration names unless the server is started with `--allow-host` for it. A server that reads a database, a warehouse, an object store, or a URL needs one `--allow-host` for each host, such as `--allow-host db.internal`. [AI agents](agents.md#mcp-server) lists the hosts a side names.
 
 ## 0.42.0
 
