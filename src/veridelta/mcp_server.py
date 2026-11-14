@@ -48,6 +48,7 @@ from pydantic import Field
 from veridelta import __version__
 from veridelta.config import load_config, referenced_variables
 from veridelta.connectors.base import mask_secrets
+from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -365,10 +366,9 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig):
         named = [("database", config.database)]
-    elif isinstance(config, DatabaseConfig):
-        parts = urlsplit(config.uri)
-        if parts.scheme.startswith("sqlite"):
-            named = [("SQLite file", parts.netloc + parts.path)]
+    elif isinstance(config, DatabaseConfig) and urlsplit(config.uri).scheme.startswith("sqlite"):
+        # The connector reads the decoded text as a path on this machine, whatever it looks like.
+        return [("SQLite file", sqlite_path(config))]
     return [
         (setting, local)
         for setting, location in named
@@ -394,10 +394,13 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
         ConfigError: If a file or folder a side reads is outside every root.
     """
     for side, config in (("source", source), ("target", target)):
+        # A SQLite path carries the `password` field, as the driver reads it.
+        password = config.password if isinstance(config, DatabaseConfig) else None
         for setting, location in _data_locations(config):
             if not _opened_inside(settings, location):
+                shown = mask_secrets(location, password)
                 raise ConfigError(
-                    f"The {side} {setting} '{location}' is outside the folders this server "
+                    f"The {side} {setting} '{shown}' is outside the folders this server "
                     f"reads from: {_roots(settings)}. A tool reads data on this machine only "
                     "from under them, so move the data into one, or ask the person who started "
                     "the server to add its folder with --root."

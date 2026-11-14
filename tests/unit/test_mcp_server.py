@@ -11,12 +11,14 @@ whether a call failed.
 import json
 import logging
 import shutil
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
+from urllib.parse import quote
 
 import anyio
 import duckdb
@@ -29,6 +31,7 @@ from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
 from veridelta.config import load_config
+from veridelta.connectors.database import sqlite_path
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError
 from veridelta.mcp_server import (
@@ -638,6 +641,44 @@ def _snowflake() -> SnowflakeConfig:
     )
 
 
+_CLIMB = "/.." * 64
+"""Enough steps up to reach `/` from any folder a test runs in."""
+
+
+def _sqlite(uri: str, password: str | None = None) -> DatabaseConfig:
+    """Build a SQLite side."""
+    return DatabaseConfig(uri=uri, password=password, table="t")
+
+
+_SQLITE_DISGUISES = [
+    pytest.param(
+        lambda root, file: _sqlite(f"sqlite://{root}/a{_CLIMB.replace('.', '%2E')}{file}"),
+        id="encoded-dots",
+    ),
+    pytest.param(
+        lambda root, file: _sqlite(
+            f"sqlite://{root}/a{_CLIMB.replace('/', '%2F')}{quote(str(file), safe='')}"
+        ),
+        id="encoded-slashes",
+    ),
+    pytest.param(lambda _, file: _sqlite("sqlite://" + quote(str(file), safe="")), id="encoded"),
+    pytest.param(lambda root, file: _sqlite(f"sqlite://{root}/a?{_CLIMB}{file}"), id="query"),
+    pytest.param(lambda root, file: _sqlite(f"sqlite://{root}/a#{_CLIMB}{file}"), id="fragment"),
+    pytest.param(lambda _, file: _sqlite(f"sqlite://s3://a{_CLIMB}{file}"), id="remote-look"),
+    pytest.param(lambda _, file: _sqlite(f"sqlite://file:..{_CLIMB}{file}"), id="file-uri"),
+    pytest.param(
+        lambda _, file: _sqlite(f"sqlite://file:..%252Fz%3Fa={_CLIMB}{file}"),
+        id="file-uri-query",
+    ),
+    pytest.param(lambda _, file: _sqlite(f"sqlite://~{_CLIMB}{file}"), id="home"),
+    pytest.param(
+        lambda _, file: _sqlite(f"sqlite://u@/../{file.name}", f"{_CLIMB}{file.parent}/d"),
+        id="password",
+    ),
+]
+"""SQLite sides whose URI text sits under the root, but whose decoded path is `file`."""
+
+
 class TestCheckDataPaths:
     """Validate the folder rule on the data a tool returns rows from."""
 
@@ -701,6 +742,70 @@ class TestCheckDataPaths:
 
         assert str(refused.value).startswith(f"The target {setting} '{outside}")
         assert "--root" in str(refused.value)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="The disguises climb to `/` and add a POSIX path, where Windows needs a drive.",
+    )
+    @pytest.mark.parametrize("build", _SQLITE_DISGUISES)
+    def test_it_checks_the_sqlite_path_the_connector_opens(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        build: Callable[[Path, Path], DatabaseConfig],
+    ) -> None:
+        """Ensure a SQLite path is decoded as the connector decodes it, so no encoding leads out."""
+        monkeypatch.chdir(tmp_path)
+        settings = Settings((tmp_path,))
+        inside = build(tmp_path, tmp_path / "x.db")
+        outside_file = tmp_path_factory.mktemp("outside").resolve() / "x.db"
+        outside = build(tmp_path, outside_file)
+
+        check_data_paths(settings, SourceConfig(path="a.csv"), inside)
+        with pytest.raises(ConfigError, match=r"The target SQLite file '.+' is outside"):
+            check_data_paths(settings, SourceConfig(path="a.csv"), outside)
+
+        assert Path(sqlite_path(inside)).resolve() == tmp_path.resolve() / "x.db"
+        assert Path(sqlite_path(outside)).resolve() == outside_file
+        # The connector opens this text too, and SQLite reads no `file:` URI in an absolute path.
+        assert Path(sqlite_path(inside)).is_absolute()
+        assert Path(sqlite_path(outside)).is_absolute()
+
+    def test_it_reads_a_sqlite_home_path_as_the_driver_does(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure `~` in a SQLite path names a folder in the working directory, as the driver reads it."""
+        home = tmp_path_factory.mktemp("home")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+        side = _sqlite("sqlite://~/x.db")
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), side)
+        with pytest.raises(ConfigError, match=r"The target SQLite file '.+' is outside"):
+            check_data_paths(Settings((home,)), SourceConfig(path=str(home / "a.csv")), side)
+
+        assert sqlite_path(side) == str(tmp_path / "~" / "x.db")
+
+    def test_it_masks_the_password_of_a_refused_sqlite_path(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a refusal never repeats the `password` the driver reads as part of the path."""
+        monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
+        side = _sqlite("sqlite://u@/x.db", "hunter2")
+
+        with pytest.raises(ConfigError, match=r"The target SQLite file '.*u:\*\*\*@") as refused:
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path=str(tmp_path / "a.csv")), side
+            )
+
+        assert "hunter2" not in str(refused.value)
 
     def test_it_checks_a_relative_path_where_the_reader_opens_it(
         self,

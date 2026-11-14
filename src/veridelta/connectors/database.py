@@ -119,7 +119,7 @@ class DatabaseConnector(ReaderConnector):
         statement = self._statement(scheme)
         uri = _connection_uri(self._config)
         if scheme == "sqlite":
-            uri = _existing_sqlite_uri(uri)
+            uri = _existing_sqlite_uri(sqlite_path(self._config))
 
         started = time.perf_counter()
         declared: dict[str, pl.Decimal] = {}
@@ -620,10 +620,27 @@ def _scrub(config: DatabaseConfig, text: str) -> str:
     return mask_secrets(text, *secrets)
 
 
-def _existing_sqlite_uri(uri: str) -> str:
-    """Encode a SQLite URI's path for ConnectorX and require the file to exist."""
-    # ConnectorX percent-decodes the text after `sqlite://`: decode it here, re-encode on return.
-    path = unquote(uri[len(_SQLITE_PREFIX) :])
+def sqlite_path(config: DatabaseConfig) -> str:
+    """Return the path of the file a `sqlite://` source opens, as the connector opens it.
+
+    ConnectorX percent-decodes all the text after `sqlite://`, so this does too,
+    with any `?` or `#` and the `password` field kept in it. A relative path is
+    made absolute against the working directory, and the connector opens that
+    form. SQLite then never reads a leading `file:` as a URI of its own, and no
+    reader expands a leading `~`. The MCP server checks this path against its
+    roots, so the check and the read agree.
+
+    Args:
+        config (DatabaseConfig): A database source whose URI starts with `sqlite://`.
+
+    Returns:
+        str: The decoded path, made absolute.
+    """
+    return str(Path(unquote(_connection_uri(config)[len(_SQLITE_PREFIX) :])).absolute())
+
+
+def _existing_sqlite_uri(path: str) -> str:
+    """Encode a SQLite file's path for ConnectorX and require the file to exist."""
     # ConnectorX opens SQLite in create mode, so a missing file leaves an empty database behind.
     if not Path(path).is_file():
         raise ConnectorError(

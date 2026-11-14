@@ -9,6 +9,7 @@ import guard: a broken lock or a missing wheel fails loudly instead of skipping.
 
 import contextlib
 import sqlite3
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import quote
@@ -196,6 +197,24 @@ class TestDatabaseSources:
             LoaderFactory.load(DatabaseConfig(uri="sqlite://" + quote(str(missing)), table="t"))
 
         assert not missing.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows allows no `:` in a file name.")
+    def test_it_reads_a_path_that_starts_with_file_as_a_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `file:` opens the file of that name, and SQLite reads no URI of its own in it."""
+        table = "CREATE TABLE t (v TEXT)"
+        insert = "INSERT INTO t VALUES (?)"
+        _sqlite(tmp_path / "x.db", table, rows=[(insert, ("beside",))])
+        named = tmp_path / "work" / "file:.."
+        named.mkdir(parents=True)
+        _sqlite(named / "x.db", table, rows=[(insert, ("named",))])
+        monkeypatch.chdir(named.parent)
+
+        connector = DatabaseConnector(DatabaseConfig(uri="sqlite://file:../x.db", table="t"))
+        connector.connect()
+
+        assert connector.lazyframe().collect()["v"].to_list() == ["named"]
 
     def test_it_checks_rules_against_a_zero_row_probe(self, tmp_path: Path) -> None:
         """Ensure `validate --schemas` reads a real table's columns and types, no rows.

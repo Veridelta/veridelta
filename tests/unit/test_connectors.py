@@ -4,12 +4,13 @@
 """Unit tests for warehouse and lakehouse connector scaffolding."""
 
 import logging
+import sys
 import traceback
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock, call
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import polars as pl
 import pytest
@@ -487,6 +488,11 @@ class TestConnectorLifecycleDefaults:
 _DATABASE_SECRET = "p@ss:w/rd %+&?#"
 """A password holding every character a URI treats specially."""
 
+_POSIX_NAMES = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows allows no `:` or `?` in a file name."
+)
+"""Skip a case whose file name only a POSIX file system takes."""
+
 _CATALOG_SCHEMA = {"attname": pl.String, "atttypmod": pl.Int32, "is_numeric": pl.Boolean}
 """Columns of the Postgres catalog query a `table` read sends first."""
 
@@ -839,6 +845,28 @@ class TestDatabaseConnector:
         database.write_bytes(b"")
 
         DatabaseConnector(DatabaseConfig(uri=f"sqlite://{database}", table="orders")).connect()
+
+        read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            pytest.param("file:../x.db", marks=_POSIX_NAMES),
+            pytest.param("file:..%2Fx.db%3Fa=/x.db", marks=_POSIX_NAMES),
+            "~/x.db",
+        ],
+    )
+    def test_it_hands_connectorx_a_relative_sqlite_path_in_full(
+        self, mocker: MockerFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure SQLite gets an absolute path, so it reads no `file:` URI and no `~` of its own."""
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
+        database = tmp_path / unquote(written)
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"")
+        monkeypatch.chdir(tmp_path)
+
+        DatabaseConnector(DatabaseConfig(uri=f"sqlite://{written}", table="orders")).connect()
 
         read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
 
