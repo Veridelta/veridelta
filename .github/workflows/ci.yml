@@ -42,6 +42,22 @@ jobs:
           uv export --frozen --all-extras --all-groups --no-hashes --no-emit-project --output-file "$RUNNER_TEMP/requirements.txt"
           uvx pip-audit@2.10.1 --no-deps --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
 
+      # A pull request's lockfile must move no package to an older version, as a
+      # pinned upgrade does when one Python cannot install the release it pins.
+      - name: Check Out the Base Branch's Lockfile
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: uv.lock
+          sparse-checkout-cone-mode: false
+
+      - name: Refuse a Lockfile That Moves a Package to an Older Version
+        if: github.event_name == 'pull_request'
+        run: python3 .github/scripts/lock_diff.py base/uv.lock uv.lock
+
   # A push to main builds the site in the docs workflow, which deploys it, so this
   # builds it only for a pull request, and the site is built once per push.
   docs:

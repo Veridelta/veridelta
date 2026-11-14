@@ -48,6 +48,7 @@ _SETUP = _ROOT / ".github" / "actions" / "setup" / "action.yml"
 _RERUN = _ROOT / ".github" / "workflows" / "rerun-dropped.yml"
 _LIVE = _ROOT / ".github" / "workflows" / "live.yml"
 _EVALS = _ROOT / ".github" / "workflows" / "evals.yml"
+_SECURITY = _ROOT / ".github" / "workflows" / "security-updates.yml"
 _EXAMPLES = [_ROOT / "docs" / "ci.md", *sorted((_ROOT / "docs").glob("*/*.ipynb"))]
 """The pages whose workflow examples a user copies."""
 _PINNED_ACTION = re.compile(r"uses: ([\w.-]+/[\w.-]+)@[0-9a-f]{40} # v(\d+)\.")
@@ -969,6 +970,7 @@ class TestWorkflowPins:
             "live.yml",
             "release.yml",
             "rerun-dropped.yml",
+            "security-updates.yml",
         }
 
     @pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda path: path.name)
@@ -1619,6 +1621,109 @@ class TestRerunDroppedJobs:
 
         assert '[ "$newest" != "$RUN_ID" ]' in script
         assert script.index('"$newest" != "$RUN_ID"') < script.index("rerun-failed-jobs")
+
+
+def _steps_by_name(path: Path, job: str) -> dict[str, dict[str, Any]]:
+    """Return one job's steps, keyed by name."""
+    return {step["name"]: step for step in _workflow(path)["jobs"][job]["steps"]}
+
+
+class TestDependencyAudit:
+    """Pin the checks that keep `uv.lock` free of known vulnerabilities and of downgrades.
+
+    CI audits the lockfile on every run and refuses a pull request's lockfile that
+    moves a package to an older version. The Security Updates workflow audits main
+    every day and proposes a fixed lockfile through a pull request. The job that
+    runs `uv lock` can run a package's build code, so it holds no secret, and the
+    job that holds the token runs nothing from the lockfile.
+    """
+
+    def test_ci_and_the_daily_workflow_run_one_pinned_audit(self) -> None:
+        """Ensure both audits run the same pip-audit release over every extra and group."""
+        audits = [
+            command
+            for workflow in (_CI, _SECURITY)
+            for step in _workflow_steps(workflow)
+            for command in re.findall(r"uvx pip-audit\S*", step.get("run", ""))
+        ]
+        exports = [
+            command
+            for workflow in (_CI, _SECURITY)
+            for step in _workflow_steps(workflow)
+            if "pip-audit" in step.get("run", "")
+            for command in re.findall(r"uv export [^\n]*", step["run"])
+        ]
+
+        assert len(audits) == 3
+        assert set(audits) == {"uvx pip-audit@2.10.1"}
+        assert len(exports) == 3
+        for command in exports:
+            assert command.startswith(
+                "uv export --frozen --all-extras --all-groups --no-hashes --no-emit-project "
+            )
+
+    def test_ci_refuses_a_pull_requests_lockfile_that_moves_backward(self) -> None:
+        """Ensure a pull request's lockfile is compared with its base branch's."""
+        steps = _steps_by_name(_CI, "static-analysis")
+        checkout = steps["Check Out the Base Branch's Lockfile"]
+        check = steps["Refuse a Lockfile That Moves a Package to an Older Version"]
+
+        assert checkout["if"] == check["if"] == "github.event_name == 'pull_request'"
+        assert checkout["with"]["ref"] == "${{ github.base_ref }}"
+        assert checkout["with"]["path"] == "base"
+        assert check["run"] == "python3 .github/scripts/lock_diff.py base/uv.lock uv.lock"
+
+    def test_the_daily_workflow_runs_every_day_and_by_hand(self) -> None:
+        """Ensure the audit runs on a schedule, and a maintainer can start it."""
+        workflow = _workflow(_SECURITY)
+        triggers = workflow[True] if True in workflow else workflow["on"]
+
+        assert set(triggers) == {"schedule", "workflow_dispatch"}
+        assert [entry["cron"].split()[2:] for entry in triggers["schedule"]] == [["*", "*", "*"]]
+
+    def test_the_job_that_runs_uv_holds_no_secret_and_a_read_only_token(self) -> None:
+        """Ensure no package `uv lock` builds can read a token that writes."""
+        workflow = _workflow(_SECURITY)
+        upgrade = workflow["jobs"]["upgrade"]
+
+        assert workflow["permissions"] == {}
+        assert upgrade["permissions"] == {"contents": "read"}
+        assert "secrets." not in yaml.safe_dump(upgrade)
+
+    def test_the_job_that_holds_the_token_runs_nothing_from_the_lockfile(self) -> None:
+        """Ensure the job with the write token checks nothing out and installs nothing."""
+        job = _workflow(_SECURITY)["jobs"]["open"]
+        uses = [step["uses"] for step in job["steps"] if "uses" in step]
+        scripts = "\n".join(step.get("run", "") for step in job["steps"])
+
+        assert job["permissions"] == {}
+        assert uses == ["actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"]
+        for command in ("uv ", "uvx ", "python", "pip ", "git clone", "git checkout"):
+            assert command not in scripts, command
+        assert job["steps"][-1]["env"]["GH_TOKEN"] == "${{ secrets.SECURITY_UPDATES_TOKEN }}"
+
+    def test_it_upgrades_with_no_version_pinned_and_checks_the_result(self) -> None:
+        """Ensure each package moves as far as every Python allows, and never backward."""
+        steps = _steps_by_name(_SECURITY, "upgrade")
+        script = steps["Upgrade Each Package and Check the Lockfile"]["run"]
+
+        assert 'upgrades+=(--upgrade-package "$package")' in script
+        assert 'uv lock "${upgrades[@]}"' in script
+        assert "==" not in script
+        assert (
+            script.index('uv lock "${upgrades[@]}"')
+            < script.index("lock_diff.py")
+            < script.index("cp uv.lock fix/uv.lock")
+        )
+
+    def test_it_opens_a_pull_request_only_for_main_and_never_merges(self) -> None:
+        """Ensure a run on another branch proposes nothing, and a person merges."""
+        job = _workflow(_SECURITY)["jobs"]["open"]
+        script = job["steps"][-1]["run"]
+
+        assert "github.ref == 'refs/heads/main'" in job["if"]
+        assert "gh pr create --base main" in script
+        assert "merge" not in script
 
 
 def _evals_triggers() -> dict[str, Any]:
