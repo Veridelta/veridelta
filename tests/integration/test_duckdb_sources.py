@@ -125,7 +125,10 @@ class TestDuckDBSources:
             pytest.param("EXPLAIN SELECT id FROM sales.orders", id="explain"),
             pytest.param("CALL duckdb_tables()", id="call"),
             pytest.param("PIVOT sales.orders ON paid USING count(*) GROUP BY id", id="pivot"),
-            pytest.param("SET threads = 1; SELECT id FROM sales.orders", id="set-then-select"),
+            pytest.param(
+                "SET VARIABLE floor = 0; SELECT id FROM sales.orders WHERE id > getvariable('floor')",
+                id="set-then-select",
+            ),
         ],
     )
     def test_it_reads_every_kind_of_statement_that_returns_rows(
@@ -141,6 +144,44 @@ class TestDuckDBSources:
         frame = LoaderFactory.load(DuckDBConfig(database=database, query=query)).collect()
 
         assert frame.height > 0
+
+    def test_it_runs_a_files_views_only_over_files_beside_it(self, tmp_path: Path) -> None:
+        """Ensure a view someone else stored reads its own folder, and nothing outside it."""
+        root = tmp_path / "vendor"
+        (root / "extracts").mkdir(parents=True)
+        (root / "extracts" / "orders.csv").write_text("id\n1\n2\n")
+        beside = tmp_path / "vendor-beside"
+        beside.mkdir()
+        (beside / "secret.txt").write_text("hunter2-do-not-print\n")
+        database = _duckdb(
+            root / "vendor.duckdb",
+            f"CREATE VIEW orders AS SELECT * FROM read_csv('{root / 'extracts' / 'orders.csv'}')",
+            f"CREATE VIEW leak AS SELECT content AS id FROM read_text('{beside / 'secret.txt'}')",
+        )
+
+        orders = LoaderFactory.load(DuckDBConfig(database=database, table="orders")).collect()
+        with pytest.raises(ConnectorError, match="Permission Error") as refused:
+            LoaderFactory.load(DuckDBConfig(database=database, table="leak"))
+        settings = LoaderFactory.load(
+            DuckDBConfig(
+                database=database,
+                query="SELECT current_setting('enable_external_access') AS external, "
+                "current_setting('autoinstall_known_extensions') AS install, "
+                "current_setting('autoload_known_extensions') AS load, "
+                "current_setting('lock_configuration') AS locked",
+            )
+        ).collect()
+        with pytest.raises(ConnectorError, match="lock"):
+            LoaderFactory.load(
+                DuckDBConfig(
+                    database=database, query="SET enable_external_access = true; FROM leak"
+                )
+            )
+
+        assert orders["id"].to_list() == [1, 2]
+        assert "hunter2" not in str(refused.value)
+        # A URL needs an extension, which can neither install nor load by itself.
+        assert settings.row(0) == (False, False, False, True)
 
     def test_it_compares_a_duckdb_table_with_a_parquet_file(self, tmp_path: Path) -> None:
         """Ensure a DuckDB source runs through the same local comparison as a file."""
@@ -587,7 +628,6 @@ class TestDuckDBPushdown:
         assert inside["id"].to_list() == [1]
         assert table["id"].to_list() == [1]
         assert "hunter2" not in str(refused.value)
-        assert read(f"SELECT content FROM read_text('{beside / 'secret.txt'}')").height == 1
 
     def test_it_compares_a_view_that_casts_what_polars_cannot_read(self, tmp_path: Path) -> None:
         """Ensure an INTERVAL column fails the probe by name, and a casting view compares."""

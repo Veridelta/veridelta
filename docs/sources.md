@@ -231,11 +231,19 @@ primary_keys: ["order_id"]
 `database` is a file path, which resolves from the working directory, or a MotherDuck database written as `md:name` or `motherduck:name`. Set exactly one of `table` and `query`:
 
 - `table` is one to three identifier segments, such as `main.orders` or `warehouse.main.orders`. Each segment is double-quoted, which keeps its case.
-- `query` is sent to DuckDB as written, so it can also read files, as in `SELECT * FROM read_parquet('orders/*.parquet')`. A `query` whose last statement returns no result, such as `SET`, or writes, such as `INSERT`, `UPDATE`, `DELETE`, `CREATE`, or `COPY`, fails the read before it runs. A write with `RETURNING` fails too. The last statement must read rows: a `SELECT`, which includes `FROM`, `VALUES`, `SHOW`, `DESCRIBE`, and `SUMMARIZE`, or a `PIVOT`, `PRAGMA`, `EXPLAIN`, or `CALL`.
+- `query` is sent to DuckDB as written, so it can also read files in the database file's folder, as in `SELECT * FROM read_parquet('orders/*.parquet')` beside `warehouse.duckdb`. A relative path resolves from the working directory. A `query` whose last statement returns no result, such as `SET`, or writes, such as `INSERT`, `UPDATE`, `DELETE`, `CREATE`, or `COPY`, fails the read before it runs. A write with `RETURNING` fails too. The last statement must read rows: a `SELECT`, which includes `FROM`, `VALUES`, `SHOW`, `DESCRIBE`, and `SUMMARIZE`, or a `PIVOT`, `PRAGMA`, `EXPLAIN`, or `CALL`.
 
 ### DuckDB files
 
 A file opens read-only, so a `query` that writes fails and the file never changes. A missing file fails the read rather than leaving an empty database behind.
+
+A file's views and macros run as their author wrote them, so a file from someone else is code as well as data. Before any statement runs, the connection is held to the folder that holds the file:
+
+- A view, a macro, or a `query` reads other files and attaches other databases only from that folder and the folders under it. Anything outside it, such as `~/.ssh` or a URL, fails the read with a `Permission Error`.
+- No extension installs or loads by itself, so a URL, which needs DuckDB's `httpfs` extension, fails too. `LOAD` and `INSTALL` fail as well.
+- The settings lock, so a `query` cannot change them. `SET threads = 1` fails, while `SET VARIABLE` still works.
+
+Put the files a view or a `query` reads beside the database file, or in a folder under it. The [MCP server](agents.md#mcp-server) holds a file to its roots instead.
 
 DuckDB lets one process write to a file, or several read it, but not both at once. Close a notebook's read-write connection before a run reads the same file.
 
