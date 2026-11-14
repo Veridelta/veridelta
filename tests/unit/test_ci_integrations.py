@@ -1133,6 +1133,21 @@ class TestGitHooks:
             assert hooks[hook]["entry"].startswith(f"uv run --frozen {tool} "), hook
         assert remote == {"https://github.com/Lucas-C/pre-commit-hooks"}
 
+    def test_every_hook_repository_is_pinned_to_a_commit(self) -> None:
+        """Ensure a hook repository runs the commit it was reviewed at, as an Action does.
+
+        Its owner can move a tag to other code, which CI and every machine with
+        the hooks would then run. The tag stays beside the commit as a comment.
+        """
+        text = (_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        config: dict[str, Any] = yaml.safe_load(text)
+        revs = [repo["rev"] for repo in config["repos"] if repo["repo"] != "local"]
+
+        assert revs
+        for rev in revs:
+            assert re.fullmatch(r"[0-9a-f]{40}", rev), rev
+            assert re.search(rf"^\s*rev: {rev} # frozen: v\d+(\.\d+)*$", text, re.MULTILINE), rev
+
     def test_make_all_runs_the_hooks_on_every_file_as_ci_does(self) -> None:
         """Ensure a notebook or a demo script that fails CI's lint job fails `make all` first.
 
