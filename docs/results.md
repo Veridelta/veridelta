@@ -43,7 +43,7 @@ result.to_pandas()
 | `accepted_count` | Rows of drift a [baseline](cli.md#accepting-drift) accepted, which the counts above leave out. `0` without one. |
 | `is_perfect_match` | Whether nothing differs. |
 | `volume_shift` | `total_rows_target` minus `total_rows_source`. |
-| `report_summary` | A plain-text report of these counts and the most drifting columns. |
+| `report_summary` | A plain-text report of these counts and the most drifting columns. A column name that starts with anything but a letter, a digit, or an underscore, or that holds a control character such as a line break or holds the text `##[`, appears as Python's `repr` writes it, with the `[` of each `##[` written as `\x5b`. |
 | `provenance` | The [run record](#run-record): what the run read and where it ran. `veridelta run` fills it, and a run from Python leaves it `null` unless given one. |
 
 [`schema/run.schema.json`](schema/run.schema.json) is the JSON Schema of this object, and `veridelta schema run` prints it; see [Printing the schema](cli.md#printing-the-schema).

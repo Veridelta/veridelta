@@ -678,6 +678,38 @@ class TestRunOnTwoFiles:
         assert configured == code == 1
         assert json.loads(capsys.readouterr().out) == expected
 
+    def test_it_quotes_a_header_that_holds_a_line_break_and_an_escape(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a header from the data cannot print a CI workflow command or a color."""
+        header = 'id,"amt\n::error title=Forged::x \x1b[31mred"\n'
+        (files / "a.csv").write_text(f"{header}1,10\n2,20\n")
+        (files / "b.csv").write_text(f"{header}1,10\n2,21\n")
+
+        code = self._main(mocker, "a.csv", "b.csv", "--key", "id")
+        out = capsys.readouterr().out
+
+        assert code == 1
+        assert "- 'amt\\n::error title=Forged::x \\x1b[31mred': 1 mismatch" in out
+        assert "\x1b" not in out
+        assert not any(line.startswith("::") for line in out.splitlines())
+
+    @pytest.mark.parametrize("command", ["error title=Forged]x", "add-mask]Total"])
+    def test_it_breaks_a_legacy_workflow_command_in_a_header(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str], command: str
+    ) -> None:
+        """Ensure a printable header holding `##[` prints no line a CI runner acts on."""
+        header = f"id,amt ##[{command}\n"
+        (files / "a.csv").write_text(f"{header}1,10\n2,20\n")
+        (files / "b.csv").write_text(f"{header}1,10\n2,21\n")
+
+        code = self._main(mocker, "a.csv", "b.csv", "--key", "id", "-q")
+        captured = capsys.readouterr()
+
+        assert code == 1
+        assert f"- 'amt ##\\x5b{command}': 1 mismatch" in captured.out
+        assert not any("##[" in line for line in (captured.out + captured.err).splitlines())
+
     def test_it_names_no_configuration_file_in_the_metrics(
         self, files: Path, mocker: MockerFixture
     ) -> None:
@@ -895,6 +927,52 @@ class TestCrosswalkCommand:
             "F": "Female",
             "M": "Male",
         }
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_it_quotes_a_column_name_a_terminal_would_act_on(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        index: int,
+    ) -> None:
+        """Ensure a header with a line break and an escape stays on its line, in every note."""
+        column = "g\n::error::x \x1b[31m"
+        propose.return_value = [
+            _proposal(column, {"M": ("Male", 5, 5)}, governing_rule_index=index)
+        ]
+
+        crosswalk(crosswalk_args)
+        err = capsys.readouterr().err
+
+        assert "'g\\n::error::x \\x1b[31m': 1 new value_map entry" in err
+        assert f"rules[{index}] already governs 'g\\n::error::x \\x1b[31m'." in err
+        assert "\x1b" not in err
+        assert not any(line.startswith("::") for line in err.splitlines())
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_it_breaks_a_legacy_workflow_command_in_a_name_or_a_value(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        index: int,
+    ) -> None:
+        """Ensure `##[` in a column name or a value reaches no line of the evidence."""
+        column = "g ##[error]x"
+        propose.return_value = [
+            _proposal(
+                column, {"M ##[warning]y": ("##[add-mask]z", 5, 5)}, governing_rule_index=index
+            )
+        ]
+
+        crosswalk(crosswalk_args)
+        err = capsys.readouterr().err
+
+        assert "'g ##\\x5berror]x': 1 new value_map entry" in err
+        assert "  'M ##\\x5bwarning]y' -> '##\\x5badd-mask]z': 5 of 5 rows" in err
+        assert f"rules[{index}] already governs 'g ##\\x5berror]x'." in err
+        assert not any("##[" in line for line in err.splitlines())
 
     def test_it_passes_the_thresholds_to_the_engine(
         self, propose: MagicMock, crosswalk_args: argparse.Namespace

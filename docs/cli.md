@@ -40,7 +40,7 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | `--otel PATH` | Also write the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics) to a file. |
 | `--otel-send` | Also send the metrics to an OTLP/HTTP endpoint. See [Sending to an endpoint](results.md#sending-to-an-endpoint). |
 
-Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one, and so does a Markdown summary that lists values.
+Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. The text report quotes a column name from the data that a terminal or a CI runner could act on: one holding a line break, an escape sequence, or `##[`, which GitHub Actions reads as a command anywhere in a line, or one that starts with anything but a letter, a digit, or an underscore. Inside the quotes, the `[` of `##[` reads `\x5b`. The evidence that `crosswalk` and `suggest` print writes column names and values from the data the same way. Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one, and so does a Markdown summary that lists values.
 
 ### Two files without a configuration
 

@@ -483,6 +483,52 @@ class TestSuggestCommand:
         assert "put it first in rules" in err
         assert "explains" not in err
 
+    def test_it_quotes_a_column_name_a_terminal_would_act_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a header with a line break and an escape stays on its line, in the note too."""
+        header = 'id,"fa\n::error::x \x1b[31m"\n'
+        (tmp_path / "a.csv").write_text(f"{header}1,10.00\n2,20.00\n")
+        (tmp_path / "b.csv").write_text(f"{header}1,10.004\n2,20.004\n")
+        (tmp_path / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: a.csv\ntarget:\n  path: b.csv\n"
+            'rules:\n  - column_names: ["fa\\n::error::x \\e[31m"]\n    cast_to: Float64\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "suggest"])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        err = capsys.readouterr().err
+        assert "'fa\\n::error::x \\x1b[31m': absolute_tolerance 0.005 explains 2 of 2" in err
+        assert "Note: rules[0] governs 'fa\\n::error::x \\x1b[31m' today." in err
+        assert "\x1b" not in err
+        assert not any(line.startswith("::") for line in err.splitlines())
+
+    def test_it_breaks_a_legacy_workflow_command_in_a_name_or_a_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `##[` in a column name or a key value reaches no line of the evidence."""
+        header = "id,fa ##[error]x\n"
+        (tmp_path / "a.csv").write_text(f"{header}k ##[warning]y,10.00\nb,20.00\n")
+        (tmp_path / "b.csv").write_text(f"{header}k ##[warning]y,10.004\nb,20.004\n")
+        (tmp_path / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: a.csv\ntarget:\n  path: b.csv\n"
+            "rules:\n  - column_names: ['fa ##[error]x']\n    cast_to: Float64\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "suggest"])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        err = capsys.readouterr().err
+        assert "'fa ##\\x5berror]x': absolute_tolerance 0.005 explains 2 of 2" in err
+        assert "id='k ##\\x5bwarning]y'" in err
+        assert "Note: rules[0] governs 'fa ##\\x5berror]x' today." in err
+        assert not any("##[" in line for line in err.splitlines())
+
     def test_it_prints_json_and_exits_3_when_it_cannot_finish(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
