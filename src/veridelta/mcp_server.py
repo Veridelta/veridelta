@@ -56,7 +56,7 @@ from veridelta.config import load_config, referenced_variables
 from veridelta.connectors.base import mask_secrets, shown_location, without_location
 from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.duckdb import sandboxed
-from veridelta.connectors.lakehouse import checking_iceberg_files
+from veridelta.connectors.lakehouse import checked_file_io, checking_iceberg_files
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
     DEFAULT_MIN_CONFIDENCE,
@@ -519,8 +519,24 @@ def _inside(settings: Settings, path: str) -> Path | None:
     return resolved if _under_roots(settings, resolved) else None
 
 
+def _another_machine(path: str) -> bool:
+    """Whether a path starts with two separators, as a path on another machine does on Windows.
+
+    Windows reaches the host such a path names, over SMB or WebDAV, as soon as
+    anything resolves it, and can send the user's credentials there. So the
+    path is refused before it is resolved or matched, on every system alike.
+    """
+    separators = tuple(filter(None, (os.sep, os.altsep)))
+    return path[:1] in separators and path[1:2] in separators
+
+
 def _under_both_readings(settings: Settings, path: Path) -> bool:
-    """Whether a path lies under a root when the links are followed before a `..`, and after."""
+    """Whether a path lies under a root when the links are followed before a `..`, and after.
+
+    A path on another machine never does, and is not resolved.
+    """
+    if _another_machine(str(path)):
+        return False
     folded = Path(os.path.abspath(path))
     # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
     return all(_under_roots(settings, Path(os.path.realpath(each))) for each in (path, folded))
@@ -670,8 +686,10 @@ def _local_paths(location: str) -> list[str]:
     ]
     standard = _split(location.replace("\\", "/").strip(_URL_SPACE))
     if standard is not None:
-        path = url2pathname(standard.path)
-        paths.append(path if os.path.isabs(path) else os.sep + path)
+        # Rooted at `/` before it is converted, since on Windows a separator added after
+        # the conversion can make a path such as `\\host\share`, which names another machine.
+        path = standard.path
+        paths.append(url2pathname(path if path.startswith("/") else f"/{path}"))
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.
     return [*dict.fromkeys(paths), location]
@@ -718,7 +736,9 @@ def _delta_files(config: DeltaLakeConfig) -> Iterator[tuple[str, str, bool]]:
         yield "data file", uri, True
 
 
-def _iceberg_files(config: IcebergConfig) -> Iterator[tuple[str, str, bool]]:
+def _iceberg_files(
+    config: IcebergConfig, check: Callable[[str], None]
+) -> Iterator[tuple[str, str, bool]]:
     """Name each file a scan of an Iceberg table reads, each before it is opened.
 
     A table folder's version hint, the manifest list, and each manifest name
@@ -728,14 +748,14 @@ def _iceberg_files(config: IcebergConfig) -> Iterator[tuple[str, str, bool]]:
     never quoted, since it is a value from a file. The data and delete files
     come from the manifests, as a scan plans them.
 
-    The files are read as the scan on this server reads them: through a
-    PyArrow FileIO built from `storage_options` alone, whatever the
-    metadata's own properties say.
+    The files are read as the scan on this server reads them: through the
+    FileIO `checked_file_io` builds from `storage_options` alone, whatever the
+    metadata's own properties say, which runs `check` on each path here and
+    opens no file through a scheme outside an object store's.
     """
-    from pyiceberg.io.pyarrow import PyArrowFileIO
     from pyiceberg.serializers import FromInputFile
 
-    io = PyArrowFileIO(dict(config.storage_options or {}))
+    io = checked_file_io(dict(config.storage_options or {}), check)
     location, hint = config.table_uri, None
     if not location.endswith(".metadata.json"):
         hint = os.path.join(location, "metadata", "version-hint.text")
@@ -771,13 +791,14 @@ def _iceberg_files(config: IcebergConfig) -> Iterator[tuple[str, str, bool]]:
 
 
 def _table_files(
-    side: str, config: DeltaLakeConfig | IcebergConfig
+    settings: Settings, side: str, config: DeltaLakeConfig | IcebergConfig
 ) -> Iterator[tuple[str, str, bool]]:
     """Name each file that the scan of a lakehouse table reads.
 
     A table's log or metadata names its files by full URI, so they can lie
     anywhere. A table whose files cannot be listed is refused, since the scan
-    would read the same log or metadata.
+    would read the same log or metadata. An Iceberg table's files are read
+    with the scan's own check, as well as the caller's.
 
     Raises:
         ConnectorError: If the extra is missing, or the table cannot be listed.
@@ -785,7 +806,8 @@ def _table_files(
     if isinstance(config, DeltaLakeConfig):
         files, kind, extra = _delta_files(config), "Delta Lake table", "delta"
     else:
-        files, kind, extra = _iceberg_files(config), "Iceberg table", "iceberg"
+        check = functools.partial(_refuse_opened, settings)
+        files, kind, extra = _iceberg_files(config, check), "Iceberg table", "iceberg"
     try:
         yield from files
     except ImportError as exc:
@@ -832,7 +854,8 @@ def _refuse_outside(
             "points to, so this server refuses the pattern. Write the path without "
             "'..', and write out each name that starts with a dot."
         )
-    opened = _opened(local) if expanded else [local]
+    # A pattern on another machine is not expanded, since that would reach the machine.
+    opened = _opened(local) if expanded and not _another_machine(local) else [local]
     if not all(_opened_inside(settings, each) for each in opened):
         raise ConfigError(
             f"The {side} {named} is outside the folders this server "
@@ -883,7 +906,7 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
             )
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
-            for setting, location, quoted in _table_files(side, config):
+            for setting, location, quoted in _table_files(settings, side, config):
                 for local in _local_paths(location):
                     _refuse_outside(settings, side, setting, location, local, quoted=quoted)
 

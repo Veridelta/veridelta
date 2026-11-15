@@ -23,7 +23,7 @@ import os
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import polars as pl
 
@@ -45,6 +45,17 @@ _file_check: ContextVar[Callable[[str], None] | None] = ContextVar(
     "veridelta_iceberg_file_check", default=None
 )
 """What checks each path on this machine an Iceberg scan opens, or None for no check."""
+
+_CHECKED_SCHEMES: Final = frozenset(
+    {"file", "s3", "s3a", "s3n", "oss", "gs", "gcs", "abfs", "abfss", "wasb", "wasbs"}
+)
+"""The schemes a checked FileIO opens a file through: `file`, whose path it
+checks, and the object stores', whose host comes from `storage_options`, which
+the MCP server checks, or is the service's own.
+
+PyArrow opens `hdfs` and `viewfs` through libhdfs, which it can load from the
+working directory, the server's first root. A table whose files name either
+would then run a library that anyone who can write to that root put there."""
 
 
 @contextmanager
@@ -74,13 +85,22 @@ def checking_iceberg_files(check: Callable[[str], None]) -> Generator[None]:
         _file_check.reset(token)
 
 
-def _checked_file_io(properties: dict[str, str], check: Callable[[str], None]) -> "FileIO":
+def checked_file_io(properties: dict[str, str], check: Callable[[str], None]) -> "FileIO":
     """Build a PyArrow FileIO that calls `check` before it opens a file on this machine.
 
     The path checked is the one the FileIO opens, since both come from its own
     `parse_location`. PyArrow opens a location from this machine's disk only
     when its scheme parses as `file`, as a location with none does unless
-    `DEFAULT_SCHEME` names another.
+    `DEFAULT_SCHEME` names another. A scheme outside `_CHECKED_SCHEMES` is
+    refused before PyArrow builds a file system for it.
+
+    Args:
+        properties (dict[str, str]): The validated storage options.
+        check (Callable[[str], None]): Raises to refuse a path, which is
+            absolute or relative to the working directory.
+
+    Returns:
+        FileIO: The FileIO, which raises `ConnectorError` for a refused scheme.
     """
     from pyiceberg.io.pyarrow import PyArrowFile, PyArrowFileIO
 
@@ -90,6 +110,12 @@ def _checked_file_io(properties: dict[str, str], check: Callable[[str], None]) -
         def new_input(self, location: str) -> PyArrowFile:
             """Check the path PyArrow opens for a location on this machine, then open it."""
             scheme, _, path = self.parse_location(location, self.properties)
+            if scheme not in _CHECKED_SCHEMES:
+                # The scheme is a value from a file, so the message leaves it out.
+                raise ConnectorError(
+                    "An Iceberg scan was about to open a file through a scheme other than "
+                    "file: or an object store's, so it was stopped."
+                )
             if scheme == "file":
                 check(path)
             return super().new_input(location)
@@ -201,7 +227,7 @@ def _static_table(table_uri: str, storage_options: dict[str, str]) -> "StaticTab
     io = (
         load_file_io(dict(storage_options), location=table_uri)
         if check is None
-        else _checked_file_io(dict(storage_options), check)
+        else checked_file_io(dict(storage_options), check)
     )
     location = _metadata_location(table_uri, io)
     metadata = FromInputFile.table_metadata(io.new_input(location))

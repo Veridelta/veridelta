@@ -9,8 +9,11 @@ whether a call failed.
 """
 
 import functools
+import glob
 import json
 import logging
+import ntpath
+import os
 import re
 import shutil
 import sys
@@ -21,6 +24,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
 from urllib.parse import quote
@@ -1247,6 +1251,58 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match="outside the folders"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="~/a.csv"), _snowflake())
 
+    @pytest.mark.parametrize(
+        "location",
+        [
+            "file:/host.example/share/a.csv",
+            "file:///host.example/share/a.csv",
+            "fs:/host.example/share/t",
+        ],
+    )
+    def test_it_reads_no_file_uri_as_a_path_on_another_machine(
+        self, monkeypatch: pytest.MonkeyPatch, location: str
+    ) -> None:
+        """Ensure each reading of a file URI's path stays on this machine under Windows' rules.
+
+        From Python 3.13, Windows holds a path that starts with one separator
+        and no drive not to be absolute, so a separator added in front of it
+        would make a UNC path, which names another machine. The URI's path is
+        rooted before it becomes a path, so no reading starts with two.
+        """
+        windows = SimpleNamespace(path=ntpath, sep="\\", altsep="/")
+        monkeypatch.setattr(mcp_server, "os", windows)
+        monkeypatch.setattr(mcp_server, "url2pathname", lambda url: url.replace("/", "\\"))
+
+        readings = mcp_server._local_paths(location)  # pyright: ignore[reportPrivateUsage] - the readings alone show the path that would reach the host
+
+        assert "\\host.example\\share\\" + location.rsplit("/", 1)[1] in readings
+        assert not any(reading.startswith("\\\\") for reading in readings)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("{sep}{sep}host.example{sep}share{sep}a.csv", id="path"),
+            pytest.param("{sep}{sep}host.example{sep}share{sep}*.csv", id="pattern"),
+        ],
+    )
+    def test_it_resolves_no_path_on_another_machine(
+        self, tmp_path: Path, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a path that starts with two separators is refused before it is resolved or matched.
+
+        On Windows, resolving or matching such a path reaches the host it names,
+        and can send the user's credentials there.
+        """
+        resolved = mocker.spy(os.path, "realpath")
+        matched = mocker.spy(glob, "glob")
+        side = SourceConfig(path=path.format(sep=os.sep))
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+        reached = [str(call.args[0]) for call in resolved.call_args_list + matched.call_args_list]
+        assert not [each for each in reached if each[:2] in ("//", "\\\\", "/\\", "\\/")]
+
     @staticmethod
     def _link_out(root: Path, outside: Path, name: str = "link") -> None:
         """Link a folder under the root to `dir` outside it, beside a file the root must not reach.
@@ -1956,6 +2012,51 @@ class TestLakehouseFiles:
                 SourceConfig(path="a.csv"),
                 IcebergConfig(table_uri=str(copy)),
             )
+
+    @pytest.mark.parametrize("scheme", ["hdfs", "viewfs"])
+    @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
+    def test_it_opens_no_file_through_libhdfs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        scheme: str,
+        listed: bool,
+    ) -> None:
+        """Ensure neither the listing nor the scan opens a file through libhdfs.
+
+        PyArrow opens an `hdfs` or `viewfs` file through libhdfs, which it can
+        load from the working directory, the first root, where an agent can
+        write one. The table lies under the root and names no host, so only the
+        FileIO stands between the table's manifest list and that library.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "libhdfs.so").write_bytes(b"code an agent wrote")
+        loads: list[str] = []
+
+        def load(_io: PyArrowFileIO, scheme: str, _netloc: str | None) -> None:
+            loads.append(scheme)
+            raise OSError("libhdfs was loaded")
+
+        monkeypatch.setattr(PyArrowFileIO, "_initialize_hdfs_fs", load)
+        metadata = Path(_iceberg(tmp_path))
+        written = json.loads(metadata.read_text())
+        for snapshot in written["snapshots"]:
+            snapshot["manifest-list"] = f"{scheme}://namenode/lake/list.avro"
+        metadata.write_text(json.dumps(written))
+        if not listed:
+            mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{metadata}'\nprimary_keys: [id]\n",
+        )
+
+        with pytest.raises(ConnectorError, match="through a scheme other than file: or an object"):
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+        assert loads == []
 
     @pytest.mark.parametrize(
         "target",

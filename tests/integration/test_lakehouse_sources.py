@@ -24,8 +24,8 @@ from pyiceberg.catalog.sql import SqlCatalog
 
 from veridelta.connectors import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.lakehouse import (
-    _checked_file_io,  # pyright: ignore[reportPrivateUsage] - pins the path the FileIO checks
     _static_table,  # pyright: ignore[reportPrivateUsage] - pins the table the loader builds
+    checked_file_io,
     checking_iceberg_files,
 )
 from veridelta.engine import DiffEngine, LoaderFactory
@@ -288,12 +288,26 @@ class TestCheckedIcebergScan:
     def test_it_checks_only_a_file_it_opens_from_this_machine(self) -> None:
         """Ensure a file in a store is left to the store, and a local one is checked as opened."""
         checked: list[str] = []
-        io = _checked_file_io({"s3.region": "us-east-1"}, checked.append)
+        io = checked_file_io({"s3.region": "us-east-1"}, checked.append)
 
         io.new_input("s3://lake/events/data.parquet")
         io.new_input("FILE:///lake/events/data.parquet")
 
         assert checked == ["/lake/events/data.parquet"]
+
+    @pytest.mark.parametrize(
+        "location",
+        ["hdfs://namenode/lake/data.parquet", "viewfs://cluster/lake/data.parquet"],
+    )
+    def test_it_opens_no_file_through_libhdfs(self, location: str) -> None:
+        """Ensure a file in HDFS is refused, since PyArrow can load libhdfs from the working directory."""
+        checked: list[str] = []
+        io = checked_file_io({}, checked.append)
+
+        with pytest.raises(ConnectorError, match="scheme other than file: or an object store's"):
+            io.new_input(location)
+
+        assert checked == []
 
 
 class TestLakehouseScanFailures:
