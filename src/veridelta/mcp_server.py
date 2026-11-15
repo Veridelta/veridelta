@@ -997,8 +997,9 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
 
     Any other `database` is a file's path, checked as any location is:
     `DuckDBConfig` refuses one that DuckDB would open through an extension,
-    such as `sqlite:x.db`, and a `file:` URI, whose host DuckDB opens as a
-    folder, and the connector opens the file as a DuckDB
+    such as `sqlite:x.db`, a `file:` URI, whose host DuckDB opens as a
+    folder, and `~name`, which DuckDB reads as HOME followed by `name`. The
+    connector expands `~/` as the check does, and opens the file as a DuckDB
     database, whatever it holds.
     """
     if config.is_motherduck:

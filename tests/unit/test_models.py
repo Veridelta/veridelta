@@ -3,7 +3,9 @@
 
 """Unit tests for Veridelta configuration and result data models."""
 
+import os
 import re
+import sys
 from typing import get_args
 
 import polars as pl
@@ -1163,11 +1165,42 @@ class TestDuckDBConfig:
             pytest.param("motherduc\u212a:x", id="kelvin-sign"),
             pytest.param("a-b:x", id="hyphen"),
             pytest.param("md:sales", id="motherduck"),
+            pytest.param("~/warehouse.duckdb", id="home"),
+            pytest.param(f"~{os.sep}warehouse.duckdb", id="home-and-separator"),
+            pytest.param("~", id="home-alone"),
+            pytest.param("data/~name/warehouse.duckdb", id="tilde-inside"),
         ],
     )
     def test_it_takes_a_database_duckdb_opens_without_an_extension(self, database: str) -> None:
         """Ensure a path, a drive letter, or a MotherDuck database is no extension prefix."""
         assert DuckDBConfig(database=database, table="t").database == database
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("~daemon/warehouse.duckdb", id="user"),
+            pytest.param("~postgres/../../data/warehouse.duckdb", id="user-and-parent"),
+            pytest.param("~_name/warehouse.duckdb", id="underscore"),
+            pytest.param("~~/warehouse.duckdb", id="two-tildes"),
+            pytest.param("~.duckdb", id="file-name"),
+        ],
+    )
+    def test_it_refuses_a_user_home_in_a_database(self, database: str) -> None:
+        """Ensure `~name` is refused, value unsaid, since DuckDB and Python read it apart.
+
+        DuckDB adds the text after `~` to the home folder, so `~daemon/x` opens
+        `<home>daemon/x`, while Python and the MCP server's check read daemon's home.
+        """
+        with pytest.raises(ValidationError, match="starts with ~ and a name") as refused:
+            DuckDBConfig(database=database, table="t")
+
+        assert database not in str(refused.value)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="a backslash separates folders on Windows")
+    def test_it_refuses_a_tilde_and_a_backslash_on_posix(self) -> None:
+        """Ensure a backslash after `~` is refused where it is part of a name, as in a user's name."""
+        with pytest.raises(ValidationError, match="starts with ~ and a name"):
+            DuckDBConfig(database="~\\warehouse.duckdb", table="t")
 
     def test_it_takes_a_token_for_motherduck_only(self) -> None:
         """Ensure a token set on a file is refused rather than silently unused."""

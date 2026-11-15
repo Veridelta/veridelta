@@ -9,6 +9,7 @@ whether a call failed.
 """
 
 import functools
+import getpass
 import glob
 import json
 import logging
@@ -2963,6 +2964,25 @@ class TestAllowedHosts:
         _remote(tmp_path, f"  type: duckdb\n  database: {json.dumps(written)}\n  table: t\n")
 
         with pytest.raises(ConfigError, match="is a file: URI") as refused:
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert written not in str(refused.value)
+        connect.assert_not_called()
+
+    def test_it_refuses_a_duckdb_database_in_a_user_home(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure `~<user>/..` opens no file outside the roots that the check read inside them.
+
+        The check reads the user's home from the system, and DuckDB adds the
+        text after `~` to HOME, then folds each `..` without the system, so
+        the two reach different files whenever the homes sit at different depths.
+        """
+        connect = mocker.patch("duckdb.connect")
+        written = f"~{getpass.getuser()}/../../x.duckdb"
+        _remote(tmp_path, f"  type: duckdb\n  database: {json.dumps(written)}\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="starts with ~ and a name") as refused:
             describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
 
         assert written not in str(refused.value)

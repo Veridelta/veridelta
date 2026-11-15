@@ -8,6 +8,7 @@ Python, and the results a comparison returns.
 """
 
 import math
+import os
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -2156,9 +2157,10 @@ class DuckDBConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set,
-                `database` is in memory, is a `file:` URI, opens through a
-                DuckDB extension, or holds a token, a token is set for a file,
-                or `pushdown` is set on a `query`.
+                `database` is in memory, is a `file:` URI, starts with `~`
+                and a user's name, opens through a DuckDB extension, or holds
+                a token, a token is set for a file, or `pushdown` is set on a
+                `query`.
         """
         if (self.table is None) == (self.query is None):
             raise ValueError("A DuckDB source reads a 'table' or runs a 'query'; set exactly one.")
@@ -2174,6 +2176,13 @@ class DuckDBConfig(BaseModel):
             raise ValueError(
                 "'database' is a file: URI, whose host and escapes DuckDB reads as part of "
                 "a path. Write the DuckDB file's path itself, such as /data/warehouse.duckdb."
+            )
+        if self.database[:1] == "~" and self.database[1:2] not in ("", "/", os.sep):
+            # DuckDB adds the text after `~` to the home folder, where Python reads a user's name.
+            raise ValueError(
+                "'database' starts with ~ and a name, as in ~name/, which DuckDB does not read "
+                "as that user's home folder. Write the path itself, or start it with ~/ for "
+                "your own home folder."
             )
         if not self.is_motherduck and _DUCKDB_EXTENSION_PREFIX.match(self.database) is not None:
             raise ValueError(

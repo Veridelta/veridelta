@@ -339,17 +339,19 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
     extension loading by itself. Otherwise DuckDB reads a SQLite file's header
     as a reason to install and load the extension that opens it, before any
     setting of the sandbox applies.
+
+    A leading `~` is expanded here, as the MCP server's check expands it, so
+    DuckDB never does. DuckDB reads `~` as `HOME` alone, which may be unset
+    where the system still names a home folder.
     """
     setup = ["SET TimeZone = 'UTC'"]
     if token is None:
-        connection = duckdb.connect(
-            f"{_DUCKDB_TYPE}{config.database}", read_only=True, config=_NO_EXTENSIONS
-        )
+        path = os.path.expanduser(config.database)
+        connection = duckdb.connect(f"{_DUCKDB_TYPE}{path}", read_only=True, config=_NO_EXTENSIONS)
         folders = _sandbox.get()
         if folders is None:
             # A view in the file runs as its author wrote it, so it reads only beside the file.
-            # DuckDB expands `~` in a path, so the folder does too.
-            folders = (_folder(Path(config.database).expanduser().resolve().parent),)
+            folders = (_folder(Path(path).resolve().parent),)
         setup += compile_duckdb_sandbox(folders)
     else:
         # A read-only MotherDuck connection needs a read-scaling token, so it opens read-write.

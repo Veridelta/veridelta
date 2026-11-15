@@ -163,6 +163,24 @@ class TestDuckDBConnector:
         ]
         assert connection.mock_calls[: len(held)] == held
 
+    def test_it_expands_the_home_folder_before_duckdb_does(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure DuckDB gets `~` expanded as the MCP server's check expands it.
+
+        DuckDB reads `~` as HOME alone, and as the root folder when HOME is
+        unset, where Python asks the system for the home folder.
+        """
+        driver = _driver(mocker)
+        home = tmp_path / "home"
+        # POSIX reads HOME, Windows USERPROFILE.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+
+        DuckDBConnector(DuckDBConfig(database="~/warehouse.duckdb", table="t")).connect()
+
+        assert driver.connect.call_args.args == (f"duckdb:{home}/warehouse.duckdb",)
+
     def test_it_closes_a_connection_whose_setup_fails(self, mocker: MockerFixture) -> None:
         """Ensure a connection is released when a setting fails, before any read."""
         connection = _driver(mocker).connect.return_value
