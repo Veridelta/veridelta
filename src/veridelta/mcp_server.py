@@ -530,13 +530,17 @@ def _inside(settings: Settings, path: str) -> Path | None:
     return resolved if _under_roots(settings, resolved) else None
 
 
-def _under_both_readings(settings: Settings, path: Path) -> bool:
+def _under_both_readings(settings: Settings, text: str) -> bool:
     """Whether a path lies under a root when the links are followed before a `..`, and after.
 
-    A path on another machine never does, and is not resolved.
+    A path on another machine never does, and is not resolved. The text is
+    asked about before `Path` reads it, since on Python 3.11 Windows' `Path`
+    drops a separator from a path such as `//host`, and the result reads as
+    one on this machine.
     """
-    if names_another_machine(str(path)):
+    if names_another_machine(text):
         return False
+    path = Path(text)
     folded = Path(os.path.abspath(path))
     # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
     return all(_under_roots(settings, Path(os.path.realpath(each))) for each in (path, folded))
@@ -552,9 +556,12 @@ def _opened_inside(settings: Settings, location: str) -> bool:
 
     The readers disagree on a `..` after a link. The system follows the link
     first, and PyArrow drops the link and the `..` without following it. So
-    the path must lie under a root read either way.
+    the path must lie under a root read either way. The text as written is
+    held off another machine before `Path` reads it, as `_under_both_readings`
+    says.
     """
-    return _under_both_readings(settings, Path(location).expanduser())
+    expanded = str(Path(location).expanduser())
+    return not names_another_machine(location) and _under_both_readings(settings, expanded)
 
 
 def _opened(location: str) -> list[str]:
@@ -605,7 +612,7 @@ def _refuse_opened(settings: Settings, path: str) -> None:
     Raises:
         ConfigError: If the path lies outside every root.
     """
-    if not _under_both_readings(settings, Path(path)):
+    if not _under_both_readings(settings, path):
         raise ConfigError(
             "An Iceberg scan was about to open a file outside the folders this server reads "
             f"from: {_roots(settings)}, so it was stopped. A tool reads data on this machine "
@@ -683,14 +690,18 @@ def _local_paths(location: str, named: str) -> list[str]:
     parsing it, is refused: deltalake opens `file://host/x` on that host on
     Windows, Polars refuses it, and PyIceberg reads the host as a folder.
     Delta Lake opens `fs:` and `opendal+fs:` here whatever host they name. A
-    URI whose path Python cannot convert is refused too: from Python 3.14,
-    one that starts with `//` and a host, such as `file:////host/x`, and on
-    Windows before 3.14, one with a second `:`. The message names `named`,
-    the setting, but not the value, which a table's files can hold.
+    local scheme's URI whose path starts with `//`, in either way of parsing
+    it, is refused too: Python 3.14 converts `//localhost/x`, or `//` and this
+    machine's name, to `/x`, while DuckDB opens `/localhost/x`, and Windows
+    reads `//host/x` as a path on another machine. So is a URI whose path
+    Python cannot convert, such as one with a second `:` on Windows before
+    3.14. The message names `named`, the setting, but not the value, which a
+    table's files can hold.
 
     Raises:
-        ConfigError: If a `file:` URI names a host, or Python cannot convert
-            one of the URI's paths.
+        ConfigError: If a `file:` URI names a host, a local scheme's URI has
+            a path that starts with `//`, or Python cannot convert one of the
+            URI's paths.
     """
     parts = _split(location)
     if parts is None or parts.scheme not in _LOCAL_SCHEMES:
@@ -705,6 +716,13 @@ def _local_paths(location: str, named: str) -> list[str]:
             "that machine, so this server refuses it. Write it with nothing between '//' and "
             "the path's '/', or as a path under the folders this server reads from."
         )
+    if any(each.path.startswith("//") for each in (parts, standard) if each is not None):
+        raise ConfigError(
+            f"The {named} is a URI whose path starts with '//'. Python 3.14 reads a host there "
+            "that DuckDB reads as a folder, and Windows reads a path on another machine, so "
+            "this server refuses it. Write it with three slashes after the scheme's ':', or "
+            "as a path under the folders this server reads from."
+        )
     try:
         paths = [
             url2pathname(parts.path),
@@ -716,8 +734,9 @@ def _local_paths(location: str, named: str) -> list[str]:
             path = standard.path
             paths.append(url2pathname(path if path.startswith("/") else f"/{path}"))
     except (OSError, ValueError, IndexError):
-        # Python 3.14 raises a URLError, an OSError, for a host it cannot read; before 3.14,
-        # Windows raises an OSError or an IndexError for a path with a second `:`.
+        # Before 3.14, Windows raises an OSError or an IndexError for a path with a second
+        # `:`. Python 3.14 raises a URLError, an OSError, for a host after `//`, which the
+        # check above refuses first.
         raise ConfigError(
             f"The {named} is a file URI whose path Python cannot read as a path on this "
             "machine, so this server refuses it. Write it as a path under the folders this "

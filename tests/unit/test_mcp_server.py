@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
@@ -1381,6 +1381,45 @@ class TestCheckDataPaths:
 
         assert not _on_another_machine(reached())
 
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("//host.example", id="host-alone"),
+            pytest.param("\\\\\\host.example\\share\\a.csv", id="three-backslashes"),
+            pytest.param("///host.example/share/a.csv", id="three-slashes"),
+        ],
+    )
+    def test_it_asks_about_the_text_before_windows_path_folds_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a path on another machine is refused as written, before `Path` reads it.
+
+        On Python 3.11, Windows' `Path` drops a separator from such a path,
+        and the result reads as a path on this machine. This folds it so on
+        every version, for a data path and for a file an Iceberg scan opens.
+        """
+
+        class Folded(PureWindowsPath):
+            """A Windows path as Python 3.11 reads one that starts with two separators."""
+
+            def expanduser(self) -> "Folded":
+                return self
+
+        def fold(*parts: str) -> Folded:
+            text = str(PureWindowsPath(*parts))
+            return Folded("\\" + text.lstrip("\\") if text.startswith("\\") else text)
+
+        settings = Settings((tmp_path,))
+        reached = _as_windows(monkeypatch, mocker)
+        monkeypatch.setattr(mcp_server, "Path", fold)
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(settings, SourceConfig(path=path), _snowflake())
+        with pytest.raises(ConfigError, match="was about to open a file outside"):
+            mcp_server._refuse_opened(settings, path)  # pyright: ignore[reportPrivateUsage] - an Iceberg scan calls it with each file it opens
+
+        assert not [each for each in reached() if "host.example" in each]
+
     @pytest.mark.skipif(
         sys.platform == "win32",
         reason="Windows reads a path after two separators as another machine's.",
@@ -1423,26 +1462,55 @@ class TestCheckDataPaths:
             raise error
 
         monkeypatch.setattr(mcp_server, "url2pathname", convert)
-        side = SourceConfig(path="file:////host.example/share/a.csv")
+        side = SourceConfig(path="file:///a:b:c/marker.csv")
 
         with pytest.raises(
             ConfigError, match="The source path is a file URI whose path Python cannot read"
         ) as refused:
             check_data_paths(Settings((tmp_path,)), side, _snowflake())
 
-        assert "host.example" not in str(refused.value)
+        assert "marker" not in str(refused.value)
 
     @pytest.mark.parametrize(
-        "path", ["file:////host.example/share/a.csv", "fs:////host.example/share/t"]
+        "path",
+        [
+            pytest.param("file:////host.example/share/a.csv", id="host"),
+            pytest.param("fs:////host.example/share/a.csv", id="host-in-delta-lake-scheme"),
+            pytest.param("opendal+fs:////host.example/share/a.csv", id="host-in-opendal-scheme"),
+            pytest.param("file:////localhost/share/a.csv", id="localhost"),
+            pytest.param("file:////this-machine/share/a.csv", id="this-machine"),
+            pytest.param("file://localhost//this-machine/share/a.csv", id="after-localhost"),
+            pytest.param("file:\\\\\\\\this-machine\\share\\a.csv", id="after-backslashes"),
+            pytest.param("file://///share/a.csv", id="three-slashes"),
+        ],
     )
-    def test_it_refuses_a_file_uri_with_a_host_in_its_path(self, tmp_path: Path, path: str) -> None:
-        """Ensure a URI whose path starts with `//` and a host fails as a configuration error.
+    def test_it_refuses_a_uri_whose_path_starts_with_two_slashes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a URI whose path starts with `//` fails before any path is read from it.
 
-        Python 3.14 cannot convert it, earlier versions read a path outside
-        the roots, and Windows reads one on another machine.
+        Python 3.14 converts `//localhost/x`, and `//` with this machine's
+        name, to `/x`, while DuckDB opens `/localhost/x`, so the check and the
+        read would name two files. Python 3.14 cannot convert one with another
+        host, and Windows reads it as a path on another machine.
         """
-        with pytest.raises(ConfigError, match="The source path"):
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+        import socket
+
+        monkeypatch.setattr(socket, "gethostname", lambda: "this-machine")
+        converted = mocker.spy(mcp_server, "url2pathname")
+        sides = (
+            SourceConfig(path=path),
+            DuckDBConfig(database=path.replace("a.csv", "a.duckdb"), table="t"),
+        )
+
+        for side in sides:
+            with pytest.raises(
+                ConfigError, match="is a URI whose path starts with '//'"
+            ) as refused:
+                check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+            assert "share" not in str(refused.value)
+        converted.assert_not_called()
 
     @pytest.mark.parametrize(
         "path",
@@ -1508,7 +1576,7 @@ class TestCheckDataPaths:
         def convert(path: str) -> str:
             raise URLError("file:// scheme is supported only on localhost")
 
-        listed = [("data file", "file:////host.example/share/part-0.parquet", False)]
+        listed = [("data file", "file:///a:b:c/marker-0.parquet", False)]
         mocker.patch.object(mcp_server, "_table_files", return_value=iter(listed))
         monkeypatch.setattr(mcp_server, "url2pathname", convert)
         side = DeltaLakeConfig(table_uri=str(tmp_path / "t"))
@@ -1516,7 +1584,7 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match="The source data file is a file URI") as refused:
             check_data_paths(Settings((tmp_path,)), side, _snowflake())
 
-        assert "host.example" not in str(refused.value)
+        assert "marker" not in str(refused.value)
 
     @staticmethod
     def _link_out(root: Path, outside: Path, name: str = "link") -> None:
