@@ -38,6 +38,7 @@ from deltalake import DeltaTable
 from mcp import Client
 from mcp.types import CallToolResult, Tool
 from polars.exceptions import PanicException
+from pyarrow import fs as arrow_fs
 from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.io.pyarrow import PyArrowFileIO
@@ -51,6 +52,7 @@ from veridelta.connectors.lakehouse import (
     DeltaLakeConnector,
     IcebergConnector,
     deletion_vector_files,
+    delta_log_vectors,
 )
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError
@@ -1707,6 +1709,32 @@ def _with_vectors(table: Path, *vectors: Mapping[str, object]) -> None:
         )
 
 
+def _store_at(mocker: MockerFixture, folder: Path) -> None:
+    """Stand in for deltalake's storage of a table in an object store with `folder`, which holds its log."""
+    mocker.patch("deltalake.fs.DeltaStorageHandler")
+    mocker.patch.object(
+        arrow_fs, "PyFileSystem", return_value=SubTreeFileSystem(str(folder), LocalFileSystem())
+    )
+
+
+def _with_a_sidecar(table: Path, sidecar: str, form: str) -> None:
+    """Write `_ROW` to a table whose checkpoint names `sidecar` as the file of its actions.
+
+    A sidecar belongs to a v2 checkpoint, but deltalake reads one in any
+    checkpoint, whatever the table's protocol says. No sidecar file is
+    written: the listing refuses the table before it is loaded.
+    """
+    _ROW.write_delta(table)
+    log = table / "_delta_log"
+    named = {"path": sidecar, "sizeInBytes": 1, "modificationTime": 0}
+    if form == "json":
+        name = f"{1:020}.checkpoint.{uuid.uuid4()}.json"
+        (log / name).write_text(json.dumps({"sidecar": named}) + "\n", encoding="utf-8")
+        return
+    name = f"{1:020}.checkpoint.{'' if form == 'classic' else f'{uuid.uuid4()}.'}parquet"
+    pl.DataFrame({"sidecar": [None, named]}).write_parquet(log / name)
+
+
 class TestLakehouseFiles:
     """Validate the folder rule on each file a Delta Lake or Iceberg table names."""
 
@@ -1806,6 +1834,7 @@ class TestLakehouseFiles:
         file's host is read as part of its path, and one before it is refused.
         """
         outside = tmp_path_factory.mktemp("outside").as_uri()
+        _store_at(mocker, tmp_path)
         table = mocker.patch("deltalake.DeltaTable")
         table.return_value.file_uris.return_value = [uri.format(outside=outside)]
         target = DeltaLakeConfig(table_uri="s3://lake/events", storage_options={"region": "eu"})
@@ -1842,7 +1871,8 @@ class TestLakehouseFiles:
         pl.DataFrame({"note": ["kept"]}).write_parquet(table / "_delta_log" / "notes.parquet")
 
         loaded = DeltaTable(str(table))
-        named = set(deletion_vector_files(loaded, {}))
+        logged = [str(path) for path in (table / "_delta_log").iterdir()]
+        named = set(deletion_vector_files(loaded, delta_log_vectors(str(table), {}, logged)))
         check_data_paths(
             Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
         )
@@ -1933,6 +1963,71 @@ class TestLakehouseFiles:
         check_data_paths(allowed, SourceConfig(path="a.csv"), target)
 
         assert "other-bucket" not in str(refused.value)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The URIs name POSIX paths.")
+    @pytest.mark.parametrize("table_uri", ["fs://{root}/events", "opendal+fs://{root}/events"])
+    def test_it_reads_the_log_of_a_delta_table_under_a_local_scheme_from_this_machine(
+        self, tmp_path: Path, table_uri: str
+    ) -> None:
+        """Ensure a table with deletion vectors under deltalake's own local schemes is listed.
+
+        deltalake's storage crashes the process as it lists such a table's
+        log, so the listing reads the files of the log it checked instead.
+        """
+        _with_vectors(
+            tmp_path / "events",
+            {"storageType": "u", "pathOrInlineDv": _relative_vector("", uuid.uuid4())},
+        )
+        target = DeltaLakeConfig(table_uri=table_uri.format(root=tmp_path))
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.parametrize("form", ["classic", "uuid", "json"])
+    @pytest.mark.parametrize("where", ["outside", "climbs", "inside"])
+    def test_it_refuses_a_delta_table_whose_checkpoint_names_a_sidecar(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        form: str,
+        where: str,
+    ) -> None:
+        """Ensure a table whose checkpoint names a sidecar is refused before deltalake reads its log.
+
+        deltalake reads a sidecar as it loads the table, wherever it lies, so
+        one outside the roots, or one whose name climbs out of the log, would
+        be read unchecked. One inside the roots is refused too: a sidecar
+        belongs to a v2 checkpoint, which `veridelta run` cannot read either.
+        """
+        outside = (tmp_path_factory.mktemp("outside") / "sidecar.parquet").as_uri()
+        named = {"outside": outside, "climbs": "../../../outside/sidecar.parquet"}
+        _with_a_sidecar(tmp_path / "events", named.get(where, "sidecar.parquet"), form)
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match=r"could not be listed.*checkpoint sidecar"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+
+    def test_it_reads_the_log_of_a_remote_delta_table_before_the_table(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a table in an object store has its log read through its store before it is loaded.
+
+        The store is mocked: it serves the log of a table under `tmp_path`,
+        whose checkpoint names a sidecar.
+        """
+        _with_a_sidecar(tmp_path / "events", "sidecar.parquet", "classic")
+        _store_at(mocker, tmp_path / "events")
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="s3://lake/events")
+        settings = Settings((tmp_path,), allowed_hosts=("lake",))
+
+        with pytest.raises(ConnectorError, match=r"could not be listed.*checkpoint sidecar"):
+            check_data_paths(settings, SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."

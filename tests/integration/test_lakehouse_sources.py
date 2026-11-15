@@ -202,6 +202,17 @@ def _vectored(path: Path) -> DeltaLakeConfig:
     return DeltaLakeConfig(table_uri=str(path))
 
 
+def _blanked(path: Path) -> DeltaLakeConfig:
+    """Write a table partitioned by a text column, one of whose values is `''` and one null.
+
+    deltalake reads `''` as null, where Polars reads the folder `tier=` as `''`.
+    """
+    pl.DataFrame({"id": [1, 2, 3, 4], "tier": ["", "gold", None, "a b"]}).write_delta(
+        path, delta_write_options={"partition_by": ["tier"]}
+    )
+    return DeltaLakeConfig(table_uri=str(path))
+
+
 def _emptied(path: Path) -> DeltaLakeConfig:
     """Write a table with no rows."""
     pl.DataFrame(schema=_EVENTS.schema).write_delta(path)
@@ -405,7 +416,7 @@ class TestCheckedDeltaScan:
     and its data files through a PyArrow file system that checks each one.
     """
 
-    @pytest.mark.parametrize("table", [_versioned, _evolved, _vectored, _emptied])
+    @pytest.mark.parametrize("table", [_versioned, _evolved, _vectored, _blanked, _emptied])
     def test_it_reads_the_rows_polars_reads(
         self, tmp_path: Path, table: Callable[[Path], DeltaLakeConfig]
     ) -> None:

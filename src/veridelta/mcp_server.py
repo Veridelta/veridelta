@@ -60,6 +60,7 @@ from veridelta.connectors.lakehouse import (
     checked_file_io,
     checking_table_files,
     deletion_vector_files,
+    delta_log_vectors,
 )
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -747,13 +748,17 @@ def _delta_files(config: DeltaLakeConfig) -> Generator[tuple[str, str, bool], No
     is read, since a commit or checkpoint can be a link out of the table's
     folder. The walk follows no link, so each one is checked before it is
     opened. The data files then come from the log, and so do the deletion
-    vectors, which a log can store at a path of their own, anywhere.
+    vectors, which a log can store at a path of their own, anywhere. A
+    checkpoint can name a sidecar anywhere too, which deltalake reads as it
+    loads the table, so the log is read before deltalake reads it, and a
+    table whose log records a sidecar is refused.
 
     Returns:
         DeltaTable: The table, at the version whose files were named.
     """
     from deltalake import DeltaTable
 
+    logged: list[str] = []
     for local in _local_paths(config.table_uri):
         # Absolute, so a reading such as `s3:/b/t`, from `s3://b/t`, names no host.
         log = Path(local).expanduser().absolute() / "_delta_log"
@@ -761,12 +766,16 @@ def _delta_files(config: DeltaLakeConfig) -> Generator[tuple[str, str, bool], No
         for folder, folders, files in os.walk(log):
             for name in sorted(folders + files):
                 yield "log file", os.path.join(folder, name), True
+            logged += [os.path.join(folder, name) for name in sorted(files)]
+    # deltalake reads each sidecar a checkpoint names as it loads the table, so the log is
+    # read first, and a log that names one is refused.
+    vectors = delta_log_vectors(config.table_uri, config.storage_options, logged)
     table = DeltaTable(
         config.table_uri, version=config.version, storage_options=config.storage_options or None
     )
     for uri in table.file_uris():
         yield "data file", uri, True
-    for location in deletion_vector_files(table, config.storage_options):
+    for location in deletion_vector_files(table, vectors):
         yield "deletion vector", location, True
     return table
 

@@ -26,7 +26,7 @@ import os
 import re
 import sys
 import uuid
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from importlib import import_module
@@ -230,20 +230,102 @@ def _arrow() -> Any:
     return import_module("pyarrow")
 
 
-def deletion_vector_files(table: "DeltaTable", storage_options: dict[str, str]) -> Iterator[str]:
-    """Name the file of each deletion vector a Delta Lake table's log records.
+def _log_actions(store: Any, path: str) -> tuple[list[Any], list[Any]]:
+    """Read the deletion vectors of the `add` actions, and the `sidecar` actions, that one log file records.
+
+    Args:
+        store (Any): The PyArrow file system that reads the file.
+        path (str): The file, a commit or a checkpoint, as `store` names it.
+
+    Returns:
+        tuple[list[Any], list[Any]]: The vectors, and the sidecars, each None
+            where an action records none.
+    """
+    arrow = _arrow()
+    if path.endswith(".json"):
+        with store.open_input_stream(path) as stream:
+            text: str = stream.read().decode("utf-8")
+        actions: list[dict[str, Any]] = [
+            json.loads(line) for line in text.splitlines() if line.strip()
+        ]
+        added: list[dict[str, Any]] = [action.get("add") or {} for action in actions]
+        return (
+            [action.get("deletionVector") for action in added],
+            [action.get("sidecar") for action in actions],
+        )
+    if not path.endswith(".parquet"):
+        return [], []
+    schema = arrow.parquet.read_schema(path, filesystem=store)
+    vectors: list[Any] = []
+    index = schema.get_field_index("add")
+    if index >= 0 and schema.field(index).type.get_field_index("deletionVector") >= 0:
+        # The vectors alone, so a large checkpoint's statistics stay unread.
+        read = arrow.parquet.read_table(path, filesystem=store, columns=["add.deletionVector"])
+        vectors = read[0].to_pylist()
+    sidecars: list[Any] = []
+    if "sidecar" in schema.names:
+        read = arrow.parquet.read_table(path, filesystem=store, columns=["sidecar"])
+        sidecars = read[0].to_pylist()
+    return vectors, sidecars
+
+
+def delta_log_vectors(
+    table_uri: str, storage_options: dict[str, str], files: Iterable[str]
+) -> list[dict[str, Any]]:
+    """Read each deletion vector a Delta Lake table's log records, and refuse a log that records a sidecar.
 
     deltalake reports which rows a vector deletes, but never where it read
-    them. So this reads each commit and checkpoint in the log, through
-    deltalake's own storage with `storage_options`, and names the file of
-    every vector an `add` action records. That includes vectors of files a
-    later commit removed, so the list can name more files than a scan reads,
-    but never fewer. A table whose protocol has no deletion vectors has none
-    a scan reads.
+    them. As it loads a table, it also reads each sidecar a checkpoint names,
+    wherever the sidecar lies and whatever the table's protocol says, and
+    reports none either. So this reads the log before deltalake does: the
+    files of a log on this machine that the caller checked, and, for a table
+    on another machine, each file in its log through deltalake's own storage,
+    with `storage_options`. A vector a later commit removed counts too, so the
+    vectors can name more files than a scan reads, but never fewer.
+
+    Args:
+        table_uri (str): The table, as its configuration names it.
+        storage_options (dict[str, str]): The validated storage options.
+        files (Iterable[str]): The files of the table's log on this machine,
+            each a path the caller checked.
+
+    Returns:
+        list[dict[str, Any]]: Each vector an `add` action records.
+
+    Raises:
+        ValueError: If the log records a sidecar.
+    """
+    from deltalake.fs import DeltaStorageHandler
+
+    arrow = _arrow()
+    found: list[tuple[Any, str]] = [(arrow.fs.LocalFileSystem(), path) for path in files]
+    scheme = urlsplit(table_uri).scheme
+    if len(scheme) > 1 and scheme not in _DELTA_LOCAL_SCHEMES:
+        # One letter is a Windows drive. deltalake's storage of a table on this machine
+        # can crash as it lists a folder, so only a table elsewhere is read through it.
+        store = arrow.fs.PyFileSystem(DeltaStorageHandler(table_uri, storage_options or None))
+        selector = arrow.fs.FileSelector("_delta_log", allow_not_found=True, recursive=True)
+        found += [(store, each.path) for each in store.get_file_info(selector)]
+    vectors: list[dict[str, Any]] = []
+    for store, path in found:
+        added, sidecars = _log_actions(store, path)
+        if any(sidecar is not None for sidecar in sidecars):
+            raise ValueError(
+                "the log records a checkpoint sidecar, a file this server does not check, "
+                "so it reads none of the table"
+            )
+        vectors += [vector for vector in added if vector is not None]
+    return vectors
+
+
+def deletion_vector_files(table: "DeltaTable", vectors: list[dict[str, Any]]) -> Iterator[str]:
+    """Name the file of each deletion vector that `delta_log_vectors` read from a table's log.
+
+    A table whose protocol has no deletion vectors has none a scan reads.
 
     Args:
         table (DeltaTable): The table, at any version.
-        storage_options (dict[str, str]): The validated storage options.
+        vectors (list[dict[str, Any]]): The vectors its log records.
 
     Yields:
         str: Each vector's file, as a URI, or as a path on this machine.
@@ -251,37 +333,12 @@ def deletion_vector_files(table: "DeltaTable", storage_options: dict[str, str]) 
     Raises:
         ValueError: If the log records a vector this cannot place.
     """
-    from deltalake.fs import DeltaStorageHandler
-
     if "deletionVectors" not in (table.protocol().reader_features or []):
         return
-    arrow = _arrow()
-    store = arrow.fs.PyFileSystem(DeltaStorageHandler(table.table_uri, storage_options or None))
-    for found in store.get_file_info(arrow.fs.FileSelector("_delta_log", recursive=True)):
-        path: str = found.path
-        vectors: list[dict[str, Any] | None]
-        if path.endswith(".json"):
-            with store.open_input_stream(path) as stream:
-                text: str = stream.read().decode("utf-8")
-            added: list[dict[str, Any]] = [
-                json.loads(line).get("add") or {} for line in text.splitlines() if line.strip()
-            ]
-            vectors = [action.get("deletionVector") for action in added]
-        elif path.endswith(".parquet"):
-            schema = arrow.parquet.read_schema(path, filesystem=store)
-            index = schema.get_field_index("add")
-            if index < 0 or schema.field(index).type.get_field_index("deletionVector") < 0:
-                # A file with no `add` action's vector, such as one deltalake never reads.
-                continue
-            # The vectors alone, so a large checkpoint's statistics stay unread.
-            read = arrow.parquet.read_table(path, filesystem=store, columns=["add.deletionVector"])
-            vectors = read[0].to_pylist()
-        else:
-            continue
-        for vector in vectors:
-            location = _vector_location(table.table_uri, vector) if vector else None
-            if location is not None:
-                yield location
+    for vector in vectors:
+        location = _vector_location(table.table_uri, vector)
+        if location is not None:
+            yield location
 
 
 def _deleted_rows(table: "DeltaTable") -> dict[str, list[int]]:
@@ -313,6 +370,10 @@ def _checked_delta_scan(
     checked the vector's file, and drops them from the file's rows as Polars'
     scan does. Polars checks the table's protocol first, and refuses a table
     it cannot read.
+
+    Polars reads a partition's value from the file's folder, where deltalake
+    reads `''` in a text column as null. So a file in a folder such as `k=`
+    has its null values of `k` read as `''`, as Polars reads them.
 
     A table on this machine, under any scheme deltalake reads from its disk,
     has each file opened here, at the path that `check` gets: the one
@@ -363,8 +424,7 @@ def _checked_delta_scan(
 
         open_input_stream = open_input_file
 
-    # Polars refuses a protocol it cannot read, such as v2 checkpoints, whose sidecars the
-    # listing never names, so this runs before any vector or data file is read.
+    # Polars refuses a protocol it cannot read, as `veridelta run` does.
     pl.scan_delta(table).collect_schema()
     schema = arrow.schema(table.schema().to_arrow())
     # deltalake's own fragments, which its `to_pyarrow_dataset` builds the same way.
@@ -385,6 +445,12 @@ def _checked_delta_scan(
         return pl.scan_pyarrow_dataset(dataset)  # pyright: ignore[reportUnknownMemberType] - Polars types the dataset as PyArrow's, which ships no stubs.
 
     deleted = _deleted_rows(table)
+    texts = [
+        field.name
+        for field in table.schema().fields
+        if field.name in table.metadata().partition_columns
+        and getattr(field.type, "type", None) == "string"
+    ]
     names: list[str] = schema.names
     # Longer than every column's name, so it is none of them.
     row = max(names, key=len, default="") + "_row"
@@ -392,11 +458,14 @@ def _checked_delta_scan(
     run: list[Any] = []
     for uri, (path, partition) in pairs:
         fragment = form.make_fragment(path, filesystem=files, partition_expression=partition)
-        if uri not in deleted:
+        blank = [name for name in texts if f"{name}=" in path.split("/")[:-1]]
+        if uri not in deleted and not blank:
             run.append(fragment)
             continue
-        kept = scan([fragment]).with_row_index(row).filter(~pl.col(row).is_in(deleted[uri]))
-        frames += [scan(run), kept.drop(row)]
+        kept = scan([fragment])
+        if uri in deleted:
+            kept = kept.with_row_index(row).filter(~pl.col(row).is_in(deleted[uri])).drop(row)
+        frames += [scan(run), kept.with_columns(pl.col(name).fill_null("") for name in blank)]
         run = []
     return pl.concat([*frames, scan(run)])
 
