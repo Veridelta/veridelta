@@ -10,7 +10,9 @@ whether a call failed.
 
 import json
 import logging
+import re
 import shutil
+import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -641,6 +643,14 @@ def _snowflake() -> SnowflakeConfig:
     )
 
 
+def _link_folder(link: Path, folder: Path) -> None:
+    """Make a link to a folder, or skip the test on a machine that cannot, as Windows may not."""
+    try:
+        link.symlink_to(folder, target_is_directory=True)
+    except OSError:
+        pytest.skip("This machine cannot make a symbolic link.")
+
+
 class TestCheckDataPaths:
     """Validate the folder rule on the data a tool returns rows from."""
 
@@ -728,6 +738,153 @@ class TestCheckDataPaths:
         """Ensure `~` is expanded first, since Polars expands it, so it cannot lead out."""
         with pytest.raises(ConfigError, match="outside the folders"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="~/a.csv"), _snowflake())
+
+    @staticmethod
+    def _link_out(root: Path, outside: Path, name: str = "link") -> None:
+        """Link a folder under the root to `dir` outside it, beside a file the root must not reach.
+
+        Through the link, `data.csv` sits in that folder and `secret.csv` one level up.
+        """
+        (outside / "dir").mkdir()
+        (outside / "dir" / "data.csv").write_text("id\n1\n")
+        (outside / "secret.csv").write_text("id\n2\n")
+        _link_folder(root / name, outside / "dir")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("lin[k]/../secret.csv", id="class"),
+            pytest.param("l?nk/../secret.csv", id="any-character"),
+            pytest.param("*/../secret.csv", id="wildcard"),
+            pytest.param("data/**/../../secret.csv", id="recursive"),
+            pytest.param("lin[k]/.[.]/secret.csv", id="dot-class"),
+            pytest.param("*/.?/secret.csv", id="dot-any-character"),
+            pytest.param("l*/.*/secret.csv", id="dot-wildcard"),
+            pytest.param("lin[k]/.[!x]/secret.csv", id="dot-negated-class"),
+        ],
+    )
+    def test_it_refuses_a_pattern_that_can_match_a_parent(self, tmp_path: Path, path: str) -> None:
+        """Ensure a pattern that can reach `..` is refused, since a match can be a link it leaves.
+
+        Polars matches `..` for a name with a glob character that starts with a dot, which the
+        standard library never lists, so the check refuses that name as it refuses `..`.
+        """
+        with pytest.raises(ConfigError, match="is a glob pattern that can match '\\.\\.'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            pytest.param("link[/]data.csv", id="class-of-a-separator"),
+            pytest.param("*[/]data.csv", id="wildcard"),
+            pytest.param("lin[k]/data.csv", id="class"),
+            pytest.param("lin?/data.csv", id="any-character"),
+            pytest.param("lin%5Bk%5D/data.csv", id="encoded"),
+        ],
+    )
+    def test_it_refuses_a_pattern_in_a_file_uri(self, tmp_path: Path, pattern: str) -> None:
+        """Ensure a `file:` URI holds no pattern, since Polars expands one with another matcher."""
+        location = f"{tmp_path.as_uri()}/{pattern}"
+
+        with pytest.raises(ConfigError, match="is a file URI with a glob character in it"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=location), _snowflake())
+
+    @pytest.mark.parametrize(
+        ("name", "path"),
+        [
+            pytest.param("link", "lin[k]/data.csv", id="class"),
+            pytest.param("link", "l?nk/data.csv", id="any-character"),
+            pytest.param("link", "*/data.csv", id="wildcard"),
+            pytest.param("link", "**/data.csv", id="recursive"),
+            pytest.param(".link", "*/data.csv", id="hidden"),
+        ],
+    )
+    def test_it_refuses_a_pattern_that_matches_a_link_out(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        name: str,
+        path: str,
+    ) -> None:
+        """Ensure each match is resolved, as Polars opens it, so a matched link cannot lead out."""
+        self._link_out(tmp_path, tmp_path_factory.mktemp("outside"), name)
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "data.csv").write_text("id\n2\n")
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigError, match=f"The source path '{re.escape(path)}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows folds '..' before it follows a link."
+    )
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("lin[k]/../secret.csv", id="class-then-parent"),
+            pytest.param("*/../secret.csv", id="wildcard-then-parent"),
+            pytest.param("lin[k]/.[.]/secret.csv", id="dot-class"),
+            pytest.param("*/.?/secret.csv", id="dot-any-character"),
+            pytest.param("l*/.*/secret.csv", id="dot-wildcard"),
+            pytest.param("lin[k]/data.csv", id="class"),
+            pytest.param("**/data.csv", id="recursive"),
+            pytest.param("{uri}/link[/]data.csv", id="uri-class-of-a-separator"),
+            pytest.param("{uri}/*[/]data.csv", id="uri-wildcard"),
+        ],
+    )
+    def test_it_refuses_each_pattern_polars_reads_out_through(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+    ) -> None:
+        """Ensure the check refuses each pattern that the installed Polars reads out of a root.
+
+        Polars is asked first, so a change in how it expands a pattern fails here.
+        """
+        self._link_out(tmp_path, tmp_path_factory.mktemp("outside"))
+        monkeypatch.chdir(tmp_path)
+        location = path.format(uri=tmp_path.as_uri())
+        opened = pl.scan_csv(location, include_file_paths="file").collect()["file"]
+
+        assert not all(
+            Path(file.removeprefix("file://")).resolve().is_relative_to(tmp_path.resolve())
+            for file in opened
+        )
+        with pytest.raises(ConfigError, match="The source path"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=location), _snowflake())
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("data/**/*.csv", id="recursive"),
+            pytest.param("*/a.csv", id="wildcard-through-a-link"),
+            pytest.param("lat[e]st/a.csv", id="class-of-a-link"),
+            pytest.param(".hidden/*.csv", id="hidden-folder-as-written"),
+            pytest.param("**/*.csv", id="everything"),
+        ],
+    )
+    def test_it_accepts_a_pattern_whose_matches_are_under_a_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+    ) -> None:
+        """Ensure a pattern passes when every match, a link's included, resolves under a root.
+
+        Polars then reads it, and opens nothing outside the root.
+        """
+        (tmp_path / "data" / "2026").mkdir(parents=True)
+        (tmp_path / "data" / "2026" / "a.csv").write_text("id\n1\n")
+        (tmp_path / ".hidden").mkdir()
+        (tmp_path / ".hidden" / "b.csv").write_text("id\n2\n")
+        _link_folder(tmp_path / "latest", tmp_path / "data" / "2026")
+        monkeypatch.chdir(tmp_path)
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+
+        opened = pl.scan_csv(path, include_file_paths="file").collect()["file"]
+        assert opened.len() > 0
+        assert all(Path(file).resolve().is_relative_to(tmp_path.resolve()) for file in opened)
 
     @pytest.mark.parametrize(
         "side",
