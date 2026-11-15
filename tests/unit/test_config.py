@@ -3,6 +3,9 @@
 
 """Unit tests for YAML configuration parsing and validation."""
 
+import time
+import traceback
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -77,6 +80,164 @@ class TestYAMLConfigurationParsing:
         assert "Configuration Validation Failed" in error_msg
         assert "primary_keys" in error_msg
         assert "unsupported_field" in error_msg
+
+    @pytest.mark.parametrize(
+        ("before", "after", "line"),
+        [
+            pytest.param("source:\n  path:\n", "target:\n  path: b.csv\n", 5, id="source-path"),
+            pytest.param(
+                "source:\n  path: a.csv\n  options:\n    storage_options:\n      a:\n",
+                "target:\n  path: b.csv\n",
+                8,
+                id="source-options",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\ntarget:\n  path: b.csv\njunk:\n", "", 8, id="root-key"
+            ),
+        ],
+    )
+    def test_it_refuses_aliases_that_repeat_more_than_the_limit(
+        self, tmp_path: Path, before: str, after: str, line: int
+    ) -> None:
+        """Ensure nested aliases are refused before any code walks or prints what they repeat.
+
+        Three levels of ten aliases over 1,000 characters repeat over 1,000,000
+        characters. Ten levels would stand for more memory than a runner has, in a
+        file of under 2 KB, wherever the aliases sit. The location is the value the
+        alias past the limit repeats.
+        """
+        text = before + _alias_chain(3, indent=" " * 8) + after + "primary_keys: [id]\n"
+
+        with pytest.raises(ConfigError, match="repeat more than 1,000,000 characters") as exc_info:
+            _load_yaml(tmp_path, text)
+
+        assert exc_info.value.locations == (ConfigLocation(line=line, column=13),)
+
+    @pytest.mark.parametrize(
+        ("text", "line", "column"),
+        [
+            pytest.param(
+                "source: &self\n  path: a.csv\n  nested: *self\n", 3, 11, id="source-block"
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\n  options: &loop\n    nested: *loop\n",
+                4,
+                13,
+                id="mapping",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\n  options:\n    nested: &loop [*loop]\n",
+                4,
+                20,
+                id="list",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\n  options:\n    nested: &loop {<<: *loop, a: x}\n",
+                4,
+                24,
+                id="merge-key",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\njunk: &outer\n  - &inner [x, [*outer]]\n",
+                4,
+                17,
+                id="through-another-anchor",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\nprimary_keys: &keys [id, *keys]\n",
+                3,
+                26,
+                id="root-setting",
+            ),
+        ],
+    )
+    def test_it_refuses_an_alias_inside_the_value_it_names(
+        self, tmp_path: Path, text: str, line: int, column: int
+    ) -> None:
+        """Ensure a looping alias is refused where it is written, wherever it sits.
+
+        No setting can hold a loop, and code that walks or prints one never ends.
+        """
+        if "target" not in text:
+            text += "target:\n  path: b.csv\n"
+        if "primary_keys" not in text:
+            text += "primary_keys: [id]\n"
+
+        with pytest.raises(
+            ConfigError, match="refers to a mapping or list that contains it"
+        ) as info:
+            _load_yaml(tmp_path, text)
+
+        assert info.value.locations == (ConfigLocation(line=line, column=column),)
+        assert f"line {line}, column {column}" in str(info.value)
+
+    @pytest.mark.parametrize("levels", [6, 7, 8])
+    @pytest.mark.parametrize("key", ["junk", "primary_keys", "rules"])
+    def test_a_loop_cannot_hide_what_aliases_repeat(
+        self, tmp_path: Path, key: str, levels: int
+    ) -> None:
+        """Ensure loops that each repeat a tenfold larger list fail fast, and so does their error.
+
+        Each level's list holds ten aliases to a list that loops back to it. Counting
+        a loop as empty let such a file of 600 bytes pass the alias limit, and then
+        printing the setting's failure, as an uncaught traceback does, built gigabytes.
+        """
+        lines = ["  - &A0 [x, &B0 [*A0]]\n"]
+        lines += [
+            f"  - &A{k} [{', '.join([f'*B{k - 1}'] * 10)}, &B{k} [*A{k}]]\n"
+            for k in range(1, levels + 1)
+        ]
+        text = "source:\n  path: a.csv\ntarget:\n  path: b.csv\n"
+        text += "" if key == "primary_keys" else "primary_keys: [id]\n"
+        text += f"{key}:\n" + "".join(lines)
+
+        tracemalloc.start()
+        started = time.perf_counter()
+        try:
+            with pytest.raises(ConfigError, match="contains it") as info:
+                _load_yaml(tmp_path, text)
+            printed = str(info.value.__cause__) + "".join(traceback.format_exception(info.value))
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+
+        assert time.perf_counter() - started < 5
+        assert peak < 20_000_000
+        assert len(printed) < 20_000
+        line = 6 if key == "primary_keys" else 7
+        assert info.value.locations == (ConfigLocation(line=line, column=18),)
+
+    def test_a_failing_setting_does_not_chain_the_validation_error(self, tmp_path: Path) -> None:
+        """Ensure the error carries its message alone, without Pydantic's quote of the input.
+
+        Pydantic's text renders each failing value in full before it shortens it, and
+        aliases can make a value of a few hundred bytes about a million characters
+        long, so a printed traceback would render it all again.
+        """
+        text = (
+            "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\nrules:\n"
+            + "  - junk:\n"
+            + _alias_chain(2, indent=" " * 6)
+        )
+
+        with pytest.raises(ConfigError, match=r"\[rules -> 0 -> junk\]") as info:
+            _load_yaml(tmp_path, text)
+
+        assert info.value.__cause__ is None
+        assert info.value.__suppress_context__
+        assert "input_value" not in "".join(traceback.format_exception(info.value))
+
+    def test_it_loads_aliases_that_repeat_less_than_the_limit(self, tmp_path: Path) -> None:
+        """Ensure a file whose aliases repeat about 100,000 characters still loads."""
+        _, source, _ = _load_yaml(
+            tmp_path,
+            "source:\n  path: a.csv\n  options:\n    junk:\n"
+            + _alias_chain(2, indent=" " * 6)
+            + "target:\n  path: b.csv\nprimary_keys: [id]\n",
+        )
+
+        assert isinstance(source, SourceConfig)
+        assert source.options["junk"]["l2"][9][9] == "x" * 1000
 
     @pytest.mark.parametrize(
         ("blocks", "location"),
@@ -204,6 +365,15 @@ def _load_yaml(
     return load_config(path, **kwargs)
 
 
+def _alias_chain(levels: int, *, indent: str) -> str:
+    """Write a mapping whose `l0` holds 1,000 characters and each later level ten aliases."""
+    lines = [f"{indent}l0: &l0 {'x' * 1000}\n"]
+    lines += [
+        f"{indent}l{n}: &l{n} [{', '.join([f'*l{n - 1}'] * 10)}]\n" for n in range(1, levels + 1)
+    ]
+    return "".join(lines)
+
+
 _SNOWFLAKE_BLOCK = (
     "  type: snowflake\n  table: SRC\n  account: xy12345\n  user: analyst\n"
     "  warehouse: COMPUTE_WH\n  database: ANALYTICS\n  schema_name: PUBLIC\n"
@@ -306,7 +476,7 @@ class TestErrorLocations:
     def test_an_environment_failure_is_placed_at_the_field(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure an unset variable, a malformed reference, and a self-referring alias name the field."""
+        """Ensure an unset variable and a malformed reference name the field."""
         monkeypatch.delenv("VD_LOCATION_UNSET", raising=False)
         cases = {
             "source:\n  path: ${VD_LOCATION_UNSET}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n": (
@@ -315,8 +485,6 @@ class TestErrorLocations:
             ),
             "source:\n  path: a.csv\ntarget:\n  path: b.csv\n  storage_options:\n    key: ${\n"
             "primary_keys: [id]\n": ("target", "storage_options", "key"),
-            "source: &self\n  path: a.csv\n  nested: *self\ntarget:\n  path: b.csv\n"
-            "primary_keys: [id]\n": ("source", "nested"),
         }
 
         for text, path in cases.items():
@@ -533,24 +701,6 @@ class TestEnvironmentExpansion:
         assert source.storage_options == {"AWS_SECRET_ACCESS_KEY": "k${VD_OTHER}"}
         assert target.storage_options == source.storage_options
         assert target.table_uri == "s3://lake/b"
-
-    @pytest.mark.parametrize(
-        ("options", "location"),
-        [
-            pytest.param("&loop\n    nested: *loop", "options -> nested", id="mapping"),
-            pytest.param("\n    nested: &loop [*loop]", "options -> nested -> 0", id="list"),
-        ],
-    )
-    def test_it_rejects_a_yaml_alias_that_contains_itself(
-        self, tmp_path: Path, options: str, location: str
-    ) -> None:
-        """Ensure a looping alias is reported as a configuration error, not a crash."""
-        with pytest.raises(ConfigError, match=rf"alias at source -> {location} refers to"):
-            _load_yaml(
-                tmp_path,
-                f"source:\n  path: a.csv\n  options: {options}\n"
-                "target:\n  path: b.csv\nprimary_keys: [id]\n",
-            )
 
     def test_it_leaves_keys_non_text_values_and_other_settings_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
