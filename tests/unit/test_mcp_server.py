@@ -251,10 +251,19 @@ class TestSettings:
         assert settings.allowed_hosts == ("db.example.com", "10.0.0.5", "[::1]")
 
     @pytest.mark.parametrize(
-        "host", ["https://db.example.com", "db.example.com:5432", "user@db", "", "::1", "a/b"]
+        "host",
+        [
+            "https://db.example.com",
+            "db.example.com:5432",
+            "user@db",
+            "",
+            "::1",
+            "a/b",
+            "\u212aafka.internal",
+        ],
     )
     def test_it_refuses_an_allowed_host_that_is_not_a_host(self, tmp_path: Path, host: str) -> None:
-        """Ensure an entry with a scheme, a port, or a login is refused, not read in part."""
+        """Ensure an entry with a scheme, a port, a login, or a letter outside ASCII is refused."""
         with pytest.raises(ConfigError, match="--allow-host takes a host name"):
             Settings((tmp_path,), allowed_hosts=(host,))
 
@@ -1051,11 +1060,6 @@ class TestAllowedHosts:
             pytest.param("  path: http://169.254.169.254/a.csv\n", "path", id="link-local"),
             pytest.param("  path: http://127.0.0.1:8080/a.csv\n", "path", id="loopback"),
             pytest.param("  path: s3://other/a.parquet\n", "path", id="bucket"),
-            pytest.param(
-                "  path: 'http://elsewhere.example\\@example.com/a.csv'\n",
-                "path",
-                id="backslash",
-            ),
             pytest.param("  path: 'https:///elsewhere.example/a.csv'\n", "path", id="no-host"),
             pytest.param(
                 "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
@@ -1076,24 +1080,6 @@ class TestAllowedHosts:
                 id="account-name",
             ),
             pytest.param(
-                "  type: delta\n  table_uri: s3://bucket/events\n"
-                "  storage_options: {aws_endpoint_url: 'http://[elsewhere'}\n",
-                "storage option 'aws_endpoint_url'",
-                id="url-that-does-not-parse",
-            ),
-            pytest.param(
-                "  type: iceberg\n  table_uri: gs://bucket/t/metadata/v1.metadata.json\n"
-                "  storage_options: {s3.endpoint: '//127.0.0.1:5436'}\n",
-                "storage option 's3.endpoint'",
-                id="endpoint-without-scheme-name",
-            ),
-            pytest.param(
-                "  type: delta\n  table_uri: s3://bucket/events\n"
-                "  storage_options: {endpoint: 'http:127.0.0.1'}\n",
-                "storage option 'endpoint'",
-                id="endpoint-without-slashes",
-            ),
-            pytest.param(
                 "  type: iceberg\n  table_uri: gs://other/events\n", "table_uri", id="iceberg"
             ),
             pytest.param(
@@ -1104,30 +1090,15 @@ class TestAllowedHosts:
                 "table_uri",
                 id="hdfs-upper-case",
             ),
-            pytest.param(
-                "  type: delta\n  table_uri: '  hdfs://127.0.0.1:9000/t'\n",
-                "table_uri",
-                id="hdfs-after-spaces",
-            ),
             pytest.param("  type: delta\n  table_uri: hdfs:///t\n", "table_uri", id="hdfs-no-host"),
             pytest.param("  type: delta\n  table_uri: dbfs:/t\n", "table_uri", id="dbfs"),
             pytest.param(
-                "  type: delta\n  table_uri: sftp://u@elsewhere.example/t\n",
+                "  type: delta\n  table_uri: sftp://elsewhere.example/t\n",
                 "table_uri",
                 id="sftp",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: opendal+s3://other/t\n", "table_uri", id="opendal"
-            ),
-            pytest.param(
-                "  type: delta\n  table_uri: abfss://bucket@elsewhere.example/t\n",
-                "table_uri",
-                id="container-at-account",
-            ),
-            pytest.param(
-                "  type: delta\n  table_uri: 'hdfs://[::1/t'\n",
-                "table_uri",
-                id="authority-that-does-not-parse",
             ),
             pytest.param(
                 "  type: iceberg\n  table_uri: s3n://other/t/metadata/v1.metadata.json\n",
@@ -1161,17 +1132,6 @@ class TestAllowedHosts:
                 "  table: t\n",
                 "uri",
                 id="database-host-parameter",
-            ),
-            pytest.param(
-                "  type: database\n  uri: postgresql://u:p@elsewhere.example,@db.internal/db\n"
-                "  table: t\n",
-                "uri",
-                id="database-second-login",
-            ),
-            pytest.param(
-                "  type: database\n  uri: 'postgresql://db.internal#,127.0.0.1/db'\n  table: t\n",
-                "uri",
-                id="database-fragment",
             ),
             pytest.param(
                 "  type: database\n  uri: postgresql://u@db.internal/db?host=\n  table: t\n",
@@ -1222,6 +1182,209 @@ class TestAllowedHosts:
         with pytest.raises(ConfigError, match="'uri' holds an '@' after its host"):
             describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
 
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param(
+                "  path: 'http://elsewhere.example\\@example.com/a.csv'\n",
+                "path",
+                id="backslash",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {aws_endpoint_url: 'http://[elsewhere'}\n",
+                "storage option 'aws_endpoint_url'",
+                id="url-that-does-not-parse",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: '//127.0.0.1:5436'}\n",
+                "storage option 's3.endpoint'",
+                id="endpoint-without-scheme-name",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http:127.0.0.1'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-without-slashes",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: '  hdfs://127.0.0.1:9000/t'\n",
+                "table_uri",
+                id="hdfs-after-spaces",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: abfss://bucket@elsewhere.example/t\n",
+                "table_uri",
+                id="container-at-account",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'hdfs://[::1/t'\n",
+                "table_uri",
+                id="authority-that-does-not-parse",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u:p@elsewhere.example,@db.internal/db\n"
+                "  table: t\n",
+                "uri",
+                id="database-second-login",
+            ),
+            pytest.param(
+                "  type: database\n  uri: 'postgresql://db.internal#,127.0.0.1/db'\n  table: t\n",
+                "uri",
+                id="database-fragment",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: 'http://127.0.0.1:1@bucket', s3.region: x}\n",
+                "storage option 's3.endpoint'",
+                id="iceberg-endpoint-with-a-login",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {aws_endpoint_url: 'http://127.0.0.1:1@db.internal'}\n",
+                "storage option 'aws_endpoint_url'",
+                id="delta-endpoint-with-a-login",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: '127.0.0.1:1@db.internal'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-without-scheme-with-a-login",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http://db.internal:9000/x@127.0.0.1'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-with-an-at-sign-in-its-path",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http://db%2einternal:9000'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-percent-encoded",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http://db.internal:90x0'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-with-a-port-that-is-not-digits",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                '  storage_options: {endpoint: "http://\uff44b.internal:9000"}\n',
+                "storage option 'endpoint'",
+                id="endpoint-outside-ascii",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                '  storage_options: {endpoint: "http://db.internal\\t:9000"}\n',
+                "storage option 'endpoint'",
+                id="endpoint-with-a-tab",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {aws_bucket: 'bucket?x'}\n",
+                "storage option 'aws_bucket'",
+                id="bucket-with-a-question-mark",
+            ),
+            pytest.param(
+                "  path: https://u@example.com/a.csv\n", "path", id="location-with-a-login"
+            ),
+            pytest.param(
+                "  path: https://example.com/a@127.0.0.1/a.csv\n",
+                "path",
+                id="location-with-an-at-sign-in-its-path",
+            ),
+            pytest.param(
+                "  path: https://example.com?@127.0.0.1/a.csv\n",
+                "path",
+                id="location-with-a-query-in-its-authority",
+            ),
+            pytest.param(
+                "  path: 'https://example.com:443:80/a.csv'\n", "path", id="location-two-ports"
+            ),
+            pytest.param(
+                '  path: "https://ex\u0430mple.com/a.csv"\n', "path", id="location-outside-ascii"
+            ),
+            pytest.param(
+                '  type: delta\n  table_uri: "hd\\tfs://127.0.0.1/t"\n',
+                "table_uri",
+                id="scheme-with-a-tab",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'sftp://u@db.internal/t'\n",
+                "table_uri",
+                id="sftp-with-a-login",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'https://example.com:1@127.0.0.1/x.duckdb'\n"
+                "  table: t\n",
+                "database",
+                id="duckdb-with-a-login",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal:54x2/db\n  table: t\n",
+                "uri",
+                id="database-port-that-is-not-digits",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@%64b.internal/db\n  table: t\n",
+                "uri",
+                id="database-host-percent-encoded",
+            ),
+            pytest.param(
+                "  type: database\n  uri: 'postgresql://u@db.internal\\x/db'\n  table: t\n",
+                "uri",
+                id="database-backslash",
+            ),
+            pytest.param(
+                "  type: database\n  uri: 'postgresql://u v@db.internal/db'\n  table: t\n",
+                "uri",
+                id="database-login-with-a-space",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal/db?host=db.internal:1\n"
+                "  table: t\n",
+                "uri",
+                id="database-host-parameter-with-a-port",
+            ),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: '127.0.0.1:1@xy12345'\n",
+                "account",
+                id="snowflake-account-with-a-login",
+            ),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: 'adb-1.azuredatabricks.net:8443'\n",
+                "server_hostname",
+                id="databricks-with-a-port",
+            ),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: 'https://u@adb-1.azuredatabricks.net'\n",
+                "server_hostname",
+                id="databricks-with-a-login",
+            ),
+        ],
+    )
+    def test_it_refuses_a_host_written_in_a_shape_readers_split_differently(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, setting: str
+    ) -> None:
+        """Ensure a host is checked only as a host and a port, never as a part of other text.
+
+        The AWS SDK in PyArrow ends `http://127.0.0.1:1@bucket` at its first
+        `:`, so it connects to 127.0.0.1, while a URL parser reads `bucket`.
+        Most cases hold a host the server allows, so each would pass a check
+        that read only that part of the text.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError, match="in the one shape every reader") as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target {setting} does not name its host")
         read.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -1301,6 +1464,12 @@ class TestAllowedHosts:
             ),
             pytest.param(
                 "  type: delta\n  table_uri: s3://bucket/events\n"
+                '  storage_options: {"aws_s\\u212aip_signature": "true"}\n',
+                "storage option 'aws_s\u212aip_signature'",
+                id="key-with-the-kelvin-sign",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
                 "  storage_options: {AWS_REGION: 'evil.example/#'}\n",
                 "storage option 'AWS_REGION'",
                 id="region-that-is-not-a-region",
@@ -1342,6 +1511,11 @@ class TestAllowedHosts:
                 "  type: duckdb\n  database: '1ab:x'\n  table: t\n",
                 "database extension prefix",
                 id="duckdb-extension-with-a-digit-first",
+            ),
+            pytest.param(
+                '  type: duckdb\n  database: "motherduc\\u212a:x"\n  table: t\n',
+                "database extension prefix",
+                id="motherduck-with-the-kelvin-sign",
             ),
             pytest.param(
                 "  type: duckdb\n  database: 'md:?motherduck_host=127.0.0.1&motherduck_use_tls=false'"
@@ -1463,6 +1637,12 @@ class TestAllowedHosts:
                 "table_uri",
                 id="hdfs",
             ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: 'http://${VD_MCP_SECRET}:1@bucket'}\n",
+                "storage option 's3.endpoint'",
+                id="endpoint-in-a-shape-readers-split-differently",
+            ),
         ],
     )
     def test_it_names_the_setting_and_not_a_host_from_the_environment(
@@ -1472,8 +1652,8 @@ class TestAllowedHosts:
         monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
         _remote(tmp_path, target)
 
-        with pytest.raises(ConfigError, match=f"The target {setting} names a host") as refused:
-            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+        with pytest.raises(ConfigError, match=re.escape(f"The target {setting} ")) as refused:
+            run_configuration(Settings((tmp_path,), allowed_hosts=("bucket",)), "veridelta.yaml")
 
         assert _SECRET not in str(refused.value)
 

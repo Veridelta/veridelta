@@ -192,9 +192,40 @@ no host. A tool refuses any key in none of these sets, since a reader can take
 an unlisted one, such as a service host, a proxy, a key file, or an emulator, as
 a place to connect."""
 
-_BARE_HOST: Final = re.compile(r"([^\s:/?#@\\\[\]]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]+)?")
-"""A host written without a scheme, with an optional port, as an endpoint option
-or an account name gives it."""
+_HOST_AND_PORT: Final = re.compile(
+    r"([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*|\[[0-9A-Fa-f:.]+\])(?::[0-9]+)?"
+)
+"""A host with an optional port, in the one shape every reader splits alike: DNS
+labels or an IP address in ASCII, and a port of digits.
+
+Readers split other text in different places. The AWS SDK in PyArrow ends a host
+at its first `:`, a URL parser at its last `@`, and a driver can decode `%` or
+take a `\\` as a `/`. So a tool checks a host only when it is written this way,
+and nothing else stands in its authority."""
+
+_PAST_AUTHORITY: Final = r"[^@\\\x00-\x1f\x7f]*"
+"""What may follow a URL's authority: anything but an `@`, a `\\`, or a control character."""
+
+_URL: Final = re.compile(
+    rf"[A-Za-z][A-Za-z0-9+.-]*:(?://([^/]*)(?:/{_PAST_AUTHORITY})?|(?!//){_PAST_AUTHORITY})"
+)
+"""A location or an endpoint with a scheme, its authority, if any, in the group.
+
+The authority runs to the first `/`, where every reader ends it. No `@`, `\\`, or
+control character may follow, since a reader that looks for a login or a
+separator further on would find a host there."""
+
+_DATABASE_URI: Final = re.compile(
+    r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/?#\\\x00-\x20\x7f]*@)?([^@/?#\\\x00-\x20\x7f]*)"
+    r"(?:[/?][^@#\\\x00-\x1f\x7f]*)?"
+)
+"""A database URI: a scheme, an optional login, its hosts, separated by commas, and
+then its database and options, with the hosts in the group.
+
+Drivers split a URI in other places than `urlsplit` does: tokio-postgres reads
+the login up to the first `@` anywhere in it, and takes a `#` into the host. So
+a URI passes only with no `@` past its login, no `#`, and no `\\`, space, or
+control character where a host or a login stands."""
 
 _EXTENSION_PREFIX: Final = re.compile(r"[^:/\\]{2,}:(?!//)")
 """The start of a DuckDB `database` that DuckDB opens through an extension, such
@@ -206,14 +237,15 @@ before any setting of the server applies. The pattern takes any character but a
 path separator, so it matches every name DuckDB reads, and a few it does not."""
 
 _MOTHERDUCK_NAME: Final = re.compile(
-    r"(?:md|motherduck):(?:[A-Za-z0-9_-][A-Za-z0-9_/-]*)?", re.IGNORECASE
+    r"(?:md|motherduck):(?:[A-Za-z0-9_-][A-Za-z0-9_/-]*)?", re.IGNORECASE | re.ASCII
 )
 """A MotherDuck `database` before its `?`, such as `md:sales` or `md:_share/s/1a-2b`,
 which a tool passes on.
 
 MotherDuck's extension reads options after a `&` or a `#` too, and DuckDB opens
 `md://x` as a file and not through MotherDuck, so a tool passes on no other
-character there."""
+character there. Case is ignored in ASCII only, as DuckDB ignores it, so the
+Kelvin sign does not count as a `k`."""
 
 _MOTHERDUCK_OPTIONS: Final = frozenset({"attach_mode", "saas_mode", "session_name"})
 """Options of a MotherDuck `database`, after its `?`, that a tool passes on.
@@ -354,7 +386,7 @@ def allowed_host(text: str) -> str:
         ConfigError: If the text is not a host written that way.
     """
     host = text.lower()
-    if _HOST.fullmatch(host) is None:
+    if not text.isascii() or _HOST.fullmatch(host) is None:
         raise ConfigError(
             f"--allow-host takes a host name, an IPv4 address, or an IPv6 address in "
             f"brackets, with no scheme or port, got {text!r}."
@@ -637,89 +669,86 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
                 )
 
 
-def _authority_hosts(authority: str) -> list[str]:
-    """Return each host a URI's authority names, after its login and before its port.
+def _host(text: str) -> str:
+    """Return the host of a host with an optional port, or the text whole when it is not one.
 
-    A Postgres authority can name several hosts, separated by commas. Readers
-    split an authority that holds a backslash or a second `@` in different
-    places, so such an authority comes back whole, which no allowed host equals.
+    Text in no other shape comes back whole, which no allowed host equals, so a
+    tool refuses it rather than check a part of it that a reader may not read.
     """
-    if "\\" in authority or authority.count("@") > 1:
-        return [authority]
-    return [
-        part.partition("]")[0] + "]" if part.startswith("[") else part.partition(":")[0]
-        for part in authority.rpartition("@")[2].split(",")
-    ]
+    written = _HOST_AND_PORT.fullmatch(text)
+    return text if written is None else written.group(1)
 
 
-def _url_hosts(url: str) -> list[str]:
-    """Return each host a URL names, or the URL whole when it does not parse."""
-    parts = _split(url)
-    return [url] if parts is None else _authority_hosts(parts.netloc)
+def _url_host(url: str) -> str:
+    """Return the host a URL names, the empty host for none, or the URL whole when it is unclear."""
+    written = _URL.fullmatch(url)
+    if written is None:
+        return url
+    authority = written.group(1)
+    return _host(authority) if authority else ""
 
 
 def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
-    """Name each host a data location reaches, or none for a path here or a service's own hosts.
+    """Name the host a data location reaches, or none for a path here or a service's own hosts.
 
     Every scheme of two or more characters counts, other than a local or a
     service one, so a scheme this module has never heard of still needs its
     host allowed. One character is a drive letter, such as `C:`, and no scheme.
-    A location with no host, such as `hdfs:///t`, names the empty host, which
-    is never allowed, since its reader would pick the host from elsewhere.
+    `urlsplit` finds the scheme as a reader that skips leading spaces does, and
+    the location must then match `_URL` as written. A location with no host,
+    such as `hdfs:///t`, names the empty host, which is never allowed, since its
+    reader would pick the host from elsewhere.
     """
     parts = _split(location)
-    if parts is None:
-        return [(setting, location)]
-    if len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES:
+    if parts is not None and (
+        len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES
+    ):
         return []
-    return [(setting, host) for host in _authority_hosts(parts.netloc)]
-
-
-def _bare_host(text: str) -> str:
-    """Return the host of an option written as a host and an optional port, or the text whole."""
-    written = _BARE_HOST.fullmatch(text)
-    return text if written is None else written.group(1)
+    return [(setting, _url_host(location))]
 
 
 def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:
     """Name each host a side's storage options send a reader to, with the option that names it.
 
     A host of None marks an option a tool does not pass on: one outside the
-    known keys, or a region that a reader could not write into a host name.
+    known keys, a key outside ASCII, or a region that a reader could not write
+    into a host name. An endpoint is a host with an optional port, or a URL.
     """
     if not isinstance(options, Mapping):
         return
     for key, value in cast("Mapping[object, object]", options).items():
-        name, text = str(key).lower(), str(value)
+        name, text = str(key), str(value)
         setting = f"storage option '{key}'"
-        if name in _HOST_OPTIONS:
-            hosts = _url_hosts(text) if "://" in text else [_bare_host(text)]
-            yield from ((setting, host) for host in hosts)
-        elif name in _REGION_OPTIONS:
+        if not name.isascii():
+            yield setting, None
+        elif name.lower() in _HOST_OPTIONS:
+            yield setting, _url_host(text) if "://" in text else _host(text)
+        elif name.lower() in _REGION_OPTIONS:
             if _REGION.fullmatch(text) is None:
                 yield setting, None
-        elif name not in _NO_HOST_OPTIONS:
+        elif name.lower() not in _NO_HOST_OPTIONS:
             yield setting, None
 
 
 def _database_hosts(uri: str) -> list[tuple[str, str]]:
     """Name each server a database URI connects to, from its host and its query alike.
 
-    Drivers split a URI in other places than `urlsplit` does: tokio-postgres
-    reads the login up to the first `@` anywhere in it, and takes a `#` into
-    the host. So a URI with an `@` outside its authority, or with a `#`, comes
-    back whole, which no allowed host equals.
+    A URI that does not match `_DATABASE_URI` comes back whole, which no allowed
+    host equals. A host parameter can list several servers, separated by
+    commas, as a URI's authority can.
     """
     parts = urlsplit(uri)
     if parts.scheme.startswith("sqlite"):
         return []
-    if "#" in uri or uri.count("@") != parts.netloc.count("@"):
+    written = _DATABASE_URI.fullmatch(uri)
+    if written is None:
         return [("uri", uri)]
-    hosts = _authority_hosts(parts.netloc)
+    hosts = [_host(part) for part in written.group(1).split(",")]
     hosts += [
-        value
+        host
         for key, value in parse_qsl(parts.query, keep_blank_values=True)
         if key.lower() in _HOST_PARAMETERS
+        for host in value.split(",")
     ]
     return [("uri", host) for host in hosts]
 
@@ -792,8 +821,10 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
 
     A configuration takes `${NAME}` values from the server's environment, so a
     side that could reach any host could send one there, or reach a service on
-    this machine or its network. The message names the setting and not the
-    host, which can hold such a value.
+    this machine or its network. A host written in any shape but
+    `_HOST_AND_PORT`'s is refused on its own, since readers split it in
+    different places. The message names the setting and not the host, which
+    can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         for setting, host in _destinations(config):
@@ -803,6 +834,15 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
                     "cannot check which host it sends a reader to. Leave it out. A credential "
                     "can come from the server's environment instead, which the person who "
                     "started it sets."
+                )
+            if host and (not host.isascii() or _HOST.fullmatch(host.lower()) is None):
+                raise ConfigError(
+                    f"The {side} {setting} does not name its host in the one shape every "
+                    "reader splits alike, so a tool could check one host and a reader connect "
+                    "to another. Write the host as DNS labels or an IP address in ASCII, with "
+                    "at most a port of digits after it, as in host:port or "
+                    "scheme://host:port/path. Leave out '@', '%', '\\', spaces, and control "
+                    "characters, other than in a database URI's login."
                 )
             if host.lower() not in settings.allowed_hosts:
                 raise ConfigError(

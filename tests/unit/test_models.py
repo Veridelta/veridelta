@@ -1087,6 +1087,7 @@ class TestDuckDBConfig:
             pytest.param("md:", True, id="default-database"),
             pytest.param("warehouse.duckdb", False, id="file"),
             pytest.param("data/md.duckdb", False, id="file-named-md"),
+            pytest.param("motherduc\u212a:sales", False, id="kelvin-sign"),
         ],
     )
     def test_it_tells_motherduck_from_a_file(self, database: str, motherduck: bool) -> None:
