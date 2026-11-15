@@ -596,13 +596,15 @@ def _local_paths(location: str) -> list[str]:
     that follows the URL standard reads from the top, so `file:a/b` is `/a/b`.
     So the location is checked as written, and a local scheme's path both ways.
     """
-    paths = [location]
+    paths: list[str] = []
     parts = _split(location)
     if parts is not None and parts.scheme in _LOCAL_SCHEMES:
         paths.append(url2pathname(parts.path))
         if not parts.path.startswith("/"):
             paths.append(url2pathname(f"/{parts.path}"))
-    return paths
+    # The decoded path comes first, so a refusal names the file the reader opens, and the
+    # same check refuses first on every system. The text as written is checked last.
+    return [*paths, location]
 
 
 def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
@@ -892,8 +894,8 @@ def check_configuration(
         findings = [error_from_exception(exc)]
     else:
         if schemas:
-            check_data_paths(settings, source, target)
             _refuse_hosts(settings, source, target)
+            check_data_paths(settings, source, target)
         with sandboxed(settings.roots):
             findings = DiffEngine.check_configs(
                 diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
@@ -904,8 +906,8 @@ def check_configuration(
 def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
     """Load a configuration a tool opens, refusing data outside the roots or on a host not allowed."""
     diff, source, target = load_config(resolve_path(settings, path))
-    check_data_paths(settings, source, target)
     _refuse_hosts(settings, source, target)
+    check_data_paths(settings, source, target)
     return diff, source, target
 
 

@@ -113,7 +113,7 @@ def _in_the_first_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _write(folder: Path, text: str, name: str = "veridelta.yaml") -> Path:
     """Write a configuration file."""
     path = folder / name
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
