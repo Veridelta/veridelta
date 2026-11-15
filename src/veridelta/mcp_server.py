@@ -10,12 +10,12 @@ agent that knows the command line knows the tools.
 
 The person who starts the server names the folders it may read configuration
 files and data on this machine from, and a tool refuses a path outside them. A
-tool returns findings, counts, and column names, never a value from the file.
-Two tools return values from the data, and only when the person who starts the
-server allows it: then at most a set number of rows. A side's `query` runs only
-when that person allows queries too. The SDK is imported by the first
-`build_server()`, not with this module, so `veridelta` imports without the
-extra.
+tool returns findings, counts, and column names, never a value from the file,
+and a failed call leaves out a message that can quote one. Three tools return
+values from the data, and only when the person who starts the server allows it:
+then at most a set number of rows. A side's `query` runs only when that person
+allows queries too. The SDK is imported by the first `build_server()`, not with
+this module, so `veridelta` imports without the extra.
 """
 
 import importlib
@@ -55,7 +55,7 @@ from veridelta.engine import (
     DEFAULT_MIN_SUPPORT,
     DiffEngine,
 )
-from veridelta.exceptions import ConfigError, VerideltaError, missing_extra
+from veridelta.exceptions import ConfigError, VerideltaError, may_quote_data, missing_extra
 from veridelta.models import (
     DatabaseConfig,
     DeltaLakeConfig,
@@ -113,6 +113,13 @@ unchecked."""
 
 _MCP_EXTRA = missing_extra("mcp", "veridelta mcp")
 
+_WITHHELD: Final = (
+    "its message is left out, since it can quote values from the data, and this server "
+    "was started without --allow-row-values. Run the configuration with veridelta run "
+    "to read the message."
+)
+"""What a failed call says in place of a message that can quote the data."""
+
 _SHORTEST_MASKED: Final = 4
 """The fewest characters an environment value needs to be masked in a tool's answer.
 
@@ -165,7 +172,8 @@ class Settings:
             from them too.
         allow_row_values (bool): Whether `read_discrepancies`,
             `propose_value_maps`, and `suggest_rules` may return values from the
-            data. Defaults to False.
+            data, and a failed call may return a message that Polars, a reader,
+            or a driver wrote. Defaults to False.
         max_rows (int): The most rows, value map entries, or example keys one of
             those calls returns. At least 1. Defaults to 50.
         allow_queries (bool): Whether a tool may run a side's `query`, which
@@ -409,8 +417,11 @@ def check_configuration(
 ) -> ValidationReport:
     """Check a configuration file for what would stop a run, as `validate --json` does.
 
+    Unless the server allows row values, a finding leaves out what Polars, a
+    reader, or a driver said about a schema read that failed.
+
     Args:
-        settings (Settings): The roots the server was started with.
+        settings (Settings): The roots and the row values the server was started with.
         path (str): The configuration file, under a root.
         schemas (bool): Whether to also connect and check the rules against each
             side's columns, which reads no rows.
@@ -435,7 +446,10 @@ def check_configuration(
             check_data_paths(settings, source, target)
     with sandboxed(settings.roots):
         findings = DiffEngine.check_config_file(
-            resolved, schemas=schemas, allow_missing_env=allow_missing_env
+            resolved,
+            schemas=schemas,
+            allow_missing_env=allow_missing_env,
+            quote_data=settings.allow_row_values,
         )
     return validation_report(str(resolved), findings)
 
@@ -710,8 +724,16 @@ def suggest(
     )
 
 
-def _failure(exc: BaseException) -> str:
-    """Name a failure as `run --json` does: its type, then its message."""
+def _failure(exc: BaseException, *, row_values: bool) -> str:
+    """Name a failure as `run --json` does: its type, then its message.
+
+    Polars, a reader, or a driver can quote cells in its message, so unless the
+    server allows row values, such a message gives way to a fixed hint. A
+    Veridelta error keeps its own, which names columns and counts, unless it
+    quotes a reader's or a driver's text.
+    """
+    if may_quote_data(exc) and not row_values:
+        return f"{type(exc).__name__}: {_WITHHELD}"
     return f"{type(exc).__name__}: {str(exc).strip()}"
 
 
@@ -750,18 +772,26 @@ def _masked(value: Any, secrets: tuple[str, ...]) -> Any:
     return value
 
 
-def _answer(tool_error: Any, work: Callable[[], _R], secrets: tuple[str, ...] = ()) -> _R:
+def _answer(
+    tool_error: Any,
+    work: Callable[[], _R],
+    secrets: tuple[str, ...] = (),
+    *,
+    row_values: bool = False,
+) -> _R:
     """Run a tool's work, masking `secrets` in its answer, or fail the call.
 
     The SDK passes only a `ToolError`'s message on to the agent, so every
     failure becomes one, named as `run --json` names it, with the secrets
-    masked there too.
+    masked there too. Unless `row_values` is set, a message that can quote
+    the data is left out.
     """
     try:
         result = work()
     except (Exception, PanicException) as exc:
         # A panic in Polars is no `Exception`, and would stop the server instead.
-        raise tool_error(mask_secrets(_failure(exc), *secrets)) from exc
+        failure = _failure(exc, row_values=row_values)
+        raise tool_error(mask_secrets(failure, *secrets)) from exc
     return cast("_R", _masked(result, secrets))
 
 
@@ -810,6 +840,7 @@ def build_server(settings: Settings) -> "MCPServer":
                 settings, path, schemas=schemas, allow_missing_env=allow_missing_env
             ),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def run_comparison(
@@ -823,6 +854,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: run_configuration(settings, path),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def describe_schema(
@@ -837,6 +869,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: describe_side(settings, path, side),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def read_discrepancies(
@@ -862,6 +895,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: read_rows(settings, path, kind, limit),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def propose_value_maps(
@@ -893,6 +927,7 @@ def build_server(settings: Settings) -> "MCPServer":
                 sample_fraction=sample_fraction,
             ),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def suggest_rules(
@@ -915,6 +950,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: suggest(settings, path, max_share=max_share),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     for tool in (

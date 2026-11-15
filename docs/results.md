@@ -70,7 +70,7 @@ The run record ties a verdict to the files it judged, the commit they came from,
 | `started_at` | When the run started, in UTC. |
 | `config_file` | The configuration file's path as given and the SHA-256 of its bytes. `null` for a run of two files and `--key`. |
 | `baseline_file` | The `--baseline` file's path and SHA-256, or `null`. |
-| `commit_sha` | The commit checked out where the run started, from `git rev-parse HEAD`. Without git, GitHub Actions' `GITHUB_SHA`. `null` outside both. |
+| `commit_sha` | The commit checked out where the run started, from `git rev-parse HEAD`. With git 2.38 or later, git takes a bare repository only when `GIT_DIR` names it, so a folder of files shaped like one names no commit. Without git, GitHub Actions' `GITHUB_SHA`. `null` outside both. |
 | `working_tree_clean` | Whether no tracked file differed from that commit, from `git status`. Untracked files, such as the run's own reports, do not count. `null` when git cannot tell. |
 | `ci_run_url` | The GitHub Actions run, built from `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, and `GITHUB_RUN_ATTEMPT`. `null` outside GitHub Actions, or when a variable has an unexpected shape. |
 
@@ -199,7 +199,7 @@ The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file
 
 `HEADERS`, `TIMEOUT`, and `PROTOCOL` also have a metrics form, such as `OTEL_EXPORTER_OTLP_METRICS_HEADERS`. The metrics form wins over the general one, as it does in the OpenTelemetry SDKs.
 
-Header keys and values are percent-encoded, as in `OTEL_RESOURCE_ATTRIBUTES`, so `Bearer <token>` is written `Bearer%20<token>`. No header value appears in a log line or an error, and neither does the endpoint's query. An endpoint with a user name, a password, or any other `@` fails the run, since credentials go in headers; write a literal `@` as `%40`. The send follows no redirect, so a header never reaches a second host. Over HTTPS, the endpoint's certificate is checked against the system's trust store.
+Header keys and values are percent-encoded, as in `OTEL_RESOURCE_ATTRIBUTES`, so `Bearer <token>` is written `Bearer%20<token>`. No header value appears in a log line or an error, and neither does the endpoint's query. An endpoint with a user name, a password, or any other `@` fails the run, since credentials go in headers; write a literal `@` as `%40`. An endpoint must percent-encode a space, a control character, or a character outside ASCII. Veridelta refuses one written as is, and the error names the variable, not its value. The send follows no redirect, so a header never reaches a second host. Over HTTPS, the endpoint's certificate is checked against the system's trust store.
 
 The send is one attempt, with no retry. When it fails, such as on an unreachable endpoint, an HTTP error, or the timeout, the run exits `3` after writing its files. Under `--json`, stdout then holds the error object instead of the summary. An unusable variable, or a protocol other than `http/json`, fails the run the same way before anything is sent.
 
@@ -218,6 +218,6 @@ A malformed `OTEL_RESOURCE_ATTRIBUTES`, such as an item without `=` or a `%` tha
 
 ## Artifacts
 
-With `output_path` set, a run writes the differing rows to that directory as `added_rows`, `removed_rows`, and `changed_rows`, in the `output_format`. An empty set writes no file. Pushdown writes primary keys only, under other names; see [Differences from a local run](pushdown.md#differences-from-a-local-run).
+With `output_path` set, a run writes the differing rows to that directory as `added_rows`, `removed_rows`, and `changed_rows`, in the `output_format`. An empty set writes no file. Each file is written to a new file in that directory, then moved onto its name. A link already at that name is replaced, never written through, and a failed write leaves the earlier file as it was. Pushdown writes primary keys only, under other names; see [Differences from a local run](pushdown.md#differences-from-a-local-run).
 
 `output_format` is `parquet` (the default), `csv`, `json`, `ndjson`, or `arrow`. CSV and JSON have no type for bytes, so `csv`, `json`, and `ndjson` write a binary column, such as a MySQL `BIT`, as hexadecimal text, and refuse a column that nests binary values in a list or a struct. Excel is not offered, because writing a workbook needs a second dependency that a discrepancy file does not justify. Neither is Avro: the Polars writer cannot store several types a discrepancy frame can hold, such as `Int8`, unsigned integers, nanosecond or timezone-aware timestamps, and all-NULL columns.

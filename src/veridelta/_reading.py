@@ -406,7 +406,8 @@ class LoaderFactory:
             except (OSError, pl.exceptions.PolarsError) as exc:
                 raise ConnectorError(
                     f"Reading the {config.format} file '{shown_location(config.path)}' failed: "
-                    f"{_with_the_suffix_format(config, without_location(str(exc), config.path))}"
+                    f"{_with_the_suffix_format(config, without_location(str(exc), config.path))}",
+                    quotes_data=True,
                 ) from exc
             logger.info(
                 "Opened the %s file '%s' (%d columns)",

@@ -7,6 +7,9 @@ A local run and a pushed-down run both end here, so their summaries and files
 agree. A baseline moves the rows it names out of the counts and into `accepted`.
 """
 
+import io
+import os
+import secrets
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final, NamedTuple
@@ -35,12 +38,14 @@ def local_column_mismatches(changed: pl.DataFrame, compared_columns: list[str]) 
     return {column: count for column, count in tally.items() if count > 0}
 
 
-_ARTIFACT_WRITERS: Final[dict[ArtifactFormat, Callable[[pl.DataFrame, Path], None]]] = {
-    "csv": lambda frame, path: frame.write_csv(path),
-    "parquet": lambda frame, path: frame.write_parquet(path),
-    "json": lambda frame, path: frame.write_json(path),
-    "ndjson": lambda frame, path: frame.write_ndjson(path),
-    "arrow": lambda frame, path: frame.write_ipc(path),
+_ArtifactWriter = Callable[[pl.DataFrame, io.BufferedWriter], None]
+
+_ARTIFACT_WRITERS: Final[dict[ArtifactFormat, _ArtifactWriter]] = {
+    "csv": lambda frame, handle: frame.write_csv(handle),
+    "parquet": lambda frame, handle: frame.write_parquet(handle),
+    "json": lambda frame, handle: frame.write_json(handle),
+    "ndjson": lambda frame, handle: frame.write_ndjson(handle),
+    "arrow": lambda frame, handle: frame.write_ipc(handle),
 }
 """Artifact format to writer."""
 
@@ -87,10 +92,38 @@ def _writable(frame: pl.DataFrame, output_format: ArtifactFormat) -> pl.DataFram
     return frame.with_columns(pl.col(binary).bin.encode("hex")) if binary else frame
 
 
+def _write_artifact(write: _ArtifactWriter, frame: pl.DataFrame, path: Path) -> None:
+    """Write one artifact to a new file beside `path`, then move it onto `path`.
+
+    The folder can hold a link at an artifact's name, planted by whoever wrote
+    there, and a writer that opens the name writes through the link to its
+    target. The new file is created with `O_EXCL`, which refuses any existing
+    name, link or not, and `os.replace` swaps the directory entry, so neither a
+    symbolic link nor a hard link at `path` leads the write anywhere else. The
+    file takes the mode a plain write would, `0o666` less the umask, where
+    `tempfile.mkstemp` would make it `0o600`. A failed write, a Polars panic
+    included, removes the new file.
+    """
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(temporary, flags, 0o666)
+    try:
+        with open(descriptor, "wb") as handle:
+            write(frame, handle)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def export_artifacts(
     frames: dict[str, pl.DataFrame], output_path: str | None, output_format: ArtifactFormat
 ) -> bool:
-    """Persist non-empty discrepancy frames to the configured directory."""
+    """Persist non-empty discrepancy frames to the configured directory.
+
+    Each file replaces whatever entry has its name, so a link there is replaced,
+    never followed.
+    """
     if output_path is None:
         return False
     # Checked before the loop so a misconfigured format fails the same way on a
@@ -108,8 +141,10 @@ def export_artifacts(
     for name, frame in frames.items():
         if frame.height == 0:
             continue
-        _ARTIFACT_WRITERS[output_format](
-            _writable(frame, output_format), out_dir / f"{name}.{output_format}"
+        _write_artifact(
+            _ARTIFACT_WRITERS[output_format],
+            _writable(frame, output_format),
+            out_dir / f"{name}.{output_format}",
         )
         written = True
     return written

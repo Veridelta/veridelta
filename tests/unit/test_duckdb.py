@@ -105,10 +105,8 @@ class TestDuckDBConnector:
 
         DuckDBConnector(_FILE).connect()
 
-        assert connection.mock_calls[:2] == [
-            call.execute("SET TimeZone = 'UTC'"),
-            call.sql('SELECT * FROM "main"."orders"'),
-        ]
+        assert connection.mock_calls[0] == call.execute("SET TimeZone = 'UTC'")
+        assert call.sql('SELECT * FROM "main"."orders"') in connection.mock_calls
 
     def test_it_holds_a_file_to_its_folders_before_reading(self, mocker: MockerFixture) -> None:
         """Ensure a read inside `sandboxed` locks the connection to its folders first."""
@@ -116,7 +114,6 @@ class TestDuckDBConnector:
 
         with sandboxed([Path("/data")]):
             DuckDBConnector(_FILE).connect()
-        DuckDBConnector(_FILE).connect()
 
         held = [call.execute("SET TimeZone = 'UTC'")]
         # Each folder ends in the platform's separator, so `/data` admits no `/data-old`.
@@ -126,8 +123,40 @@ class TestDuckDBConnector:
             *held,
             call.sql('SELECT * FROM "main"."orders"'),
         ]
-        # The read outside the block sets the time zone alone.
-        assert connection.execute.call_args_list[len(held) :] == [call("SET TimeZone = 'UTC'")]
+
+    @pytest.mark.parametrize(
+        ("database", "folder"),
+        [
+            pytest.param("warehouse.duckdb", ".", id="relative"),
+            pytest.param("{root}/data/warehouse.duckdb", "data", id="absolute"),
+            pytest.param("~/warehouse.duckdb", "home", id="home"),
+        ],
+    )
+    def test_it_holds_a_file_to_its_own_folder_outside_the_sandbox(
+        self,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        database: str,
+        folder: str,
+    ) -> None:
+        """Ensure a view in a file someone else wrote reads nothing outside the file's folder."""
+        connection = _driver(mocker).connect.return_value
+        monkeypatch.chdir(tmp_path)
+        # DuckDB expands `~`, so the folder must too: POSIX reads HOME, Windows USERPROFILE.
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+        config = DuckDBConfig(database=database.format(root=tmp_path), table="orders")
+
+        DuckDBConnector(config).connect()
+
+        sandbox = compile_duckdb_sandbox([f"{(tmp_path / folder).resolve()}{os.sep}"])
+        held = [
+            call.execute("SET TimeZone = 'UTC'"),
+            *[call.execute(statement) for statement in sandbox],
+            call.sql('SELECT * FROM "orders"'),
+        ]
+        assert connection.mock_calls[: len(held)] == held
 
     def test_it_closes_a_connection_whose_setup_fails(self, mocker: MockerFixture) -> None:
         """Ensure a connection is released when a setting fails, before any read."""

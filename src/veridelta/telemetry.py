@@ -77,6 +77,9 @@ _HEADER_NAME: Final[re.Pattern[str]] = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+"
 _HEADER_BREAK: Final[re.Pattern[str]] = re.compile(r"[\r\n\x00]")
 """A character that would end a header value early, or that HTTP refuses in one."""
 
+_URL_UNSAFE: Final[re.Pattern[str]] = re.compile(r"[^\x21-\x7e]")
+"""A character a URL cannot hold unencoded: a space, a control character, or one outside ASCII."""
+
 _JSONObject = dict[str, object]
 
 
@@ -358,6 +361,12 @@ def _otlp_endpoint() -> str:
         name = "OTEL_EXPORTER_OTLP_ENDPOINT"
         base = urlsplit(os.environ.get(name, "").strip() or _DEFAULT_ENDPOINT)
         endpoint = urlunsplit(base._replace(path=f"{base.path.rstrip('/')}/{_METRICS_PATH}"))
+    if _URL_UNSAFE.search(endpoint):
+        # The standard library's error would quote the path and query, which can hold a key.
+        raise ConfigError(
+            f"{name} must hold no space, control character, or character outside ASCII. "
+            "Percent-encode one, such as %20 for a space."
+        )
     parts = urlsplit(endpoint)
     try:
         port_ok = parts.port is None or parts.port > 0
@@ -541,8 +550,11 @@ def send_otlp_metrics(
             if isinstance(reason, TimeoutError)
             else str(reason)
         )
-    except (OSError, http.client.HTTPException) as exc:
-        # Raised while reading the answer, such as a connection closed without one.
+    except http.client.HTTPException as exc:
+        # Its text can quote the URL's path and query, so only its type is named.
+        failure = f"the HTTP client raised {type(exc).__name__}"
+    except OSError as exc:
+        # Raised while reading the answer, such as a connection reset.
         failure = str(exc) or type(exc).__name__
     else:
         logger.info("Sent metrics to %s in %.3fs", where, time.perf_counter() - started)

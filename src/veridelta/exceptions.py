@@ -92,7 +92,40 @@ class ConnectorError(VerideltaError):
 
     Such failures include a missing optional extra, a failed query or scan, a
     pair of backends that cannot be compared, and a call before a session opens.
+
+    Attributes:
+        quotes_data (bool): Whether the message quotes a reader's or a driver's
+            own text, which can hold values from the data.
     """
+
+    def __init__(self, message: str = "", *, quotes_data: bool = False) -> None:
+        """Carry the message, and whether it quotes a reader's or a driver's text.
+
+        Args:
+            message (str): What failed and what to do about it.
+            quotes_data (bool): Whether the message quotes a reader's or a
+                driver's own text.
+        """
+        super().__init__(message)
+        self.quotes_data = quotes_data
+
+
+def may_quote_data(exc: BaseException) -> bool:
+    """Return whether an error's message can quote values from the data.
+
+    Polars, a file reader, and a database driver can quote cells in their own
+    messages, and so can a `ConnectorError` that passes one on, which sets
+    `quotes_data`. Veridelta's other errors name columns, types, and counts.
+
+    Args:
+        exc (BaseException): The error.
+
+    Returns:
+        bool: Whether its message can hold a value from the data.
+    """
+    return not isinstance(exc, VerideltaError) or (
+        isinstance(exc, ConnectorError) and exc.quotes_data
+    )
 
 
 class DatasetError(VerideltaError):
