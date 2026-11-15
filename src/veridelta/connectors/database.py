@@ -39,6 +39,7 @@ from veridelta.connectors.base import (
     PushdownSession,
     ReaderConnector,
     mask_secrets,
+    names_another_machine,
     optional_module,
     read_subject,
 )
@@ -650,14 +651,17 @@ def sqlite_path(config: DatabaseConfig) -> str | None:
     The connector hands ConnectorX this text, encoded, so nothing is left for its
     URL parser to fold another way, SQLite reads no `file:` URI of its own in
     it, and no reader expands a leading `~`. The MCP server checks this path
-    against its roots, so the check and the read name one file.
+    against its roots, so the check and the read name one file. A path the
+    system reads as one on another machine, as `names_another_machine` says, is
+    returned decoded but not resolved, since resolving it would reach that
+    machine; the MCP server refuses it as it is.
 
     Args:
         config (DatabaseConfig): A database source.
 
     Returns:
-        str | None: The decoded path, resolved, or None for a URI ConnectorX
-            does not read as SQLite.
+        str | None: The decoded path, resolved unless it is on another machine,
+            or None for a URI ConnectorX does not read as SQLite.
 
     Raises:
         ConfigError: If ConnectorX reads the URI as SQLite but it does not start
@@ -680,6 +684,8 @@ def sqlite_path(config: DatabaseConfig) -> str | None:
             "A SQLite path holds a NUL character, such as '%00', which no file name can hold. "
             "Write 'uri' as sqlite:// followed by the file's path."
         )
+    if names_another_machine(decoded):
+        return decoded
     # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
     return os.path.realpath(decoded)
 

@@ -5,6 +5,7 @@
 
 import importlib
 import logging
+import os
 from abc import ABC, abstractmethod
 from types import ModuleType, TracebackType
 from typing import ClassVar, Final, Literal, Self
@@ -60,6 +61,30 @@ def without_location(text: str, location: str) -> str:
         str: The message, with the location's secrets left out.
     """
     return text.replace(location, shown_location(location))
+
+
+def names_another_machine(path: str) -> bool:
+    r"""Say whether the system reads a path, as written, as one that can reach another machine.
+
+    Windows reads a path that starts with two separators, of either kind, as a
+    path on another machine, such as `\\host\share`, or as a device path, such
+    as one after `\\?\` or `\\.\`, which can name another machine too. It hands
+    a path that starts with `\??\` to the kernel as written, which can name one
+    as well. Resolving, matching, or opening such a path reaches the host it
+    names, and can send the user's credentials there, so a caller asks this
+    before anything resolves the path. A system whose only separator is `/`
+    reads each of these as a path on this machine.
+
+    Args:
+        path (str): A path, before anything expands or resolves it.
+
+    Returns:
+        bool: Whether the path can name another machine or a device.
+    """
+    if os.path.sep != "\\":
+        return False
+    text = path.replace("/", "\\")
+    return text.startswith(("\\\\", "\\??\\"))
 
 
 PROBE_NEEDS_A_TABLE: Final = "A schema probe reads a 'table'; a 'query' would have to run in full."
