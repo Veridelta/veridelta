@@ -904,6 +904,38 @@ class TestDatabaseConnector:
 
         read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "sqlite+x:///srv/x.db",
+            "SQLite+A:///srv/x.db",
+            " sqlite:///srv/x.db",
+            "sqli\tte:///srv/x.db",
+        ],
+    )
+    def test_it_refuses_a_uri_connectorx_reads_as_sqlite_in_another_form(
+        self, mocker: MockerFixture, uri: str
+    ) -> None:
+        """Ensure a query never reaches ConnectorX through a SQLite URI not written as sqlite://."""
+        read = _read_database(mocker)
+
+        with pytest.raises(ConfigError, match="reads only one that starts with sqlite://"):
+            DatabaseConnector(DatabaseConfig(uri=uri, query="SELECT * FROM t")).connect()
+
+        read.assert_not_called()
+
+    def test_it_reads_an_upper_case_sqlite_scheme_as_sqlite(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure `SQLITE://` reaches ConnectorX as the resolved path, as `sqlite://` does."""
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
+        database = tmp_path / "x.db"
+        database.write_bytes(b"")
+
+        DatabaseConnector(DatabaseConfig(uri=f"SQLITE://{database}", table="t")).connect()
+
+        read.assert_called_once_with('SELECT * FROM "t"', "sqlite://" + quote(str(database)))
+
     def test_it_refuses_a_sqlite_path_holding_a_nul(self, mocker: MockerFixture) -> None:
         """Ensure `%00` fails as a configuration error, before any read."""
         read = _read_database(mocker)

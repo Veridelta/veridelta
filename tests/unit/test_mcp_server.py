@@ -766,11 +766,9 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match=r"The target SQLite file '.+' is outside"):
             check_data_paths(settings, SourceConfig(path="a.csv"), outside)
 
-        assert Path(sqlite_path(inside)).resolve() == tmp_path.resolve() / "x.db"
-        assert Path(sqlite_path(outside)).resolve() == outside_file
         # The connector opens this text too, and SQLite reads no `file:` URI in an absolute path.
-        assert Path(sqlite_path(inside)).is_absolute()
-        assert Path(sqlite_path(outside)).is_absolute()
+        assert sqlite_path(inside) == str(tmp_path.resolve() / "x.db")
+        assert sqlite_path(outside) == str(outside_file)
 
     def test_it_reads_a_sqlite_home_path_as_the_driver_does(
         self,
@@ -817,6 +815,51 @@ class TestCheckDataPaths:
         # The connector opens this text, so no `..` is left for ConnectorX to fold another way.
         assert sqlite_path(inside) == str(root / "outside" / "x.db")
         assert sqlite_path(outside) == str(tmp_path.resolve() / "x.db")
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "sqlite+x://{}",
+            "SQLite+A://{}",
+            "sqlite+pysqlite://{}",
+            "sqlite+://{}",
+            " sqlite://{}",
+            "\tsqli\nte://{}",
+            "sqlite:{}",
+        ],
+    )
+    def test_it_refuses_a_uri_connectorx_reads_as_sqlite_in_another_form(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, uri: str
+    ) -> None:
+        """Ensure no form of a SQLite URI but `sqlite://` reaches the read, even with a query.
+
+        ConnectorX reads a URI as SQLite by its scheme up to the first `+`,
+        after it drops spaces at either end and tabs or line breaks anywhere,
+        and it opens the file such a URI names.
+        """
+        outside = tmp_path_factory.mktemp("outside") / "x.db"
+        side = DatabaseConfig(uri=uri.format(outside), query="SELECT * FROM t")
+
+        with pytest.raises(ConfigError, match="reads only one that starts with sqlite://"):
+            check_data_paths(
+                Settings((tmp_path,), allow_queries=True),
+                SourceConfig(path=str(tmp_path / "a.csv")),
+                side,
+            )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_checks_a_sqlite_path_through_a_link_loop(self, tmp_path: Path) -> None:
+        """Ensure a link loop leaves the connector to refuse the file, not a crash in the check."""
+        (tmp_path / "loop-a").symlink_to(tmp_path / "loop-b")
+        (tmp_path / "loop-b").symlink_to(tmp_path / "loop-a")
+
+        check_data_paths(
+            Settings((tmp_path,)),
+            SourceConfig(path=str(tmp_path / "a.csv")),
+            _sqlite(f"sqlite://{tmp_path}/loop-a/x.db"),
+        )
 
     def test_it_refuses_a_sqlite_path_holding_a_nul(self, tmp_path: Path) -> None:
         """Ensure `%00` fails as a configuration error, not as a crash in the check."""

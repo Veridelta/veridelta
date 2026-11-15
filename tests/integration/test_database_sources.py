@@ -19,7 +19,7 @@ import pytest
 
 from veridelta.connectors import DatabaseConnector
 from veridelta.engine import DiffEngine, LoaderFactory
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.mcp_server import Settings, check_data_paths
 from veridelta.models import DatabaseConfig, DiffConfig, DiffRule, SourceConfig
 
@@ -258,6 +258,36 @@ class TestDatabaseSources:
         connector.connect()
 
         assert connector.lazyframe().collect()["v"].to_list() == ["inside"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Where ConnectorX opens a `+` scheme's path is only checked on POSIX paths.",
+    )
+    @pytest.mark.parametrize("scheme", ["sqlite+x", "SQLite+A", " sqlite", "sqli\tte"])
+    def test_it_refuses_a_uri_connectorx_reads_as_sqlite_in_another_form(
+        self, tmp_path: Path, scheme: str
+    ) -> None:
+        """Ensure a scheme ConnectorX reads as SQLite is held to the check and to `sqlite://`."""
+        root = tmp_path / "root"
+        root.mkdir()
+        written = _sqlite(
+            tmp_path / "x.db",
+            "CREATE TABLE t (v TEXT)",
+            rows=[("INSERT INTO t VALUES (?)", ("outside",))],
+        )
+        uri = scheme + written.removeprefix("sqlite")
+        config = DatabaseConfig(uri=uri, query="SELECT v FROM t")
+
+        # ConnectorX itself reads the file this URI names.
+        assert pl.read_database_uri("SELECT v FROM t", uri)["v"].to_list() == ["outside"]
+        with pytest.raises(ConfigError, match="reads only one that starts with sqlite://"):
+            check_data_paths(
+                Settings((root,), allow_queries=True),
+                SourceConfig(path=str(root / "a.csv")),
+                config,
+            )
+        with pytest.raises(ConfigError, match="reads only one that starts with sqlite://"):
+            DatabaseConnector(config).connect()
 
     def test_it_checks_rules_against_a_zero_row_probe(self, tmp_path: Path) -> None:
         """Ensure `validate --schemas` reads a real table's columns and types, no rows.

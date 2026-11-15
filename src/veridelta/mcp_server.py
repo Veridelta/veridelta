@@ -313,7 +313,8 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     command runs the server in its first root, where the two agree, but a
     program that calls `serve()` from another folder gets the same check.
     """
-    return _under_roots(settings, Path(location).expanduser().resolve())
+    # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
+    return _under_roots(settings, Path(os.path.realpath(Path(location).expanduser())))
 
 
 def _roots(settings: Settings) -> str:
@@ -366,9 +367,10 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig):
         named = [("database", config.database)]
-    elif isinstance(config, DatabaseConfig) and urlsplit(config.uri).scheme == "sqlite":
+    elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
-        return [("SQLite file", sqlite_path(config))]
+        path = sqlite_path(config)
+        return [] if path is None else [("SQLite file", path)]
     return [
         (setting, local)
         for setting, location in named
