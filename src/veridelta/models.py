@@ -2068,6 +2068,14 @@ colon, with no `//` after it, as the name of the extension that opens the
 database, and loads that extension before any setting of the connection
 applies. One letter is a drive letter, such as `C:`."""
 
+_FILE_URI: Final = re.compile(r"file:", re.IGNORECASE | re.ASCII)
+"""The start of a `file:` URI, which DuckDB reads otherwise than a check of its path.
+
+DuckDB opens `file://host/x.duckdb` as `/host/x.duckdb`, and keeps a `%`
+escape, a `?`, or a `#` as part of the file's name, where a URI parser takes
+the host away and decodes the rest. So a `database` is a plain path, which
+DuckDB and the MCP server read alike."""
+
 
 class DuckDBConfig(BaseModel):
     """Immutable settings for reading a DuckDB or MotherDuck table or query into a local comparison.
@@ -2148,9 +2156,9 @@ class DuckDBConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set,
-                `database` is in memory, opens through a DuckDB extension, or
-                holds a token, a token is set for a file, or `pushdown` is set
-                on a `query`.
+                `database` is in memory, is a `file:` URI, opens through a
+                DuckDB extension, or holds a token, a token is set for a file,
+                or `pushdown` is set on a `query`.
         """
         if (self.table is None) == (self.query is None):
             raise ValueError("A DuckDB source reads a 'table' or runs a 'query'; set exactly one.")
@@ -2161,6 +2169,11 @@ class DuckDBConfig(BaseModel):
             raise ValueError(
                 "':memory:' opens a new, empty database. Point 'database' at a DuckDB "
                 "file or an md: database."
+            )
+        if _FILE_URI.match(self.database) is not None:
+            raise ValueError(
+                "'database' is a file: URI, whose host and escapes DuckDB reads as part of "
+                "a path. Write the DuckDB file's path itself, such as /data/warehouse.duckdb."
             )
         if not self.is_motherduck and _DUCKDB_EXTENSION_PREFIX.match(self.database) is not None:
             raise ValueError(

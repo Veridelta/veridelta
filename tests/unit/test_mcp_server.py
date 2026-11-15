@@ -2940,6 +2940,34 @@ class TestAllowedHosts:
         assert written not in str(refused.value)
         read.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("file://elsewhere{root}/x.duckdb", id="host"),
+            pytest.param("file://LOCALHOST{root}/x.duckdb", id="localhost-uppercase"),
+            pytest.param("file://elsewhere:22{root}/x.duckdb", id="host-and-port"),
+            pytest.param("file://%2e%2e{root}/x.duckdb", id="escaped-host"),
+            pytest.param("file:///{root}/x.duckdb#/../../x.duckdb", id="fragment"),
+        ],
+    )
+    def test_it_refuses_a_duckdb_file_uri(
+        self, tmp_path: Path, mocker: MockerFixture, database: str
+    ) -> None:
+        """Ensure a `file:` URI whose path lies under the roots opens no file elsewhere.
+
+        DuckDB opens `file://elsewhere/<root>/x.duckdb` as `/elsewhere/<root>/x.duckdb`,
+        outside the roots, while each path the check reads from the URI lies under them.
+        """
+        connect = mocker.patch("duckdb.connect")
+        written = database.format(root=tmp_path.as_posix())
+        _remote(tmp_path, f"  type: duckdb\n  database: {json.dumps(written)}\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="is a file: URI") as refused:
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert written not in str(refused.value)
+        connect.assert_not_called()
+
     def test_it_opens_a_sqlite_file_at_a_duckdb_path_through_no_extension(
         self,
         tmp_path: Path,

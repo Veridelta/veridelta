@@ -1127,6 +1127,34 @@ class TestDuckDBConfig:
     @pytest.mark.parametrize(
         "database",
         [
+            pytest.param("file://host/data/warehouse.duckdb", id="host"),
+            pytest.param("file://LOCALHOST/data/warehouse.duckdb", id="localhost-uppercase"),
+            pytest.param("file://localhost/data/warehouse.duckdb", id="localhost"),
+            pytest.param("file://host:22/data/warehouse.duckdb", id="host-and-port"),
+            pytest.param("file://%2e%2e/data/warehouse.duckdb", id="escaped-host"),
+            pytest.param("file:///data/warehouse.duckdb", id="empty-host"),
+            pytest.param("file:////host/data/warehouse.duckdb", id="four-slashes"),
+            pytest.param("file:///data/%2e%2e/warehouse.duckdb", id="escape"),
+            pytest.param("file:///data/warehouse.duckdb#/../x.duckdb", id="fragment"),
+            pytest.param("file:/data/warehouse.duckdb", id="one-slash"),
+            pytest.param("file:warehouse.duckdb", id="no-slash"),
+            pytest.param("FILE:///data/warehouse.duckdb", id="uppercase"),
+        ],
+    )
+    def test_it_refuses_a_file_uri(self, database: str) -> None:
+        """Ensure a `file:` URI is refused, value unsaid, since DuckDB reads it as no parser does.
+
+        DuckDB opens `file://host/x` as `/host/x` and keeps a `%` escape, a
+        `?`, or a `#` in the name, so a check of the URI's path reads another file.
+        """
+        with pytest.raises(ValidationError, match="is a file: URI") as refused:
+            DuckDBConfig(database=database, table="t")
+
+        assert database not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "database",
+        [
             pytest.param("warehouse.duckdb", id="relative"),
             pytest.param("./data:2026/warehouse.duckdb", id="colon-after-a-dot"),
             pytest.param("C:/data/warehouse.duckdb", id="drive-letter"),

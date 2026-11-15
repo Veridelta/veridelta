@@ -656,7 +656,7 @@ def _local_paths(location: str) -> list[str]:
     Readers disagree on a URI. Polars and DuckDB open one whose scheme they do
     not know, such as `lakefs://r/t`, as a relative path. Polars opens even
     `s3:x/a.parquet`, with no `//`, `md://x/a.parquet`, or `FILE://x` that
-    way, and DuckDB opens `s3://b/x.duckdb` too. So the location is checked as
+    way, and DuckDB opens `lakefs://r/x.duckdb` too. So the location is checked as
     written, whatever its scheme.
 
     A local scheme's URI opens its path, and the readers read that path
@@ -997,7 +997,8 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
 
     Any other `database` is a file's path, checked as any location is:
     `DuckDBConfig` refuses one that DuckDB would open through an extension,
-    such as `sqlite:x.db`, and the connector opens the file as a DuckDB
+    such as `sqlite:x.db`, and a `file:` URI, whose host DuckDB opens as a
+    folder, and the connector opens the file as a DuckDB
     database, whatever it holds.
     """
     if config.is_motherduck:
