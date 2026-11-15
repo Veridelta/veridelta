@@ -1951,13 +1951,14 @@ class TestLakehouseFiles:
     def test_it_leaves_the_version_hint_out_of_an_error(self, tmp_path: Path) -> None:
         """Ensure the text of a version hint that names no metadata file is not quoted."""
         metadata = Path(_iceberg(tmp_path))
-        (metadata.parent / "version-hint.text").write_text(_SECRET)
+        hint = "text-from-the-version-hint"
+        (metadata.parent / "version-hint.text").write_text(hint, encoding="utf-8")
         target = IcebergConfig(table_uri=str(metadata.parent.parent))
 
         with pytest.raises(ConnectorError, match="names could not be read") as refused:
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
-        assert _SECRET not in str(refused.value)
+        assert hint not in str(refused.value)
 
     def test_it_checks_the_snapshot_a_side_pins(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
