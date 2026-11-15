@@ -892,8 +892,10 @@ class TestCheckDataPaths:
         monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
         side = _sqlite("sqlite://u@/x.db", "hunter2")
 
-        # Windows reads `u:` as a drive and writes it `U:`.
-        with pytest.raises(ConfigError, match=r"The target SQLite file '.*[uU]:\*\*\*@") as refused:
+        # Windows reads `u:` as a drive and writes it `U:\`.
+        with pytest.raises(
+            ConfigError, match=r"The target SQLite file '.*[uU]:\\?\*\*\*@"
+        ) as refused:
             check_data_paths(
                 Settings((tmp_path,)), SourceConfig(path=str(tmp_path / "a.csv")), side
             )
