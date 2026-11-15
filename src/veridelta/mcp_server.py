@@ -19,6 +19,7 @@ person names its host. The SDK is imported by the first `build_server()`, not
 with this module, so `veridelta` imports without the extra.
 """
 
+import functools
 import glob
 import importlib
 import inspect
@@ -26,7 +27,8 @@ import json
 import logging
 import os
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -51,16 +53,23 @@ from pydantic import Field
 from veridelta import __version__
 from veridelta._checks import error_from_exception, unset_variable_findings
 from veridelta.config import load_config, referenced_variables
-from veridelta.connectors.base import mask_secrets
+from veridelta.connectors.base import mask_secrets, shown_location, without_location
 from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.duckdb import sandboxed
+from veridelta.connectors.lakehouse import checked_file_io, checking_iceberg_files
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_MIN_SUPPORT,
     DiffEngine,
 )
-from veridelta.exceptions import ConfigError, VerideltaError, may_quote_data, missing_extra
+from veridelta.exceptions import (
+    ConfigError,
+    ConnectorError,
+    VerideltaError,
+    may_quote_data,
+    missing_extra,
+)
 from veridelta.models import (
     DatabaseConfig,
     DatabricksConfig,
@@ -106,6 +115,9 @@ Any other scheme of two or more characters names another machine, so its host
 must be allowed, even one no reader is known to take: a reader that knows more
 schemes than this module, such as `hdfs`, `sftp`, or `s3n`, connects to the host
 all the same."""
+
+_URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
+"""The C0 controls and the space, which a URL parser strips from both ends of a URL."""
 
 _HOST_OPTIONS: Final = frozenset(
     {
@@ -507,6 +519,29 @@ def _inside(settings: Settings, path: str) -> Path | None:
     return resolved if _under_roots(settings, resolved) else None
 
 
+def _another_machine(path: str) -> bool:
+    """Whether a path starts with two separators, as a path on another machine does on Windows.
+
+    Windows reaches the host such a path names, over SMB or WebDAV, as soon as
+    anything resolves it, and can send the user's credentials there. So the
+    path is refused before it is resolved or matched, on every system alike.
+    """
+    separators = tuple(filter(None, (os.sep, os.altsep)))
+    return path[:1] in separators and path[1:2] in separators
+
+
+def _under_both_readings(settings: Settings, path: Path) -> bool:
+    """Whether a path lies under a root when the links are followed before a `..`, and after.
+
+    A path on another machine never does, and is not resolved.
+    """
+    if _another_machine(str(path)):
+        return False
+    folded = Path(os.path.abspath(path))
+    # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
+    return all(_under_roots(settings, Path(os.path.realpath(each))) for each in (path, folded))
+
+
 def _opened_inside(settings: Settings, location: str) -> bool:
     """Whether a path a configuration names lies under a root, resolved where it is opened.
 
@@ -514,9 +549,12 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     working directory, as the command line does, so the check does too. The
     command runs the server in its first root, where the two agree, but a
     program that calls `serve()` from another folder gets the same check.
+
+    The readers disagree on a `..` after a link. The system follows the link
+    first, and PyArrow drops the link and the `..` without following it. So
+    the path must lie under a root read either way.
     """
-    # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
-    return _under_roots(settings, Path(os.path.realpath(Path(location).expanduser())))
+    return _under_both_readings(settings, Path(location).expanduser())
 
 
 def _opened(location: str) -> list[str]:
@@ -552,6 +590,40 @@ def _climbs(location: str) -> bool:
 def _roots(settings: Settings) -> str:
     """List the roots for a message."""
     return ", ".join(str(root) for root in settings.roots)
+
+
+def _refuse_opened(settings: Settings, path: str) -> None:
+    """Refuse a file on this machine that an Iceberg scan is about to open, outside the roots.
+
+    The path is the one PyArrow opens: relative to the working directory, and
+    with no `~` expanded. PyArrow drops a folder and the `..` after it before
+    it follows a link, so the path must lie under a root read either way. The
+    message leaves the path out, since the table's files named it.
+
+    Raises:
+        ConfigError: If the path lies outside every root.
+    """
+    if not _under_both_readings(settings, Path(path)):
+        raise ConfigError(
+            "An Iceberg scan was about to open a file outside the folders this server reads "
+            f"from: {_roots(settings)}, so it was stopped. A tool reads data on this machine "
+            "only from under them."
+        )
+
+
+@contextmanager
+def _reading(settings: Settings) -> Generator[None]:
+    """Hold what a tool's sides read to the roots, while they read.
+
+    A DuckDB file's connection reads other files only from under the roots,
+    and an Iceberg scan opens a file on this machine only from under them,
+    each checked just before it is opened.
+    """
+    with (
+        sandboxed(settings.roots),
+        checking_iceberg_files(functools.partial(_refuse_opened, settings)),
+    ):
+        yield
 
 
 def resolve_path(settings: Settings, path: str) -> Path:
@@ -591,20 +663,36 @@ def _local_paths(location: str) -> list[str]:
     """Return each path on this machine a reader could open for a data location.
 
     Readers disagree on a URI. Polars and DuckDB open one whose scheme they do
-    not know, such as `lakefs://r/t`, as a relative path, and DuckDB opens even
-    `s3://b/x.duckdb` that way. A `file` URI opens its path, which a reader
-    that follows the URL standard reads from the top, so `file:a/b` is `/a/b`.
-    So the location is checked as written, and a local scheme's path both ways.
+    not know, such as `lakefs://r/t`, as a relative path. Polars opens even
+    `s3:x/a.parquet`, with no `//`, `md://x/a.parquet`, or `FILE://x` that
+    way, and DuckDB opens `s3://b/x.duckdb` too. So the location is checked as
+    written, whatever its scheme.
+
+    A local scheme's URI opens its path, and the readers read that path
+    differently. Polars decodes `%` escapes. PyIceberg adds a host to the path
+    and decodes nothing, so it opens `file:tmp/x` as `tmp/x`. Polars and
+    deltalake start the path at `/`, so they open it as `/tmp/x`, and
+    deltalake parses the URI as the URL standard says, so it also reads a
+    backslash as `/` and strips the spaces at its ends. So a local scheme's URI
+    yields each of these paths too, and the caller holds every one to the
+    roots.
     """
-    paths: list[str] = []
     parts = _split(location)
-    if parts is not None and parts.scheme in _LOCAL_SCHEMES:
-        paths.append(url2pathname(parts.path))
-        if not parts.path.startswith("/"):
-            paths.append(url2pathname(f"/{parts.path}"))
+    if parts is None or parts.scheme not in _LOCAL_SCHEMES:
+        return [location]
+    paths = [
+        url2pathname(parts.path),
+        parts.netloc + url2pathname(parts.path.replace("%", "%25")),
+    ]
+    standard = _split(location.replace("\\", "/").strip(_URL_SPACE))
+    if standard is not None:
+        # Rooted at `/` before it is converted, since on Windows a separator added after
+        # the conversion can make a path such as `\\host\share`, which names another machine.
+        path = standard.path
+        paths.append(url2pathname(path if path.startswith("/") else f"/{path}"))
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.
-    return [*paths, location]
+    return [*dict.fromkeys(paths), location]
 
 
 def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
@@ -625,6 +713,158 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
     ]
 
 
+def _delta_files(config: DeltaLakeConfig) -> Iterator[tuple[str, str, bool]]:
+    """Name each file a scan of a Delta Lake table reads, from the version it reads.
+
+    The log of a table on this machine comes first, each entry before the log
+    is read, since a commit or checkpoint can be a link out of the table's
+    folder. The walk follows no link, so each one is checked before it is
+    opened. The data files then come from the log.
+    """
+    from deltalake import DeltaTable
+
+    for local in _local_paths(config.table_uri):
+        log = Path(local).expanduser() / "_delta_log"
+        yield "log", str(log), True
+        for folder, folders, files in os.walk(log):
+            for name in sorted(folders + files):
+                yield "log file", os.path.join(folder, name), True
+    table = DeltaTable(
+        config.table_uri, version=config.version, storage_options=config.storage_options or None
+    )
+    for uri in table.file_uris():
+        yield "data file", uri, True
+
+
+def _iceberg_files(
+    config: IcebergConfig, check: Callable[[str], None]
+) -> Iterator[tuple[str, str, bool]]:
+    """Name each file a scan of an Iceberg table reads, each before it is opened.
+
+    A table folder's version hint, the manifest list, and each manifest name
+    the next files to read, so the caller checks each name before this reads
+    the file. The version hint is read as `StaticTable.from_metadata` reads
+    it, so the check and the scan read the same metadata file, but its text is
+    never quoted, since it is a value from a file. The data and delete files
+    come from the manifests, as a scan plans them.
+
+    The files are read as the scan on this server reads them: through the
+    FileIO `checked_file_io` builds from `storage_options` alone, whatever the
+    metadata's own properties say, which runs `check` on each path here and
+    opens no file through a scheme outside an object store's.
+    """
+    from pyiceberg.serializers import FromInputFile
+
+    io = checked_file_io(dict(config.storage_options or {}), check)
+    location, hint = config.table_uri, None
+    if not location.endswith(".metadata.json"):
+        hint = os.path.join(location, "metadata", "version-hint.text")
+        yield "version hint", hint, True
+        with io.new_input(hint).open() as stream:
+            content = stream.read().decode("utf-8")
+        if not content.endswith(".metadata.json"):
+            content = f"v{content}" if content.isnumeric() else content
+            content = f"{content}.metadata.json"
+        location = os.path.join(location, "metadata", content)
+        yield f"metadata file that '{hint}' names", location, False
+    try:
+        metadata = FromInputFile.table_metadata(io.new_input(location))
+    except Exception:
+        if hint is None:
+            raise
+        # The error would quote the metadata file, and so the version hint's text.
+        raise OSError(f"the metadata file that '{hint}' names could not be read") from None
+    snapshot = (
+        metadata.current_snapshot()
+        if config.snapshot_id is None
+        else metadata.snapshot_by_id(config.snapshot_id)
+    )
+    if snapshot is None:
+        # The scan reads no file: an empty table has none, and a snapshot it
+        # cannot find stops it.
+        return
+    yield "manifest list", snapshot.manifest_list, True
+    for manifest in snapshot.manifests(io):
+        yield "manifest", manifest.manifest_path, True
+        for entry in manifest.fetch_manifest_entry(io, discard_deleted=True):
+            yield "data file", entry.data_file.file_path, True
+
+
+def _table_files(
+    settings: Settings, side: str, config: DeltaLakeConfig | IcebergConfig
+) -> Iterator[tuple[str, str, bool]]:
+    """Name each file that the scan of a lakehouse table reads.
+
+    A table's log or metadata names its files by full URI, so they can lie
+    anywhere. A table whose files cannot be listed is refused, since the scan
+    would read the same log or metadata. An Iceberg table's files are read
+    with the scan's own check, as well as the caller's.
+
+    Raises:
+        ConnectorError: If the extra is missing, or the table cannot be listed.
+    """
+    if isinstance(config, DeltaLakeConfig):
+        files, kind, extra = _delta_files(config), "Delta Lake table", "delta"
+    else:
+        check = functools.partial(_refuse_opened, settings)
+        files, kind, extra = _iceberg_files(config, check), "Iceberg table", "iceberg"
+    try:
+        yield from files
+    except ImportError as exc:
+        raise ConnectorError(missing_extra(extra, f"Reading a {kind}")) from exc
+    except Exception as exc:
+        where = shown_location(config.table_uri)
+        raise ConnectorError(
+            f"The files of the {side} {kind} '{where}' could not be listed, so this server "
+            f"reads none of them: {without_location(str(exc), config.table_uri)}"
+        ) from exc
+
+
+def _refuse_outside(
+    settings: Settings,
+    side: str,
+    setting: str,
+    location: str,
+    local: str,
+    *,
+    quoted: bool = True,
+    expanded: bool = False,
+    password: str | None = None,
+) -> None:
+    """Refuse a path on this machine that a side could read for a location, outside the roots.
+
+    The message quotes the path only when `quoted`, since a path read from a
+    file is a value from it, and masks `password` in it. With `expanded`, the
+    location is one Polars expands as a pattern, so each file it matches is
+    checked, and a pattern that can match `..`, or one in a `file:` URI, is
+    refused.
+    """
+    named = f"{setting} '{mask_secrets(local, password)}'" if quoted else setting
+    pattern = expanded and bool(_GLOB_CHARACTERS.intersection(location + local))
+    if pattern and local != location:  # A `file:` URI, which `_local_paths` decoded.
+        raise ConfigError(
+            f"The {side} {setting} '{location}' is a file URI with a glob character in "
+            "it. Polars expands a pattern in a URI with another matcher than a path's, "
+            "so this server cannot check the files it would open. Write it as a path."
+        )
+    if pattern and _climbs(local):
+        raise ConfigError(
+            f"The {side} {named} is a glob pattern that can match '..'. "
+            "A match can be a link, and '..' would then leave the folder the link "
+            "points to, so this server refuses the pattern. Write the path without "
+            "'..', and write out each name that starts with a dot."
+        )
+    # A pattern on another machine is not expanded, since that would reach the machine.
+    opened = _opened(local) if expanded and not _another_machine(local) else [local]
+    if not all(_opened_inside(settings, each) for each in opened):
+        raise ConfigError(
+            f"The {side} {named} is outside the folders this server "
+            f"reads from: {_roots(settings)}. A tool reads data on this machine only "
+            "from under them, so move the data into one, or ask the person who started "
+            "the server to add its folder with --root."
+        )
+
+
 def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -> None:
     """Refuse a side whose data on this machine lies outside the roots.
 
@@ -636,9 +876,16 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     holds a glob character is a pattern, and every file it matches must
     resolve under a root. A pattern may not reach `..`, since a match can be a
     link that `..` then leaves from its target. A `file:` URI may not hold a
-    pattern at all, since Polars expands one with another matcher. Data on
-    another machine, such as an object store, a database server, or a
-    warehouse, is held to the hosts the server allows as well.
+    pattern at all, since Polars expands one with another matcher. A Delta
+    Lake or Iceberg table, wherever it lies, has every file on this machine
+    that its scan reads checked too, since its log or metadata can name a
+    file anywhere. Data on another machine that a side names, such as an
+    object store, a database server, or a warehouse, is held to the hosts the
+    server allows by `_refuse_hosts`, which a caller runs first, since listing
+    a table's files connects to its host.
+
+    Every location the configuration names is checked before any file is
+    opened, of either side: the listings come last.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -647,33 +894,21 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
 
     Raises:
         ConfigError: If a file or folder a side reads is outside every root.
+        ConnectorError: If the files of a lakehouse table cannot be listed.
     """
-    for side, config in (("source", source), ("target", target)):
+    sides = (("source", source), ("target", target))
+    for side, config in sides:
         # A SQLite path carries the `password` field, as the driver reads it.
         password = config.password if isinstance(config, DatabaseConfig) else None
         for setting, location, local in _data_locations(config):
-            pattern = bool(_GLOB_CHARACTERS.intersection(location + local))
-            if pattern and local != location:  # A `file:` URI, which `_local_paths` decoded.
-                raise ConfigError(
-                    f"The {side} {setting} '{location}' is a file URI with a glob character in "
-                    "it. Polars expands a pattern in a URI with another matcher than a path's, "
-                    "so this server cannot check the files it would open. Write it as a path."
-                )
-            if pattern and _climbs(local):
-                raise ConfigError(
-                    f"The {side} {setting} '{local}' is a glob pattern that can match '..'. "
-                    "A match can be a link, and '..' would then leave the folder the link "
-                    "points to, so this server refuses the pattern. Write the path without "
-                    "'..', and write out each name that starts with a dot."
-                )
-            if not all(_opened_inside(settings, opened) for opened in _opened(local)):
-                shown = mask_secrets(local, password)
-                raise ConfigError(
-                    f"The {side} {setting} '{shown}' is outside the folders this server "
-                    f"reads from: {_roots(settings)}. A tool reads data on this machine only "
-                    "from under them, so move the data into one, or ask the person who started "
-                    "the server to add its folder with --root."
-                )
+            _refuse_outside(
+                settings, side, setting, location, local, expanded=True, password=password
+            )
+    for side, config in sides:
+        if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+            for setting, location, quoted in _table_files(settings, side, config):
+                for local in _local_paths(location):
+                    _refuse_outside(settings, side, setting, location, local, quoted=quoted)
 
 
 def _host(text: str) -> str:
@@ -883,6 +1118,8 @@ def check_configuration(
         ConfigError: If the path is outside the roots, or, with `schemas`, the
             data a side reads on this machine is, or a side names a host the
             server does not allow.
+        ConnectorError: With `schemas`, if the files of a lakehouse table
+            cannot be listed.
     """
     resolved = resolve_path(settings, path)
     unset: list[str] | None = [] if allow_missing_env else None
@@ -896,7 +1133,7 @@ def check_configuration(
         if schemas:
             _refuse_hosts(settings, source, target)
             check_data_paths(settings, source, target)
-        with sandboxed(settings.roots):
+        with _reading(settings):
             findings = DiffEngine.check_configs(
                 diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
             )
@@ -965,7 +1202,7 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If a primary key repeats on either side.
     """
-    with sandboxed(settings.roots):
+    with _reading(settings):
         summary = DiffEngine.run_from_configs(*_runnable(settings, path)).summary
     return cast(
         "RunReport",
@@ -997,7 +1234,7 @@ def describe_side(settings: Settings, path: str, side: Literal["source", "target
         ConnectorError: If the side cannot be reached or read.
     """
     _, source, target = _load(settings, path)
-    with sandboxed(settings.roots):
+    with _reading(settings):
         schema = DiffEngine.read_schema(source if side == "source" else target)
     return SchemaReport(side=side, columns={name: str(dtype) for name, dtype in schema.items()})
 
@@ -1062,7 +1299,7 @@ def read_rows(
     _allow_rows(settings, "read_discrepancies")
     if limit < 1:
         raise ConfigError(f"limit must be at least 1, got {limit}.")
-    with sandboxed(settings.roots):
+    with _reading(settings):
         result = DiffEngine.run_from_configs(*_runnable(settings, path))
     found = {
         "added": (result.added, result.summary.added_count),
@@ -1113,7 +1350,7 @@ def propose_maps(
     _allow_rows(settings, "propose_value_maps")
     diff, source, target = _load(settings, path)
     _refuse_queries(settings, source, target)
-    with sandboxed(settings.roots):
+    with _reading(settings):
         proposals = DiffEngine.propose_value_maps_from_configs(
             diff,
             source,
@@ -1160,7 +1397,7 @@ def suggest(
     _allow_rows(settings, "suggest_rules")
     diff, source, target = _load(settings, path)
     _refuse_queries(settings, source, target)
-    with sandboxed(settings.roots):
+    with _reading(settings):
         suggestions = DiffEngine.suggest_rules_from_configs(
             diff, source, target, max_share=max_share
         )
