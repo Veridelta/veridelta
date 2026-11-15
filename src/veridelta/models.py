@@ -1738,22 +1738,50 @@ class DeltaLakeConfig(BaseModel):
     )
 
 
+PYICEBERG_CLASS_PREFIX: Final = "py-"
+"""The prefix of a PyIceberg property that names a Python class to import, such as `py-io-impl`."""
+
+PYICEBERG_CLASS_SUFFIX: Final = "impl"
+"""The suffix of a PyIceberg property that names a Python class to import, such as `s3.retry-strategy-impl`."""
+
+
+def names_a_pyiceberg_class(key: str) -> bool:
+    """Tell whether PyIceberg may import the Python class a property names.
+
+    PyIceberg 0.12 imports a class from `py-io-impl`, `py-catalog-impl`,
+    `s3.retry-strategy-impl`, and `write.py-location-provider.impl`. A key
+    that starts with `py-` or ends with `impl` covers them, and any later one
+    named the same way.
+
+    Args:
+        key (str): A storage option or table property name.
+
+    Returns:
+        bool: True when the key starts with `py-` or ends with `impl`.
+    """
+    return key.startswith(PYICEBERG_CLASS_PREFIX) or key.endswith(PYICEBERG_CLASS_SUFFIX)
+
+
 class IcebergConfig(BaseModel):
     """Immutable settings for an Apache Iceberg table scan.
 
     Attributes:
         type (Literal["iceberg"]): Source kind, which selects this model.
-        table_uri (str): Catalog identifier or filesystem URI of the table.
+        table_uri (str): Path or object-store URI of the table's metadata
+            file, or of the table's folder. A catalog identifier is refused.
         snapshot_id (int | None): Optional snapshot to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
-            Left out when the config is printed, but kept by `model_dump()`,
-            which the scanner needs.
+            A key that starts with `py-` or ends with `impl` is refused, since
+            PyIceberg imports the class it names. Left out when the config is
+            printed, but kept by `model_dump()`, which the scanner needs.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["iceberg"] = Field("iceberg", description="Discriminator for Apache Iceberg.")
-    table_uri: str = Field(..., description="Catalog identifier or filesystem URI of the table.")
+    table_uri: str = Field(
+        ..., description="Path or object-store URI of the table's metadata file or folder."
+    )
     snapshot_id: int | None = Field(
         default=None,
         ge=0,
@@ -1765,6 +1793,55 @@ class IcebergConfig(BaseModel):
         repr=False,
         description="Object-store credentials and options passed to Polars.",
     )
+
+    @field_validator("table_uri")
+    @classmethod
+    def _refuse_catalog_identifier(cls, value: str) -> str:
+        """Refuse a `table_uri` that Polars would look up in a catalog.
+
+        A catalog builds the table's FileIO from the table's own metadata
+        properties, which can name a class for PyIceberg to import. So only a
+        path, which the connector loads itself, is read.
+
+        Args:
+            value (str): Configured table URI.
+
+        Returns:
+            str: The table URI, unchanged.
+
+        Raises:
+            ValueError: If the value holds no slash or backslash.
+        """
+        if "/" not in value and "\\" not in value:
+            raise ValueError(
+                "An Iceberg 'table_uri' is the path or URI of the table's metadata file or "
+                "folder, such as s3://lake/events. A catalog identifier is not read."
+            )
+        return value
+
+    @field_validator("storage_options")
+    @classmethod
+    def _refuse_class_names(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse a key that names a Python class for PyIceberg to import.
+
+        Args:
+            value (dict[str, str]): Configured storage options.
+
+        Returns:
+            dict[str, str]: The storage options, unchanged.
+
+        Raises:
+            ValueError: If a key starts with `py-` or ends with `impl`. The
+                message names the key, never its value.
+        """
+        for key in value:
+            if names_a_pyiceberg_class(key):
+                raise ValueError(
+                    f"Iceberg 'storage_options' may not set '{key}': a key that starts with "
+                    f"'{PYICEBERG_CLASS_PREFIX}' or ends with '{PYICEBERG_CLASS_SUFFIX}' names "
+                    "a Python class for PyIceberg to import."
+                )
+        return value
 
 
 POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})

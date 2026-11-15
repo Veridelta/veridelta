@@ -75,7 +75,9 @@ target:
 primary_keys: ["event_id"]
 ```
 
-`storage_options` is a map of strings passed to the scanner, such as credentials, the region, and other object store settings.
+`storage_options` is a map of strings passed to the scanner, such as credentials, the region, and other object store settings. An Iceberg `storage_options` key that starts with `py-` or ends with `impl`, such as `py-io-impl` or `s3.retry-strategy-impl`, is refused, since PyIceberg imports the class it names.
+
+An Iceberg `table_uri` is the path or URI of the table's metadata file, or of the table's folder, where `metadata/version-hint.text` names the current metadata file. A catalog identifier, such as `sales.orders`, is refused. Veridelta reads the metadata file itself, with `storage_options` alone, so the table's own properties never choose how its files are read. A property in them that starts with `py-` or ends with `impl` is dropped.
 
 The scan reads the table's transaction log or metadata when it opens. So a missing table, version, or snapshot fails before the comparison starts, with the table's URI in the error. Checking an Iceberg `snapshot_id` reads one row.
 

@@ -3,8 +3,9 @@
 
 """Lakehouse-native connectors for Delta Lake and Apache Iceberg.
 
-Scanners return unevaluated Polars LazyFrames. Optional extras (`deltalake`,
-`pyiceberg`) are imported only through Polars' native `scan_*` APIs.
+Scanners return unevaluated Polars LazyFrames. The `deltalake` extra is
+imported only through `pl.scan_delta`. An Iceberg table's metadata is loaded
+here, through `pyiceberg`, and the table handed to `pl.scan_iceberg`.
 
 A missing extra and a failed scan are reported separately: the former names
 the extra to install, the latter names the table and carries the scanner's own
@@ -14,12 +15,18 @@ logger; log lines carry the table URI and pin, never `storage_options`.
 """
 
 import logging
+import os
+from typing import TYPE_CHECKING
 
 import polars as pl
 
 from veridelta.connectors.base import ReaderConnector, shown_location, without_location
 from veridelta.exceptions import ConnectorError, missing_extra
-from veridelta.models import DeltaLakeConfig, IcebergConfig
+from veridelta.models import DeltaLakeConfig, IcebergConfig, names_a_pyiceberg_class
+
+if TYPE_CHECKING:
+    from pyiceberg.io import FileIO
+    from pyiceberg.table import StaticTable
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +88,75 @@ class DeltaLakeConnector(ReaderConnector):
         )
 
 
+def _metadata_location(table_uri: str, io: "FileIO") -> str:
+    """Name the metadata file of a table, from its folder's version hint when it is a folder.
+
+    This follows PyIceberg's `StaticTable.from_metadata`.
+
+    Args:
+        table_uri (str): The table's metadata file or folder.
+        io (FileIO): Reads the table's files.
+
+    Returns:
+        str: The location of the table's current metadata file.
+    """
+    if table_uri.endswith(".metadata.json"):
+        return table_uri
+    folder = os.path.join(table_uri, "metadata")
+    with io.new_input(os.path.join(folder, "version-hint.text")).open() as stream:
+        hint = stream.read().decode("utf-8")
+    if hint.endswith(".metadata.json"):
+        return os.path.join(folder, hint)
+    if hint.isnumeric():
+        return os.path.join(folder, f"v{hint}.metadata.json")
+    return os.path.join(folder, f"{hint}.metadata.json")
+
+
+def _static_table(table_uri: str, storage_options: dict[str, str]) -> "StaticTable":
+    """Load an Iceberg table from its metadata, with a FileIO built from `storage_options` alone.
+
+    PyIceberg's `StaticTable.from_metadata`, and Polars when given a path,
+    build the table's FileIO from its metadata properties too, and import the
+    class a `py-io-impl` property names. Whoever writes a table writes those
+    properties. So this FileIO reads `storage_options` only, which the model
+    has already refused any key in that names a class, and the table keeps no
+    such property for a later reader to import.
+
+    Args:
+        table_uri (str): The table's metadata file or folder.
+        storage_options (dict[str, str]): The validated storage options.
+
+    Returns:
+        StaticTable: The table, to hand to `pl.scan_iceberg`.
+    """
+    from pyiceberg.catalog.noop import NoopCatalog
+    from pyiceberg.io import load_file_io
+    from pyiceberg.serializers import FromInputFile
+    from pyiceberg.table import StaticTable
+
+    io = load_file_io(dict(storage_options), location=table_uri)
+    location = _metadata_location(table_uri, io)
+    metadata = FromInputFile.table_metadata(io.new_input(location))
+    properties = {
+        key: value for key, value in metadata.properties.items() if not names_a_pyiceberg_class(key)
+    }
+    return StaticTable(
+        identifier=("static-table", location),
+        metadata_location=location,
+        metadata=metadata.model_copy(update={"properties": properties}),
+        io=io,
+        catalog=NoopCatalog("static-table"),
+    )
+
+
 class IcebergConnector(ReaderConnector):
     """Apache Iceberg scanner backed by `pl.scan_iceberg`.
 
-    `connect()` opens a lazy scan of `IcebergConfig.table_uri`, pinned to
-    `snapshot_id` when one is set, and `lazyframe()` hands that scan to the
-    local engine. As with Delta Lake, the comparison runs in Polars. Requires
-    the `iceberg` extra (`uv add 'veridelta[iceberg]'`).
+    `connect()` loads the metadata of `IcebergConfig.table_uri` itself, with a
+    FileIO built from `storage_options` alone, and opens a lazy scan of that
+    table, pinned to `snapshot_id` when one is set. `lazyframe()` hands that
+    scan to the local engine. As with Delta Lake, the comparison runs in
+    Polars. Requires the `iceberg` extra (`uv add 'veridelta[iceberg]'`).
     """
 
     _unconnected = _UNCONNECTED
@@ -101,7 +170,7 @@ class IcebergConnector(ReaderConnector):
         self._config = config
 
     def connect(self) -> None:
-        """Open a lazy `pl.scan_iceberg` of the configured table and read its metadata.
+        """Read the configured table's metadata and open a lazy `pl.scan_iceberg` of it.
 
         Raises:
             ConnectorError: If the `pyiceberg` extra is missing, or the table
@@ -109,13 +178,13 @@ class IcebergConnector(ReaderConnector):
         """
         try:
             frame = pl.scan_iceberg(
-                self._config.table_uri,
+                _static_table(self._config.table_uri, self._config.storage_options),
                 snapshot_id=self._config.snapshot_id,
                 storage_options=self._config.storage_options or None,
             )
-            # Polars defers the scan, so read the metadata now: a missing table
-            # then fails here, named, instead of partway through a run. Polars
-            # looks a snapshot up only to read rows, so time travel reads one.
+            # Polars looks a snapshot up only to read rows, so time travel reads
+            # one now: a missing snapshot then fails here, named, instead of
+            # partway through a run.
             if self._config.snapshot_id is None:
                 frame.collect_schema()
             else:

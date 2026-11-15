@@ -101,5 +101,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [A DuckDB file reads only its own folder](decisions/a-duckdb-file-reads-only-its-own-folder.md)
 - [Git and GitHub are the ledger, and a run record ties a verdict to them](decisions/git-and-github-are-the-ledger.md)
 - [A workflow fixes a vulnerable lockfile in two jobs](decisions/security-updates-in-two-jobs.md)
+- [An Iceberg table loads from its path, never from a catalog](decisions/iceberg-tables-load-from-a-path.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

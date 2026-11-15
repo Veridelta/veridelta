@@ -23,11 +23,12 @@ Then run a comparison whose verdict you already know, and confirm the new releas
 
 ## 0.43.0
 
-Three things change:
+Four things change:
 
 - `DiffSummary` carries `threshold`, the configuration's threshold the verdict was held to, so `veridelta run --json` prints one more key, and the Markdown summary's JSON comment holds it too. A script that compares the JSON's keys exactly sees one more.
 - The HTML report's tables change shape. One columns table replaces the column-level drift and rules applied tables, the metric cards become a bar of the rows with its counts, and the disclosure under the mismatched values lists the changed rows side by side, one cell per compared column with both values, in place of the `<column>_source`, `<column>_target`, and `<column>_is_match` columns. The mismatched values table is unchanged. A script that reads the report's tables reads the mismatched values, or the JSON summary.
 - A DuckDB file's connection reads other files only from the file's own folder and the folders under it, and installs or loads no extension by itself, outside the MCP server too. A view or a `query` that reads a file elsewhere, or a URL, fails with a `Permission Error`, and a `query` that changes a setting with `SET` fails. Move the files it reads beside the database file; see [DuckDB files](sources.md#duckdb-files).
+- An Iceberg source's `table_uri` names the table's metadata file or folder. A catalog identifier, such as `sales.orders`, is refused, and so is a `storage_options` key that starts with `py-` or ends with `impl`, such as `py-io-impl` or `s3.retry-strategy-impl`. Point `table_uri` at the table's current metadata file, which the catalog's `metadata_location` names, and remove any such key.
 
 ## 0.42.0
 
