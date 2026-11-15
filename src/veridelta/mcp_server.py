@@ -49,6 +49,7 @@ from pydantic import Field
 from veridelta import __version__
 from veridelta.config import load_config, referenced_variables
 from veridelta.connectors.base import mask_secrets
+from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -325,7 +326,8 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     command runs the server in its first root, where the two agree, but a
     program that calls `serve()` from another folder gets the same check.
     """
-    return _under_roots(settings, Path(location).expanduser().resolve())
+    # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
+    return _under_roots(settings, Path(os.path.realpath(Path(location).expanduser())))
 
 
 def _opened(location: str) -> list[str]:
@@ -409,9 +411,9 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
     elif isinstance(config, DuckDBConfig):
         named = [("database", config.database)]
     elif isinstance(config, DatabaseConfig):
-        parts = urlsplit(config.uri)
-        if parts.scheme.startswith("sqlite"):
-            named = [("SQLite file", parts.netloc + parts.path)]
+        # The connector opens this resolved text, so a link or `..` leads nowhere else.
+        path = sqlite_path(config)
+        return [] if path is None else [("SQLite file", path, path)]
     return [
         (setting, location, local)
         for setting, location in named
@@ -441,6 +443,8 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
         ConfigError: If a file or folder a side reads is outside every root.
     """
     for side, config in (("source", source), ("target", target)):
+        # A SQLite path carries the `password` field, as the driver reads it.
+        password = config.password if isinstance(config, DatabaseConfig) else None
         for setting, location, local in _data_locations(config):
             pattern = bool(_GLOB_CHARACTERS.intersection(location + local))
             if pattern and local != location:  # A `file:` URI, which `_local_path` decoded.
@@ -457,8 +461,9 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
                     "'..', and write out each name that starts with a dot."
                 )
             if not all(_opened_inside(settings, opened) for opened in _opened(local)):
+                shown = mask_secrets(local, password)
                 raise ConfigError(
-                    f"The {side} {setting} '{local}' is outside the folders this server "
+                    f"The {side} {setting} '{shown}' is outside the folders this server "
                     f"reads from: {_roots(settings)}. A tool reads data on this machine only "
                     "from under them, so move the data into one, or ask the person who started "
                     "the server to add its folder with --root."

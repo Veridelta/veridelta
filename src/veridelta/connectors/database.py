@@ -22,6 +22,8 @@ error as the cause.
 """
 
 import logging
+import os
+import re
 import time
 from abc import abstractmethod
 from collections.abc import Mapping
@@ -68,6 +70,15 @@ _UNCONNECTED = "Database connector is not connected. Call connect() first."
 _SQLITE_PREFIX = "sqlite://"
 _LITERAL_RULES = "SELECT current_setting('standard_conforming_strings') AS value"
 
+_URL_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*(?=:)")
+"""A URI's scheme, as a URL parser reads it before the first `:`."""
+
+_URL_TRIMMED: Final = "".join(map(chr, range(0x21)))
+"""Control characters and the space, which a URL parser drops at either end of a URI."""
+
+_URL_REMOVED: Final = dict.fromkeys(map(ord, "\t\n\r"))
+"""Tabs and line breaks, which a URL parser drops from anywhere in a URI."""
+
 _CLICKHOUSE_SCHEME: Final = "clickhouse"
 """URI scheme whose empty reads are counted, since ConnectorX can drop every row."""
 
@@ -111,15 +122,15 @@ class DatabaseConnector(ReaderConnector):
                 does not exist, the partition column holds a NULL or anything
                 but integers, or the read fails.
             ConfigError: If `table` names a database Veridelta cannot quote for,
-                or a probe was asked of a `query`.
+                a probe was asked of a `query`, or a SQLite URI does not start
+                with `sqlite://` or holds a NUL character.
         """
         if connectorx is None:
             raise ConnectorError(_DATABASE_EXTRA)
+        path = sqlite_path(self._config)
         scheme = urlsplit(self._config.uri).scheme.lower()
         statement = self._statement(scheme)
-        uri = _connection_uri(self._config)
-        if scheme == "sqlite":
-            uri = _existing_sqlite_uri(uri)
+        uri = _connection_uri(self._config) if path is None else _existing_sqlite_uri(path)
 
         started = time.perf_counter()
         declared: dict[str, pl.Decimal] = {}
@@ -623,10 +634,58 @@ def _scrub(config: DatabaseConfig, text: str) -> str:
     return mask_secrets(text, *secrets)
 
 
-def _existing_sqlite_uri(uri: str) -> str:
-    """Encode a SQLite URI's path for ConnectorX and require the file to exist."""
-    # ConnectorX percent-decodes the text after `sqlite://`: decode it here, re-encode on return.
-    path = unquote(uri[len(_SQLITE_PREFIX) :])
+def sqlite_path(config: DatabaseConfig) -> str | None:
+    """Return the path of the file a SQLite source opens, as the connector opens it.
+
+    ConnectorX reads a URI as SQLite when its scheme, up to the first `+`, is
+    `sqlite`, as in `sqlite+x://`, and it finds the scheme as a URL parser
+    does, after it drops spaces and control characters at either end and every
+    tab or line break. This reads the scheme the same way, and refuses every
+    such URI that does not start with `sqlite://` itself.
+
+    ConnectorX percent-decodes all the text after `sqlite://`, so this does too,
+    with any `?` or `#` and the `password` field kept in it. The decoded path is
+    then resolved as the operating system resolves it: made absolute against the
+    working directory, with every link followed and every `.` and `..` folded.
+    The connector hands ConnectorX this text, encoded, so nothing is left for its
+    URL parser to fold another way, SQLite reads no `file:` URI of its own in
+    it, and no reader expands a leading `~`. The MCP server checks this path
+    against its roots, so the check and the read name one file.
+
+    Args:
+        config (DatabaseConfig): A database source.
+
+    Returns:
+        str | None: The decoded path, resolved, or None for a URI ConnectorX
+            does not read as SQLite.
+
+    Raises:
+        ConfigError: If ConnectorX reads the URI as SQLite but it does not start
+            with `sqlite://`, or the decoded path holds a NUL character, which
+            no file name can.
+    """
+    text = config.uri.strip(_URL_TRIMMED).translate(_URL_REMOVED)
+    scheme = _URL_SCHEME.match(text)
+    if scheme is None or scheme[0].lower().split("+")[0] != "sqlite":
+        return None
+    if config.uri[: len(_SQLITE_PREFIX)].lower() != _SQLITE_PREFIX:
+        raise ConfigError(
+            f"ConnectorX reads a 'uri' with the scheme '{scheme[0]}' as a SQLite file, but "
+            "Veridelta reads only one that starts with sqlite://. Write 'uri' as sqlite:// "
+            "followed by the file's path."
+        )
+    decoded = unquote(_connection_uri(config)[len(_SQLITE_PREFIX) :])
+    if "\0" in decoded:
+        raise ConfigError(
+            "A SQLite path holds a NUL character, such as '%00', which no file name can hold. "
+            "Write 'uri' as sqlite:// followed by the file's path."
+        )
+    # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
+    return os.path.realpath(decoded)
+
+
+def _existing_sqlite_uri(path: str) -> str:
+    """Encode a SQLite file's path for ConnectorX and require the file to exist."""
     # ConnectorX opens SQLite in create mode, so a missing file leaves an empty database behind.
     if not Path(path).is_file():
         raise ConnectorError(
