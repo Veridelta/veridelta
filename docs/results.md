@@ -218,6 +218,6 @@ A malformed `OTEL_RESOURCE_ATTRIBUTES`, such as an item without `=` or a `%` tha
 
 ## Artifacts
 
-With `output_path` set, a run writes the differing rows to that directory as `added_rows`, `removed_rows`, and `changed_rows`, in the `output_format`. An empty set writes no file. Pushdown writes primary keys only, under other names; see [Differences from a local run](pushdown.md#differences-from-a-local-run).
+With `output_path` set, a run writes the differing rows to that directory as `added_rows`, `removed_rows`, and `changed_rows`, in the `output_format`. An empty set writes no file. Each file is written to a new file in that directory, then moved onto its name. A link already at that name is replaced, never written through, and a failed write leaves the earlier file as it was. Pushdown writes primary keys only, under other names; see [Differences from a local run](pushdown.md#differences-from-a-local-run).
 
 `output_format` is `parquet` (the default), `csv`, `json`, `ndjson`, or `arrow`. CSV and JSON have no type for bytes, so `csv`, `json`, and `ndjson` write a binary column, such as a MySQL `BIT`, as hexadecimal text, and refuse a column that nests binary values in a list or a struct. Excel is not offered, because writing a workbook needs a second dependency that a discrepancy file does not justify. Neither is Avro: the Polars writer cannot store several types a discrepancy frame can hold, such as `Int8`, unsigned integers, nanosecond or timezone-aware timestamps, and all-NULL columns.
