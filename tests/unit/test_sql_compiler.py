@@ -61,6 +61,27 @@ _PREFIXED_LITERAL_DIALECTS = frozenset({SQLDialect.TSQL})
 """Dialects whose literals take an `N` before the opening quote to hold any Unicode text."""
 
 
+def _read_escape(sql: str, dialect: SQLDialect) -> tuple[str, int]:
+    """Decode the escape sequence after a backslash the way `dialect` does.
+
+    Spark's `unescapeSQLString` reads a `u` and four hex digits as one UTF-16
+    code unit, and BigQuery reads `n` and `r` as line breaks. Any other escaped
+    character stands for itself.
+
+    Args:
+        sql (str): SQL text right after the backslash.
+        dialect (SQLDialect): Dialect whose lexing rules apply.
+
+    Returns:
+        tuple[str, int]: The decoded character and how many characters it took.
+    """
+    if dialect is SQLDialect.DATABRICKS and sql.startswith("u"):
+        return chr(int(sql[1:5], 16)), 5
+    if dialect is SQLDialect.BIGQUERY:
+        return _BIGQUERY_ESCAPES.get(sql[0], sql[0]), 1
+    return sql[0], 1
+
+
 def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
     r"""Lex one single-quoted literal off the front of `sql` the way `dialect` does.
 
@@ -72,7 +93,9 @@ def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
     as the end of one literal and the start of the next, which it then
     concatenates, so the quote is lost; BigQuery reads it as the end. T-SQL
     reads a literal after an `N` as Unicode, and drops a backslash and the line
-    break after it as a line continuation.
+    break after it as a line continuation. Databricks decodes `\uXXXX` as one
+    character, and Spark replaces a `${` in the raw statement with a variable
+    before it reads any literal, so a raw `${` fails the check.
 
     Args:
         sql (str): SQL text starting with an opening quote.
@@ -85,6 +108,8 @@ def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
         assert sql.startswith("N'"), f"{dialect.value} needs N before a literal: {sql!r}"
         sql = sql[1:]
     assert sql.startswith("'")
+    if dialect is SQLDialect.DATABRICKS:
+        assert "${" not in sql, f"Spark substitutes a variable for `${{`: {sql!r}"
     decoded: list[str] = []
     index = 1
     while index < len(sql):
@@ -92,11 +117,9 @@ def _read_literal(sql: str, dialect: SQLDialect) -> tuple[str, str]:
         if char == "\\" and dialect is SQLDialect.TSQL and sql[index + 1 : index + 2] in "\r\n":
             raise AssertionError(f"T-SQL drops a backslash before a line break: {sql!r}")
         if char == "\\" and dialect in _BACKSLASH_ESCAPE_DIALECTS:
-            escaped = sql[index + 1]
-            if dialect is SQLDialect.BIGQUERY:
-                escaped = _BIGQUERY_ESCAPES.get(escaped, escaped)
+            escaped, length = _read_escape(sql[index + 1 :], dialect)
             decoded.append(escaped)
-            index += 2
+            index += 1 + length
         elif char in "\r\n" and dialect is SQLDialect.BIGQUERY:
             raise AssertionError(f"BigQuery refuses a line break inside a literal: {sql!r}")
         elif char == "'":
@@ -222,6 +245,9 @@ class TestStringLiteralEscaping:
             pytest.param("''", id="doubled-quotes"),
             pytest.param("\\\\server\\share", id="unc-path"),
             pytest.param("line\nbreak\r", id="line-breaks"),
+            pytest.param("${env:HOME}", id="spark-variable"),
+            pytest.param("\\${x}$", id="escaped-spark-variable"),
+            pytest.param("\\u0024", id="unicode-escape-text"),
         ],
     )
     def test_it_round_trips_text_through_a_literal(self, dialect: SQLDialect, value: str) -> None:
@@ -277,6 +303,38 @@ class TestStringLiteralEscaping:
         assert r"'\d+'" in duckdb
         assert r"'\N'" in duckdb
         assert r"'C:\'" in duckdb
+
+    def test_databricks_writes_no_dollar_sign_for_spark_to_substitute(self) -> None:
+        r"""Ensure no rule text reaches Databricks as a `${` that Spark would expand.
+
+        Spark replaces `${...}` in the raw statement with a session, environment,
+        or JVM value before it parses it. Every `$` is written as `\u0024`, which
+        Spark decodes only inside the literal, so a regex anchor, a group
+        reference, and a literal dollar sign keep their meaning.
+        """
+        rule = DiffRule(
+            column_names=["code"],
+            regex_replace={"^\\$(\\d+)$": "$1", "(a)": "$${env:HOME}$1"},
+            null_values=["${system:user.name}"],
+            value_map={"${spark.app.id}": "${env:HOME}"},
+        )
+        compiler = _databricks()
+
+        sql = compiler.compile_column_predicate(rule, "code")
+        replace = compiler._apply_regex_replace("x", rule)  # pyright: ignore[reportPrivateUsage]
+
+        assert "$" not in sql
+        inner = "REGEXP_REPLACE(REGEXP_REPLACE(x, "
+        pattern, rest = _read_literal(replace[len(inner) :], SQLDialect.DATABRICKS)
+        assert pattern == "^\\$(\\d+)$"
+        written, rest = _read_literal(rest[len(", ") :], SQLDialect.DATABRICKS)
+        assert written == "$1"
+        assert rest.startswith("), ")
+        pattern, rest = _read_literal(rest[len("), ") :], SQLDialect.DATABRICKS)
+        assert pattern == "(a)"
+        written, rest = _read_literal(rest[len(", ") :], SQLDialect.DATABRICKS)
+        assert written == "\\${env:HOME}$1"
+        assert rest == ")"
 
 
 class TestPredicateCompilation:
@@ -735,8 +793,8 @@ class TestChangedFlagsQuery:
 
     @pytest.mark.parametrize("dialect", list(SQLDialect))
     def test_a_text_key_goes_through_the_dialects_escapes(self, dialect: SQLDialect) -> None:
-        """Ensure a quote or a backslash in a key cannot end the literal, on every dialect."""
-        tricky = "O'Neil \\ end"
+        """Ensure a quote, a backslash, or a `${` in a key keeps its text, on every dialect."""
+        tricky = "O'Neil \\ end ${x}"
         query = SQLPushdownCompiler(dialect).compile_changed_flags_query(
             "s", "t", ["id"], self._RULES, [{"id": tricky}]
         )

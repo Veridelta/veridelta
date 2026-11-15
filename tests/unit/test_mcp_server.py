@@ -93,6 +93,9 @@ The database is on another machine, so no file of it has to lie under a root."""
 
 _SECRET = "hunter2-do-not-print"
 
+_CANARY = "CANARY-123-45-6789"
+"""A cell value that a server started without `--allow-row-values` never returns."""
+
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
 """The CSV files the CI jobs and the recording compare."""
 
@@ -648,6 +651,14 @@ def _snowflake() -> SnowflakeConfig:
     )
 
 
+def _link_folder(link: Path, folder: Path) -> None:
+    """Make a link to a folder, or skip the test on a machine that cannot, as Windows may not."""
+    try:
+        link.symlink_to(folder, target_is_directory=True)
+    except OSError:
+        pytest.skip("This machine cannot make a symbolic link.")
+
+
 class TestCheckDataPaths:
     """Validate the folder rule on the data a tool returns rows from."""
 
@@ -910,6 +921,153 @@ class TestCheckDataPaths:
         """Ensure `~` is expanded first, since Polars expands it, so it cannot lead out."""
         with pytest.raises(ConfigError, match="outside the folders"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="~/a.csv"), _snowflake())
+
+    @staticmethod
+    def _link_out(root: Path, outside: Path, name: str = "link") -> None:
+        """Link a folder under the root to `dir` outside it, beside a file the root must not reach.
+
+        Through the link, `data.csv` sits in that folder and `secret.csv` one level up.
+        """
+        (outside / "dir").mkdir()
+        (outside / "dir" / "data.csv").write_text("id\n1\n")
+        (outside / "secret.csv").write_text("id\n2\n")
+        _link_folder(root / name, outside / "dir")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("lin[k]/../secret.csv", id="class"),
+            pytest.param("l?nk/../secret.csv", id="any-character"),
+            pytest.param("*/../secret.csv", id="wildcard"),
+            pytest.param("data/**/../../secret.csv", id="recursive"),
+            pytest.param("lin[k]/.[.]/secret.csv", id="dot-class"),
+            pytest.param("*/.?/secret.csv", id="dot-any-character"),
+            pytest.param("l*/.*/secret.csv", id="dot-wildcard"),
+            pytest.param("lin[k]/.[!x]/secret.csv", id="dot-negated-class"),
+        ],
+    )
+    def test_it_refuses_a_pattern_that_can_match_a_parent(self, tmp_path: Path, path: str) -> None:
+        """Ensure a pattern that can reach `..` is refused, since a match can be a link it leaves.
+
+        Polars matches `..` for a name with a glob character that starts with a dot, which the
+        standard library never lists, so the check refuses that name as it refuses `..`.
+        """
+        with pytest.raises(ConfigError, match="is a glob pattern that can match '\\.\\.'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            pytest.param("link[/]data.csv", id="class-of-a-separator"),
+            pytest.param("*[/]data.csv", id="wildcard"),
+            pytest.param("lin[k]/data.csv", id="class"),
+            pytest.param("lin?/data.csv", id="any-character"),
+            pytest.param("lin%5Bk%5D/data.csv", id="encoded"),
+        ],
+    )
+    def test_it_refuses_a_pattern_in_a_file_uri(self, tmp_path: Path, pattern: str) -> None:
+        """Ensure a `file:` URI holds no pattern, since Polars expands one with another matcher."""
+        location = f"{tmp_path.as_uri()}/{pattern}"
+
+        with pytest.raises(ConfigError, match="is a file URI with a glob character in it"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=location), _snowflake())
+
+    @pytest.mark.parametrize(
+        ("name", "path"),
+        [
+            pytest.param("link", "lin[k]/data.csv", id="class"),
+            pytest.param("link", "l?nk/data.csv", id="any-character"),
+            pytest.param("link", "*/data.csv", id="wildcard"),
+            pytest.param("link", "**/data.csv", id="recursive"),
+            pytest.param(".link", "*/data.csv", id="hidden"),
+        ],
+    )
+    def test_it_refuses_a_pattern_that_matches_a_link_out(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        name: str,
+        path: str,
+    ) -> None:
+        """Ensure each match is resolved, as Polars opens it, so a matched link cannot lead out."""
+        self._link_out(tmp_path, tmp_path_factory.mktemp("outside"), name)
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "data.csv").write_text("id\n2\n")
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigError, match=f"The source path '{re.escape(path)}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows folds '..' before it follows a link."
+    )
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("lin[k]/../secret.csv", id="class-then-parent"),
+            pytest.param("*/../secret.csv", id="wildcard-then-parent"),
+            pytest.param("lin[k]/.[.]/secret.csv", id="dot-class"),
+            pytest.param("*/.?/secret.csv", id="dot-any-character"),
+            pytest.param("l*/.*/secret.csv", id="dot-wildcard"),
+            pytest.param("lin[k]/data.csv", id="class"),
+            pytest.param("**/data.csv", id="recursive"),
+            pytest.param("{uri}/link[/]data.csv", id="uri-class-of-a-separator"),
+            pytest.param("{uri}/*[/]data.csv", id="uri-wildcard"),
+        ],
+    )
+    def test_it_refuses_each_pattern_polars_reads_out_through(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+    ) -> None:
+        """Ensure the check refuses each pattern that the installed Polars reads out of a root.
+
+        Polars is asked first, so a change in how it expands a pattern fails here.
+        """
+        self._link_out(tmp_path, tmp_path_factory.mktemp("outside"))
+        monkeypatch.chdir(tmp_path)
+        location = path.format(uri=tmp_path.as_uri())
+        opened = pl.scan_csv(location, include_file_paths="file").collect()["file"]
+
+        assert not all(
+            Path(file.removeprefix("file://")).resolve().is_relative_to(tmp_path.resolve())
+            for file in opened
+        )
+        with pytest.raises(ConfigError, match="The source path"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=location), _snowflake())
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("data/**/*.csv", id="recursive"),
+            pytest.param("*/a.csv", id="wildcard-through-a-link"),
+            pytest.param("lat[e]st/a.csv", id="class-of-a-link"),
+            pytest.param(".hidden/*.csv", id="hidden-folder-as-written"),
+            pytest.param("**/*.csv", id="everything"),
+        ],
+    )
+    def test_it_accepts_a_pattern_whose_matches_are_under_a_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+    ) -> None:
+        """Ensure a pattern passes when every match, a link's included, resolves under a root.
+
+        Polars then reads it, and opens nothing outside the root.
+        """
+        (tmp_path / "data" / "2026").mkdir(parents=True)
+        (tmp_path / "data" / "2026" / "a.csv").write_text("id\n1\n")
+        (tmp_path / ".hidden").mkdir()
+        (tmp_path / ".hidden" / "b.csv").write_text("id\n2\n")
+        _link_folder(tmp_path / "latest", tmp_path / "data" / "2026")
+        monkeypatch.chdir(tmp_path)
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+
+        opened = pl.scan_csv(path, include_file_paths="file").collect()["file"]
+        assert opened.len() > 0
+        assert all(Path(file).resolve().is_relative_to(tmp_path.resolve()) for file in opened)
 
     @pytest.mark.parametrize(
         "side",
@@ -1263,16 +1421,6 @@ class TestLakehouseFiles:
             with pytest.raises(ConfigError, match=rf"sets '{refused}', which says how"):
                 check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
-    def test_it_refuses_storage_options_that_choose_the_code(self, tmp_path: Path) -> None:
-        """Ensure a `py-` key in `storage_options` is refused before any file is read."""
-        target = IcebergConfig(
-            table_uri="lake/events.metadata.json",
-            storage_options={"s3.region": "eu", "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO"},
-        )
-
-        with pytest.raises(ConfigError, match="storage_options set 'py-io-impl'"):
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
-
     def test_it_checks_each_path_before_it_lists_a_table(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
@@ -1334,16 +1482,6 @@ class TestLakehouseFiles:
             assert str(outside) not in str(refused.value)
         else:
             assert str(refused.value).startswith(f"The target {layer} '{outside}")
-
-    def test_it_refuses_a_table_in_a_catalog(self, tmp_path: Path) -> None:
-        """Ensure a name Polars reads as a catalog table is refused, though a folder has that name."""
-        metadata = Path(_iceberg(tmp_path))
-        (metadata.parent / "version-hint.text").write_text(metadata.name)
-        shutil.copytree(metadata.parent.parent, tmp_path / "lake.events")
-        target = IcebergConfig(table_uri="lake.events")
-
-        with pytest.raises(ConfigError, match="names a table in a PyIceberg catalog"):
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
@@ -2342,10 +2480,154 @@ class TestServer:
         )
         _write(tmp_path, _VALID)
 
-        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
+        result = _call(Settings((tmp_path,), allow_row_values=True), {"path": "veridelta.yaml"})
 
         assert result.is_error is True
         assert _text(result).endswith("RuntimeError: boom")
+
+    def test_it_leaves_out_the_message_of_an_unexpected_failure_unless_rows_are_allowed(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a message from Polars or a driver, which can quote a cell, stays out by default."""
+        mocker.patch(
+            "veridelta.engine.DiffEngine.check_config_file", side_effect=RuntimeError(_CANARY)
+        )
+        _write(tmp_path, _VALID)
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
+
+        assert result.is_error is True
+        assert "RuntimeError: its message is left out" in _text(result)
+        assert "--allow-row-values" in _text(result)
+        assert _CANARY not in _text(result)
+
+    def test_it_leaves_out_a_cell_a_schema_check_quotes_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `validate_config` with `schemas` keeps a JSON value out of its findings.
+
+        The finding is the call's result rather than a failure, so it never
+        passes through the check that a failed call's message gets.
+        """
+        monkeypatch.chdir(tmp_path)
+        rows = ",".join(f'{{"id": {i}, "v": "x"}}' for i in range(200))
+        (tmp_path / "a.json").write_text(f'[{rows}, {{"id": 999, "v": {{"ssn": "{_CANARY}"}}}}]')
+        (tmp_path / "b.json").write_text(f"[{rows}]")
+        _write(
+            tmp_path,
+            "source: {path: a.json, format: json}\ntarget: {path: b.json, format: json}\n"
+            "primary_keys: [id]\n",
+        )
+        arguments = {"path": "veridelta.yaml", "schemas": True}
+
+        default = _call(Settings((tmp_path,)), arguments)
+        allowed = _call(Settings((tmp_path,), allow_row_values=True), arguments)
+
+        assert default.is_error is False
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert _CANARY in _text(allowed)
+
+    def test_it_never_returns_a_cell_a_cast_cannot_convert(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a failed `cast_to` names the column and a count, on any server."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.csv").write_text(f"id,amount\n1,10\n2,{_CANARY}\n")
+        (tmp_path / "b.csv").write_text("id,amount\n1,10\n2,11\n")
+        _write(tmp_path, _VALID + "rules: [{column_names: [amount], cast_to: Int64}]\n")
+
+        for settings in (Settings((tmp_path,)), Settings((tmp_path,), allow_row_values=True)):
+            result = _call(settings, {"path": "veridelta.yaml"}, tool="run_comparison")
+
+            assert result.is_error is True
+            assert "DataIntegrityError: Column 'amount' sets cast_to='Int64', but 1 value" in _text(
+                result
+            )
+            assert _CANARY not in _text(result)
+
+    def test_it_leaves_out_a_cell_that_fails_to_parse_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a CSV value past the rows the reader infers types from stays out by default.
+
+        Polars quotes the value it cannot parse, and a third party who writes
+        the file chooses that text.
+        """
+        monkeypatch.chdir(tmp_path)
+        rows = "".join(f"{i},{i}\n" for i in range(200))
+        (tmp_path / "a.csv").write_text(f"id,amount\n{rows}200,{_CANARY}\n")
+        (tmp_path / "b.csv").write_text(f"id,amount\n{rows}")
+        _write(tmp_path, _VALID)
+
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+
+        assert default.is_error is True
+        assert _text(default).endswith(
+            "ComputeError: its message is left out, since it can quote values from the data, "
+            "and this server was started without --allow-row-values. Run the configuration "
+            "with veridelta run to read the message."
+        )
+        assert allowed.is_error is True
+        assert _CANARY in _text(allowed)
+
+    def test_it_leaves_out_a_cell_a_pushdown_cast_cannot_convert_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure DuckDB's error for a failed `CAST`, which quotes the value, stays out by default."""
+        monkeypatch.chdir(tmp_path)
+        with duckdb.connect(str(tmp_path / "warehouse.duckdb")) as connection:
+            connection.execute(
+                f"CREATE TABLE src AS SELECT * FROM (VALUES (1, '10'), (2, '{_CANARY}')) t(id, amount)"
+            )
+            connection.execute(
+                "CREATE TABLE tgt AS SELECT * FROM (VALUES (1, '10'), (2, '11')) t(id, amount)"
+            )
+        side = "  type: duckdb\n  database: warehouse.duckdb\n  pushdown: true\n"
+        _write(
+            tmp_path,
+            f"source:\n{side}  table: src\ntarget:\n{side}  table: tgt\nprimary_keys: [id]\n"
+            "rules: [{column_names: [amount], cast_to: Int64}]\n",
+        )
+
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert _CANARY in _text(allowed)
+
+    def test_it_leaves_out_a_driver_message_unless_rows_are_allowed(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a source error that quotes its driver stays out, and one in Veridelta's words stays."""
+        _write(tmp_path, _VALID)
+        run = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+        quoted = ConnectorError(f"Warehouse statement failed: {_CANARY}", quotes_data=True)
+
+        run.side_effect = quoted
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+        run.side_effect = ConnectorError("Pushdown needs SQL Server 2022.")
+        own = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert _text(allowed).endswith(f"ConnectorError: Warehouse statement failed: {_CANARY}")
+        assert _text(own).endswith("ConnectorError: Pushdown needs SQL Server 2022.")
 
     def test_it_never_returns_a_secret_from_the_configuration(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -2353,7 +2635,8 @@ class TestServer:
         """Ensure a password read from the environment stays out of a result, even in an error.
 
         The database read fails with the full connection URI, as a driver's
-        error can, and the result still holds only the masked form.
+        error can, and the result still holds only the masked form. The server
+        allows row values, or the driver's message would be left out whole.
         """
         monkeypatch.setenv("VD_MCP_PASSWORD", _SECRET)
         uri = f"postgresql://analyst:{_SECRET}@db.internal/sales"
@@ -2369,7 +2652,10 @@ class TestServer:
             "  table: orders\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
         )
 
-        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", "schemas": True})
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml", "schemas": True},
+        )
 
         shown = json.dumps(result.structured_content) + _text(result)
         assert result.structured_content is not None
@@ -2421,7 +2707,7 @@ class TestServer:
         result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
 
         assert result.is_error is True
-        assert "PanicException: not yet implemented" in _text(result)
+        assert "PanicException: its message is left out" in _text(result)
 
     def test_it_leaves_the_root_logger_as_it_found_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

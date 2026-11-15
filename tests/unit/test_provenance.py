@@ -44,7 +44,7 @@ def _git_answers(mocker: MockerFixture, *, head: str | None, status: str | None)
     """
 
     def answer(arguments: list[str], **_: object) -> subprocess.CompletedProcess[str]:
-        output = head if arguments[1] == "rev-parse" else status
+        output = head if "rev-parse" in arguments else status
         if output is None:
             raise subprocess.CalledProcessError(128, arguments)
         return subprocess.CompletedProcess(arguments, 0, stdout=f"{output}\n", stderr="")
@@ -162,7 +162,28 @@ class TestCollectProvenance:
         collect_provenance(None, None, started_at=_STARTED_AT, environ={})
 
         status_call = run_git.call_args_list[1]
-        assert status_call.args[0] == ["git", "status", "--porcelain", "--untracked-files=no"]
+        assert status_call.args[0][-3:] == ["status", "--porcelain", "--untracked-files=no"]
+
+    def test_it_runs_git_without_a_found_bare_repository_or_a_monitor(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure both calls refuse a bare repository git finds, and start no fsmonitor command."""
+        run_git = _git_answers(mocker, head=_COMMIT_SHA, status="")
+
+        collect_provenance(None, None, started_at=_STARTED_AT, environ={})
+
+        hardening = ["-c", "safe.bareRepository=explicit", "-c", "core.fsmonitor=false"]
+        assert [call.args[0] for call in run_git.call_args_list] == [
+            ["git", *hardening, "rev-parse", "HEAD"],
+            [
+                "git",
+                *hardening,
+                "--no-optional-locks",
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
+        ]
 
     def test_it_falls_back_to_the_ci_commit_without_git(self, mocker: MockerFixture) -> None:
         """Ensure a run outside a repository takes GitHub's commit, and leaves cleanliness unknown."""

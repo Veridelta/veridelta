@@ -70,13 +70,20 @@ _PARQUET = SourceConfig(path="b.parquet", format="parquet")
 
 
 def _check(
-    source: SourceRef, target: SourceRef, *, schemas: bool = False, **diff: Any
+    source: SourceRef,
+    target: SourceRef,
+    *,
+    schemas: bool = False,
+    quote_data: bool = True,
+    **diff: Any,
 ) -> list[tuple[str, str]]:
     """Run the checks and flatten each finding to (severity, message)."""
     config = DiffConfig(**{"primary_keys": ["id"], **diff})
     return [
         (finding.severity, finding.message)
-        for finding in DiffEngine.check_configs(config, source, target, schemas=schemas)
+        for finding in DiffEngine.check_configs(
+            config, source, target, schemas=schemas, quote_data=quote_data
+        )
     ]
 
 
@@ -499,6 +506,9 @@ def _parquet_pair(
     )
 
 
+_CANARY = "CANARY-123-45-6789"
+"""A cell value that a check run without `quote_data` never returns."""
+
 _WAREHOUSE_SCHEMA = {"ID": pl.Int64(), "NAME": pl.String(), "SEEN_AT": pl.String()}
 
 
@@ -593,6 +603,40 @@ class TestLiveSchemaChecks:
 
         assert severity == "error"
         assert message.startswith("Could not read the schemas:")
+
+    def test_it_leaves_out_a_reader_message_that_can_quote_the_data(self, tmp_path: Path) -> None:
+        """Ensure a JSON value the reader quotes stays out of a finding unless asked for.
+
+        A JSON file is parsed whole to learn its schema, so the reader's error
+        can quote any value in it.
+        """
+        rows = ",".join(f'{{"id": {i}, "v": "x"}}' for i in range(200))
+        (tmp_path / "a.json").write_text(f'[{rows}, {{"id": 999, "v": {{"ssn": "{_CANARY}"}}}}]')
+        (tmp_path / "b.json").write_text(f"[{rows}]")
+        source = SourceConfig(path=str(tmp_path / "a.json"), format="json")
+        target = SourceConfig(path=str(tmp_path / "b.json"), format="json")
+
+        [(_, withheld)] = _check(source, target, schemas=True, quote_data=False)
+        [(_, quoted)] = _check(source, target, schemas=True)
+
+        assert withheld == (
+            "Could not read the schemas: ConnectorError: its message is left out, since it can "
+            "quote values from the data. Run veridelta validate --schemas on the file to read it."
+        )
+        assert _CANARY in quoted
+
+    def test_it_keeps_a_message_in_its_own_words_without_quoting_data(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a schema read that fails in Veridelta's words keeps them."""
+        source, target = _parquet_pair(tmp_path)
+        mocker.patch(
+            "veridelta.engine.schema_frame", side_effect=ConnectorError("Pushdown needs a table.")
+        )
+
+        [(_, message)] = _check(source, target, schemas=True, quote_data=False)
+
+        assert message == "Could not read the schemas: Pushdown needs a table."
 
     def test_it_skips_the_live_check_after_an_offline_error(self, mocker: MockerFixture) -> None:
         """Ensure nothing is opened for a configuration that cannot run anyway."""
@@ -724,6 +768,27 @@ class TestLiveSchemaChecks:
 
         assert severity == "error"
         assert expected in message
+
+    def test_it_leaves_out_a_driver_message_that_can_quote_the_data(
+        self, mocker: MockerFixture
+    ) -> None:
+        """Ensure a probe's driver error stays out of a finding unless asked for."""
+        session = _warehouse_session(mocker)
+        session.execute_pushdown.side_effect = ConnectorError(
+            f"Warehouse statement failed: {_CANARY}", quotes_data=True
+        )
+
+        [(severity, message)] = _check(
+            _snowflake("SRC"),
+            _snowflake("TGT"),
+            schemas=True,
+            primary_keys=["ID"],
+            quote_data=False,
+        )
+
+        assert severity == "error"
+        assert message.startswith("ConnectorError: its message is left out")
+        assert _CANARY not in message
 
     def test_it_refuses_a_key_of_two_types_once_types_are_known(
         self, mocker: MockerFixture

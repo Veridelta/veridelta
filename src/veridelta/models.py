@@ -30,6 +30,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from veridelta._terminal import printable
 from veridelta.exceptions import ConfigError
 
 if TYPE_CHECKING:
@@ -39,20 +40,32 @@ _CONTAINER_SCHEMES: Final[frozenset[str]] = frozenset({"abfs", "abfss", "wasb", 
 """Azure schemes whose `container@account` user part names a container, not a login."""
 
 
+def _has_hidden_user_part(location: str, netloc: str) -> bool:
+    """Tell whether a URL holds an `@` past the host part its parser found.
+
+    An unencoded `/`, `?`, or `#` in a password ends the host part early, so
+    the parser sees no password, and the `@` that ends it lands in the path,
+    query, or fragment.
+    """
+    return location.count("@") > netloc.count("@")
+
+
 def redacted_location(location: str) -> str | None:
     """Return a path or URL with anything secret left out, safe to print or log.
 
     A URL keeps its scheme, host, and path. Its query goes, since it can hold a
     token or the signature of a pre-signed link, and so does its user part,
     which can hold a login, unless an Azure scheme names a container there. A
-    path on this machine comes back as it is.
+    URL with an `@` past its host part comes back as None, since that `@` can
+    end a password that holds an unencoded `/`, `?`, or `#`. A path on this
+    machine comes back as it is.
 
     Args:
         location (str): A file path, or the URL of a file or a table.
 
     Returns:
         str | None: The location without its secrets, or None when it does not
-            parse as a URL.
+            parse as a URL or has an `@` past its host part.
 
     Examples:
         >>> redacted_location("s3://bucket/events.parquet?X-Amz-Signature=abc")
@@ -63,6 +76,9 @@ def redacted_location(location: str) -> str | None:
     try:
         parts = urlsplit(location)
     except ValueError:
+        return None
+    # A one-letter scheme with no host part is a Windows drive, as in C:\me@corp\orders.csv.
+    if (len(parts.scheme) > 1 or parts.netloc) and _has_hidden_user_part(location, parts.netloc):
         return None
     if not (parts.scheme and parts.netloc):
         return location
@@ -941,7 +957,7 @@ class DiffSummary(BaseModel):
         ]
 
         col_report = "".join(
-            f"- {col}: {count:,} {_noun(count, 'mismatch', 'mismatches')}\n"
+            f"- {printable(col)}: {count:,} {_noun(count, 'mismatch', 'mismatches')}\n"
             for col, count in top_cols
         )
         return f"{base_report}\nTop Column-Level Drifts:\n---------------------------\n{col_report}"
@@ -1738,22 +1754,50 @@ class DeltaLakeConfig(BaseModel):
     )
 
 
+PYICEBERG_CLASS_PREFIX: Final = "py-"
+"""The prefix of a PyIceberg property that names a Python class to import, such as `py-io-impl`."""
+
+PYICEBERG_CLASS_SUFFIX: Final = "impl"
+"""The suffix of a PyIceberg property that names a Python class to import, such as `s3.retry-strategy-impl`."""
+
+
+def names_a_pyiceberg_class(key: str) -> bool:
+    """Tell whether PyIceberg may import the Python class a property names.
+
+    PyIceberg 0.12 imports a class from `py-io-impl`, `py-catalog-impl`,
+    `s3.retry-strategy-impl`, and `write.py-location-provider.impl`. A key
+    that starts with `py-` or ends with `impl` covers them, and any later one
+    named the same way.
+
+    Args:
+        key (str): A storage option or table property name.
+
+    Returns:
+        bool: True when the key starts with `py-` or ends with `impl`.
+    """
+    return key.startswith(PYICEBERG_CLASS_PREFIX) or key.endswith(PYICEBERG_CLASS_SUFFIX)
+
+
 class IcebergConfig(BaseModel):
     """Immutable settings for an Apache Iceberg table scan.
 
     Attributes:
         type (Literal["iceberg"]): Source kind, which selects this model.
-        table_uri (str): Catalog identifier or filesystem URI of the table.
+        table_uri (str): Path or object-store URI of the table's metadata
+            file, or of the table's folder. A catalog identifier is refused.
         snapshot_id (int | None): Optional snapshot to time-travel.
         storage_options (dict[str, str]): Object-store credentials and options.
-            Left out when the config is printed, but kept by `model_dump()`,
-            which the scanner needs.
+            A key that starts with `py-` or ends with `impl` is refused, since
+            PyIceberg imports the class it names. Left out when the config is
+            printed, but kept by `model_dump()`, which the scanner needs.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     type: Literal["iceberg"] = Field("iceberg", description="Discriminator for Apache Iceberg.")
-    table_uri: str = Field(..., description="Catalog identifier or filesystem URI of the table.")
+    table_uri: str = Field(
+        ..., description="Path or object-store URI of the table's metadata file or folder."
+    )
     snapshot_id: int | None = Field(
         default=None,
         ge=0,
@@ -1765,6 +1809,55 @@ class IcebergConfig(BaseModel):
         repr=False,
         description="Object-store credentials and options passed to Polars.",
     )
+
+    @field_validator("table_uri")
+    @classmethod
+    def _refuse_catalog_identifier(cls, value: str) -> str:
+        """Refuse a `table_uri` that Polars would look up in a catalog.
+
+        A catalog builds the table's FileIO from the table's own metadata
+        properties, which can name a class for PyIceberg to import. So only a
+        path, which the connector loads itself, is read.
+
+        Args:
+            value (str): Configured table URI.
+
+        Returns:
+            str: The table URI, unchanged.
+
+        Raises:
+            ValueError: If the value holds no slash or backslash.
+        """
+        if "/" not in value and "\\" not in value:
+            raise ValueError(
+                "An Iceberg 'table_uri' is the path or URI of the table's metadata file or "
+                "folder, such as s3://lake/events. A catalog identifier is not read."
+            )
+        return value
+
+    @field_validator("storage_options")
+    @classmethod
+    def _refuse_class_names(cls, value: dict[str, str]) -> dict[str, str]:
+        """Refuse a key that names a Python class for PyIceberg to import.
+
+        Args:
+            value (dict[str, str]): Configured storage options.
+
+        Returns:
+            dict[str, str]: The storage options, unchanged.
+
+        Raises:
+            ValueError: If a key starts with `py-` or ends with `impl`. The
+                message names the key, never its value.
+        """
+        for key in value:
+            if names_a_pyiceberg_class(key):
+                raise ValueError(
+                    f"Iceberg 'storage_options' may not set '{key}': a key that starts with "
+                    f"'{PYICEBERG_CLASS_PREFIX}' or ends with '{PYICEBERG_CLASS_SUFFIX}' names "
+                    "a Python class for PyIceberg to import."
+                )
+        return value
 
 
 POSTGRES_SCHEMES: Final = frozenset({"postgres", "postgresql"})
@@ -1862,7 +1955,8 @@ class DatabaseConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set, the
-                URI has no scheme, `password` conflicts with the URI, or
+                URI does not parse, has no scheme, or holds an `@` after its host, `password`
+                conflicts with the URI, or
                 `pushdown` is set on anything but a Postgres, SQL Server, or Redshift
                 table.
         """
@@ -1870,9 +1964,24 @@ class DatabaseConfig(BaseModel):
             raise ValueError(
                 "A database source reads a 'table' or runs a 'query'; set exactly one."
             )
-        parts = urlsplit(self.uri)
+        try:
+            parts = urlsplit(self.uri)
+        except ValueError:
+            # The parser's message repeats the host part, which can hold the password.
+            raise ValueError(
+                "'uri' does not parse as a URL, as when its user name, password, or host holds "
+                "a character not allowed there. Set the password in 'password', or "
+                "percent-encode it in 'uri'."
+            ) from None
         if not parts.scheme:
             raise ValueError("'uri' needs a scheme such as postgresql:// or sqlite://.")
+        if _has_hidden_user_part(self.uri, parts.netloc):
+            # The URI is never echoed: the text before that `@` can be a password.
+            raise ValueError(
+                "'uri' holds an '@' after its host, where a password with an unencoded '/', "
+                "'?', or '#' puts it. Set the password in 'password', or percent-encode it in "
+                "'uri'. Write any other '@' as %40."
+            )
         if self.pushdown and parts.scheme.lower() not in DATABASE_PUSHDOWN_SCHEMES:
             raise ValueError(
                 "'pushdown' compares inside the database and works on postgresql://, "

@@ -483,6 +483,129 @@ class TestSuggestCommand:
         assert "put it first in rules" in err
         assert "explains" not in err
 
+    def test_it_quotes_a_column_name_a_terminal_would_act_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a header with a line break and an escape stays on its line, in the note too."""
+        header = 'id,"fa\n::error::x \x1b[31m"\n'
+        (tmp_path / "a.csv").write_text(f"{header}1,10.00\n2,20.00\n", newline="")
+        (tmp_path / "b.csv").write_text(f"{header}1,10.004\n2,20.004\n", newline="")
+        (tmp_path / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: a.csv\ntarget:\n  path: b.csv\n"
+            'rules:\n  - column_names: ["fa\\n::error::x \\e[31m"]\n    cast_to: Float64\n'
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "suggest"])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        err = capsys.readouterr().err
+        assert "'fa\\n::error::x \\x1b[31m': absolute_tolerance 0.005 explains 2 of 2" in err
+        assert "Note: rules[0] governs 'fa\\n::error::x \\x1b[31m' today." in err
+        assert "\x1b" not in err
+        assert not any(line.startswith("::") for line in err.splitlines())
+
+    def test_it_breaks_a_legacy_workflow_command_in_a_name_or_a_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `##[` in a column name or a key value reaches no line of the evidence."""
+        header = "id,fa ##[error]x\n"
+        (tmp_path / "a.csv").write_text(f"{header}k ##[warning]y,10.00\nb,20.00\n")
+        (tmp_path / "b.csv").write_text(f"{header}k ##[warning]y,10.004\nb,20.004\n")
+        (tmp_path / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: a.csv\ntarget:\n  path: b.csv\n"
+            "rules:\n  - column_names: ['fa ##[error]x']\n    cast_to: Float64\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "suggest"])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        err = capsys.readouterr().err
+        assert "'fa ##\\x5berror]x': absolute_tolerance 0.005 explains 2 of 2" in err
+        assert "id='k ##\\x5bwarning]y'" in err
+        assert "Note: rules[0] governs 'fa ##\\x5berror]x' today." in err
+        assert not any("##[" in line for line in err.splitlines())
+
+    @pytest.mark.parametrize(
+        ("keys", "written"),
+        [
+            pytest.param(
+                pl.Series([b"k ##[error title=Forged]y", b"b"], dtype=pl.Binary),
+                "id=b'k ##\\x5berror title=Forged]y'",
+                id="binary",
+            ),
+            pytest.param(
+                pl.Series([["k ##[error title=Forged]y"], ["b"]], dtype=pl.List(pl.String)),
+                "id=['k ##\\x5berror title=Forged]y']",
+                id="list",
+            ),
+            pytest.param(
+                pl.Series([{"a": "k ##[x\n::error::y\x1b"}, {"a": "b"}]),
+                "id={'a': 'k ##\\x5bx\\n::error::y\\x1b'}",
+                id="struct",
+            ),
+        ],
+    )
+    def test_it_breaks_a_legacy_workflow_command_in_a_key_of_any_type(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        keys: pl.Series,
+        written: str,
+    ) -> None:
+        """Ensure a key that is not text still names its row with nothing a runner acts on."""
+        ids = keys.alias("id")
+        pl.DataFrame([ids, pl.Series("fa", [10.00, 20.00])]).write_parquet(tmp_path / "a.parquet")
+        pl.DataFrame([ids, pl.Series("fa", [10.004, 20.004])]).write_parquet(tmp_path / "b.parquet")
+        (tmp_path / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: a.parquet\ntarget:\n  path: b.parquet\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "suggest"])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        err = capsys.readouterr().err
+        assert written in err
+        assert "\x1b" not in err
+        assert not any("##[" in line or line.lstrip().startswith("::") for line in err.splitlines())
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            pytest.param("::error title=Forged::x", id="workflow-command"),
+            pytest.param("fa ##[error]x", id="legacy-command"),
+            pytest.param("f" * 70 + " ::error::y", id="long-line"),
+        ],
+    )
+    def test_it_prints_rules_that_hold_nothing_a_runner_acts_on(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        header: str,
+    ) -> None:
+        """Ensure the YAML to paste names a header from the data safely, and loads back as it."""
+        (tmp_path / "a.csv").write_text(f'id,"{header}"\n1,10.00\n2,20.00\n')
+        (tmp_path / "b.csv").write_text(f'id,"{header}"\n1,10.004\n2,20.004\n')
+        (tmp_path / "veridelta.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: a.csv\ntarget:\n  path: b.csv\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["veridelta", "suggest"])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        out = capsys.readouterr().out
+        assert yaml.safe_load(out)["rules"][0]["column_names"] == [header]
+        assert not any("##[" in line or line.lstrip().startswith("::") for line in out.splitlines())
+
     def test_it_prints_json_and_exits_3_when_it_cannot_finish(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
