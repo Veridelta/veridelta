@@ -641,21 +641,29 @@ def _scrub(config: DatabaseConfig, text: str) -> str:
     return mask_secrets(text, *secrets)
 
 
-def connectorx_url(uri: str) -> SplitResult:
-    """Split a database URI as ConnectorX does, with the scheme it picks a reader by.
+def connectorx_url(config: DatabaseConfig) -> SplitResult:
+    """Split the URI ConnectorX reads for a database source, with the scheme it picks a reader by.
 
-    ConnectorX parses a URI as a URL parser does, after it drops spaces and
+    The connector hands ConnectorX `connection_uri`. ConnectorX's Python
+    package first rewrites a URI whose text before the first `:` holds
+    `redshift`, in lowercase and anywhere in it, and not `-iam`, to start with
+    `postgresql:`, so it reads `sqliteredshift://` with its Postgres reader.
+    It then parses the URI as a URL parser does, after it drops spaces and
     control characters at either end and every tab or line break, and picks
     its reader by the scheme in lowercase up to the first `+`, so it reads
     `BigQuery+x://` as BigQuery. The scheme here is that reader's name, and
     empty for a URI with no scheme.
 
     Args:
-        uri (str): A database source's `uri`.
+        config (DatabaseConfig): A database source.
 
     Returns:
         SplitResult: The URI's parts, with the reader's name for a scheme.
     """
+    uri = connection_uri(config)
+    backend, _, rest = uri.partition(":")
+    if "redshift" in backend and "-iam" not in backend:
+        uri = f"postgresql:{rest}"
     parts = urlsplit(uri.strip(_URL_TRIMMED).translate(_URL_REMOVED))
     return parts._replace(scheme=parts.scheme.split("+")[0])
 

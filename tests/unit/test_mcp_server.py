@@ -2477,6 +2477,24 @@ class TestAllowedHosts:
                 "uri",
                 id="database-empty-host-parameter",
             ),
+            pytest.param(
+                "  type: database\n  uri: sqliteredshift://u@elsewhere.example:5439/d\n"
+                "  query: SELECT 1\n",
+                "uri",
+                id="sqlite-scheme-connectorx-reads-as-postgres",
+            ),
+            pytest.param(
+                "  type: database\n  uri: sqlite-redshift://u@elsewhere.example/d\n"
+                "  query: SELECT 1\n",
+                "uri",
+                id="sqlite-scheme-with-redshift-after-a-dash",
+            ),
+            pytest.param(
+                "  type: database\n  uri: SQLiteRedshift://u@elsewhere.example/d\n"
+                "  password: p\n  query: SELECT 1\n",
+                "uri",
+                id="upper-case-redshift-lowered-by-the-password",
+            ),
             pytest.param(f"{_SNOWFLAKE}  account: elsewhere\n", "account", id="snowflake"),
             pytest.param(
                 f"{_SNOWFLAKE}  account: xy12345.cn-north-1\n", "account", id="snowflake-in-china"
@@ -2687,6 +2705,11 @@ class TestAllowedHosts:
                 id="trino-password-that-ends-the-host-once-decoded",
             ),
             pytest.param(
+                "  type: database\n  uri: trino://u@db.internal%5D:8080/cat\n  table: t\n",
+                "uri",
+                id="trino-bracket-once-decoded",
+            ),
+            pytest.param(
                 "  type: database\n  uri: 'postgresql://u@db.internal\\x/db'\n  table: t\n",
                 "uri",
                 id="database-backslash",
@@ -2772,8 +2795,23 @@ class TestAllowedHosts:
                 id="trino-with-a-password",
             ),
             pytest.param(
+                "  type: database\n  uri: trino://u@db.internal:8080/cat\n  password: 'p[ss'\n"
+                "  table: t\n",
+                id="trino-with-a-bracket-in-the-password",
+            ),
+            pytest.param(
+                "  type: database\n  uri: trino+redshift://u:p%2F@db.internal:5439/d\n"
+                "  query: SELECT 1\n",
+                id="trino-scheme-connectorx-reads-as-postgres",
+            ),
+            pytest.param(
                 "  type: database\n  uri: oracle://u:p@db.internal:1521/svc?schema=s\n  table: t\n",
                 id="oracle",
+            ),
+            pytest.param(
+                "  type: database\n  uri: oracle://u:p@db.internal/S_1.x$-:dedicated/i1\n"
+                "  table: t\n",
+                id="oracle-server-type-and-instance",
             ),
             pytest.param(
                 "  type: database\n  uri: postgresql://u@db.internal/db?sslmode=require&%C3%A9=1\n"
@@ -2994,6 +3032,21 @@ class TestAllowedHosts:
                 "oracle://u:p@db.internal/svc%3Fhttps_proxy%3Dexample.com",
                 "TNS alias",
                 id="oracle-escape-in-the-path",
+            ),
+            pytest.param(
+                "oracle://u:p@db.internal/svc,example.com:1521/x",
+                "path other than a service name",
+                id="oracle-second-address-in-the-path",
+            ),
+            pytest.param(
+                "oracle://u:p@db.internal/svc(ADDRESS=(HOST=example.com))",
+                "path other than a service name",
+                id="oracle-address-in-the-path",
+            ),
+            pytest.param(
+                "Oracle+redshift-iam-x://u:p@db.internal/svc?alias=true",
+                "TNS alias",
+                id="oracle-with-iam-not-rewritten",
             ),
         ],
     )

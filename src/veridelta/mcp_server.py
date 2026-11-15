@@ -281,6 +281,13 @@ _FILE_PARAMETERS: Final = frozenset(
 ConnectorX opens for TLS: Postgres's certificate, key, and certificate
 authority, MySQL's certificate authority, and SQL Server's."""
 
+_ORACLE_PATH: Final = re.compile(r"(?:/[A-Za-z0-9_.$-]*(?::[A-Za-z]+)?(?:/[A-Za-z0-9_.$-]+)?)?")
+"""An Oracle URI's path a tool passes on: a service name, then at most a server
+type and an instance name, as in `/sales:dedicated/sales1`.
+
+ConnectorX writes the path, decoded, after the host in Oracle's connect string,
+where other characters can add an address or an option that names a proxy."""
+
 _HOST: Final = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*|\[[0-9a-f:.]+\]")
 """An allowed host: DNS labels, an IPv4 address, or an IPv6 address in brackets.
 
@@ -986,11 +993,11 @@ def _refuse_database_uri(side: str, config: DatabaseConfig) -> None:
     key file names the host its sign-in goes to. Its Redshift IAM reader signs
     in through AWS at hosts its options choose. Postgres, MySQL, and SQL
     Server open the TLS files `_FILE_PARAMETERS` names. Oracle looks an
-    `alias` up in a file on this machine, and decodes the path into its
-    connect string, where a decoded `?` adds options that can name a proxy.
-    A parameter is matched in ASCII only, as the readers match it.
+    `alias` up in a file on this machine, and writes the path into its
+    connect string, so a path passes only in `_ORACLE_PATH`'s shape. A
+    parameter is matched in ASCII only, as the readers match it.
     """
-    parts = connectorx_url(config.uri)
+    parts = connectorx_url(config)
     if parts.scheme == "bigquery":
         raise ConfigError(
             f"The {side} uri reads BigQuery through ConnectorX, which signs in with a key file "
@@ -1013,11 +1020,15 @@ def _refuse_database_uri(side: str, config: DatabaseConfig) -> None:
             "driver opens and this server does not check, so a tool does not pass it on. "
             "Leave it out."
         )
-    if parts.scheme == "oracle" and ("alias" in names or "%" in parts.path):
+    if parts.scheme == "oracle" and (
+        "alias" in names or _ORACLE_PATH.fullmatch(parts.path) is None
+    ):
         raise ConfigError(
-            f"The {side} uri has Oracle find its host in a TNS alias or in a path with a '%', "
-            "so the server cannot check which host it connects to. Write the host in the uri, "
-            "and the service name without '%'."
+            f"The {side} uri has Oracle find its host in a TNS alias, or in a path other than "
+            "a service name, which ConnectorX writes into the connect string, so the server "
+            "cannot check which host it connects to. Write the host in the uri, and the path "
+            "as /service, with at most :server_type and /instance after it, in letters, "
+            "digits, '_', '.', '$', and '-'."
         )
 
 
@@ -1028,21 +1039,23 @@ def _database_hosts(config: DatabaseConfig) -> list[tuple[str, str]]:
     host equals. A host parameter can list several servers, separated by
     commas, as a URI's authority can. ConnectorX's Trino reader decodes the
     whole URI, with the `password` field in it, before it finds the host, so
-    such a URI is checked decoded.
+    such a URI is checked decoded. Only a URI ConnectorX reads as SQLite names
+    no server, since the connector then opens the file `sqlite_path` names,
+    which `check_data_paths` checks.
     """
-    uri = config.uri
-    if connectorx_url(uri).scheme == "trino":
-        uri = unquote(connection_uri(config))
-    parts = urlsplit(uri)
-    if parts.scheme.startswith("sqlite"):
+    reader = connectorx_url(config).scheme
+    if reader == "sqlite":
         return []
+    uri = unquote(connection_uri(config)) if reader == "trino" else config.uri
     written = _DATABASE_URI.fullmatch(uri)
     if written is None:
         return [("uri", uri)]
     hosts = [_host(part) for part in written.group(1).split(",")]
+    # The pattern allows no `#`, so the query runs from the first `?` to the end. A decoded
+    # URI can hold a bracket urlsplit raises on, so it is not split there.
     hosts += [
         host
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        for key, value in parse_qsl(uri.partition("?")[2], keep_blank_values=True)
         if key.lower() in _HOST_PARAMETERS
         for host in value.split(",")
     ]
