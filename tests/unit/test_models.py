@@ -31,6 +31,7 @@ from veridelta.models import (  # pyright: ignore[reportPrivateUsage]
     SourceType,
     ValueMapEntry,
     ValueMapProposal,
+    redacted_location,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
@@ -798,10 +799,20 @@ class TestDatabaseConfig:
         with pytest.raises(ValidationError, match="needs a user name"):
             DatabaseConfig(uri="postgresql://db.internal/sales", password=_SECRET, table="t")
 
-    def test_it_reports_an_unparseable_uri_without_repeating_it(self) -> None:
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param(f"postgresql://analyst:{_SECRET}@[::1/sales", id="bad-ipv6"),
+            # The parser's own error for a character that folds to `/` repeats the password.
+            pytest.param(
+                f"postgresql://analyst:{_SECRET}\uff0f@db.internal:5432/sales", id="nfkc-solidus"
+            ),
+        ],
+    )
+    def test_it_reports_an_unparseable_uri_without_repeating_it(self, uri: str) -> None:
         """Ensure a malformed URI names the problem but never echoes its secret."""
-        with pytest.raises(ValidationError, match="Invalid IPv6 URL") as exc_info:
-            DatabaseConfig(uri=f"postgresql://analyst:{_SECRET}@[::1/sales", table="t")
+        with pytest.raises(ValidationError, match="'uri' does not parse as a URL") as exc_info:
+            DatabaseConfig(uri=uri, table="t")
 
         assert _SECRET not in str(exc_info.value)
 
@@ -947,6 +958,35 @@ class TestDatabaseConfig:
         assert config.uri == uri
         assert config.model_dump()["uri"] == uri
 
+    @pytest.mark.parametrize("mark", ["/", "?", "#"])
+    def test_it_refuses_a_password_that_ends_the_host_part_early(self, mark: str) -> None:
+        """Ensure a password the URI parser cannot see is refused, not printed.
+
+        An unencoded `/`, `?`, or `#` ends the host part before the `@`, so
+        nothing could mask the password in a log line, an error, or `repr()`.
+        """
+        secret = f"hunter2{mark}do-not-print"
+        uri = f"postgresql://analyst:{secret}@db.internal:5432/sales"
+
+        with pytest.raises(ValidationError, match="Set the password in 'password'") as exc_info:
+            DatabaseConfig(uri=uri, table="orders")
+
+        assert secret not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param("mssql://analyst@corp:hunter2@db.internal/sales", id="at-in-user"),
+            pytest.param("postgresql://analyst:hunter2%2F@db.internal/sales", id="encoded"),
+        ],
+    )
+    def test_it_accepts_every_at_sign_inside_the_host_part(self, uri: str) -> None:
+        """Ensure a login such as `analyst@corp` and an encoded password still load and mask."""
+        config = DatabaseConfig(uri=uri, table="orders")
+
+        assert "hunter2" not in config.redacted_uri
+
     @pytest.mark.parametrize(
         "uri",
         [
@@ -980,6 +1020,38 @@ class TestDatabaseConfig:
 
         assert config.redacted_uri == printed
         assert _SECRET not in repr(config)
+
+
+class TestRedactedLocation:
+    """Validate how a file or table location is printed without its secrets."""
+
+    @pytest.mark.parametrize("mark", ["/", "?", "#"])
+    def test_it_prints_nothing_of_a_password_that_ends_the_host_part_early(self, mark: str) -> None:
+        """Ensure a password the URL parser cannot see is never printed, not even in part."""
+        location = f"https://user:hunter2{mark}do-not-print@files.example.com/orders.csv"
+
+        assert redacted_location(location) is None
+
+    def test_it_prints_nothing_of_a_hidden_password_behind_a_one_letter_scheme(self) -> None:
+        """Ensure only a one-letter scheme with no host part passes as a Windows drive."""
+        assert redacted_location("x://user:hunter2/do-not-print@files.example.com/a") is None
+
+    @pytest.mark.parametrize(
+        ("location", "printed"),
+        [
+            pytest.param(
+                "https://user:hunter2@files.example.com/orders.csv",
+                "https://files.example.com/orders.csv",
+                id="user-part",
+            ),
+            pytest.param("C:\\me@corp\\orders.csv", "C:\\me@corp\\orders.csv", id="windows-path"),
+        ],
+    )
+    def test_it_prints_a_location_whose_at_sign_is_unambiguous(
+        self, location: str, printed: str
+    ) -> None:
+        """Ensure an `@` in a user part or in a Windows path still prints as before."""
+        assert redacted_location(location) == printed
 
 
 class TestDuckDBConfig:

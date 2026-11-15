@@ -948,6 +948,25 @@ class TestSendOTLPMetrics:
         assert "s3cret" not in str(info.value)
 
     @pytest.mark.parametrize(
+        "endpoint",
+        [
+            pytest.param("http://127.0.0.1:1/v1/metrics?team=a@b", id="in-query"),
+            pytest.param("http://s3cret/token@127.0.0.1:1/v1/metrics", id="hidden-password"),
+        ],
+    )
+    def test_it_refuses_an_at_sign_past_the_host(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint: str
+    ) -> None:
+        """Ensure an `@` past the host is refused before any send, since it can end a password."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", endpoint)
+
+        with pytest.raises(ConfigError, match="write a literal '@' as %40") as info:
+            send_otlp_metrics(_drift())
+
+        assert "s3" not in str(info.value)
+        assert "team" not in str(info.value)
+
+    @pytest.mark.parametrize(
         ("name", "endpoint"),
         [
             pytest.param(

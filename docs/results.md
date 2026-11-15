@@ -179,7 +179,7 @@ Resource attributes say which comparison ran:
 - `veridelta.source.type` and `veridelta.target.type`, such as `file` or `snowflake`;
 - `veridelta.source.name` and `veridelta.target.name`: the table, or the file or lakehouse path.
 
-A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run. An Azure `abfss://container@account` path keeps its container, which sits where a user would. A database `query` source has no name.
+A URL keeps only its scheme, host, and path, so a token in its user part or a signature in its query never leaves the run. A URL with an `@` after its host has no name, since that `@` can end a password holding an unencoded `/`, `?`, or `#`. An Azure `abfss://container@account` path keeps its container, which sits where a user would. A database `query` source has no name.
 
 Like the Markdown summary by default, the export holds counts and column names, never row values, connection URIs, credentials, or SQL. A run that fails before it has a result writes no file and sends nothing.
 
@@ -199,7 +199,7 @@ The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file
 
 `HEADERS`, `TIMEOUT`, and `PROTOCOL` also have a metrics form, such as `OTEL_EXPORTER_OTLP_METRICS_HEADERS`. The metrics form wins over the general one, as it does in the OpenTelemetry SDKs.
 
-Header keys and values are percent-encoded, as in `OTEL_RESOURCE_ATTRIBUTES`, so `Bearer <token>` is written `Bearer%20<token>`. No header value appears in a log line or an error, and neither does the endpoint's query. An endpoint must percent-encode a space, a control character, or a character outside ASCII. Veridelta refuses one written as is, and the error names the variable, not its value. The send follows no redirect, so a header never reaches a second host. Over HTTPS, the endpoint's certificate is checked against the system's trust store.
+Header keys and values are percent-encoded, as in `OTEL_RESOURCE_ATTRIBUTES`, so `Bearer <token>` is written `Bearer%20<token>`. No header value appears in a log line or an error, and neither does the endpoint's query. An endpoint with a user name, a password, or any other `@` fails the run, since credentials go in headers; write a literal `@` as `%40`. An endpoint must percent-encode a space, a control character, or a character outside ASCII. Veridelta refuses one written as is, and the error names the variable, not its value. The send follows no redirect, so a header never reaches a second host. Over HTTPS, the endpoint's certificate is checked against the system's trust store.
 
 The send is one attempt, with no retry. When it fails, such as on an unreachable endpoint, an HTTP error, or the timeout, the run exits `3` after writing its files. Under `--json`, stdout then holds the error object instead of the summary. An unusable variable, or a protocol other than `http/json`, fails the run the same way before anything is sent.
 

@@ -34,7 +34,7 @@ import urllib.error
 import urllib.request
 from email.message import Message
 from pathlib import Path
-from typing import IO, Final, cast
+from typing import IO, Final
 from urllib.parse import unquote_to_bytes, urlsplit, urlunsplit
 
 from veridelta import __version__
@@ -376,11 +376,12 @@ def _otlp_endpoint() -> str:
         raise ConfigError(
             f"{name} must be an http:// or https:// URL, such as {_DEFAULT_ENDPOINT}."
         )
-    if parts.username is not None:
-        # The standard library cannot send one, and its error would repeat it.
+    if "@" in endpoint:
+        # The standard library cannot send a user part, and its error would repeat it. An '@'
+        # past the host can end a password holding a '/', '?', or '#', which nothing could mask.
         raise ConfigError(
-            f"{name} must hold no user name or password. Send credentials as headers, in "
-            "OTEL_EXPORTER_OTLP_HEADERS."
+            f"{name} must hold no user name or password, nor any other '@'. Send credentials "
+            "as headers, in OTEL_EXPORTER_OTLP_HEADERS, and write a literal '@' as %40."
         )
     return endpoint
 
@@ -510,7 +511,7 @@ def send_otlp_metrics(
         time_unix_nano=time_unix_nano,
     )
     # A query can hold a credential too, so messages name the endpoint without one.
-    where = cast("str", redacted_location(endpoint))
+    where = redacted_location(endpoint) or "the OTLP endpoint"
     parts = urlsplit(endpoint)
     if headers and parts.scheme == "http" and not _on_this_machine(parts.hostname or ""):
         # Headers often carry an API key, which plain http sends readable on the way.
