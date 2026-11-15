@@ -785,6 +785,19 @@ def _snowflake() -> SnowflakeConfig:
     )
 
 
+def _key_pair(path: str) -> SnowflakeConfig:
+    """Build a warehouse side that signs in with the key file at `path`, which the driver opens here."""
+    return SnowflakeConfig(
+        account="xy12345",
+        user="analyst",
+        warehouse="COMPUTE_WH",
+        database="ANALYTICS",
+        schema_name="PUBLIC",
+        table="ORDERS",
+        private_key_path=path,
+    )
+
+
 _CLIMB = "/.." * 64
 """Enough steps up to reach `/` from any folder a test runs in."""
 
@@ -1417,6 +1430,8 @@ class TestCheckDataPaths:
             check_data_paths(settings, SourceConfig(path=path), _snowflake())
         with pytest.raises(ConfigError, match="was about to open a file outside"):
             mcp_server._refuse_opened(settings, path)  # pyright: ignore[reportPrivateUsage] - an Iceberg scan calls it with each file it opens
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            check_data_paths(settings, _snowflake(), _key_pair(path))
 
         assert not [each for each in reached() if "host.example" in each]
 
@@ -1752,6 +1767,84 @@ class TestCheckDataPaths:
     def test_it_leaves_remote_data_to_the_host_check(self, tmp_path: Path, side: SourceRef) -> None:
         """Ensure data on another machine is not held to the roots, but to the allowed hosts."""
         check_data_paths(Settings((tmp_path,)), side, side)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("{outside}/k.pem", id="absolute"),
+            pytest.param("../{outside_name}/k.pem", id="relative"),
+            pytest.param("~/k.pem", id="home"),
+        ],
+    )
+    def test_it_refuses_a_snowflake_key_file_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, path: str
+    ) -> None:
+        """Ensure the key file the driver opens here is held to the roots, by its setting alone.
+
+        The path can hold a `${NAME}` value, so the message leaves it out.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        (outside / "k.pem").write_text("not a real key\n", encoding="utf-8")
+        side = _key_pair(path.format(outside=outside, outside_name=outside.name))
+
+        with pytest.raises(
+            ConfigError, match=r"^The target private_key_path is outside"
+        ) as refused:
+            check_data_paths(Settings((tmp_path,)), _snowflake(), side)
+
+        assert "k.pem" not in str(refused.value)
+        assert outside.name not in str(refused.value)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("link.pem", id="link"),
+            pytest.param("deeper/../../{outside_name}/k.pem", id="parent-of-a-link"),
+        ],
+    )
+    def test_it_refuses_a_snowflake_key_file_a_link_leads_out_to(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, path: str
+    ) -> None:
+        """Ensure a link cannot carry the key file out, followed before a `..` or after it."""
+        outside = tmp_path_factory.mktemp("outside")
+        (outside / "k.pem").write_text("not a real key\n", encoding="utf-8")
+        (tmp_path / "link.pem").symlink_to(outside / "k.pem")
+        (tmp_path / "deep" / "er").mkdir(parents=True)
+        (tmp_path / "deeper").symlink_to(tmp_path / "deep" / "er", target_is_directory=True)
+        side = _key_pair(path.format(outside_name=outside.name))
+
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+    @pytest.mark.parametrize("path", _ANOTHER_MACHINE)
+    def test_it_resolves_no_snowflake_key_file_on_another_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a key file Windows reads as another machine's is refused before it is resolved.
+
+        On Windows, the driver's open reaches the host such a path names.
+        """
+        reached = _as_windows(monkeypatch, mocker)
+
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            check_data_paths(Settings((tmp_path,)), _snowflake(), _key_pair(path))
+
+        assert not _on_another_machine(reached())
+
+    @pytest.mark.parametrize("path", ["k.pem", "keys/../k.pem", "{root}/k.pem", "~/k.pem"])
+    def test_it_accepts_a_snowflake_key_file_under_a_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+    ) -> None:
+        """Ensure a key file under a root passes, with `~` expanded as the driver expands it."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "keys").mkdir()
+        (tmp_path / "k.pem").write_text("not a real key\n", encoding="utf-8")
+
+        check_data_paths(Settings((tmp_path,)), _snowflake(), _key_pair(path.format(root=tmp_path)))
 
 
 _ROW = pl.DataFrame({"id": [1], "note": [_SECRET]})
@@ -2785,6 +2878,20 @@ class TestAllowedHosts:
 
         assert str(refused.value).startswith(f"The target {setting} names a host")
         assert "--allow-host" in str(refused.value)
+        read.assert_not_called()
+
+    def test_it_refuses_a_snowflake_key_file_outside_the_roots_before_it_connects(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure an allowed account does not let the driver open a key file outside the roots."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        outside = tmp_path_factory.mktemp("outside")
+        target = f"{_SNOWFLAKE}  account: xy12345\n  private_key_path: {outside / 'k.pem'}\n"
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError, match=r"^The target private_key_path is outside"):
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
         read.assert_not_called()
 
     @pytest.mark.parametrize(

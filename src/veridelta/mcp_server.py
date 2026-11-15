@@ -918,6 +918,30 @@ def _refuse_outside(
         )
 
 
+def _refuse_key_file(settings: Settings, side: str, config: SourceRef) -> None:
+    """Refuse a Snowflake key file outside the roots, before the driver opens it.
+
+    The driver opens `private_key_path` on this machine before it connects,
+    with `~` expanded and relative to the working directory, as a reader opens
+    a data path. So the key file is held to the same rules: a path on another
+    machine is refused before anything resolves it, and the path must lie
+    under a root read either way. The message names the setting and not the
+    path, which can hold a `${NAME}` value.
+
+    Raises:
+        ConfigError: If the key file lies outside every root.
+    """
+    if not isinstance(config, SnowflakeConfig) or config.private_key_path is None:
+        return
+    if not _opened_inside(settings, config.private_key_path):
+        raise ConfigError(
+            f"The {side} private_key_path is outside the folders this server reads from: "
+            f"{_roots(settings)}. The driver opens the key file on this machine, and a tool "
+            "reads files here only from under them, so move the key into one, or ask the "
+            "person who started the server to add its folder with --root."
+        )
+
+
 def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -> None:
     """Refuse a side whose data on this machine lies outside the roots.
 
@@ -935,7 +959,9 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     file anywhere. Data on another machine that a side names, such as an
     object store, a database server, or a warehouse, is held to the hosts the
     server allows by `_refuse_hosts`, which a caller runs first, since listing
-    a table's files connects to its host.
+    a table's files connects to its host. A Snowflake key file is a file on
+    this machine, which the driver opens before it connects, so it must lie
+    under a root too.
 
     Every location the configuration names is checked before any file is
     opened, of either side: the listings come last.
@@ -946,7 +972,8 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
         target (SourceRef): The target configuration.
 
     Raises:
-        ConfigError: If a file or folder a side reads is outside every root.
+        ConfigError: If a file or folder a side reads, or a Snowflake key file,
+            is outside every root.
         ConnectorError: If the files of a lakehouse table cannot be listed.
     """
     sides = (("source", source), ("target", target))
@@ -957,6 +984,7 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
             _refuse_outside(
                 settings, side, setting, location, local, expanded=True, password=password
             )
+        _refuse_key_file(settings, side, config)
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
             for setting, location, quoted in _table_files(settings, side, config):
