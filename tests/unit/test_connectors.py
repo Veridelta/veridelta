@@ -187,10 +187,24 @@ class TestSharedHelpers:
     def test_it_reads_every_path_as_local_where_only_a_slash_separates(
         self, monkeypatch: pytest.MonkeyPatch, path: str
     ) -> None:
-        """Ensure a system whose only separator is `/` reads no path as another machine's."""
+        """Ensure Linux, whose only separator is `/`, reads no path as another machine's."""
         monkeypatch.setattr(base, "os", SimpleNamespace(path=posixpath))
+        monkeypatch.setattr(base, "sys", SimpleNamespace(platform="linux"))
 
         assert names_another_machine(path) is False
+
+    @pytest.mark.parametrize("platform", ["cygwin", "msys"])
+    @pytest.mark.parametrize(
+        "path", ["//host.example/share/a.csv", "\\\\host.example\\share\\a.csv"]
+    )
+    def test_it_reads_a_path_as_windows_does_on_cygwin(
+        self, monkeypatch: pytest.MonkeyPatch, platform: str, path: str
+    ) -> None:
+        """Ensure Cygwin and MSYS, whose only separator is `/`, read a network path as Windows does."""
+        monkeypatch.setattr(base, "os", SimpleNamespace(path=posixpath))
+        monkeypatch.setattr(base, "sys", SimpleNamespace(platform=platform))
+
+        assert names_another_machine(path) is True
 
 
 class TestConnectorInterface:

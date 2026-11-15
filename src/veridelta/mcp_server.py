@@ -43,7 +43,6 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.error import URLError
 from urllib.parse import SplitResult, parse_qsl, urlsplit
 from urllib.request import url2pathname
 
@@ -114,8 +113,9 @@ _SERVICE_SCHEMES: Final = frozenset({"hf", "md", "motherduck"})
 MotherDuck's, so a configuration chooses no host with them."""
 
 _LOCAL_SCHEMES: Final = frozenset({"file", "fs", "opendal+fs"})
-"""URI schemes whose reader opens the URI's path on this machine, whatever host
-it names: `file` for every reader, and `fs` and `opendal+fs` for Delta Lake's.
+"""URI schemes whose reader opens the URI's path on this machine: `file` for
+every reader, which `_local_paths` refuses with a host other than `localhost`,
+and `fs` and `opendal+fs` for Delta Lake's, whatever host they name.
 
 Any other scheme of two or more characters names another machine, so its host
 must be allowed, even one no reader is known to take: a reader that knows more
@@ -679,34 +679,49 @@ def _local_paths(location: str, named: str) -> list[str]:
     yields each of these paths too, and the caller holds every one to the
     roots.
 
-    From Python 3.14, a path that starts with `//` and a host, such as the one
-    in `file:////host/x`, cannot be converted when the host does not parse, or
-    when it is not this machine on a system whose only separator is `/`. Such
-    a URI is refused, with a message that names `named`, the setting, but not
-    the value, which a table's files can hold.
+    A `file:` URI that names a host other than `localhost`, in either way of
+    parsing it, is refused: deltalake opens `file://host/x` on that host on
+    Windows, Polars refuses it, and PyIceberg reads the host as a folder.
+    Delta Lake opens `fs:` and `opendal+fs:` here whatever host they name. A
+    URI whose path Python cannot convert is refused too: from Python 3.14,
+    one that starts with `//` and a host, such as `file:////host/x`, and on
+    Windows before 3.14, one with a second `:`. The message names `named`,
+    the setting, but not the value, which a table's files can hold.
 
     Raises:
-        ConfigError: If Python cannot convert one of the URI's paths.
+        ConfigError: If a `file:` URI names a host, or Python cannot convert
+            one of the URI's paths.
     """
     parts = _split(location)
     if parts is None or parts.scheme not in _LOCAL_SCHEMES:
         return [location]
+    standard = _split(location.replace("\\", "/").strip(_URL_SPACE))
+    hosts = {parts.netloc, "" if standard is None else standard.netloc}
+    if parts.scheme == "file" and any(
+        host and not (host.isascii() and host.lower() == "localhost") for host in hosts
+    ):
+        raise ConfigError(
+            f"The {named} is a file URI that names a host, and on Windows a reader opens it on "
+            "that machine, so this server refuses it. Write it with nothing between '//' and "
+            "the path's '/', or as a path under the folders this server reads from."
+        )
     try:
         paths = [
             url2pathname(parts.path),
             parts.netloc + url2pathname(parts.path.replace("%", "%25")),
         ]
-        standard = _split(location.replace("\\", "/").strip(_URL_SPACE))
         if standard is not None:
             # Rooted at `/` before it is converted, since on Windows a separator added after
             # the conversion can make a path such as `\\host\share`, which names another machine.
             path = standard.path
             paths.append(url2pathname(path if path.startswith("/") else f"/{path}"))
-    except (URLError, ValueError):
+    except (OSError, ValueError, IndexError):
+        # Python 3.14 raises a URLError, an OSError, for a host it cannot read; before 3.14,
+        # Windows raises an OSError or an IndexError for a path with a second `:`.
         raise ConfigError(
-            f"The {named} is a file URI whose path starts with '//' and a host, which Python "
-            "does not read as a path on this machine, so this server refuses it. Write it as "
-            "a path under the folders this server reads from."
+            f"The {named} is a file URI whose path Python cannot read as a path on this "
+            "machine, so this server refuses it. Write it as a path under the folders this "
+            "server reads from."
         ) from None
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.

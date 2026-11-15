@@ -1230,7 +1230,6 @@ class TestCheckDataPaths:
         [
             pytest.param("FILE://{root}/a.csv", id="file-scheme-in-capitals"),
             pytest.param("S3://{root}/a.csv", id="remote-scheme-in-capitals"),
-            pytest.param("file://link{root}/a.csv", id="file-host"),
             pytest.param("file://{root}/x%2Fy/../../a.csv", id="escaped-slash"),
         ],
     )
@@ -1244,11 +1243,11 @@ class TestCheckDataPaths:
         """Ensure a URI the readers open in different places is held to the roots in each.
 
         Polars opens a scheme in capitals as a folder of that name, and decodes
-        `%` escapes. PyIceberg opens a host as a folder, and decodes none.
+        `%` escapes. PyIceberg decodes none.
         """
         outside = tmp_path_factory.mktemp("outside")
         monkeypatch.chdir(tmp_path)
-        for name in ("FILE:", "S3:", "link"):
+        for name in ("FILE:", "S3:"):
             (tmp_path / name).symlink_to(outside, target_is_directory=True)
         side = SourceConfig(path=uri.format(root=tmp_path))
 
@@ -1405,6 +1404,8 @@ class TestCheckDataPaths:
         [
             pytest.param(URLError("file:// scheme is supported only on localhost"), id="host"),
             pytest.param(ValueError("Invalid IPv6 URL"), id="unparsed-host"),
+            pytest.param(OSError("Bad URL: /a|b|c/x.csv"), id="second-colon-on-windows"),
+            pytest.param(IndexError("string index out of range"), id="no-drive-on-windows"),
         ],
     )
     def test_it_refuses_a_file_uri_python_cannot_read_as_a_path(
@@ -1413,7 +1414,9 @@ class TestCheckDataPaths:
         """Ensure a file URI whose path Python cannot convert fails as a configuration error.
 
         From Python 3.14, converting a path that starts with `//` and a host
-        raises, which this simulates on every version.
+        raises a URLError or a ValueError. On Windows before 3.14, converting a
+        path with a second `:` raises an OSError or an IndexError. This
+        simulates each on every version.
         """
 
         def convert(path: str) -> str:
@@ -1423,7 +1426,7 @@ class TestCheckDataPaths:
         side = SourceConfig(path="file:////host.example/share/a.csv")
 
         with pytest.raises(
-            ConfigError, match="The source path is a file URI whose path starts with '//'"
+            ConfigError, match="The source path is a file URI whose path Python cannot read"
         ) as refused:
             check_data_paths(Settings((tmp_path,)), side, _snowflake())
 
@@ -1440,6 +1443,62 @@ class TestCheckDataPaths:
         """
         with pytest.raises(ConfigError, match="The source path"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path=path), _snowflake())
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("file://host.example/share/a.csv", id="host"),
+            pytest.param("FILE://Host.Example/share/a.csv", id="host-in-capitals"),
+            pytest.param("file:\\\\host.example\\share\\a.csv", id="host-after-backslashes"),
+            pytest.param("file:/\\host.example/share/a.csv", id="host-after-mixed-separators"),
+            pytest.param("file://localhost./share/a.csv", id="localhost-with-a-dot"),
+            pytest.param("file://user@localhost/share/a.csv", id="localhost-with-a-user"),
+        ],
+    )
+    def test_it_refuses_a_file_uri_that_names_a_host(
+        self, tmp_path: Path, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a file URI that names a host fails before any reader opens it, never quoted.
+
+        On Windows, deltalake opens `file://host/x` on that host, and so does
+        a URL parser that reads a backslash as `/`.
+        """
+        import deltalake
+
+        opened = mocker.spy(deltalake, "DeltaTable")
+        sides = (SourceConfig(path=path), DeltaLakeConfig(table_uri=path.removesuffix("/a.csv")))
+
+        for side in sides:
+            with pytest.raises(ConfigError, match="is a file URI that names a host") as refused:
+                check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+            assert "host.example" not in str(refused.value).lower()
+        opened.assert_not_called()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows on Python 3.11 resolves text such as 'file:' otherwise.",
+    )
+    def test_it_reads_a_file_uri_on_localhost_as_a_path_here(self, tmp_path: Path) -> None:
+        """Ensure a file URI whose host is `localhost`, in any case, is checked as a path here."""
+        file = tmp_path / "a.csv"
+
+        for host in ("localhost", "LocalHost"):
+            uri = f"file://{host}{file.as_uri().removeprefix('file://')}"
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=uri), _snowflake())
+
+    def test_it_refuses_a_listed_file_uri_that_names_a_host(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file a table's listing names on another host fails, never quoted."""
+        listed = [("data file", "file://host.example/share/part-0.parquet", False)]
+        mocker.patch.object(mcp_server, "_table_files", return_value=iter(listed))
+        side = DeltaLakeConfig(table_uri=str(tmp_path / "t"))
+
+        with pytest.raises(ConfigError, match="The source data file is a file URI that") as refused:
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+        assert "host.example" not in str(refused.value)
 
     def test_it_refuses_a_listed_file_uri_python_cannot_read_as_a_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture

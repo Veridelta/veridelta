@@ -6,6 +6,7 @@
 import importlib
 import logging
 import os
+import sys
 from abc import ABC, abstractmethod
 from types import ModuleType, TracebackType
 from typing import ClassVar, Final, Literal, Self
@@ -72,8 +73,9 @@ def names_another_machine(path: str) -> bool:
     a path that starts with `\??\` to the kernel as written, which can name one
     as well. Resolving, matching, or opening such a path reaches the host it
     names, and can send the user's credentials there, so a caller asks this
-    before anything resolves the path. A system whose only separator is `/`
-    reads each of these as a path on this machine.
+    before anything resolves the path. Cygwin and MSYS read such a path as
+    Windows does. Any other system whose only separator is `/`, such as Linux
+    or macOS, reads each of these as a path on this machine.
 
     Args:
         path (str): A path, before anything expands or resolves it.
@@ -81,7 +83,7 @@ def names_another_machine(path: str) -> bool:
     Returns:
         bool: Whether the path can name another machine or a device.
     """
-    if os.path.sep != "\\":
+    if os.path.sep != "\\" and sys.platform not in ("cygwin", "msys"):
         return False
     text = path.replace("/", "\\")
     return text.startswith(("\\\\", "\\??\\"))
