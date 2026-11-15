@@ -181,6 +181,57 @@ class TestDuckDBConnector:
 
         assert driver.connect.call_args.args == (f"duckdb:{home}/warehouse.duckdb",)
 
+    @pytest.mark.parametrize(
+        ("database", "home"),
+        [
+            pytest.param("//srv/warehouse.duckdb", None, id="two-slashes"),
+            pytest.param("~//srv/warehouse.duckdb", "/", id="home-of-the-root-folder"),
+        ],
+    )
+    def test_it_refuses_a_path_duckdb_reads_as_no_type(
+        self,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        database: str,
+        home: str | None,
+    ) -> None:
+        """Ensure no path reaches DuckDB as `duckdb://`, from which it strips no type.
+
+        DuckDB would open the relative file `duckdb:/srv/warehouse.duckdb`
+        instead, and by its first bytes, through the SQLite extension if
+        that is what the file holds.
+        """
+        driver = _driver(mocker)
+        if home is not None:
+            # POSIX reads HOME, Windows USERPROFILE.
+            monkeypatch.setenv("HOME", home)
+            monkeypatch.setenv("USERPROFILE", home)
+        connector = DuckDBConnector(DuckDBConfig(database=database, table="t"))
+        session = DuckDBPushdownSession(DuckDBConfig(database=database, table="t", pushdown=True))
+
+        with pytest.raises(ConnectorError, match="starts with //, once ~ is expanded") as refused:
+            connector.connect()
+        with pytest.raises(ConnectorError, match="starts with //, once ~ is expanded"):
+            session.connect()
+
+        assert str(refused.value).startswith("The DuckDB 'database' starts with //")
+        driver.connect.assert_not_called()
+
+    def test_it_refuses_a_home_path_with_no_home_folder(self, mocker: MockerFixture) -> None:
+        """Ensure DuckDB is never handed `~`, which it expands where Python found no home.
+
+        Python leaves the text as written when the system names no home
+        folder, so the MCP server checks a folder `~` in the working
+        directory, while DuckDB would read `~` as HOME alone.
+        """
+        driver = _driver(mocker)
+        mocker.patch.object(os.path, "expanduser", side_effect=lambda path: path)
+
+        with pytest.raises(ConnectorError, match="names no home folder"):
+            DuckDBConnector(DuckDBConfig(database="~/warehouse.duckdb", table="t")).connect()
+
+        driver.connect.assert_not_called()
+
     def test_it_closes_a_connection_whose_setup_fails(self, mocker: MockerFixture) -> None:
         """Ensure a connection is released when a setting fails, before any read."""
         connection = _driver(mocker).connect.return_value

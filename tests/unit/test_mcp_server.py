@@ -880,6 +880,94 @@ class TestCheckDataPaths:
     @pytest.mark.skipif(
         sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
     )
+    @pytest.mark.parametrize(
+        ("build", "setting", "location"),
+        [
+            pytest.param(lambda path: SourceConfig(path=path), "path", "./~/x.csv", id="file"),
+            pytest.param(
+                lambda path: DuckDBConfig(database=path, table="t"),
+                "database",
+                "./~/x.duckdb",
+                id="duckdb",
+            ),
+        ],
+    )
+    def test_it_reads_a_folder_named_home_as_the_readers_do(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        build: Callable[[str], SourceRef],
+        setting: str,
+        location: str,
+    ) -> None:
+        """Ensure `./~/x` names a folder `~` in the working directory, in the check and the read.
+
+        `Path` drops the `./` and then expands `~`, so it would check the home
+        folder, here under the root, while the reader opens the link named `~`.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "~").symlink_to(outside, target_is_directory=True)
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigError, match=f"The target {setting} '{location}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), build(location))
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A home folder of `/` and a path from it are POSIX forms."
+    )
+    def test_it_reads_a_duckdb_home_path_as_duckdb_is_handed_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `~//x` with a home folder of `/` is the path on another machine that DuckDB gets.
+
+        `Path` folds `//` into one, so it would check `/x` under the root,
+        while the connector expands the text to `//x`.
+        """
+        monkeypatch.setenv("HOME", "/")
+        database = f"~/{tmp_path / 'x.duckdb'}"
+
+        with pytest.raises(ConfigError, match="is outside the folders"):
+            check_data_paths(
+                Settings((tmp_path,)),
+                SourceConfig(path=str(tmp_path / "a.csv")),
+                DuckDBConfig(database=database, table="t"),
+            )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        ("database", "link"), [("{root}/x.duckdb", "x.duckdb.wal"), ("~", "home.wal")]
+    )
+    def test_it_refuses_a_duckdb_write_ahead_log_linked_outside(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        database: str,
+        link: str,
+    ) -> None:
+        """Ensure the WAL beside a DuckDB file is held to the roots, since DuckDB replays it.
+
+        DuckDB opens the expanded path with `.wal` added as it opens the
+        file, before the sandbox applies, and follows a link there to another
+        database's log. Python would read `~.wal` as the home of a user named
+        `.wal`, where DuckDB adds `.wal` to the home folder.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
+        wal.write_bytes(b"")
+        (tmp_path / link).symlink_to(wal)
+        target = DuckDBConfig(database=database.format(root=tmp_path), table="t")
+
+        with pytest.raises(ConfigError, match=r"The target database's WAL '.+' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
     @pytest.mark.parametrize("dots", ["..", "%2E%2E", ".%2e"])
     def test_it_checks_the_sqlite_path_a_link_leads_to(
         self,

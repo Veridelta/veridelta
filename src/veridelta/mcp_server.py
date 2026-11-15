@@ -544,8 +544,12 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     The readers disagree on a `..` after a link. The system follows the link
     first, and PyArrow drops the link and the `..` without following it. So
     the path must lie under a root read either way.
+
+    A leading `~` is expanded by `os.path.expanduser` on the text as written,
+    as the readers expand it. `Path` would drop a leading `./` and fold `//`
+    first, and so read `./~/x` as a file in the home folder.
     """
-    return _under_both_readings(settings, Path(location).expanduser())
+    return _under_both_readings(settings, Path(os.path.expanduser(location)))
 
 
 def _opened(location: str) -> list[str]:
@@ -694,7 +698,10 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
     elif isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig) and not config.is_motherduck:
-        named = [("database", config.database)]
+        # DuckDB replays the write-ahead log beside the file as it opens it, before the sandbox.
+        # Its name is the expanded path's, so `~` and `~.wal` cannot name different homes.
+        wal = f"{os.path.expanduser(config.database)}.wal"
+        named = [("database", config.database), ("database's WAL", wal)]
     elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)
@@ -715,7 +722,7 @@ def _delta_files(config: DeltaLakeConfig) -> Iterator[tuple[str, str, bool]]:
     from deltalake import DeltaTable
 
     for local in _local_paths(config.table_uri):
-        log = Path(local).expanduser() / "_delta_log"
+        log = Path(os.path.expanduser(local)) / "_delta_log"
         yield "log", str(log), True
         for folder, folders, files in os.walk(log):
             for name in sorted(folders + files):

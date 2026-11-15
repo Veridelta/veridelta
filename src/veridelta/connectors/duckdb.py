@@ -83,6 +83,17 @@ _DUCKDB_TYPE: Final = "duckdb:"
 DuckDB strips it and opens the rest of the text as a path, so it opens the path
 that `DuckDBConfig` and the MCP server check, whatever the file holds."""
 
+_NO_HOME: Final = (
+    "The DuckDB 'database' starts with ~, and the system names no home folder to expand it "
+    "to. Set HOME, or USERPROFILE on Windows, or write the path itself."
+)
+
+_TWO_SLASHES: Final = (
+    "The DuckDB 'database' starts with //, once ~ is expanded, and DuckDB does not open "
+    "such a path as the file it names. Start the path with one /, and write a Windows "
+    "share as \\\\server\\share."
+)
+
 _NO_EXTENSIONS: Final = {"autoinstall_known_extensions": False, "autoload_known_extensions": False}
 """Settings that stop DuckDB from installing or loading an extension by itself while
 it opens a file, such as `httpfs` for a path that starts with a URL's scheme."""
@@ -340,13 +351,23 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
     as a reason to install and load the extension that opens it, before any
     setting of the sandbox applies.
 
-    A leading `~` is expanded here, as the MCP server's check expands it, so
-    DuckDB never does. DuckDB reads `~` as `HOME` alone, which may be unset
-    where the system still names a home folder.
+    A leading `~` is expanded here, with the function and text the MCP
+    server's check expands, so DuckDB never does. DuckDB reads `~` as `HOME`
+    alone, which may be unset where the system still names a home folder.
+
+    Raises:
+        ConnectorError: If the path still starts with `~`, since the system
+            names no home folder, or starts with `//`, once `~` is expanded.
+            DuckDB strips no type from `duckdb://`, so it would open a file
+            whose name starts with `duckdb:` instead, by its first bytes.
     """
     setup = ["SET TimeZone = 'UTC'"]
     if token is None:
         path = os.path.expanduser(config.database)
+        if path.startswith("~"):
+            raise ConnectorError(_NO_HOME)
+        if path.startswith("//"):
+            raise ConnectorError(_TWO_SLASHES)
         connection = duckdb.connect(f"{_DUCKDB_TYPE}{path}", read_only=True, config=_NO_EXTENSIONS)
         folders = _sandbox.get()
         if folders is None:

@@ -2067,7 +2067,11 @@ as `sqlite:x.db` or `postgres:host=db`.
 DuckDB reads two or more ASCII letters, digits, or underscores before the first
 colon, with no `//` after it, as the name of the extension that opens the
 database, and loads that extension before any setting of the connection
-applies. One letter is a drive letter, such as `C:`."""
+applies. One letter is a drive letter, such as `C:`.
+
+The connector puts `duckdb:` before every file's path, so DuckDB never reads a
+type from the text itself. This refusal names the mistake before that. Keep
+the prefix in `_open` if this pattern changes."""
 
 _FILE_URI: Final = re.compile(r"file:", re.IGNORECASE | re.ASCII)
 """The start of a `file:` URI, which DuckDB reads otherwise than a check of its path.
