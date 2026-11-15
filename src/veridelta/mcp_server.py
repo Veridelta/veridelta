@@ -195,6 +195,25 @@ _BARE_HOST: Final = re.compile(r"([^\s:/?#@\\\[\]]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]
 """A host written without a scheme, with an optional port, as an endpoint option
 or an account name gives it."""
 
+_EXTENSION_PREFIX: Final = re.compile(r"[^:/\\]{2,}:(?!//)")
+"""The start of a DuckDB `database` that DuckDB opens through an extension, such
+as `postgres_scanner:host=db port=5432`.
+
+DuckDB reads two or more letters, digits, or underscores before the first colon,
+with no `//` after it, as the name of an extension, and loads it to connect
+before any setting of the server applies. The pattern takes any character but a
+path separator, so it matches every name DuckDB reads, and a few it does not."""
+
+_MOTHERDUCK_OPTIONS: Final = frozenset({"attach_mode", "saas_mode", "session_name"})
+"""Options of a MotherDuck `database`, after its `?`, that a tool passes on.
+
+MotherDuck's extension reads its settings there, and some, such as
+`motherduck_host`, choose the host it connects to, so a tool passes on only
+these, which choose none."""
+
+_OPTION_VALUE: Final = re.compile(r"[A-Za-z0-9_-]*")
+"""A MotherDuck option's value a tool passes on, such as `single`."""
+
 _HOST_PARAMETERS: Final = frozenset({"host", "hostaddr", "socket"})
 """Query parameters of a database URI that name the server to connect to, which a
 driver reads in place of, or beside, the URI's host."""
@@ -632,14 +651,39 @@ def _database_hosts(uri: str) -> list[tuple[str, str]]:
     return [("uri", host) for host in hosts]
 
 
+def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
+    """Name each host a DuckDB `database` reaches, or None for one the server cannot check.
+
+    A database DuckDB opens through an extension, such as Postgres's, connects
+    to whatever its text names, so it names None. So does a MotherDuck option a
+    tool does not pass on, such as `motherduck_host`. A MotherDuck database with
+    none of those reaches MotherDuck's own hosts, and names none. The text after
+    `?` can hold a `${NAME}` value, so only a known option's name is repeated.
+    """
+    if config.is_motherduck:
+        _, _, query = config.database.partition("?")
+        for option in query.split("&") if query else ():
+            key, _, value = option.partition("=")
+            if key not in _MOTHERDUCK_OPTIONS:
+                return [
+                    ("database option other than attach_mode, saas_mode, or session_name", None)
+                ]
+            if _OPTION_VALUE.fullmatch(value) is None:
+                return [(f"database option '{key}'", None)]
+        return []
+    if _EXTENSION_PREFIX.match(config.database) is not None:
+        return [("database extension prefix", None)]
+    return [*_location_hosts("database", config.database)]
+
+
 def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     """Name each host a side connects to that its configuration chooses, with the setting.
 
     A host of None marks a setting a tool does not pass on, since the server
     cannot check the host it sends a reader to. A BigQuery key file is one: its
-    `token_uri` names the host the sign-in goes to. MotherDuck and Hugging
-    Face, and BigQuery with the server's own credentials, reach their own
-    service's hosts, which no setting changes, so they name none.
+    `token_uri` names the host the sign-in goes to. Hugging Face, MotherDuck
+    with no option that moves it, and BigQuery with the server's own
+    credentials reach their own service's hosts, so they name none.
     """
     if isinstance(config, SourceConfig):
         return [
@@ -652,7 +696,7 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
             *_option_hosts(config.storage_options),
         ]
     if isinstance(config, DuckDBConfig):
-        return [*_location_hosts("database", config.database)]
+        return _duckdb_hosts(config)
     if isinstance(config, DatabaseConfig):
         return [*_database_hosts(config.uri)]
     if isinstance(config, SnowflakeConfig):
@@ -675,8 +719,9 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
             if host is None:
                 raise ConfigError(
                     f"The {side} {setting} is not one a tool passes on, since the server "
-                    "cannot check which host it sends a reader to. Leave it out, and ask the "
-                    "person who started the server to give credentials through its environment."
+                    "cannot check which host it sends a reader to. Leave it out. A credential "
+                    "can come from the server's environment instead, which the person who "
+                    "started it sets."
                 )
             if host.lower() not in settings.allowed_hosts:
                 raise ConfigError(

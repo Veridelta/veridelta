@@ -1137,6 +1137,50 @@ class TestAllowedHosts:
                 "credentials_path",
                 id="bigquery-key-file",
             ),
+            pytest.param(
+                "  type: duckdb\n  database: 'postgres_scanner:host=127.0.0.1 dbname=d'\n"
+                "  table: t\n",
+                "database extension prefix",
+                id="duckdb-postgres-extension",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'Postgres_Scanner:host=127.0.0.1'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-extension-in-any-case",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'mysql_scanner:host=127.0.0.1 user=u'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-mysql-extension",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'sqlite_scanner:x.db'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-sqlite-extension",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: '1ab:x'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-extension-with-a-digit-first",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:?motherduck_host=127.0.0.1&motherduck_use_tls=false'"
+                "\n  table: t\n",
+                "database option other than attach_mode, saas_mode, or session_name",
+                id="motherduck-host",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'MD:sales?attach_mode=single&Motherduck_Port=80'\n"
+                "  table: t\n",
+                "database option other than attach_mode, saas_mode, or session_name",
+                id="motherduck-option-in-any-case",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:sales?attach_mode=single;motherduck_host=x'\n"
+                "  table: t\n",
+                "database option 'attach_mode'",
+                id="motherduck-option-that-hides-another",
+            ),
         ],
     )
     def test_it_refuses_a_setting_whose_host_it_cannot_check(
@@ -1159,6 +1203,11 @@ class TestAllowedHosts:
                 "  type: bigquery\n  project: analytics\n  table: sales.orders\n", id="bigquery"
             ),
             pytest.param("  type: duckdb\n  database: md:sales\n  table: t\n", id="motherduck"),
+            pytest.param(
+                "  type: duckdb\n  database: 'motherduck:sales?attach_mode=single&saas_mode=true"
+                "&session_name=etl-1'\n  table: t\n",
+                id="motherduck-options",
+            ),
             pytest.param("  path: hf://datasets/org/data/a.parquet\n", id="hugging-face"),
         ],
     )
@@ -1200,6 +1249,25 @@ class TestAllowedHosts:
             run_configuration(Settings((tmp_path,)), "veridelta.yaml")
 
         assert _SECRET not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("md:sales?${VD_MCP_SECRET}=1", id="motherduck-option"),
+            pytest.param("${VD_MCP_SECRET}_scanner:host=127.0.0.1", id="duckdb-extension"),
+        ],
+    )
+    def test_it_names_no_duckdb_text_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database: str
+    ) -> None:
+        """Ensure a refused DuckDB `database` keeps a value from the environment out of the refusal."""
+        monkeypatch.setenv("VD_MCP_SECRET", "hunter2_do_not_print")
+        _remote(tmp_path, f"  type: duckdb\n  database: '{database}'\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="is not one a tool passes on") as refused:
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert "hunter2" not in str(refused.value)
 
     def test_a_check_with_schemas_connects_to_no_host_it_does_not_allow(
         self, tmp_path: Path, mocker: MockerFixture
