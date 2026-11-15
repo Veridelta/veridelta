@@ -76,8 +76,8 @@ def redacted_location(location: str) -> str | None:
         parts = urlsplit(location)
     except ValueError:
         return None
-    # A one-letter scheme is a Windows drive, as in C:\me@corp\orders.csv, which has no user part.
-    if len(parts.scheme) > 1 and _has_hidden_user_part(location, parts.netloc):
+    # A one-letter scheme with no host part is a Windows drive, as in C:\me@corp\orders.csv.
+    if (len(parts.scheme) > 1 or parts.netloc) and _has_hidden_user_part(location, parts.netloc):
         return None
     if not (parts.scheme and parts.netloc):
         return location
@@ -1877,7 +1877,7 @@ class DatabaseConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set, the
-                URI has no scheme or holds an `@` after its host, `password`
+                URI does not parse, has no scheme, or holds an `@` after its host, `password`
                 conflicts with the URI, or
                 `pushdown` is set on anything but a Postgres, SQL Server, or Redshift
                 table.
@@ -1886,14 +1886,23 @@ class DatabaseConfig(BaseModel):
             raise ValueError(
                 "A database source reads a 'table' or runs a 'query'; set exactly one."
             )
-        parts = urlsplit(self.uri)
+        try:
+            parts = urlsplit(self.uri)
+        except ValueError:
+            # The parser's message repeats the host part, which can hold the password.
+            raise ValueError(
+                "'uri' does not parse as a URL, as when its user name, password, or host holds "
+                "a character not allowed there. Set the password in 'password', or "
+                "percent-encode it in 'uri'."
+            ) from None
         if not parts.scheme:
             raise ValueError("'uri' needs a scheme such as postgresql:// or sqlite://.")
         if _has_hidden_user_part(self.uri, parts.netloc):
             # The URI is never echoed: the text before that `@` can be a password.
             raise ValueError(
-                "'uri' holds an '@' after its host, as a password with an unencoded '/', '?', "
-                "or '#' puts it. Set the password in 'password', or percent-encode it in 'uri'."
+                "'uri' holds an '@' after its host, where a password with an unencoded '/', "
+                "'?', or '#' puts it. Set the password in 'password', or percent-encode it in "
+                "'uri'. Write any other '@' as %40."
             )
         if self.pushdown and parts.scheme.lower() not in DATABASE_PUSHDOWN_SCHEMES:
             raise ValueError(

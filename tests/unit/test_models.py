@@ -769,10 +769,20 @@ class TestDatabaseConfig:
         with pytest.raises(ValidationError, match="needs a user name"):
             DatabaseConfig(uri="postgresql://db.internal/sales", password=_SECRET, table="t")
 
-    def test_it_reports_an_unparseable_uri_without_repeating_it(self) -> None:
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param(f"postgresql://analyst:{_SECRET}@[::1/sales", id="bad-ipv6"),
+            # The parser's own error for a character that folds to `/` repeats the password.
+            pytest.param(
+                f"postgresql://analyst:{_SECRET}\uff0f@db.internal:5432/sales", id="nfkc-solidus"
+            ),
+        ],
+    )
+    def test_it_reports_an_unparseable_uri_without_repeating_it(self, uri: str) -> None:
         """Ensure a malformed URI names the problem but never echoes its secret."""
-        with pytest.raises(ValidationError, match="Invalid IPv6 URL") as exc_info:
-            DatabaseConfig(uri=f"postgresql://analyst:{_SECRET}@[::1/sales", table="t")
+        with pytest.raises(ValidationError, match="'uri' does not parse as a URL") as exc_info:
+            DatabaseConfig(uri=uri, table="t")
 
         assert _SECRET not in str(exc_info.value)
 
@@ -991,6 +1001,10 @@ class TestRedactedLocation:
         location = f"https://user:hunter2{mark}do-not-print@files.example.com/orders.csv"
 
         assert redacted_location(location) is None
+
+    def test_it_prints_nothing_of_a_hidden_password_behind_a_one_letter_scheme(self) -> None:
+        """Ensure only a one-letter scheme with no host part passes as a Windows drive."""
+        assert redacted_location("x://user:hunter2/do-not-print@files.example.com/a") is None
 
     @pytest.mark.parametrize(
         ("location", "printed"),
