@@ -858,6 +858,7 @@ _ALLOWED = (
     "db.internal",
     "[::1]",
     "xy12345.snowflakecomputing.com",
+    "xy12345.cn-north-1.aws.snowflakecomputing.cn",
     "adb-1.azuredatabricks.net",
 )
 """The hosts the host tests' server allows."""
@@ -872,6 +873,12 @@ _SNOWFLAKE = (
 def _remote(root: Path, target: str) -> Path:
     """Write a configuration whose source is a file under the root and whose target is `target`."""
     return _write(root, f"source:\n  path: a.csv\ntarget:\n{target}primary_keys: [id]\n")
+
+
+_MOTHERDUCK_NAME = (
+    "database name, which may hold only letters, digits, _, -, and /, and not start with /,"
+)
+"""How a refusal names a MotherDuck `database` whose text before its `?` a tool does not pass on."""
 
 
 class TestAllowedHosts:
@@ -1025,6 +1032,9 @@ class TestAllowedHosts:
             ),
             pytest.param(f"{_SNOWFLAKE}  account: elsewhere\n", "account", id="snowflake"),
             pytest.param(
+                f"{_SNOWFLAKE}  account: xy12345.cn-north-1\n", "account", id="snowflake-in-china"
+            ),
+            pytest.param(
                 f"{_DATABRICKS}  server_hostname: elsewhere.example\n",
                 "server_hostname",
                 id="databricks",
@@ -1078,6 +1088,9 @@ class TestAllowedHosts:
             pytest.param("  type: database\n  uri: sqlite://x.db\n  table: t\n", id="sqlite"),
             pytest.param("  type: duckdb\n  database: x.duckdb\n  table: t\n", id="duckdb-file"),
             pytest.param(f"{_SNOWFLAKE}  account: XY12345\n", id="snowflake"),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: XY12345.cn-north-1.aws\n", id="snowflake-in-china"
+            ),
             pytest.param(
                 f"{_DATABRICKS}  server_hostname: https://adb-1.azuredatabricks.net/\n",
                 id="databricks",
@@ -1181,6 +1194,45 @@ class TestAllowedHosts:
                 "database option 'attach_mode'",
                 id="motherduck-option-that-hides-another",
             ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x&motherduck_host=127.0.0.1&motherduck_use_tls=false'"
+                "\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-an-ampersand",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x#motherduck_host=127.0.0.1&motherduck_use_tls=false'"
+                "\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-a-hash",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x?attach_mode=single#motherduck_host=127.0.0.1'"
+                "\n  table: t\n",
+                "database option 'attach_mode'",
+                id="motherduck-option-after-a-hash-in-the-options",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'Motherduck:x;motherduck_host=127.0.0.1?saas_mode=1'"
+                "\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-a-semicolon",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x%26motherduck_host%3D127.0.0.1'\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-percent-encoded",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x motherduck_host=127.0.0.1'\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-a-space",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md://../outside.duckdb'\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-scheme-that-duckdb-opens-as-a-file",
+            ),
         ],
     )
     def test_it_refuses_a_setting_whose_host_it_cannot_check(
@@ -1203,6 +1255,14 @@ class TestAllowedHosts:
                 "  type: bigquery\n  project: analytics\n  table: sales.orders\n", id="bigquery"
             ),
             pytest.param("  type: duckdb\n  database: md:sales\n  table: t\n", id="motherduck"),
+            pytest.param(
+                "  type: duckdb\n  database: 'MD:_share/sales/23b0d623-1361-421d?saas_mode=1'\n"
+                "  table: t\n",
+                id="motherduck-share",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:'\n  table: t\n", id="motherduck-default"
+            ),
             pytest.param(
                 "  type: duckdb\n  database: 'motherduck:sales?attach_mode=single&saas_mode=true"
                 "&session_name=etl-1'\n  table: t\n",
@@ -1254,6 +1314,7 @@ class TestAllowedHosts:
         "database",
         [
             pytest.param("md:sales?${VD_MCP_SECRET}=1", id="motherduck-option"),
+            pytest.param("md:sales&${VD_MCP_SECRET}=1", id="motherduck-name"),
             pytest.param("${VD_MCP_SECRET}_scanner:host=127.0.0.1", id="duckdb-extension"),
         ],
     )

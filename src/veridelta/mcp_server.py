@@ -204,6 +204,16 @@ with no `//` after it, as the name of an extension, and loads it to connect
 before any setting of the server applies. The pattern takes any character but a
 path separator, so it matches every name DuckDB reads, and a few it does not."""
 
+_MOTHERDUCK_NAME: Final = re.compile(
+    r"(?:md|motherduck):(?:[A-Za-z0-9_-][A-Za-z0-9_/-]*)?", re.IGNORECASE
+)
+"""A MotherDuck `database` before its `?`, such as `md:sales` or `md:_share/s/1a-2b`,
+which a tool passes on.
+
+MotherDuck's extension reads options after a `&` or a `#` too, and DuckDB opens
+`md://x` as a file and not through MotherDuck, so a tool passes on no other
+character there."""
+
 _MOTHERDUCK_OPTIONS: Final = frozenset({"attach_mode", "saas_mode", "session_name"})
 """Options of a MotherDuck `database`, after its `?`, that a tool passes on.
 
@@ -657,11 +667,16 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
     A database DuckDB opens through an extension, such as Postgres's, connects
     to whatever its text names, so it names None. So does a MotherDuck option a
     tool does not pass on, such as `motherduck_host`. A MotherDuck database with
-    none of those reaches MotherDuck's own hosts, and names none. The text after
-    `?` can hold a `${NAME}` value, so only a known option's name is repeated.
+    none of those reaches MotherDuck's own hosts, and names none. The whole text
+    is checked, since the extension finds an option after a `&` or a `#` before
+    the `?` as well. The text can hold a `${NAME}` value, so only a known
+    option's name is repeated.
     """
     if config.is_motherduck:
-        _, _, query = config.database.partition("?")
+        name, _, query = config.database.partition("?")
+        if _MOTHERDUCK_NAME.fullmatch(name) is None:
+            setting = "database name, which may hold only letters, digits, _, -, and /"
+            return [(f"{setting}, and not start with /,", None)]
         for option in query.split("&") if query else ():
             key, _, value = option.partition("=")
             if key not in _MOTHERDUCK_OPTIONS:
@@ -700,7 +715,10 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     if isinstance(config, DatabaseConfig):
         return [*_database_hosts(config.uri)]
     if isinstance(config, SnowflakeConfig):
-        return [("account", f"{config.account}.snowflakecomputing.com")]
+        # The driver ends the host in `.cn` when the account's second label starts with `cn-`.
+        labels = config.account.split(".")
+        china = config.account.find(".") > 0 and labels[1].lower().startswith("cn-")
+        return [("account", f"{config.account}.snowflakecomputing.{'cn' if china else 'com'}")]
     if isinstance(config, DatabricksConfig):
         return [("server_hostname", config.server_hostname.removeprefix("https://").rstrip("/"))]
     return [] if config.credentials_path is None else [("credentials_path", None)]
