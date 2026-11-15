@@ -32,6 +32,7 @@ from contextvars import ContextVar
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 import polars as pl
 
@@ -162,6 +163,10 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
     return CheckedFileIO(properties)
 
 
+_DELTA_LOCAL_SCHEMES: Final = frozenset({"file", "fs", "opendal+fs"})
+"""The schemes whose table deltalake reads from this machine's disk, whatever host they name."""
+
+
 _Z85: Final = (
     "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#"
 )
@@ -254,18 +259,26 @@ def deletion_vector_files(table: "DeltaTable", storage_options: dict[str, str]) 
     store = arrow.fs.PyFileSystem(DeltaStorageHandler(table.table_uri, storage_options or None))
     for found in store.get_file_info(arrow.fs.FileSelector("_delta_log", recursive=True)):
         path: str = found.path
-        actions: list[dict[str, Any]]
+        vectors: list[dict[str, Any] | None]
         if path.endswith(".json"):
             with store.open_input_stream(path) as stream:
                 text: str = stream.read().decode("utf-8")
-            actions = [json.loads(line) for line in text.splitlines() if line.strip()]
+            added: list[dict[str, Any]] = [
+                json.loads(line).get("add") or {} for line in text.splitlines() if line.strip()
+            ]
+            vectors = [action.get("deletionVector") for action in added]
         elif path.endswith(".parquet"):
-            actions = arrow.parquet.read_table(path, filesystem=store).to_pylist()
+            schema = arrow.parquet.read_schema(path, filesystem=store)
+            index = schema.get_field_index("add")
+            if index < 0 or schema.field(index).type.get_field_index("deletionVector") < 0:
+                # A file with no `add` action's vector, such as one deltalake never reads.
+                continue
+            # The vectors alone, so a large checkpoint's statistics stay unread.
+            read = arrow.parquet.read_table(path, filesystem=store, columns=["add.deletionVector"])
+            vectors = read[0].to_pylist()
         else:
             continue
-        for action in actions:
-            added: dict[str, Any] = action.get("add") or {}
-            vector: dict[str, Any] | None = added.get("deletionVector")
+        for vector in vectors:
             location = _vector_location(table.table_uri, vector) if vector else None
             if location is not None:
                 yield location
@@ -301,10 +314,11 @@ def _checked_delta_scan(
     scan does. Polars checks the table's protocol first, and refuses a table
     it cannot read.
 
-    A table on this machine has each file opened here, at the path that
-    `file_uris` names and `check` gets. One in an object store has each file
-    opened through deltalake's own storage, which reaches only the table's
-    host, and `check` gets the file's URI.
+    A table on this machine, under any scheme deltalake reads from its disk,
+    has each file opened here, at the path that `check` gets: the one
+    `file_uris` names, or the path of the URI it names. One in an object
+    store has each file opened through deltalake's own storage, which reaches
+    only the table's host, and `check` gets the file's URI.
 
     Args:
         table (DeltaTable): The table, at the version that the listing checked.
@@ -330,19 +344,27 @@ def _checked_delta_scan(
         def __init__(self, files: dict[str, str]) -> None:
             handler.__init__(self, table.table_uri, storage_options or None)
             self.files = files
-            self.here = urlsplit(table.table_uri).scheme == "file"
+            self.here = urlsplit(table.table_uri).scheme in _DELTA_LOCAL_SCHEMES
 
         def open_input_file(self, path: str) -> Any:
             """Check the file a fragment names, then open it."""
             # A path the version does not list raises a KeyError, and opens nothing.
             location = self.files[path]
-            check(location, not self.here)
-            if self.here:
-                return arrow.fs.LocalFileSystem().open_input_file(location)
-            return handler.open_input_file(self, path)
+            if not self.here:
+                check(location, True)
+                return handler.open_input_file(self, path)
+            # `file_uris` names a file of a `file:` table by its path, and one of an
+            # `fs:` or `opendal+fs:` table by a URI, whose path deltalake would open.
+            parts = urlsplit(location)
+            if parts.scheme in _DELTA_LOCAL_SCHEMES:
+                location = url2pathname(parts.path)
+            check(location, False)
+            return arrow.fs.LocalFileSystem().open_input_file(location)
 
         open_input_stream = open_input_file
 
+    # Polars refuses a protocol it cannot read, such as v2 checkpoints, whose sidecars the
+    # listing never names, so this runs before any vector or data file is read.
     pl.scan_delta(table).collect_schema()
     schema = arrow.schema(table.schema().to_arrow())
     # deltalake's own fragments, which its `to_pyarrow_dataset` builds the same way.

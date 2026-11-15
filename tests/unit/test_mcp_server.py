@@ -1781,10 +1781,14 @@ class TestLakehouseFiles:
         assert _SECRET not in str(refused.value)
 
     @pytest.mark.parametrize(
-        ("uri", "refused"),
+        ("uri", "refusal"),
         [
-            pytest.param("s3://lake/events/part-0.parquet", False, id="remote-file"),
-            pytest.param("{outside}/part-0.parquet", True, id="local-file"),
+            pytest.param("s3://lake/events/part-0.parquet", None, id="remote-file"),
+            pytest.param(
+                "s3://lake/events/owner=ann@x.com/part-0.parquet", None, id="at-sign-in-a-path"
+            ),
+            pytest.param("{outside}/part-0.parquet", "is outside", id="local-file"),
+            pytest.param("s3://ann@lake/part-0.parquet", "one shape", id="at-sign-in-a-host"),
         ],
     )
     def test_it_lists_a_remote_delta_table(
@@ -1793,11 +1797,13 @@ class TestLakehouseFiles:
         tmp_path_factory: pytest.TempPathFactory,
         mocker: MockerFixture,
         uri: str,
-        refused: bool,
+        refusal: str | None,
     ) -> None:
         """Ensure a table in an object store has each data file on this machine held to the roots.
 
         The store is mocked: the log names the files that the test gives it.
+        Spark leaves an `@` in a partition's value as it is, so one after a
+        file's host is read as part of its path, and one before it is refused.
         """
         outside = tmp_path_factory.mktemp("outside").as_uri()
         table = mocker.patch("deltalake.DeltaTable")
@@ -1805,8 +1811,8 @@ class TestLakehouseFiles:
         target = DeltaLakeConfig(table_uri="s3://lake/events", storage_options={"region": "eu"})
         settings = Settings((tmp_path,), allowed_hosts=("lake",))
 
-        if refused:
-            with pytest.raises(ConfigError, match=r"The target data file .* is outside"):
+        if refusal is not None:
+            with pytest.raises(ConfigError, match=f"The target data file .*{refusal}"):
                 check_data_paths(settings, SourceConfig(path="a.csv"), target)
         else:
             check_data_paths(settings, SourceConfig(path="a.csv"), target)
@@ -1817,7 +1823,9 @@ class TestLakehouseFiles:
     def test_it_names_each_deletion_vector_where_its_log_stores_it(self, tmp_path: Path) -> None:
         """Ensure a vector at its own path or at a relative one is listed, and one inline is not.
 
-        A checkpoint records the vectors as well, which the listing reads too.
+        A checkpoint records the vectors as well, which the listing reads
+        alone once the commits before it are gone. A file in the log with no
+        `add` action, which deltalake never reads, is passed over.
         """
         table, own = tmp_path / "events", (tmp_path / "vectors" / "own.bin").as_uri()
         first, second = uuid.uuid4(), uuid.uuid4()
@@ -1829,6 +1837,9 @@ class TestLakehouseFiles:
             {"storageType": "i", "pathOrInlineDv": "inline"},
         )
         DeltaTable(str(table)).create_checkpoint()
+        for commit in (table / "_delta_log").glob("*.json"):
+            commit.unlink()
+        pl.DataFrame({"note": ["kept"]}).write_parquet(table / "_delta_log" / "notes.parquet")
 
         loaded = DeltaTable(str(table))
         named = set(deletion_vector_files(loaded, {}))
@@ -1954,12 +1965,21 @@ class TestLakehouseFiles:
     @pytest.mark.skipif(
         sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
     )
+    @pytest.mark.parametrize(
+        "table_uri",
+        ["events", "fs://{root}/events", "opendal+fs://{root}/events", "fs:{root}/events"],
+    )
     def test_it_stops_a_delta_scan_at_a_file_that_changed_after_it_started(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        table_uri: str,
     ) -> None:
         """Ensure a data file that becomes a link out of the roots after a scan starts is never read.
 
-        The scan checks each data file again just before it opens it.
+        The scan checks each data file again just before it opens it, under
+        each scheme Delta Lake reads from this machine.
         """
         _ROW.with_columns(note=pl.lit("public")).write_delta(tmp_path / "events")
         (added,) = DeltaTable(str(tmp_path / "events")).file_uris()
@@ -1979,7 +1999,8 @@ class TestLakehouseFiles:
         _write(
             tmp_path,
             "source:\n  path: a.parquet\n  format: parquet\n"
-            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+            f"target:\n  type: delta\n  table_uri: '{table_uri.format(root=tmp_path)}'\n"
+            "primary_keys: [id]\n",
         )
 
         with pytest.raises(VerideltaError, match="about to open a file outside") as stopped:

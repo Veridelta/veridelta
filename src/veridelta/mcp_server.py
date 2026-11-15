@@ -233,6 +233,17 @@ The authority runs to the first `/`, where every reader ends it. No `@`, `\\`, o
 control character may follow, since a reader that looks for a login or a
 separator further on would find a host there."""
 
+_NAMED_FILE: Final = re.compile(
+    rf"[A-Za-z][A-Za-z0-9+.-]*:(?://([^/]*)(?:/[^\\\x00-\x1f\x7f]*)?|(?!//){_PAST_AUTHORITY})"
+)
+"""The URI of a file a table's log or metadata names, its authority, if any, in the group.
+
+It is `_URL`'s shape, but with an `@` allowed after the authority, since a
+Delta Lake log can name a file in a partition such as `owner=ann@x.com`. Only
+the authority chooses the host for the readers of such a file: deltalake's
+store, fixed to the table's host, and PyIceberg's FileIO, which reads the
+authority up to the first `/`."""
+
 _DATABASE_URI: Final = re.compile(
     r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/?#\\\x00-\x20\x7f]*@)?([^@/?#\\\x00-\x20\x7f]*)"
     r"(?:[/?][^@#\\\x00-\x1f\x7f]*)?"
@@ -612,7 +623,7 @@ def _refuse_opened(settings: Settings, location: str, remote: bool) -> None:
             the server does not allow.
     """
     if remote:
-        for _, host in _location_hosts("file", location):
+        for _, host in _location_hosts("file", location, _NAMED_FILE):
             _refuse_host(settings, "A file that a lakehouse scan was about to open", host)
     elif not _under_both_readings(settings, Path(location)):
         raise ConfigError(
@@ -954,7 +965,7 @@ def _refuse_listed(
     """
     for local in _local_paths(location):
         _refuse_outside(settings, side, setting, location, local, quoted=quoted)
-    for _, host in _location_hosts(setting, location):
+    for _, host in _location_hosts(setting, location, _NAMED_FILE):
         _refuse_host(settings, f"The {side} {setting}", host)
 
 
@@ -989,23 +1000,26 @@ def _host(text: str) -> str:
     return text if written is None else written.group(1)
 
 
-def _url_host(url: str) -> str:
-    """Return the host a URL names, the empty host for none, or the URL whole when it is unclear."""
-    written = _URL.fullmatch(url)
+def _url_host(url: str, shape: re.Pattern[str] = _URL) -> str:
+    """Return the host a URL in `shape` names, the empty host for none, or the URL whole when it is unclear."""
+    written = shape.fullmatch(url)
     if written is None:
         return url
     authority = written.group(1)
     return _host(authority) if authority else ""
 
 
-def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
+def _location_hosts(
+    setting: str, location: str, shape: re.Pattern[str] = _URL
+) -> list[tuple[str, str]]:
     """Name the host a data location reaches, or none for a path here or a service's own hosts.
 
     Every scheme of two or more characters counts, other than a local or a
     service one, so a scheme this module has never heard of still needs its
     host allowed. One character is a drive letter, such as `C:`, and no scheme.
     `urlsplit` finds the scheme as a reader that skips leading spaces does, and
-    the location must then match `_URL` as written. A location with no host,
+    the location must then match `shape` as written: `_URL`, or `_NAMED_FILE`
+    for a file a table's log or metadata names. A location with no host,
     such as `hdfs:///t`, names the empty host, which is never allowed, since its
     reader would pick the host from elsewhere.
     """
@@ -1014,7 +1028,7 @@ def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
         len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES
     ):
         return []
-    return [(setting, _url_host(location))]
+    return [(setting, _url_host(location, shape))]
 
 
 def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:

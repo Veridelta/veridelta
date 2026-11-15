@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import struct
+import sys
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -468,6 +469,34 @@ class TestCheckedDeltaScan:
             pytest.raises(ConnectorError, match="do not pair up"),
         ):
             DeltaLakeConnector(config).connect()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="deltalake's own store turns an `fs:` URI into a Windows path in a way "
+        "this test has no means to check, as `fs:///C:/...` names its drive after a slash.",
+    )
+    @pytest.mark.parametrize("scheme", ["fs", "opendal+fs"])
+    def test_it_checks_each_file_of_a_local_scheme_by_the_path_it_opens(
+        self, tmp_path: Path, scheme: str
+    ) -> None:
+        """Ensure a table that deltalake reads from this machine under its own scheme is checked here.
+
+        deltalake names such a table's files by URI, not by path, so the scan
+        checks each file at the path it then opens, as for a `file:` table.
+        """
+        config = _vectored(tmp_path / "events")
+        expected = LoaderFactory.load(config).collect()
+        uri = Path(config.table_uri).as_uri().replace("file:", f"{scheme}:", 1)
+        local = config.model_copy(update={"table_uri": uri})
+        checked: list[tuple[str, bool]] = []
+
+        with checking_table_files(lambda *opened: checked.append(opened), _listed):
+            frame = LoaderFactory.load(local).collect()
+
+        assert frame.equals(expected)
+        assert not any(remote for _, remote in checked)
+        listed = _listed(config).file_uris()
+        assert sorted(Path(path) for path, _ in checked) == sorted(Path(uri) for uri in listed)
 
     def test_it_opens_a_remote_file_through_deltalake(
         self, tmp_path: Path, mocker: MockerFixture
