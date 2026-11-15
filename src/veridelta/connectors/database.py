@@ -29,7 +29,7 @@ from abc import abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar, Final, cast
-from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
+from urllib.parse import SplitResult, parse_qsl, quote, unquote, urlsplit, urlunsplit
 
 import polars as pl
 
@@ -130,7 +130,7 @@ class DatabaseConnector(ReaderConnector):
         path = sqlite_path(self._config)
         scheme = urlsplit(self._config.uri).scheme.lower()
         statement = self._statement(scheme)
-        uri = _connection_uri(self._config) if path is None else _existing_sqlite_uri(path)
+        uri = connection_uri(self._config) if path is None else _existing_sqlite_uri(path)
 
         started = time.perf_counter()
         declared: dict[str, pl.Decimal] = {}
@@ -315,7 +315,7 @@ class _ConnectorXPushdownSession(PushdownSession):
         """
         if connectorx is None:
             raise ConnectorError(_DATABASE_EXTRA)
-        uri = _connection_uri(self._config)
+        uri = connection_uri(self._config)
         self._check_server(uri)
         self._uri = uri
 
@@ -604,8 +604,15 @@ def _with_declared_scale(
     return frame
 
 
-def _connection_uri(config: DatabaseConfig) -> str:
-    """Return the URI to connect with, carrying the `password` field if set."""
+def connection_uri(config: DatabaseConfig) -> str:
+    """Return the URI the connector hands ConnectorX, carrying the `password` field if set.
+
+    Args:
+        config (DatabaseConfig): A database source.
+
+    Returns:
+        str: `uri`, with `password` percent-encoded into its login when set.
+    """
     password = config.password
     if password is None:
         return config.uri
@@ -632,6 +639,33 @@ def _scrub(config: DatabaseConfig, text: str) -> str:
         if any(word in name.lower() for word in _CREDENTIAL_PARAMETERS):
             secrets.update({value, quote(value, safe="")})
     return mask_secrets(text, *secrets)
+
+
+def connectorx_url(config: DatabaseConfig) -> SplitResult:
+    """Split the URI ConnectorX reads for a database source, with the scheme it picks a reader by.
+
+    The connector hands ConnectorX `connection_uri`. ConnectorX's Python
+    package first rewrites a URI whose text before the first `:` holds
+    `redshift`, in lowercase and anywhere in it, and not `-iam`, to start with
+    `postgresql:`, so it reads `sqliteredshift://` with its Postgres reader.
+    It then parses the URI as a URL parser does, after it drops spaces and
+    control characters at either end and every tab or line break, and picks
+    its reader by the scheme in lowercase up to the first `+`, so it reads
+    `BigQuery+x://` as BigQuery. The scheme here is that reader's name, and
+    empty for a URI with no scheme.
+
+    Args:
+        config (DatabaseConfig): A database source.
+
+    Returns:
+        SplitResult: The URI's parts, with the reader's name for a scheme.
+    """
+    uri = connection_uri(config)
+    backend, _, rest = uri.partition(":")
+    if "redshift" in backend and "-iam" not in backend:
+        uri = f"postgresql:{rest}"
+    parts = urlsplit(uri.strip(_URL_TRIMMED).translate(_URL_REMOVED))
+    return parts._replace(scheme=parts.scheme.split("+")[0])
 
 
 def sqlite_path(config: DatabaseConfig) -> str | None:
@@ -674,7 +708,7 @@ def sqlite_path(config: DatabaseConfig) -> str | None:
             "Veridelta reads only one that starts with sqlite://. Write 'uri' as sqlite:// "
             "followed by the file's path."
         )
-    decoded = unquote(_connection_uri(config)[len(_SQLITE_PREFIX) :])
+    decoded = unquote(connection_uri(config)[len(_SQLITE_PREFIX) :])
     if "\0" in decoded:
         raise ConfigError(
             "A SQLite path holds a NUL character, such as '%00', which no file name can hold. "
