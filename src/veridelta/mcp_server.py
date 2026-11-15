@@ -40,7 +40,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import SplitResult, parse_qsl, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -48,6 +48,7 @@ from polars.exceptions import PanicException
 from pydantic import Field
 
 from veridelta import __version__
+from veridelta._checks import error_from_exception, unset_variable_findings
 from veridelta.config import load_config, referenced_variables
 from veridelta.connectors.base import mask_secrets
 from veridelta.connectors.duckdb import sandboxed
@@ -91,33 +92,18 @@ started with another `--max-rows`."""
 DEFAULT_ROW_LIMIT: Final = 20
 """The rows `read_discrepancies` returns when a call names no `limit`."""
 
-_REMOTE_SCHEMES: Final = frozenset(
-    {
-        "abfs",
-        "abfss",
-        "adl",
-        "az",
-        "azure",
-        "gcs",
-        "gs",
-        "hf",
-        "http",
-        "https",
-        "lakefs",
-        "md",
-        "motherduck",
-        "s3",
-        "s3a",
-    }
-)
-"""URI schemes the readers fetch from another machine: object stores, the web,
-Hugging Face, lakeFS, and MotherDuck. Any other location counts as a path on
-this machine, so one the readers would open here is never let through
-unchecked."""
-
 _SERVICE_SCHEMES: Final = frozenset({"hf", "md", "motherduck"})
-"""Remote schemes whose reader reaches one service's own hosts, Hugging Face's or
+"""URI schemes whose reader reaches one service's own hosts, Hugging Face's or
 MotherDuck's, so a configuration chooses no host with them."""
+
+_LOCAL_SCHEMES: Final = frozenset({"file", "fs", "opendal+fs"})
+"""URI schemes whose reader opens the URI's path on this machine, whatever host
+it names: `file` for every reader, and `fs` and `opendal+fs` for Delta Lake's.
+
+Any other scheme of two or more characters names another machine, so its host
+must be allowed, even one no reader is known to take: a reader that knows more
+schemes than this module, such as `hdfs`, `sftp`, or `s3n`, connects to the host
+all the same."""
 
 _HOST_OPTIONS: Final = frozenset(
     {
@@ -487,35 +473,46 @@ def resolve_path(settings: Settings, path: str) -> Path:
     return resolved
 
 
-def _local_path(location: str) -> str | None:
-    """Return the path on this machine a data location names, or None for a remote one."""
-    parts = urlsplit(location)
-    scheme = parts.scheme.lower()
-    if scheme in _REMOTE_SCHEMES:
+def _split(location: str) -> SplitResult | None:
+    """Split a location as a URL parser does, or return None for an authority that does not parse."""
+    try:
+        return urlsplit(location)
+    except ValueError:
         return None
-    if scheme == "file":
-        return url2pathname(parts.path)
-    return location
+
+
+def _local_paths(location: str) -> list[str]:
+    """Return each path on this machine a reader could open for a data location.
+
+    Readers disagree on a URI. Polars and DuckDB open one whose scheme they do
+    not know, such as `lakefs://r/t`, as a relative path, and DuckDB opens even
+    `s3://b/x.duckdb` that way. A `file` URI opens its path, which a reader
+    that follows the URL standard reads from the top, so `file:a/b` is `/a/b`.
+    So the location is checked as written, and a local scheme's path both ways.
+    """
+    paths = [location]
+    parts = _split(location)
+    if parts is not None and parts.scheme in _LOCAL_SCHEMES:
+        paths.append(url2pathname(parts.path))
+        if not parts.path.startswith("/"):
+            paths.append(url2pathname(f"/{parts.path}"))
+    return paths
 
 
 def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
-    """Name each file or folder on this machine a side reads, with the setting that names it."""
+    """Name each path on this machine a side could read, with the setting that names it."""
     named: list[tuple[str, str]] = []
     if isinstance(config, SourceConfig):
         named = [("path", config.path)]
     elif isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         named = [("table_uri", config.table_uri)]
-    elif isinstance(config, DuckDBConfig):
+    elif isinstance(config, DuckDBConfig) and not config.is_motherduck:
         named = [("database", config.database)]
     elif isinstance(config, DatabaseConfig):
         parts = urlsplit(config.uri)
         if parts.scheme.startswith("sqlite"):
             named = [("SQLite file", parts.netloc + parts.path)]
-    return [
-        (setting, local)
-        for setting, location in named
-        if (local := _local_path(location)) is not None
-    ]
+    return [(setting, path) for setting, location in named for path in _local_paths(location)]
 
 
 def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -> None:
@@ -524,8 +521,10 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     Every tool that opens a side calls this first, since a column name or an
     error message can carry a file's text as a row does. The paths are
     expanded and resolved as the readers do, so neither `~` nor a link leads
-    out. Data on another machine, such as an object store, a database server,
-    or a warehouse, is held to the hosts the server allows instead.
+    out. A location with a scheme, such as `s3://`, is checked as a path too,
+    since a reader that does not know the scheme opens it here. Data on
+    another machine, such as an object store, a database server, or a
+    warehouse, is held to the hosts the server allows as well.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -563,18 +562,25 @@ def _authority_hosts(authority: str) -> list[str]:
 
 def _url_hosts(url: str) -> list[str]:
     """Return each host a URL names, or the URL whole when it does not parse."""
-    try:
-        return _authority_hosts(urlsplit(url).netloc)
-    except ValueError:
-        return [url]
+    parts = _split(url)
+    return [url] if parts is None else _authority_hosts(parts.netloc)
 
 
 def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
-    """Name the host a data location reaches, or none for a path here or a service's own hosts."""
-    scheme = urlsplit(location).scheme.lower()
-    if scheme not in _REMOTE_SCHEMES or scheme in _SERVICE_SCHEMES:
+    """Name each host a data location reaches, or none for a path here or a service's own hosts.
+
+    Every scheme of two or more characters counts, other than a local or a
+    service one, so a scheme this module has never heard of still needs its
+    host allowed. One character is a drive letter, such as `C:`, and no scheme.
+    A location with no host, such as `hdfs:///t`, names the empty host, which
+    is never allowed, since its reader would pick the host from elsewhere.
+    """
+    parts = _split(location)
+    if parts is None:
+        return [(setting, location)]
+    if len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES:
         return []
-    return [(setting, host) for host in _url_hosts(location)]
+    return [(setting, host) for host in _authority_hosts(parts.netloc)]
 
 
 def _bare_host(text: str) -> str:
@@ -703,20 +709,20 @@ def check_configuration(
             server does not allow.
     """
     resolved = resolve_path(settings, path)
-    if schemas:
-        try:
-            _, source, target = load_config(resolved, unset_env=[] if allow_missing_env else None)
-        except ConfigError:
-            # The check reports why the file does not load, and then reads no columns.
-            pass
-        else:
+    unset: list[str] | None = [] if allow_missing_env else None
+    # The file is loaded once, and the checks connect with what was checked, so a
+    # file swapped between the two cannot reach a host the server does not allow.
+    try:
+        diff, source, target = load_config(resolved, unset_env=unset)
+    except ConfigError as exc:
+        findings = [error_from_exception(exc)]
+    else:
+        if schemas:
             check_data_paths(settings, source, target)
             _refuse_hosts(settings, source, target)
-    with sandboxed(settings.roots):
-        findings = DiffEngine.check_config_file(
-            resolved, schemas=schemas, allow_missing_env=allow_missing_env
-        )
-    return validation_report(str(resolved), findings)
+        with sandboxed(settings.roots):
+            findings = DiffEngine.check_configs(diff, source, target, schemas=schemas)
+    return validation_report(str(resolved), [*unset_variable_findings(unset or []), *findings])
 
 
 def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
@@ -1217,7 +1223,8 @@ def serve(settings: Settings) -> None:
     A configuration's relative paths resolve against the working directory,
     as on the command line, and the tools check them there. `veridelta mcp`
     runs the server in its first root; a program that calls this from
-    another folder has its relative paths checked against that folder.
+    another folder has its relative paths checked against that folder, and
+    each location with a scheme too, since some reader opens one as a path.
 
     Args:
         settings (Settings): The roots every tool is held to.

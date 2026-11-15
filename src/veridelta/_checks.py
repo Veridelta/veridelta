@@ -108,6 +108,17 @@ def error_from_exception(exc: VerideltaError) -> ConfigFinding:
     )
 
 
+def unset_variable_findings(names: Iterable[str]) -> list[ConfigFinding]:
+    """Build a warning for each unset variable that a check read as its own name."""
+    return [
+        warning_finding(
+            f"Environment variable '{name}' is not set, so its references were checked "
+            f"as the text '{name}'."
+        )
+        for name in names
+    ]
+
+
 def missing_extra_findings(source: SourceRef, target: SourceRef) -> list[ConfigFinding]:
     """Report each optional extra a side reads through that is not installed."""
     sides: dict[str, list[str]] = {}

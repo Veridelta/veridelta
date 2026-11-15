@@ -416,6 +416,38 @@ class TestCheckConfiguration:
         assert report["valid"] is False
         assert report["errors"][0].startswith("Configuration must contain both")
 
+    def test_it_checks_the_configuration_it_connects_with(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure `schemas` loads the file once, so a file swapped after the host check reaches no host.
+
+        The file is rewritten to name a database the server does not allow right
+        after the one load, as an agent racing the check would.
+        """
+        (tmp_path / "a.csv").write_text("id\n1\n")
+        path = _write(
+            tmp_path, "source: {path: a.csv}\ntarget: {path: a.csv}\nprimary_keys: [id]\n"
+        )
+        swapped = (
+            "source: {path: a.csv}\n"
+            "target: {type: database, uri: 'postgresql://u@127.0.0.1:9/db', table: t}\n"
+            "primary_keys: [id]\n"
+        )
+
+        def load_then_swap(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
+            loaded = load_config(*args, **kwargs)
+            path.write_text(swapped)
+            return loaded
+
+        mocker.patch.object(mcp_server, "load_config", side_effect=load_then_swap)
+        checks = mocker.spy(DiffEngine, "check_configs")
+
+        report = check_configuration(Settings((tmp_path,)), "veridelta.yaml", schemas=True)
+
+        assert report["valid"] is True
+        checks.assert_called_once()
+        assert checks.call_args.args[2] == SourceConfig(path="a.csv")
+
 
 class TestRunConfiguration:
     """Validate the run `run_comparison` makes, without the SDK in the way.
@@ -734,12 +766,66 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match=r"The source path 'a\.csv' is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), _snowflake())
 
-    def test_it_checks_a_scheme_it_does_not_know_as_a_path(self, tmp_path: Path) -> None:
-        """Ensure a made-up scheme cannot carry a path out, since the readers open it here."""
-        escape = "xx:" + "/.." * 64 + "/a.csv"
+    @pytest.mark.parametrize(
+        "side",
+        [
+            pytest.param(SourceConfig(path="xx:" + "/.." * 64 + "/a.csv"), id="made-up"),
+            pytest.param(
+                SourceConfig(path="lakefs://repo" + "/.." * 64 + "/a.csv"), id="polars-unknown"
+            ),
+            pytest.param(
+                DuckDBConfig(database="s3://bucket" + "/.." * 64 + "/x.duckdb", table="t"),
+                id="duckdb-any",
+            ),
+        ],
+    )
+    def test_it_checks_a_location_with_a_scheme_as_a_path_too(
+        self, tmp_path: Path, side: SourceRef
+    ) -> None:
+        """Ensure a scheme cannot carry a path out, since a reader that does not know it opens it here.
+
+        Polars opens `lakefs://` as a relative path, and DuckDB opens every
+        location but MotherDuck's that way, `s3://` included.
+        """
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            pytest.param(
+                lambda uri: DeltaLakeConfig(table_uri=f"fs://{uri.removeprefix('file://')}"),
+                id="fs",
+            ),
+            pytest.param(
+                lambda uri: DeltaLakeConfig(
+                    table_uri=f"opendal+fs://bucket{uri.removeprefix('file://')}"
+                ),
+                id="opendal-fs-with-a-host",
+            ),
+            pytest.param(
+                lambda uri: SourceConfig(path=f"file:{uri.removeprefix('file:///')}"),
+                id="file-without-slashes",
+            ),
+        ],
+    )
+    def test_it_checks_the_path_of_a_local_scheme_as_its_reader_opens_it(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        build: Callable[[str], SourceRef],
+    ) -> None:
+        """Ensure a URI a reader opens here is held to the roots, whatever host it names.
+
+        Delta Lake opens `fs://` and `opendal+fs://` on this machine and ignores
+        the host, and Polars reads `file:a/b` from the top, as `/a/b`.
+        """
+        outside = tmp_path_factory.mktemp("outside")
 
         with pytest.raises(ConfigError, match="outside the folders"):
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path=escape), _snowflake())
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path="a.csv"), build(outside.as_uri())
+            )
 
     def test_it_reads_a_home_path_as_the_readers_do(self, tmp_path: Path) -> None:
         """Ensure `~` is expanded first, since Polars expands it, so it cannot lead out."""
@@ -752,6 +838,7 @@ class TestCheckDataPaths:
             pytest.param(SourceConfig(path="s3://bucket/a.parquet"), id="object-store"),
             pytest.param(SourceConfig(path="https://example.com/a.csv"), id="https"),
             pytest.param(DeltaLakeConfig(table_uri="s3://lake/events"), id="delta-remote"),
+            pytest.param(DeltaLakeConfig(table_uri="hdfs://namenode:8020/t"), id="delta-hdfs"),
             pytest.param(DuckDBConfig(database="md:sales", table="t"), id="motherduck"),
             pytest.param(
                 DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="orders"),
@@ -841,6 +928,50 @@ class TestAllowedHosts:
             ),
             pytest.param(
                 "  type: iceberg\n  table_uri: gs://other/events\n", "table_uri", id="iceberg"
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://127.0.0.1:9000/t\n", "table_uri", id="hdfs"
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'HDFS://127.0.0.1:9000/t'\n",
+                "table_uri",
+                id="hdfs-upper-case",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: '  hdfs://127.0.0.1:9000/t'\n",
+                "table_uri",
+                id="hdfs-after-spaces",
+            ),
+            pytest.param("  type: delta\n  table_uri: hdfs:///t\n", "table_uri", id="hdfs-no-host"),
+            pytest.param("  type: delta\n  table_uri: dbfs:/t\n", "table_uri", id="dbfs"),
+            pytest.param(
+                "  type: delta\n  table_uri: sftp://u@elsewhere.example/t\n",
+                "table_uri",
+                id="sftp",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: opendal+s3://other/t\n", "table_uri", id="opendal"
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: abfss://bucket@elsewhere.example/t\n",
+                "table_uri",
+                id="container-at-account",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'hdfs://[::1/t'\n",
+                "table_uri",
+                id="authority-that-does-not-parse",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3n://other/t/metadata/v1.metadata.json\n",
+                "table_uri",
+                id="s3n",
+            ),
+            pytest.param("  path: made-up://127.0.0.1/a.csv\n", "path", id="made-up"),
+            pytest.param(
+                "  type: duckdb\n  database: hdfs://127.0.0.1/x.duckdb\n  table: t\n",
+                "database",
+                id="duckdb-made-up",
             ),
             pytest.param(
                 "  type: duckdb\n  database: https://elsewhere.example/x.duckdb\n  table: t\n",
@@ -941,6 +1072,9 @@ class TestAllowedHosts:
                 "  table: t\n",
                 id="database",
             ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://db.internal:8020/t\n", id="delta-hdfs"
+            ),
             pytest.param("  type: database\n  uri: sqlite://x.db\n  table: t\n", id="sqlite"),
             pytest.param("  type: duckdb\n  database: x.duckdb\n  table: t\n", id="duckdb-file"),
             pytest.param(f"{_SNOWFLAKE}  account: XY12345\n", id="snowflake"),
@@ -1039,18 +1173,30 @@ class TestAllowedHosts:
 
         assert report["columns"] == {"id": "Int64"}
 
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@${VD_MCP_SECRET}.elsewhere.example/db\n"
+                "  table: t\n",
+                "uri",
+                id="database",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://${VD_MCP_SECRET}.elsewhere.example/t\n",
+                "table_uri",
+                id="hdfs",
+            ),
+        ],
+    )
     def test_it_names_the_setting_and_not_a_host_from_the_environment(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, setting: str
     ) -> None:
         """Ensure a value a host takes from the environment stays out of the refusal."""
         monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
-        _remote(
-            tmp_path,
-            "  type: database\n  uri: postgresql://u@${VD_MCP_SECRET}.elsewhere.example/db\n"
-            "  table: t\n",
-        )
+        _remote(tmp_path, target)
 
-        with pytest.raises(ConfigError, match="The target uri names a host") as refused:
+        with pytest.raises(ConfigError, match=f"The target {setting} names a host") as refused:
             run_configuration(Settings((tmp_path,)), "veridelta.yaml")
 
         assert _SECRET not in str(refused.value)
@@ -1818,9 +1964,7 @@ class TestServer:
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
         """Ensure any failure reaches the agent as `run --json` names one, not a bare refusal."""
-        mocker.patch(
-            "veridelta.engine.DiffEngine.check_config_file", side_effect=RuntimeError("boom")
-        )
+        mocker.patch.object(DiffEngine, "check_configs", side_effect=RuntimeError("boom"))
         _write(tmp_path, _VALID)
 
         result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
