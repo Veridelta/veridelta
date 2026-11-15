@@ -1133,6 +1133,21 @@ class TestGitHooks:
             assert hooks[hook]["entry"].startswith(f"uv run --frozen {tool} "), hook
         assert remote == {"https://github.com/Lucas-C/pre-commit-hooks"}
 
+    def test_every_hook_repository_is_pinned_to_a_commit(self) -> None:
+        """Ensure a hook repository runs the commit it was reviewed at, as an Action does.
+
+        Its owner can move a tag to other code, which CI and every machine with
+        the hooks would then run. The tag stays beside the commit as a comment.
+        """
+        text = (_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        config: dict[str, Any] = yaml.safe_load(text)
+        revs = [repo["rev"] for repo in config["repos"] if repo["repo"] != "local"]
+
+        assert revs
+        for rev in revs:
+            assert re.fullmatch(r"[0-9a-f]{40}", rev), rev
+            assert re.search(rf"^\s*rev: {rev} # frozen: v\d+(\.\d+)*$", text, re.MULTILINE), rev
+
     def test_make_all_runs_the_hooks_on_every_file_as_ci_does(self) -> None:
         """Ensure a notebook or a demo script that fails CI's lint job fails `make all` first.
 
@@ -1623,6 +1638,52 @@ class TestRerunDroppedJobs:
         assert script.index('"$newest" != "$RUN_ID"') < script.index("rerun-failed-jobs")
 
 
+def _uses_the_uv_cache(step: dict[str, Any]) -> bool:
+    """Return whether a step sets up uv with its cache, which restores and saves it.
+
+    `setup-uv` turns its cache on by default on a GitHub-hosted runner, and the
+    shared setup does unless a job passes `enable-cache: "false"`.
+    """
+    uses = str(step.get("uses", ""))
+    settings = step.get("with", {})
+    if uses.startswith("astral-sh/setup-uv@"):
+        return settings.get("enable-cache") is not False
+    if uses == "./.github/actions/setup":
+        return settings.get("enable-cache", "true") != "false"
+    return False
+
+
+class TestUvCache:
+    """Pin where CI sets up uv with its cache, which any step of a job can write to.
+
+    A job that may run code nobody reviewed writes none, and a job that holds a
+    secret restores none, so no planted entry runs where a secret can be read.
+    """
+
+    def test_the_shared_setup_caches_unless_a_job_turns_it_off(self) -> None:
+        """Ensure the shared setup passes the job's choice through to `setup-uv`."""
+        setup = _workflow(_SETUP)
+        [step] = [s for s in _workflow_steps(_SETUP) if "setup-uv@" in s.get("uses", "")]
+
+        assert setup["inputs"]["enable-cache"]["default"] == "true"
+        assert step["with"]["enable-cache"] == "${{ inputs.enable-cache }}"
+        assert _uses_the_uv_cache({"uses": "./.github/actions/setup"})
+
+    @pytest.mark.parametrize("workflow", [_LIVE, _EVALS], ids=lambda path: path.name)
+    def test_a_job_that_holds_a_secret_restores_no_cache(self, workflow: Path) -> None:
+        """Ensure each job that reads a warehouse credential or a model key sets up uv uncached."""
+        for name, job in _workflow(workflow)["jobs"].items():
+            assert "secrets." in yaml.safe_dump(job), name
+            setting_up = [
+                step
+                for step in job["steps"]
+                if "setup-uv@" in step.get("uses", "")
+                or step.get("uses") == "./.github/actions/setup"
+            ]
+            assert setting_up, name
+            assert not any(_uses_the_uv_cache(step) for step in setting_up), name
+
+
 def _steps_by_name(path: Path, job: str) -> dict[str, dict[str, Any]]:
     """Return one job's steps, keyed by name."""
     return {step["name"]: step for step in _workflow(path)["jobs"][job]["steps"]}
@@ -1716,6 +1777,16 @@ class TestDependencyAudit:
             < script.index("cp uv.lock fix/uv.lock")
         )
 
+    def test_the_job_that_runs_uv_lock_touches_no_cache(self) -> None:
+        """Ensure a package `uv lock` builds cannot plant a cache entry a later job restores.
+
+        Any step can write to its branch's cache, whatever the token's permissions.
+        """
+        steps = _workflow(_SECURITY)["jobs"]["upgrade"]["steps"]
+
+        assert any(step.get("uses") == "./.github/actions/setup" for step in steps)
+        assert not any(_uses_the_uv_cache(step) for step in steps)
+
     def test_it_opens_a_pull_request_only_for_main_and_never_merges(self) -> None:
         """Ensure a run on another branch proposes nothing, and a person merges."""
         job = _workflow(_SECURITY)["jobs"]["open"]
@@ -1788,7 +1859,7 @@ class TestEvalsWorkflow:
 
         assert str(steps[0]["uses"]).startswith("actions/checkout@")
         assert steps[1]["uses"] == "./.github/actions/setup"
-        assert steps[1]["with"] == {"group": "evals"}
+        assert steps[1]["with"] == {"group": "evals", "enable-cache": "false"}
         assert any(line.startswith("claude-agent-sdk>=") for line in groups["evals"])
 
     def test_every_input_reaches_the_eval_through_env_and_the_command_parses(self) -> None:

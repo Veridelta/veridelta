@@ -157,7 +157,8 @@ class DatabaseConnector(ReaderConnector):
             )
             raise ConnectorError(
                 f"Database read of {self._subject} from '{self._config.redacted_uri}' "
-                f"failed: {_scrub(self._config, str(exc))}"
+                f"failed: {_scrub(self._config, str(exc))}",
+                quotes_data=True,
             ) from None
         logger.info(
             "Read %d rows of %s from %s in %.3fs",
@@ -377,7 +378,8 @@ class _ConnectorXPushdownSession(PushdownSession):
             )
             raise ConnectorError(
                 f"{self._backend} {query_type} statement on '{self._config.redacted_uri}' "
-                f"failed: {_scrub(self._config, str(exc))}"
+                f"failed: {_scrub(self._config, str(exc))}",
+                quotes_data=True,
             ) from None
         logger.info(
             "Ran %s %s statement on %s in %.3fs, %d rows",
@@ -504,7 +506,8 @@ class TSqlPushdownSession(_ConnectorXPushdownSession):
             raise ConnectorError(
                 f"{where} refused LTRIM and RTRIM with the characters to strip. Pushdown "
                 "needs them, which SQL Server has from 2022. Compare locally "
-                f"(pushdown: false), or upgrade. {exc}"
+                f"(pushdown: false), or upgrade. {exc}",
+                quotes_data=exc.quotes_data,
             ) from None
         if trimmed != 1:
             raise ConnectorError(

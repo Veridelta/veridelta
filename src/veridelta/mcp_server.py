@@ -10,14 +10,15 @@ agent that knows the command line knows the tools.
 
 The person who starts the server names the folders it may read configuration
 files and data on this machine from, and a tool refuses a path outside them. A
-tool returns findings, counts, and column names, never a value from the file.
-Two tools return values from the data, and only when the person who starts the
-server allows it: then at most a set number of rows. A side's `query` runs only
-when that person allows queries too. The SDK is imported by the first
-`build_server()`, not with this module, so `veridelta` imports without the
-extra.
+tool returns findings, counts, and column names, never a value from the file,
+and a failed call leaves out a message that can quote one. Three tools return
+values from the data, and only when the person who starts the server allows it:
+then at most a set number of rows. A side's `query` runs only when that person
+allows queries too. The SDK is imported by the first `build_server()`, not with
+this module, so `veridelta` imports without the extra.
 """
 
+import glob
 import importlib
 import inspect
 import json
@@ -56,7 +57,7 @@ from veridelta.engine import (
     DEFAULT_MIN_SUPPORT,
     DiffEngine,
 )
-from veridelta.exceptions import ConfigError, VerideltaError, missing_extra
+from veridelta.exceptions import ConfigError, VerideltaError, may_quote_data, missing_extra
 from veridelta.models import (
     DatabaseConfig,
     DeltaLakeConfig,
@@ -112,7 +113,18 @@ Hugging Face, lakeFS, and MotherDuck. Any other location counts as a path on
 this machine, so one the readers would open here is never let through
 unchecked."""
 
+_GLOB_CHARACTERS: Final = frozenset("*?[")
+"""Characters that make Polars read a local path as a pattern, which it expands
+into the files it opens."""
+
 _MCP_EXTRA = missing_extra("mcp", "veridelta mcp")
+
+_WITHHELD: Final = (
+    "its message is left out, since it can quote values from the data, and this server "
+    "was started without --allow-row-values. Run the configuration with veridelta run "
+    "to read the message."
+)
+"""What a failed call says in place of a message that can quote the data."""
 
 _SHORTEST_MASKED: Final = 4
 """The fewest characters an environment value needs to be masked in a tool's answer.
@@ -166,7 +178,8 @@ class Settings:
             from them too.
         allow_row_values (bool): Whether `read_discrepancies`,
             `propose_value_maps`, and `suggest_rules` may return values from the
-            data. Defaults to False.
+            data, and a failed call may return a message that Polars, a reader,
+            or a driver wrote. Defaults to False.
         max_rows (int): The most rows, value map entries, or example keys one of
             those calls returns. At least 1. Defaults to 50.
         allow_queries (bool): Whether a tool may run a side's `query`, which
@@ -317,6 +330,36 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     return _under_roots(settings, Path(os.path.realpath(Path(location).expanduser())))
 
 
+def _opened(location: str) -> list[str]:
+    """List the paths a reader may open for a location: itself, and each match of a pattern.
+
+    Polars expands `*`, `?`, and `[...]` in a name, and `**` across folders.
+    A wildcard matches a hidden name too, and `**` follows links. A name such
+    as `lin[k]` does not exist as written, so resolving the pattern cannot
+    follow the link it matches. The standard library lists the matches here,
+    with hidden names and `**` included, and each is resolved on its own.
+    Polars matches `.` and `..` as well, which the standard library never
+    lists, so `_climbs` refuses each pattern that could match them first.
+    """
+    if not _GLOB_CHARACTERS.intersection(location):
+        return [location]
+    pattern = os.path.expanduser(location)
+    return [location, *glob.glob(pattern, recursive=True, include_hidden=True)]
+
+
+def _climbs(location: str) -> bool:
+    """Whether a pattern could reach `..`, which leaves the folder a matched link points to.
+
+    A pattern may not hold `..` as written. Polars matches the entries `.`
+    and `..` only for a name with a glob character that starts with a dot,
+    such as `.*` or `.[.]`, so such a name is refused too, and `*` is not.
+    """
+    return any(
+        name == ".." or (name.startswith(".") and _GLOB_CHARACTERS.intersection(name))
+        for name in Path(location).parts
+    )
+
+
 def _roots(settings: Settings) -> str:
     """List the roots for a message."""
     return ", ".join(str(root) for root in settings.roots)
@@ -358,8 +401,8 @@ def _local_path(location: str) -> str | None:
     return location
 
 
-def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
-    """Name each file or folder on this machine a side reads, with the setting that names it."""
+def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
+    """Name each file or folder on this machine a side reads: its setting, location, and path."""
     named: list[tuple[str, str]] = []
     if isinstance(config, SourceConfig):
         named = [("path", config.path)]
@@ -370,9 +413,9 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
     elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)
-        return [] if path is None else [("SQLite file", path)]
+        return [] if path is None else [("SQLite file", path, path)]
     return [
-        (setting, local)
+        (setting, location, local)
         for setting, location in named
         if (local := _local_path(location)) is not None
     ]
@@ -384,8 +427,12 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     Every tool that opens a side calls this first, since a column name or an
     error message can carry a file's text as a row does. The paths are
     expanded and resolved as the readers do, so neither `~` nor a link leads
-    out. Data on another machine, such as an object store, a database server,
-    or a warehouse, is read as the command line reads it.
+    out. A path that holds a glob character is a pattern, and every file it
+    matches must resolve under a root. A pattern may not reach `..`, since a
+    match can be a link that `..` then leaves from its target. A `file:` URI
+    may not hold a pattern at all, since Polars expands one with another
+    matcher. Data on another machine, such as an object store, a database
+    server, or a warehouse, is read as the command line reads it.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -398,9 +445,23 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     for side, config in (("source", source), ("target", target)):
         # A SQLite path carries the `password` field, as the driver reads it.
         password = config.password if isinstance(config, DatabaseConfig) else None
-        for setting, location in _data_locations(config):
-            if not _opened_inside(settings, location):
-                shown = mask_secrets(location, password)
+        for setting, location, local in _data_locations(config):
+            pattern = bool(_GLOB_CHARACTERS.intersection(location + local))
+            if pattern and local != location:  # A `file:` URI, which `_local_path` decoded.
+                raise ConfigError(
+                    f"The {side} {setting} '{location}' is a file URI with a glob character in "
+                    "it. Polars expands a pattern in a URI with another matcher than a path's, "
+                    "so this server cannot check the files it would open. Write it as a path."
+                )
+            if pattern and _climbs(local):
+                raise ConfigError(
+                    f"The {side} {setting} '{local}' is a glob pattern that can match '..'. "
+                    "A match can be a link, and '..' would then leave the folder the link "
+                    "points to, so this server refuses the pattern. Write the path without "
+                    "'..', and write out each name that starts with a dot."
+                )
+            if not all(_opened_inside(settings, opened) for opened in _opened(local)):
+                shown = mask_secrets(local, password)
                 raise ConfigError(
                     f"The {side} {setting} '{shown}' is outside the folders this server "
                     f"reads from: {_roots(settings)}. A tool reads data on this machine only "
@@ -414,8 +475,11 @@ def check_configuration(
 ) -> ValidationReport:
     """Check a configuration file for what would stop a run, as `validate --json` does.
 
+    Unless the server allows row values, a finding leaves out what Polars, a
+    reader, or a driver said about a schema read that failed.
+
     Args:
-        settings (Settings): The roots the server was started with.
+        settings (Settings): The roots and the row values the server was started with.
         path (str): The configuration file, under a root.
         schemas (bool): Whether to also connect and check the rules against each
             side's columns, which reads no rows.
@@ -440,7 +504,10 @@ def check_configuration(
             check_data_paths(settings, source, target)
     with sandboxed(settings.roots):
         findings = DiffEngine.check_config_file(
-            resolved, schemas=schemas, allow_missing_env=allow_missing_env
+            resolved,
+            schemas=schemas,
+            allow_missing_env=allow_missing_env,
+            quote_data=settings.allow_row_values,
         )
     return validation_report(str(resolved), findings)
 
@@ -715,8 +782,16 @@ def suggest(
     )
 
 
-def _failure(exc: BaseException) -> str:
-    """Name a failure as `run --json` does: its type, then its message."""
+def _failure(exc: BaseException, *, row_values: bool) -> str:
+    """Name a failure as `run --json` does: its type, then its message.
+
+    Polars, a reader, or a driver can quote cells in its message, so unless the
+    server allows row values, such a message gives way to a fixed hint. A
+    Veridelta error keeps its own, which names columns and counts, unless it
+    quotes a reader's or a driver's text.
+    """
+    if may_quote_data(exc) and not row_values:
+        return f"{type(exc).__name__}: {_WITHHELD}"
     return f"{type(exc).__name__}: {str(exc).strip()}"
 
 
@@ -755,18 +830,26 @@ def _masked(value: Any, secrets: tuple[str, ...]) -> Any:
     return value
 
 
-def _answer(tool_error: Any, work: Callable[[], _R], secrets: tuple[str, ...] = ()) -> _R:
+def _answer(
+    tool_error: Any,
+    work: Callable[[], _R],
+    secrets: tuple[str, ...] = (),
+    *,
+    row_values: bool = False,
+) -> _R:
     """Run a tool's work, masking `secrets` in its answer, or fail the call.
 
     The SDK passes only a `ToolError`'s message on to the agent, so every
     failure becomes one, named as `run --json` names it, with the secrets
-    masked there too.
+    masked there too. Unless `row_values` is set, a message that can quote
+    the data is left out.
     """
     try:
         result = work()
     except (Exception, PanicException) as exc:
         # A panic in Polars is no `Exception`, and would stop the server instead.
-        raise tool_error(mask_secrets(_failure(exc), *secrets)) from exc
+        failure = _failure(exc, row_values=row_values)
+        raise tool_error(mask_secrets(failure, *secrets)) from exc
     return cast("_R", _masked(result, secrets))
 
 
@@ -815,6 +898,7 @@ def build_server(settings: Settings) -> "MCPServer":
                 settings, path, schemas=schemas, allow_missing_env=allow_missing_env
             ),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def run_comparison(
@@ -828,6 +912,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: run_configuration(settings, path),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def describe_schema(
@@ -842,6 +927,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: describe_side(settings, path, side),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def read_discrepancies(
@@ -867,6 +953,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: read_rows(settings, path, kind, limit),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def propose_value_maps(
@@ -898,6 +985,7 @@ def build_server(settings: Settings) -> "MCPServer":
                 sample_fraction=sample_fraction,
             ),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     def suggest_rules(
@@ -920,6 +1008,7 @@ def build_server(settings: Settings) -> "MCPServer":
             loaded.tool_error,
             lambda: suggest(settings, path, max_share=max_share),
             environment_values(settings, path),
+            row_values=settings.allow_row_values,
         )
 
     for tool in (

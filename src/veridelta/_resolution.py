@@ -66,6 +66,20 @@ def duplicate_keys_error(keys: list[str], side: str, count: int) -> DataIntegrit
     )
 
 
+def unconverted_values_error(column: str, target: str, side: str, count: int) -> DataIntegrityError:
+    """Build the error for a `cast_to` that meets values it cannot convert.
+
+    Polars' own error quotes the values, which can be personal data or text
+    written to mislead an agent, so this one counts them instead.
+    """
+    counted = "1 value does" if count == 1 else f"{count} values do"
+    return DataIntegrityError(
+        f"Column '{column}' sets cast_to='{target}', but {counted} not convert to it in "
+        f"the {side} dataset. Map such values to null with null_values, or convert the "
+        "column where it is read."
+    )
+
+
 def mixed_key_types_error(
     mixed: Sequence[tuple[str, pl.DataType, pl.DataType]],
 ) -> ConfigError:

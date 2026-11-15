@@ -3,6 +3,7 @@
 
 """Unit tests for the OpenTelemetry metrics export."""
 
+import http.client
 import io
 import json
 import logging
@@ -945,6 +946,89 @@ class TestSendOTLPMetrics:
             send_otlp_metrics(_drift())
 
         assert "s3cret" not in str(info.value)
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            pytest.param("http://127.0.0.1:1/v1/metrics?team=a@b", id="in-query"),
+            pytest.param("http://s3cret/token@127.0.0.1:1/v1/metrics", id="hidden-password"),
+        ],
+    )
+    def test_it_refuses_an_at_sign_past_the_host(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint: str
+    ) -> None:
+        """Ensure an `@` past the host is refused before any send, since it can end a password."""
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", endpoint)
+
+        with pytest.raises(ConfigError, match="write a literal '@' as %40") as info:
+            send_otlp_metrics(_drift())
+
+        assert "s3" not in str(info.value)
+        assert "team" not in str(info.value)
+
+    @pytest.mark.parametrize(
+        ("name", "endpoint"),
+        [
+            pytest.param(
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "https://otlp.example.com/v1/metrics?api_key=s3cret x",
+                id="space",
+            ),
+            pytest.param(
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "https://otlp.example.com/v1/metrics?api_key=s3cret\x01",
+                id="control",
+            ),
+            pytest.param(
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "https://otlp.example.com/v1/metrics?api_key=s3cret\u00e9",
+                id="non-ascii",
+            ),
+            pytest.param(
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "https://otlp.example.com/base?api_key=s3cret\x7f",
+                id="base-delete",
+            ),
+        ],
+    )
+    def test_it_refuses_an_endpoint_holding_unencoded_characters(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, name: str, endpoint: str
+    ) -> None:
+        """Ensure a character a URL cannot hold fails naming the variable, never its query."""
+        opened = mocker.patch.object(urllib.request.OpenerDirector, "open")
+        monkeypatch.setenv(name, endpoint)
+
+        with pytest.raises(ConfigError, match=f"^{name} must hold no space") as info:
+            send_otlp_metrics(_drift())
+
+        assert "s3cret" not in str(info.value)
+        opened.assert_not_called()
+
+    def test_it_names_only_the_type_of_an_http_client_error(self, mocker: MockerFixture) -> None:
+        """Ensure an error whose text quotes the URL's query leaves that text out."""
+        mocker.patch.object(
+            urllib.request.OpenerDirector,
+            "open",
+            side_effect=http.client.InvalidURL("'/v1/metrics?api_key=s3cret'"),
+        )
+
+        with pytest.raises(ConnectorError) as info:
+            send_otlp_metrics(_drift())
+
+        assert str(info.value) == (
+            "Sending metrics to http://localhost:4318/v1/metrics failed: "
+            "the HTTP client raised InvalidURL."
+        )
+
+    def test_it_reports_a_connection_reset_while_reading(self, mocker: MockerFixture) -> None:
+        """Ensure a socket error raised outside the opener keeps its own text."""
+        opened = mocker.patch.object(urllib.request.OpenerDirector, "open")
+        opened.return_value.__enter__.return_value.read.side_effect = ConnectionResetError(
+            "Connection reset by peer"
+        )
+
+        with pytest.raises(ConnectorError, match=r"failed: Connection reset by peer\.$"):
+            send_otlp_metrics(_drift())
 
     @pytest.mark.parametrize("timeout", ["soon", "0", "-5", "1.5", "\u00b2", "\u0663"])
     def test_it_refuses_a_timeout_that_is_not_whole_milliseconds(

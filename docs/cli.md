@@ -40,7 +40,7 @@ veridelta run -c veridelta.yaml --html report.html --markdown summary.md --otel 
 | `--otel PATH` | Also write the run's [OpenTelemetry metrics](results.md#opentelemetry-metrics) to a file. |
 | `--otel-send` | Also send the metrics to an OTLP/HTTP endpoint. See [Sending to an endpoint](results.md#sending-to-an-endpoint). |
 
-Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one, and so does a Markdown summary that lists values.
+Progress messages always go to stderr, so `veridelta run --json | jq` needs no filtering. The text report escapes a column name a terminal or a CI runner could act on; see [Text from the data](#text-from-the-data). Reports and summaries from a pushdown run are labeled as holding primary keys only. An HTML report shows a [row sample](pushdown.md#row-samples)'s values when the run fetched one, and so does a Markdown summary that lists values.
 
 ### Two files without a configuration
 
@@ -87,6 +87,19 @@ INFO veridelta.connectors.database: Read 1200 rows of table 'orders' from postgr
 A line names its source by host, account, project, database, or table, and masks a password inside a URI. It never holds SQL text, row values, or a credential. [Logging](sources.md#logging) lists what each level records. The drivers' own loggers stay silent.
 
 When a read or a statement fails, a warning names it and how long it ran, and the error follows. `--verbose` changes nothing else: stdout keeps the report or the JSON, and `--quiet` still drops the progress messages.
+
+## Text from the data
+
+A column name, a key value, or an error can carry text from the data, and a terminal or a CI runner acts on some of it. A line break can start a line of its own, and an escape sequence can recolor or hide the output. GitHub Actions runs a line that opens with `::` as a command, and reads `##[` as one anywhere in a line.
+
+Every command writes such text so that nothing acts on it:
+
+- The text report, and the evidence `crosswalk` and `suggest` print, write a plain name as it is. A plain name starts with a letter, a digit, or an underscore, and holds no control character and no `##[`.
+- Any other name, and every key value, appears as Python's `repr` writes it, such as `'amt\n::error::x'` or `b'k'`. The `[` of each `##[` reads `\x5b`.
+- An error, a `validate` finding, a progress message, and a `--verbose` log line keep their line breaks. Any other control character is escaped as `repr` writes it, and the `[` of each `##[` reads `\x5b`. A line that opens with `::` has its first `:` written as `\x3a`.
+- The rules `crosswalk` and `suggest` print double-quote any text that is not plain, and break no line. YAML reads `\x5b` back as `[`, so the rules still say what the data holds.
+
+The JSON that `--json` prints keeps each name and value as the data holds it. Write it to a file, as the [GitHub Action](ci.md) does, rather than print it raw in a CI log.
 
 ## Checking a configuration
 
@@ -321,4 +334,4 @@ veridelta mcp --root .
 | `--max-rows N` | The most rows, value map entries, or example keys one call returns, at least 1. Default: 50. |
 | `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |
 
-A tool refuses a configuration file, or data on this machine, outside every root, and a tool that runs the comparison refuses a configuration whose `output_path` lies outside them. Without `--allow-row-values`, no tool returns a value from the data, and without `--allow-queries`, no tool runs a side's `query`. The server runs in the first root, so a relative path in a tool call, or in a configuration file, resolves there. Stdout carries the protocol and nothing else, and log lines go to stderr, which the host keeps. The server stops when the host disconnects, or on Ctrl-C.
+A tool refuses a configuration file, or data on this machine, outside every root, and a tool that runs the comparison refuses a configuration whose `output_path` lies outside them. Without `--allow-row-values`, no tool returns a value from the data, and a failed call or a `validate_config` finding leaves out any message that Polars, a file reader, or a database driver wrote. Without `--allow-queries`, no tool runs a side's `query`. The server runs in the first root, so a relative path in a tool call, or in a configuration file, resolves there. Stdout carries the protocol and nothing else, and log lines go to stderr, which the host keeps. The server stops when the host disconnects, or on Ctrl-C.

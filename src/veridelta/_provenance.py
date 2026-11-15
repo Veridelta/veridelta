@@ -30,6 +30,15 @@ from veridelta.models import HashedFile, RunProvenance
 _GIT_TIMEOUT_SECONDS: Final = 5.0
 """How long one git command may take before its field is left empty."""
 
+_GIT_OPTIONS: Final = ("-c", "safe.bareRepository=explicit", "-c", "core.fsmonitor=false")
+"""Settings for every git call: refuse a bare repository git finds on its own, run no monitor.
+
+A folder holding `HEAD`, `objects/`, and `refs/` is a bare repository to git,
+and those are ordinary files a commit can carry, so without the first setting
+they could name any commit. The second stops `git status` from starting the
+command `core.fsmonitor` names.
+"""
+
 _COMMIT_SHA: Final = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 """A full SHA-1 or SHA-256 commit id, the forms git and `GITHUB_SHA` print."""
 
@@ -97,13 +106,14 @@ def _git_state(environment: Mapping[str, str]) -> tuple[str | None, bool | None]
 
     Git answers first, since it sees the files this run read. Without git, or
     outside a repository, `GITHUB_SHA` names the commit and cleanliness stays
-    unknown. Untracked files are ignored, so a run's own outputs leave it clean.
+    unknown. Untracked files are ignored, so a run's own outputs leave it clean,
+    and status writes nothing back to the index.
     """
     head_output = _git("rev-parse", "HEAD")
     if head_output is None or not _COMMIT_SHA.fullmatch(head_output):
         ci_commit_sha = environment.get("GITHUB_SHA", "")
         return (ci_commit_sha if _COMMIT_SHA.fullmatch(ci_commit_sha) else None), None
-    status_output = _git("status", "--porcelain", "--untracked-files=no")
+    status_output = _git("--no-optional-locks", "status", "--porcelain", "--untracked-files=no")
     working_tree_clean = None if status_output is None else status_output == ""
     return head_output, working_tree_clean
 
@@ -112,7 +122,7 @@ def _git(*arguments: str) -> str | None:
     """Run one read-only git command in the working folder, or return None if it fails."""
     try:
         completed = subprocess.run(  # fixed arguments, no shell, read-only commands
-            ["git", *arguments],  # git from PATH, as the user runs it
+            ["git", *_GIT_OPTIONS, *arguments],  # git from PATH, as the user runs it
             capture_output=True,
             check=True,
             stdin=subprocess.DEVNULL,

@@ -14,6 +14,9 @@ inputs:
   sync:
     description: Whether to install the dependencies. A job that only builds the package sets "false".
     default: "true"
+  enable-cache:
+    description: Whether to restore and save the uv cache. A job that runs code nobody reviewed, or holds a secret, sets "false".
+    default: "true"
 
 runs:
   using: composite
@@ -22,7 +25,7 @@ runs:
       uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
       with:
         version: "0.12.23"
-        enable-cache: true
+        enable-cache: ${{ inputs.enable-cache }}
         cache-dependency-glob: "uv.lock"
         python-version: ${{ inputs.python-version }}
 
