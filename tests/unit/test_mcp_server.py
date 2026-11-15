@@ -16,6 +16,7 @@ import ntpath
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import threading
 from collections.abc import Awaitable, Callable, Iterator
@@ -2830,37 +2831,6 @@ class TestAllowedHosts:
                 id="bigquery-key-file",
             ),
             pytest.param(
-                "  type: duckdb\n  database: 'postgres_scanner:host=127.0.0.1 dbname=d'\n"
-                "  table: t\n",
-                "database extension prefix",
-                id="duckdb-postgres-extension",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: 'Postgres_Scanner:host=127.0.0.1'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-extension-in-any-case",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: 'mysql_scanner:host=127.0.0.1 user=u'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-mysql-extension",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: 'sqlite_scanner:x.db'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-sqlite-extension",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: '1ab:x'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-extension-with-a-digit-first",
-            ),
-            pytest.param(
-                '  type: duckdb\n  database: "motherduc\\u212a:x"\n  table: t\n',
-                "database extension prefix",
-                id="motherduck-with-the-kelvin-sign",
-            ),
-            pytest.param(
                 "  type: duckdb\n  database: 'md:?motherduck_host=127.0.0.1&motherduck_use_tls=false'"
                 "\n  table: t\n",
                 "database option other than attach_mode, saas_mode, or session_name",
@@ -2931,6 +2901,72 @@ class TestAllowedHosts:
 
         assert str(refused.value).startswith(f"The target {setting} is not one")
         read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("sqlite:x.db", id="sqlite"),
+            pytest.param("SQLITE:x.db", id="sqlite-in-any-case"),
+            pytest.param("sqlite:{outside}", id="sqlite-outside-the-roots"),
+            pytest.param("sqlite:../x.db", id="sqlite-relative"),
+            pytest.param("sqlite_scanner:x.db", id="sqlite-extension"),
+            pytest.param("postgres_scanner:host=127.0.0.1 dbname=d", id="postgres-extension"),
+            pytest.param("Postgres:host=127.0.0.1", id="postgres-in-any-case"),
+            pytest.param("mysql_scanner:host=127.0.0.1 user=u", id="mysql-extension"),
+            pytest.param("ducklake:x.ducklake", id="ducklake"),
+            pytest.param("duckdb:x.duckdb", id="duckdb"),
+            pytest.param("1ab:x", id="digit-first"),
+        ],
+    )
+    def test_it_refuses_a_duckdb_database_opened_through_an_extension(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        database: str,
+    ) -> None:
+        """Ensure no text before a colon picks the extension DuckDB opens a side through.
+
+        DuckDB loads that extension before the sandbox applies, and opens the
+        text after the prefix, which the check would read as another path.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        written = database.format(outside=tmp_path_factory.mktemp("outside") / "x.db")
+        _remote(tmp_path, f"  type: duckdb\n  database: {json.dumps(written)}\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="open it through an extension") as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert written not in str(refused.value)
+        read.assert_not_called()
+
+    def test_it_opens_a_sqlite_file_at_a_duckdb_path_through_no_extension(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a SQLite file under the roots, named as a DuckDB file, installs no extension.
+
+        DuckDB reads a SQLite file's header as a reason to download its SQLite
+        extension, from a host no `--allow-host` names, and load it before the
+        sandbox applies. Its extensions live under the home folder, which
+        points into this test's folder, so one it installed would show there.
+        """
+        home = tmp_path_factory.mktemp("home")
+        # POSIX reads HOME, Windows USERPROFILE.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.chdir(tmp_path)
+        with sqlite3.connect(tmp_path / "x.db") as connection:
+            connection.execute("CREATE TABLE t (id INTEGER)")
+        connection.close()
+        _remote(tmp_path, "  type: duckdb\n  database: x.db\n  table: t\n")
+
+        with pytest.raises(ConnectorError, match="not a valid DuckDB database file"):
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert list(home.rglob("*")) == []
 
     @pytest.mark.parametrize(
         "target",
@@ -3015,7 +3051,8 @@ class TestAllowedHosts:
         monkeypatch.setenv("VD_MCP_SECRET", "hunter2_do_not_print")
         _remote(tmp_path, f"  type: duckdb\n  database: '{database}'\n  table: t\n")
 
-        with pytest.raises(ConfigError, match="is not one a tool passes on") as refused:
+        refusal = "is not one a tool passes on|open it through an extension"
+        with pytest.raises(ConfigError, match=refusal) as refused:
             run_configuration(Settings((tmp_path,)), "veridelta.yaml")
 
         assert "hunter2" not in str(refused.value)

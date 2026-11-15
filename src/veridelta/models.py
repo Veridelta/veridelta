@@ -2059,6 +2059,15 @@ _MOTHERDUCK_PREFIX: Final = re.compile(r"(?:md|motherduck):", re.IGNORECASE | re
 Case is ignored in ASCII only, as DuckDB ignores it, so a name with the Kelvin
 sign, U+212A, in place of the `k` of `motherduck:` is no MotherDuck database."""
 
+_DUCKDB_EXTENSION_PREFIX: Final = re.compile(r"[A-Za-z0-9_]{2,}:(?!//)", re.ASCII)
+"""The start of a DuckDB `database` that DuckDB opens through an extension, such
+as `sqlite:x.db` or `postgres:host=db`.
+
+DuckDB reads two or more ASCII letters, digits, or underscores before the first
+colon, with no `//` after it, as the name of the extension that opens the
+database, and loads that extension before any setting of the connection
+applies. One letter is a drive letter, such as `C:`."""
+
 
 class DuckDBConfig(BaseModel):
     """Immutable settings for reading a DuckDB or MotherDuck table or query into a local comparison.
@@ -2139,8 +2148,9 @@ class DuckDBConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set,
-                `database` is in memory or holds a token, a token is set for a
-                file, or `pushdown` is set on a `query`.
+                `database` is in memory, opens through a DuckDB extension, or
+                holds a token, a token is set for a file, or `pushdown` is set
+                on a `query`.
         """
         if (self.table is None) == (self.query is None):
             raise ValueError("A DuckDB source reads a 'table' or runs a 'query'; set exactly one.")
@@ -2151,6 +2161,13 @@ class DuckDBConfig(BaseModel):
             raise ValueError(
                 "':memory:' opens a new, empty database. Point 'database' at a DuckDB "
                 "file or an md: database."
+            )
+        if not self.is_motherduck and _DUCKDB_EXTENSION_PREFIX.match(self.database) is not None:
+            raise ValueError(
+                "'database' starts with a name and a colon, as in sqlite:, so DuckDB would "
+                "open it through an extension, which Veridelta does not load. Point it at a "
+                "DuckDB file, written as ./name when the name holds a colon, or at an md: "
+                "database. Read a SQLite file through a database source, with a sqlite:// URI."
             )
         if self.is_motherduck and "token" in self.database.partition("?")[2].lower():
             raise ValueError(

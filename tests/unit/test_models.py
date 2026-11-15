@@ -1094,6 +1094,53 @@ class TestDuckDBConfig:
         """Ensure only the `md:` and `motherduck:` prefixes name a MotherDuck database."""
         assert DuckDBConfig(database=database, table="t").is_motherduck is motherduck
 
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("sqlite:warehouse.db", id="sqlite"),
+            pytest.param("SQLITE:warehouse.db", id="sqlite-uppercase"),
+            pytest.param("sqlite:/elsewhere/warehouse.db", id="sqlite-absolute"),
+            pytest.param("sqlite:../warehouse.db", id="sqlite-relative"),
+            pytest.param("sqlite_scanner:warehouse.db", id="extension-name"),
+            pytest.param("postgres:host=db.internal port=5432", id="postgres"),
+            pytest.param("postgres_scanner:host=db.internal", id="postgres-extension-name"),
+            pytest.param("mysql:host=db.internal user=u", id="mysql"),
+            pytest.param("ducklake:metadata.ducklake", id="ducklake"),
+            pytest.param("duckdb:warehouse.duckdb", id="duckdb"),
+            pytest.param("1ab:x", id="digit-first"),
+            pytest.param("data:warehouse.duckdb", id="folder-with-a-colon"),
+            pytest.param("postgres:", id="prefix-alone"),
+        ],
+    )
+    def test_it_refuses_a_database_duckdb_opens_through_an_extension(self, database: str) -> None:
+        """Ensure a `database` that would make DuckDB load an extension is refused, value unsaid.
+
+        DuckDB reads two or more ASCII letters, digits, or underscores before a
+        colon as the extension that opens the database, and loads it before
+        any setting of the connection applies.
+        """
+        with pytest.raises(ValidationError, match="open it through an extension") as refused:
+            DuckDBConfig(database=database, table="t")
+
+        assert database not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("warehouse.duckdb", id="relative"),
+            pytest.param("./data:2026/warehouse.duckdb", id="colon-after-a-dot"),
+            pytest.param("C:/data/warehouse.duckdb", id="drive-letter"),
+            pytest.param("C:\\data\\warehouse.duckdb", id="drive-letter-backslash"),
+            pytest.param("s3://bucket/warehouse.duckdb", id="url"),
+            pytest.param("motherduc\u212a:x", id="kelvin-sign"),
+            pytest.param("a-b:x", id="hyphen"),
+            pytest.param("md:sales", id="motherduck"),
+        ],
+    )
+    def test_it_takes_a_database_duckdb_opens_without_an_extension(self, database: str) -> None:
+        """Ensure a path, a drive letter, or a MotherDuck database is no extension prefix."""
+        assert DuckDBConfig(database=database, table="t").database == database
+
     def test_it_takes_a_token_for_motherduck_only(self) -> None:
         """Ensure a token set on a file is refused rather than silently unused."""
         with pytest.raises(ValidationError, match="for an md: database"):

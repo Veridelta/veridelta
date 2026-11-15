@@ -8,6 +8,8 @@ MotherDuck needs an account and a network, so its connection is covered by
 the unit tests alone.
 """
 
+import sqlite3
+import sys
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -243,6 +245,54 @@ class TestDuckDBReadFailures:
 
         assert not missing.exists()
 
+    @pytest.mark.parametrize(
+        ("name", "reason"),
+        [
+            pytest.param("legacy.db", "not a valid DuckDB database file", id="sqlite-file"),
+            pytest.param("s3://bucket/legacy.duckdb", "httpfs", id="url"),
+        ],
+    )
+    def test_it_opens_a_file_as_duckdb_without_an_extension(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, reason: str
+    ) -> None:
+        """Ensure no file's header and no path makes DuckDB install or load an extension.
+
+        DuckDB reads a SQLite file's header as a reason to download and load
+        its SQLite extension, and a URL as one to load `httpfs`, before any
+        setting of the sandbox applies. Its extensions live under the home
+        folder, which points into this test's folder, so one it installed
+        would show there.
+        """
+        home = tmp_path / "home"
+        home.mkdir()
+        # POSIX reads HOME, Windows USERPROFILE.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.chdir(tmp_path)
+        with sqlite3.connect(tmp_path / "legacy.db") as connection:
+            connection.execute("CREATE TABLE orders (id INTEGER)")
+        connection.close()
+
+        with pytest.raises(ConnectorError, match=reason):
+            LoaderFactory.load(DuckDBConfig(database=name, table="orders"))
+
+        assert list(home.rglob("*")) == []
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name cannot hold a colon.")
+    def test_it_reads_a_file_whose_folder_has_a_colon_written_from_dot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `./` before a name with a colon reads the file, as the refusal says to write it."""
+        (tmp_path / "data:2026").mkdir()
+        _duckdb(tmp_path / "data:2026" / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        monkeypatch.chdir(tmp_path)
+
+        frame = LoaderFactory.load(
+            DuckDBConfig(database="./data:2026/w.duckdb", table="t")
+        ).collect()
+
+        assert frame["id"].to_list() == [1]
+
     def test_it_refuses_to_write_to_a_file(self, tmp_path: Path) -> None:
         """Ensure a `query` that writes fails, because a file opens read-only.
 
@@ -324,12 +374,16 @@ class TestDuckDBReadFailures:
             LoaderFactory.load(DuckDBConfig(database=database, query=query))
 
     def test_it_explains_a_file_another_connection_holds(self, tmp_path: Path) -> None:
-        """Ensure a file open read-write elsewhere fails with DuckDB's reason, not a crash."""
+        """Ensure a file open read-write elsewhere fails with DuckDB's reason, not a crash.
+
+        The read opens the file as a DuckDB database by another name than the
+        writer's, so DuckDB says the file is attached already.
+        """
         database = _orders(tmp_path / "legacy.duckdb")
 
         with (
             duckdb.connect(database),
-            pytest.raises(ConnectorError, match="different configuration"),
+            pytest.raises(ConnectorError, match="already attached"),
         ):
             LoaderFactory.load(DuckDBConfig(database=database, table="sales.orders"))
 

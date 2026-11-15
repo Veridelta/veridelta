@@ -87,7 +87,12 @@ class TestDuckDBConnector:
             assert connector.lazyframe().collect().equals(frame)
             assert connector.lazyframe().collect_schema() == frame.schema
 
-        driver.connect.assert_called_once_with("warehouse.duckdb", read_only=True)
+        # As a DuckDB database, so neither the text nor the file's header picks an extension.
+        driver.connect.assert_called_once_with(
+            "duckdb:warehouse.duckdb",
+            read_only=True,
+            config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+        )
         driver.connect.return_value.sql.assert_called_once_with('SELECT * FROM "main"."orders"')
 
     def test_it_sends_a_query_verbatim(self, mocker: MockerFixture) -> None:
@@ -467,7 +472,11 @@ class TestDuckDBPushdownSession:
         session.close()
         session.close()
 
-        driver.connect.assert_called_once_with("warehouse.duckdb", read_only=True)
+        driver.connect.assert_called_once_with(
+            "duckdb:warehouse.duckdb",
+            read_only=True,
+            config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+        )
         assert connection.mock_calls[0] == call.execute("SET TimeZone = 'UTC'")
         assert connection.sql.call_args_list == [call("SELECT 1"), call("SELECT 2")]
         assert first.collect().equals(frame)

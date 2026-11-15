@@ -240,15 +240,6 @@ the login up to the first `@` anywhere in it, and takes a `#` into the host. So
 a URI passes only with no `@` past its login, no `#`, and no `\\`, space, or
 control character where a host or a login stands."""
 
-_EXTENSION_PREFIX: Final = re.compile(r"[^:/\\]{2,}:(?!//)")
-"""The start of a DuckDB `database` that DuckDB opens through an extension, such
-as `postgres_scanner:host=db port=5432`.
-
-DuckDB reads two or more letters, digits, or underscores before the first colon,
-with no `//` after it, as the name of an extension, and loads it to connect
-before any setting of the server applies. The pattern takes any character but a
-path separator, so it matches every name DuckDB reads, and a few it does not."""
-
 _MOTHERDUCK_NAME: Final = re.compile(
     r"(?:md|motherduck):(?:[A-Za-z0-9_-][A-Za-z0-9_/-]*)?", re.IGNORECASE | re.ASCII
 )
@@ -998,13 +989,16 @@ def _database_hosts(uri: str) -> list[tuple[str, str]]:
 def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
     """Name each host a DuckDB `database` reaches, or None for one the server cannot check.
 
-    A database DuckDB opens through an extension, such as Postgres's, connects
-    to whatever its text names, so it names None. So does a MotherDuck option a
-    tool does not pass on, such as `motherduck_host`. A MotherDuck database with
-    none of those reaches MotherDuck's own hosts, and names none. The whole text
-    is checked, since the extension finds an option after a `&` or a `#` before
-    the `?` as well. The text can hold a `${NAME}` value, so only a known
-    option's name is repeated.
+    A MotherDuck option a tool does not pass on, such as `motherduck_host`,
+    names None. A MotherDuck database with none of those reaches MotherDuck's
+    own hosts, and names none. The whole text is checked, since the extension
+    finds an option after a `&` or a `#` before the `?` as well. The text can
+    hold a `${NAME}` value, so only a known option's name is repeated.
+
+    Any other `database` is a file's path, checked as any location is:
+    `DuckDBConfig` refuses one that DuckDB would open through an extension,
+    such as `sqlite:x.db`, and the connector opens the file as a DuckDB
+    database, whatever it holds.
     """
     if config.is_motherduck:
         name, _, query = config.database.partition("?")
@@ -1020,8 +1014,6 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
             if _OPTION_VALUE.fullmatch(value) is None:
                 return [(f"database option '{key}'", None)]
         return []
-    if _EXTENSION_PREFIX.match(config.database) is not None:
-        return [("database extension prefix", None)]
     return [*_location_hosts("database", config.database)]
 
 

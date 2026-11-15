@@ -239,6 +239,8 @@ primary_keys: ["order_id"]
 
 A file opens read-only, so a `query` that writes fails and the file never changes. A missing file fails the read rather than leaving an empty database behind.
 
+`database` is a path, and the file opens as a DuckDB database, whatever it holds, so a SQLite file fails the read. DuckDB reads two or more letters, digits, or underscores before a colon as an extension to open the database through, such as `sqlite:` in `sqlite:legacy.db`. Veridelta refuses such a `database`, other than MotherDuck's `md:` and `motherduck:`. Read a SQLite file through a [database source](#connection-string) with a `sqlite://` URI. Write a file whose name holds a colon from its folder, as in `./data:2026/warehouse.duckdb`.
+
 A file's views and macros run as their author wrote them, so a file from someone else is code as well as data. Before any statement runs, the connection is held to the folder that holds the file:
 
 - A view, a macro, or a `query` reads other files and attaches other databases only from that folder and the folders under it. Anything outside it, such as `~/.ssh` or a URL, fails the read with a `Permission Error`.
