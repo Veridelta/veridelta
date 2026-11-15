@@ -35,10 +35,12 @@ from polars.exceptions import PanicException
 from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.io.pyarrow import PyArrowFileIO
+from pyiceberg.manifest import ManifestFile, write_manifest_list
 from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
 from veridelta.config import load_config
+from veridelta.connectors.lakehouse import IcebergConnector
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError
 from veridelta.mcp_server import (
@@ -1215,6 +1217,73 @@ def _remote_iceberg(
             return str(catalog.load_table("lake.events").metadata_location)
 
 
+def _read_two_ways(root: Path, outside: Path, layer: str) -> str:
+    """Write an Iceberg table under `root` that names one file PyIceberg and Polars open apart.
+
+    The table holds a row whose note is `public`. Its metadata names one file
+    of `layer` by a location that PyIceberg opens as the file the table
+    wrote, and that the `polars_iceberg` plugin, which parses it otherwise,
+    opens as a forged file under `root`. The forged file leads to a second
+    table, whose data file in `outside` holds `_SECRET`. Both readings lie
+    under `root`, so the listing passes either. The working directory must
+    be `root`.
+
+    Returns:
+        str: The `table_uri` that reads it.
+    """
+    with _catalog(root) as catalog:
+        for name, note, properties in (
+            ("events", "public", {}),
+            ("forged", _SECRET, {"write.data.path": str(outside)}),
+        ):
+            table = catalog.create_table(
+                f"lake.{name}", schema=_ROW.to_arrow().schema, properties=properties
+            )
+            table.append(_ROW.with_columns(note=pl.lit(note)).to_arrow())
+        events, forged = catalog.load_table("lake.events"), catalog.load_table("lake.forged")
+    metadata = Path(events.metadata_location)
+    written = json.loads(metadata.read_text())
+    (snapshot,) = written["snapshots"]
+    listed, forged_list = snapshot["manifest-list"], forged.current_snapshot().manifest_list
+    if layer == "metadata file":
+        # PyIceberg opens `FILE:///x` as `/x`, and the plugin as `FILE:/x` in the working directory.
+        snapshot["manifest-list"] = forged_list
+        (root / f"FILE:{metadata}").parent.mkdir(parents=True)
+        (root / f"FILE:{metadata}").write_text(json.dumps(written))
+        return f"FILE://{metadata}"
+    if layer == "manifest list":
+        (root / f"FILE:{listed}").parent.mkdir(parents=True)
+        shutil.copy(forged_list, root / f"FILE:{listed}")
+        snapshot["manifest-list"] = f"FILE://{listed}"
+    elif layer == "manifest list without a slash":
+        # PyIceberg opens `file:x` as `x` in the working directory, and the plugin as `/x`.
+        (root / listed.lstrip("/")).parent.mkdir(parents=True)
+        shutil.copy(listed, root / listed.lstrip("/"))
+        shutil.copy(forged_list, listed)
+        snapshot["manifest-list"] = f"file:{listed.lstrip('/')}"
+    else:
+        (manifest,) = events.current_snapshot().manifests(events.io)
+        (forged_manifest,) = forged.current_snapshot().manifests(forged.io)
+        (root / f"FILE:{manifest.manifest_path}").parent.mkdir(parents=True)
+        shutil.copy(forged_manifest.manifest_path, root / f"FILE:{manifest.manifest_path}")
+        # The manifest list entry as written, but for its first field: the manifest's location.
+        renamed = ManifestFile(
+            f"FILE://{manifest.manifest_path}", *(manifest[i] for i in range(1, len(manifest)))
+        )
+        snapshot["manifest-list"] = str(root / "renamed-list.avro")
+        with write_manifest_list(
+            format_version=written["format-version"],
+            output_file=events.io.new_output(snapshot["manifest-list"]),
+            snapshot_id=snapshot["snapshot-id"],
+            parent_snapshot_id=None,
+            sequence_number=snapshot["sequence-number"],
+            avro_compression="deflate",
+        ) as writer:
+            writer.add_manifests([renamed])
+    metadata.write_text(json.dumps(written))
+    return str(metadata)
+
+
 class TestLakehouseFiles:
     """Validate the folder rule on each file a Delta Lake or Iceberg table names."""
 
@@ -1384,42 +1453,33 @@ class TestLakehouseFiles:
 
         assert _SECRET not in str(refused.value)
 
-    @pytest.mark.parametrize(
-        ("properties", "options", "refused"),
-        [
-            pytest.param({"s3.endpoint": "http://elsewhere"}, {}, "s3.endpoint", id="store"),
-            pytest.param({"DEFAULT_SCHEME": "file"}, {}, "DEFAULT_SCHEME", id="default-store"),
-            pytest.param(
-                {"py-io-impl": "pyiceberg.io.pyarrow.PyArrowFileIO"}, {}, "py-io-impl", id="code"
-            ),
-            pytest.param(
-                {"s3.endpoint": "http://elsewhere"},
-                {"s3.endpoint": "http://elsewhere"},
-                None,
-                id="same-as-storage-options",
-            ),
-            pytest.param({"write.target-file-size-bytes": "1024"}, {}, None, id="table-property"),
-        ],
-    )
-    def test_it_refuses_metadata_that_says_how_files_are_read(
-        self,
-        tmp_path: Path,
-        properties: dict[str, str],
-        options: dict[str, str],
-        refused: str | None,
-    ) -> None:
-        """Ensure a table cannot point its scan at other manifests than the listing reads.
+    def test_it_reads_a_table_with_storage_options_alone(self, tmp_path: Path) -> None:
+        """Ensure a table's own properties never say how the scan reads its files.
 
-        A scan through PyIceberg reads the manifests with the metadata's own
-        properties merged over `storage_options`, and the listing does not.
+        Metadata that sends its files to a store, or names a FileIO class,
+        would make PyIceberg read other files than the listing names, if the
+        scan built its FileIO from them.
         """
-        target = IcebergConfig(table_uri=_iceberg(tmp_path, properties), storage_options=options)
+        metadata = Path(_iceberg(tmp_path))
+        written = json.loads(metadata.read_text())
+        written["properties"].update(
+            {
+                "DEFAULT_SCHEME": "s3",
+                "s3.endpoint": "http://127.0.0.1:9",
+                "py-io-impl": "veridelta.nowhere.FileIO",
+            }
+        )
+        metadata.write_text(json.dumps(written))
+        _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{metadata}'\nprimary_keys: [id]\n",
+        )
 
-        if refused is None:
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
-        else:
-            with pytest.raises(ConfigError, match=rf"sets '{refused}', which says how"):
-                check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert report["changed_count"] == 1
 
     def test_it_checks_each_path_before_it_lists_a_table(
         self, tmp_path: Path, mocker: MockerFixture
@@ -1588,7 +1648,7 @@ class TestLakehouseFiles:
         [
             pytest.param("deltalake", DeltaLakeConfig(table_uri="events"), "delta", id="delta"),
             pytest.param(
-                "pyiceberg.io",
+                "pyiceberg.io.pyarrow",
                 IcebergConfig(table_uri="lake/events.metadata.json"),
                 "iceberg",
                 id="iceberg",
@@ -1745,6 +1805,115 @@ class TestLakehouseFiles:
             check_data_paths(
                 Settings((tmp_path,)), SourceConfig(path="a.csv"), IcebergConfig(table_uri=metadata)
             )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The locations name POSIX paths.")
+    @pytest.mark.parametrize(
+        "layer",
+        ["metadata file", "manifest list", "manifest list without a slash", "manifest"],
+    )
+    @pytest.mark.parametrize("planner", ["", "plugin"], ids=["default-planner", "plugin-required"])
+    def test_it_scans_the_files_the_listing_reads(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        layer: str,
+        planner: str,
+    ) -> None:
+        """Ensure a scan opens the metadata files that the listing opened, however they are named.
+
+        The `polars_iceberg` plugin would open a forged file that the listing
+        never read, which leads to a data file outside the roots. Polars plans
+        a scan with that plugin whenever it is installed, and only with it when
+        `POLARS_ICEBERG_PLANNER` says so.
+        """
+        monkeypatch.setenv("POLARS_ICEBERG_PLANNER", planner)
+        monkeypatch.chdir(tmp_path)
+        metadata = _read_two_ways(tmp_path, tmp_path_factory.mktemp("outside"), layer)
+        _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{metadata}'\nprimary_keys: [id]\n",
+        )
+
+        report = read_rows(
+            Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed"
+        )
+
+        assert [row["note_target"] for row in report["rows"]] == ["public"]
+
+    @pytest.mark.parametrize("layer", ["metadata file", "manifest list", "manifest", "data file"])
+    def test_it_stops_a_scan_at_a_file_outside_the_roots(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        layer: str,
+    ) -> None:
+        """Ensure a scan opens no file outside the roots, though the listing found none.
+
+        A file can change between the listing and the scan, so the scan checks
+        each file on this machine again, just before it opens it.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        metadata = _one_layer_outside(tmp_path, outside, layer)
+        mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
+        _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{metadata}'\nprimary_keys: [id]\n",
+        )
+
+        with pytest.raises(VerideltaError, match="about to open a file outside") as stopped:
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+        assert _SECRET not in str(stopped.value)
+        assert str(outside) not in str(stopped.value)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The manifest list names a POSIX path.")
+    def test_it_reads_no_metadata_file_an_earlier_scan_left_in_polars_cache(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a scan reads each metadata file afresh, never as Polars cached it.
+
+        Polars keeps the bytes of each manifest list and manifest it reads, for
+        every later scan in the process. A scan from outside the server caches
+        a manifest list that leads outside the roots, which is then replaced.
+        The listing reads the new one, and so must the scan.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        with _catalog(tmp_path) as catalog:
+            for name, note, properties in (
+                ("events", "public", {}),
+                ("forged", _SECRET, {"write.data.path": str(outside)}),
+            ):
+                table = catalog.create_table(
+                    f"lake.{name}", schema=_ROW.to_arrow().schema, properties=properties
+                )
+                table.append(_ROW.with_columns(note=pl.lit(note)).to_arrow())
+            events, forged = catalog.load_table("lake.events"), catalog.load_table("lake.forged")
+        listed = Path(events.current_snapshot().manifest_list)
+        written = listed.read_bytes()
+        shutil.copy(forged.current_snapshot().manifest_list, listed)
+        command_line = IcebergConnector(IcebergConfig(table_uri=str(events.metadata_location)))
+        command_line.connect()
+        assert command_line.lazyframe().collect()["note"].to_list() == [_SECRET]
+        listed.write_bytes(written)
+        _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{events.metadata_location}'\n"
+            "primary_keys: [id]\n",
+        )
+
+        report = read_rows(
+            Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed"
+        )
+
+        assert [row["note_target"] for row in report["rows"]] == ["public"]
 
 
 class TestEnvironmentValues:

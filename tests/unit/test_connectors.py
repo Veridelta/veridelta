@@ -324,6 +324,7 @@ class TestLakehouseConnectors:
             static_table.return_value,
             snapshot_id=None,
             storage_options={"AWS_REGION": "us-east-1"},
+            reader_override=None,
         )
         assert connector.lazyframe() is lazy
         assert schema.names() == ["id", "amount"]
@@ -344,6 +345,7 @@ class TestLakehouseConnectors:
             static_table.return_value,
             snapshot_id=42,
             storage_options=None,
+            reader_override=None,
         )
         assert connector.lazyframe() is lazy
 

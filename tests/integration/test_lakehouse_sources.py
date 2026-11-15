@@ -23,7 +23,11 @@ import pytest
 from pyiceberg.catalog.sql import SqlCatalog
 
 from veridelta.connectors import DeltaLakeConnector, IcebergConnector
-from veridelta.connectors.lakehouse import _static_table  # pyright: ignore[reportPrivateUsage] - pins the table the loader builds
+from veridelta.connectors.lakehouse import (
+    _checked_file_io,  # pyright: ignore[reportPrivateUsage] - pins the path the FileIO checks
+    _static_table,  # pyright: ignore[reportPrivateUsage] - pins the table the loader builds
+    checking_iceberg_files,
+)
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConnectorError
 from veridelta.models import DeltaLakeConfig, DiffConfig, DiffRule, IcebergConfig, SourceConfig
@@ -249,6 +253,47 @@ class TestIcebergMetadataProperties:
 
         assert frame.sort("id").equals(_CHANGED)
         assert MarkerFileIO.loads == 0
+
+
+class TestCheckedIcebergScan:
+    """Validate the Iceberg scan the MCP server runs, which checks each file before it opens it.
+
+    Polars plans a scan with the `polars_iceberg` plugin, and reads the data
+    files itself. Inside `checking_iceberg_files`, PyIceberg plans and reads
+    every file through one FileIO instead, so each one passes the check.
+    """
+
+    @pytest.mark.parametrize("first", [False, True], ids=["latest", "snapshot"])
+    def test_it_checks_each_file_and_reads_the_same_rows(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+        first: bool,
+    ) -> None:
+        """Ensure the scan checks every file it opens, never plans with the plugin, and loses no row."""
+        source = _iceberg_table(tmp_path)(first)
+        monkeypatch.setenv("POLARS_VERBOSE", "1")
+        checked: list[str] = []
+
+        with checking_iceberg_files(checked.append):
+            frame = LoaderFactory.load(source).collect()
+
+        assert frame.sort("id").equals(_EVENTS if first else _CHANGED)
+        assert source.table_uri in checked
+        assert any(path.endswith(".parquet") for path in checked)
+        assert all(Path(path).is_relative_to(tmp_path) for path in checked)
+        assert "polars_iceberg plugin" not in capfd.readouterr().err
+
+    def test_it_checks_only_a_file_it_opens_from_this_machine(self) -> None:
+        """Ensure a file in a store is left to the store, and a local one is checked as opened."""
+        checked: list[str] = []
+        io = _checked_file_io({"s3.region": "us-east-1"}, checked.append)
+
+        io.new_input("s3://lake/events/data.parquet")
+        io.new_input("FILE:///lake/events/data.parquet")
+
+        assert checked == ["/lake/events/data.parquet"]
 
 
 class TestLakehouseScanFailures:

@@ -18,13 +18,15 @@ allows queries too. The SDK is imported by the first `build_server()`, not with
 this module, so `veridelta` imports without the extra.
 """
 
+import functools
 import glob
 import importlib
 import inspect
 import json
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -50,6 +52,7 @@ from veridelta import __version__
 from veridelta.config import load_config, referenced_variables
 from veridelta.connectors.base import mask_secrets, shown_location, without_location
 from veridelta.connectors.duckdb import sandboxed
+from veridelta.connectors.lakehouse import checking_iceberg_files
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
     DEFAULT_MIN_CONFIDENCE,
@@ -120,28 +123,6 @@ file is also held to the roots as written."""
 
 _MOTHERDUCK_PREFIXES: Final = ("md:", "motherduck:")
 """How a DuckDB `database` on MotherDuck starts, which DuckDB never opens as a file."""
-
-_FILE_IO_PROPERTIES: Final = (
-    "DEFAULT_NETLOC",
-    "DEFAULT_SCHEME",
-    "adls.",
-    "auth.",
-    "buffer-size",
-    "client.",
-    "gcs.",
-    "hdfs.",
-    "header.",
-    "hf.",
-    "oss.",
-    "py-",
-    "s3.",
-    "token",
-    "uri",
-    "warehouse",
-)
-"""The prefixes of the properties PyIceberg builds a FileIO from: the code to
-load, the store a location without a scheme lies in, and how it reaches each
-store and signs each request."""
 
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
@@ -403,6 +384,41 @@ def _roots(settings: Settings) -> str:
     return ", ".join(str(root) for root in settings.roots)
 
 
+def _refuse_opened(settings: Settings, path: str) -> None:
+    """Refuse a file on this machine that an Iceberg scan is about to open, outside the roots.
+
+    The path is the one PyArrow opens: relative to the working directory, and
+    with no `~` expanded. PyArrow drops a folder and the `..` after it before
+    it follows a link, so the path must lie under a root read either way. The
+    message leaves the path out, since the table's files named it.
+
+    Raises:
+        ConfigError: If the path lies outside every root.
+    """
+    readings = (Path(path), Path(os.path.abspath(path)))
+    if not all(_under_roots(settings, reading.resolve()) for reading in readings):
+        raise ConfigError(
+            "An Iceberg scan was about to open a file outside the folders this server reads "
+            f"from: {_roots(settings)}, so it was stopped. A tool reads data on this machine "
+            "only from under them."
+        )
+
+
+@contextmanager
+def _reading(settings: Settings) -> Generator[None]:
+    """Hold what a tool's sides read to the roots, while they read.
+
+    A DuckDB file's connection reads other files only from under the roots,
+    and an Iceberg scan opens a file on this machine only from under them,
+    each checked just before it is opened.
+    """
+    with (
+        sandboxed(settings.roots),
+        checking_iceberg_files(functools.partial(_refuse_opened, settings)),
+    ):
+        yield
+
+
 def resolve_path(settings: Settings, path: str) -> Path:
     """Resolve a path from a tool call, and refuse one outside the roots.
 
@@ -513,31 +529,25 @@ def _iceberg_files(config: IcebergConfig) -> Iterator[tuple[str, str, bool]]:
     never quoted, since it is a value from a file. The data and delete files
     come from the manifests, as a scan plans them.
 
-    The FileIO is built from `storage_options` alone, which hold no `py-` key
-    on this server. A scan through PyIceberg merges the metadata's own
-    properties over them, so a table whose metadata sets a property a FileIO
-    reads, to another value, is refused: its scan could read other manifests,
-    or load other code, than this lists.
-
-    Raises:
-        ConfigError: If the metadata sets a property a FileIO reads.
+    The files are read as the scan on this server reads them: through a
+    PyArrow FileIO built from `storage_options` alone, whatever the
+    metadata's own properties say.
     """
-    from pyiceberg.io import load_file_io
+    from pyiceberg.io.pyarrow import PyArrowFileIO
     from pyiceberg.serializers import FromInputFile
 
-    properties = dict(config.storage_options or {})
+    io = PyArrowFileIO(dict(config.storage_options or {}))
     location, hint = config.table_uri, None
     if not location.endswith(".metadata.json"):
         hint = os.path.join(location, "metadata", "version-hint.text")
         yield "version hint", hint, True
-        with load_file_io(properties, location=hint).new_input(hint).open() as stream:
+        with io.new_input(hint).open() as stream:
             content = stream.read().decode("utf-8")
         if not content.endswith(".metadata.json"):
             content = f"v{content}" if content.isnumeric() else content
             content = f"{content}.metadata.json"
         location = os.path.join(location, "metadata", content)
         yield f"metadata file that '{hint}' names", location, False
-    io = load_file_io(properties, location=location)
     try:
         metadata = FromInputFile.table_metadata(io.new_input(location))
     except Exception:
@@ -545,14 +555,6 @@ def _iceberg_files(config: IcebergConfig) -> Iterator[tuple[str, str, bool]]:
             raise
         # The error would quote the metadata file, and so the version hint's text.
         raise OSError(f"the metadata file that '{hint}' names could not be read") from None
-    for key, value in sorted(metadata.properties.items()):
-        if key.startswith(_FILE_IO_PROPERTIES) and properties.get(key) != value:
-            raise ConfigError(
-                f"The metadata of the Iceberg table '{shown_location(config.table_uri)}' sets "
-                f"'{key}', which says how its files are read, so this server cannot list the "
-                "files its scan would read. Set it in storage_options instead, or run the "
-                "comparison from the command line."
-            )
     snapshot = (
         metadata.current_snapshot()
         if config.snapshot_id is None
@@ -589,8 +591,6 @@ def _table_files(
         yield from files
     except ImportError as exc:
         raise ConnectorError(missing_extra(extra, f"Reading a {kind}")) from exc
-    except ConfigError:
-        raise
     except Exception as exc:
         where = shown_location(config.table_uri)
         raise ConnectorError(
@@ -669,8 +669,7 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
         target (SourceRef): The target configuration.
 
     Raises:
-        ConfigError: If a file or folder a side reads is outside every root,
-            or an Iceberg table's metadata sets how its files are read.
+        ConfigError: If a file or folder a side reads is outside every root.
         ConnectorError: If the files of a lakehouse table cannot be listed.
     """
     sides = (("source", source), ("target", target))
@@ -722,7 +721,7 @@ def check_configuration(
             pass
         else:
             check_data_paths(settings, source, target)
-    with sandboxed(settings.roots):
+    with _reading(settings):
         findings = DiffEngine.check_config_file(
             resolved,
             schemas=schemas,
@@ -792,7 +791,7 @@ def run_configuration(settings: Settings, path: str) -> RunReport:
         ConnectorError: If a source cannot be read.
         DataIntegrityError: If a primary key repeats on either side.
     """
-    with sandboxed(settings.roots):
+    with _reading(settings):
         summary = DiffEngine.run_from_configs(*_runnable(settings, path)).summary
     return cast(
         "RunReport",
@@ -823,7 +822,7 @@ def describe_side(settings: Settings, path: str, side: Literal["source", "target
         ConnectorError: If the side cannot be reached or read.
     """
     _, source, target = _load(settings, path)
-    with sandboxed(settings.roots):
+    with _reading(settings):
         schema = DiffEngine.read_schema(source if side == "source" else target)
     return SchemaReport(side=side, columns={name: str(dtype) for name, dtype in schema.items()})
 
@@ -888,7 +887,7 @@ def read_rows(
     _allow_rows(settings, "read_discrepancies")
     if limit < 1:
         raise ConfigError(f"limit must be at least 1, got {limit}.")
-    with sandboxed(settings.roots):
+    with _reading(settings):
         result = DiffEngine.run_from_configs(*_runnable(settings, path))
     found = {
         "added": (result.added, result.summary.added_count),
@@ -939,7 +938,7 @@ def propose_maps(
     _allow_rows(settings, "propose_value_maps")
     diff, source, target = _load(settings, path)
     _refuse_queries(settings, source, target)
-    with sandboxed(settings.roots):
+    with _reading(settings):
         proposals = DiffEngine.propose_value_maps_from_configs(
             diff,
             source,
@@ -986,7 +985,7 @@ def suggest(
     _allow_rows(settings, "suggest_rules")
     diff, source, target = _load(settings, path)
     _refuse_queries(settings, source, target)
-    with sandboxed(settings.roots):
+    with _reading(settings):
         suggestions = DiffEngine.suggest_rules_from_configs(
             diff, source, target, max_share=max_share
         )

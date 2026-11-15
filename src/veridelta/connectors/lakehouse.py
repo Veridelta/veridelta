@@ -12,10 +12,17 @@ the extra to install, the latter names the table and carries the scanner's own
 message, so a bad snapshot or an unreachable bucket never reads as an install
 problem. Scan lifecycle is logged under the `veridelta.connectors.lakehouse`
 logger; log lines carry the table URI and pin, never `storage_options`.
+
+Inside `checking_iceberg_files`, which the MCP server opens, an Iceberg scan
+reads every file through one PyIceberg FileIO that checks each path on this
+machine before it opens it.
 """
 
 import logging
 import os
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -33,6 +40,61 @@ logger = logging.getLogger(__name__)
 _UNCONNECTED = "Lakehouse connector is not connected. Call connect() first."
 _DELTA_EXTRA = missing_extra("delta", "Reading a Delta Lake table")
 _ICEBERG_EXTRA = missing_extra("iceberg", "Reading an Iceberg table")
+
+_file_check: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "veridelta_iceberg_file_check", default=None
+)
+"""What checks each path on this machine an Iceberg scan opens, or None for no check."""
+
+
+@contextmanager
+def checking_iceberg_files(check: Callable[[str], None]) -> Generator[None]:
+    """Check each file on this machine that an Iceberg scan inside the block opens.
+
+    Polars plans a scan with the `polars_iceberg` plugin when it is installed,
+    which reads the metadata, the manifest lists, and the manifests through
+    Polars' own storage, and it reads the data files itself. Polars parses a
+    location otherwise than PyIceberg does, and keeps a cache of metadata
+    files across scans. So inside the block, a scan plans and reads through
+    PyIceberg alone, with one FileIO that calls `check` with the path PyArrow
+    is about to open, just before it opens it. No other reader opens a file,
+    and Polars' cache never serves a FileIO of this kind.
+
+    Args:
+        check (Callable[[str], None]): Raises to refuse a path, which is
+            absolute or relative to the working directory.
+
+    Yields:
+        None: Control, for the scans to run inside the block.
+    """
+    token = _file_check.set(check)
+    try:
+        yield
+    finally:
+        _file_check.reset(token)
+
+
+def _checked_file_io(properties: dict[str, str], check: Callable[[str], None]) -> "FileIO":
+    """Build a PyArrow FileIO that calls `check` before it opens a file on this machine.
+
+    The path checked is the one the FileIO opens, since both come from its own
+    `parse_location`. PyArrow opens a location from this machine's disk only
+    when its scheme parses as `file`, as a location with none does unless
+    `DEFAULT_SCHEME` names another.
+    """
+    from pyiceberg.io.pyarrow import PyArrowFile, PyArrowFileIO
+
+    class CheckedFileIO(PyArrowFileIO):  # type: ignore[misc]  # mypy skips PyIceberg, so its classes read as Any.
+        """A PyArrow FileIO that checks each path on this machine before it opens it."""
+
+        def new_input(self, location: str) -> PyArrowFile:
+            """Check the path PyArrow opens for a location on this machine, then open it."""
+            scheme, _, path = self.parse_location(location, self.properties)
+            if scheme == "file":
+                check(path)
+            return super().new_input(location)
+
+    return CheckedFileIO(properties)
 
 
 class DeltaLakeConnector(ReaderConnector):
@@ -120,7 +182,8 @@ def _static_table(table_uri: str, storage_options: dict[str, str]) -> "StaticTab
     class a `py-io-impl` property names. Whoever writes a table writes those
     properties. So this FileIO reads `storage_options` only, which the model
     has already refused any key in that names a class, and the table keeps no
-    such property for a later reader to import.
+    such property for a later reader to import. Inside
+    `checking_iceberg_files`, the FileIO checks each path before it opens it.
 
     Args:
         table_uri (str): The table's metadata file or folder.
@@ -134,7 +197,12 @@ def _static_table(table_uri: str, storage_options: dict[str, str]) -> "StaticTab
     from pyiceberg.serializers import FromInputFile
     from pyiceberg.table import StaticTable
 
-    io = load_file_io(dict(storage_options), location=table_uri)
+    check = _file_check.get()
+    io = (
+        load_file_io(dict(storage_options), location=table_uri)
+        if check is None
+        else _checked_file_io(dict(storage_options), check)
+    )
     location = _metadata_location(table_uri, io)
     metadata = FromInputFile.table_metadata(io.new_input(location))
     properties = {
@@ -181,6 +249,9 @@ class IcebergConnector(ReaderConnector):
                 _static_table(self._config.table_uri, self._config.storage_options),
                 snapshot_id=self._config.snapshot_id,
                 storage_options=self._config.storage_options or None,
+                # PyIceberg then plans the scan and reads every file, through
+                # the table's FileIO, where Polars would read them itself.
+                reader_override=None if _file_check.get() is None else "pyiceberg",
             )
             # Polars looks a snapshot up only to read rows, so time travel reads
             # one now: a missing snapshot then fails here, named, instead of
