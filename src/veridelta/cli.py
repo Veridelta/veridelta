@@ -819,7 +819,7 @@ def _add_mcp_arguments(mcp_parser: argparse.ArgumentParser) -> None:
         help=(
             "A host a side may connect to, such as a database server, a bucket, or a URL's "
             "host. Repeat it for more hosts. Without it, a tool reads only data on this "
-            "machine, BigQuery, MotherDuck, or Hugging Face."
+            "machine, MotherDuck, Hugging Face, or BigQuery with the server's own credentials."
         ),
     )
     mcp_parser.add_argument(

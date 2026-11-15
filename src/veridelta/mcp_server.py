@@ -119,21 +119,95 @@ _SERVICE_SCHEMES: Final = frozenset({"hf", "md", "motherduck"})
 """Remote schemes whose reader reaches one service's own hosts, Hugging Face's or
 MotherDuck's, so a configuration chooses no host with them."""
 
-_HOST_OPTIONS: Final = (
-    "account_name",
-    "bucket",
-    "bucket_name",
-    "container_name",
-    "endpoint",
-    "url",
+_HOST_OPTIONS: Final = frozenset(
+    {
+        "account_name",
+        "adls.account-name",
+        "aws_bucket",
+        "aws_bucket_name",
+        "aws_endpoint",
+        "aws_endpoint_url",
+        "azure_container_name",
+        "azure_endpoint",
+        "azure_storage_account_name",
+        "azure_storage_endpoint",
+        "bucket",
+        "bucket_name",
+        "container_name",
+        "endpoint",
+        "endpoint_url",
+        "google_bucket",
+        "google_bucket_name",
+        "s3.endpoint",
+    }
 )
-"""Endings of the storage option keys that choose where a reader connects, such as
-`aws_endpoint_url`, `bucket`, or `azure_storage_account_name`, with or without a
-scheme. Any other option whose value is a URL names that URL's host too."""
+"""Storage option keys, in lowercase, whose value names the host a reader connects
+to: an endpoint, with or without a scheme, a bucket, or an account name."""
 
-_EMULATOR_OPTION: Final = "use_emulator"
-"""The ending of the storage option key that sends Azure requests to the emulator,
-which listens on this machine."""
+_REGION_OPTIONS: Final = frozenset(
+    {"aws_default_region", "aws_region", "client.region", "default_region", "region", "s3.region"}
+)
+"""Storage option keys, in lowercase, whose value a reader writes into an AWS host
+name, so a tool passes on only a value of letters, digits, and hyphens."""
+
+_REGION: Final = re.compile(r"[A-Za-z0-9-]+")
+"""A region a tool passes on, such as `us-east-1`."""
+
+_NO_HOST_OPTIONS: Final = frozenset(
+    {
+        "access_key",
+        "access_key_id",
+        "account_key",
+        "adls.account-key",
+        "adls.client-id",
+        "adls.client-secret",
+        "adls.sas-token",
+        "adls.tenant-id",
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_session_token",
+        "aws_skip_signature",
+        "aws_token",
+        "azure_client_id",
+        "azure_client_secret",
+        "azure_storage_access_key",
+        "azure_storage_account_key",
+        "azure_storage_client_id",
+        "azure_storage_client_secret",
+        "azure_storage_sas_key",
+        "azure_storage_sas_token",
+        "azure_storage_tenant_id",
+        "azure_storage_token",
+        "azure_tenant_id",
+        "bearer_token",
+        "client.access-key-id",
+        "client.secret-access-key",
+        "client.session-token",
+        "client_id",
+        "client_secret",
+        "gcs.oauth2.token",
+        "hf.token",
+        "s3.access-key-id",
+        "s3.anonymous",
+        "s3.secret-access-key",
+        "s3.session-token",
+        "sas_key",
+        "sas_token",
+        "secret_access_key",
+        "session_token",
+        "skip_signature",
+        "tenant_id",
+        "token",
+    }
+)
+"""Storage option keys, in lowercase, that hold a credential or a switch and choose
+no host. A tool refuses any key in none of these sets, since a reader can take
+an unlisted one, such as a service host, a proxy, a key file, or an emulator, as
+a place to connect."""
+
+_BARE_HOST: Final = re.compile(r"([^\s:/?#@\\\[\]]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]+)?")
+"""A host written without a scheme, with an optional port, as an endpoint option
+or an account name gives it."""
 
 _HOST_PARAMETERS: Final = frozenset({"host", "hostaddr", "socket"})
 """Query parameters of a database URI that name the server to connect to, which a
@@ -211,7 +285,8 @@ class Settings:
             lowercase on creation. A side that names any other host, such as a
             database server, an object store's bucket, or a URL's host, is
             refused before it connects. Defaults to none, so every tool reads
-            only data on this machine, BigQuery, MotherDuck, or Hugging Face.
+            only data on this machine, MotherDuck, Hugging Face, or BigQuery with
+            the server's own credentials.
     """
 
     roots: tuple[Path, ...]
@@ -502,36 +577,63 @@ def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
     return [(setting, host) for host in _url_hosts(location)]
 
 
-def _option_hosts(options: object) -> Iterator[tuple[str, str]]:
-    """Name each host a side's storage options send a reader to, with the option that names it."""
+def _bare_host(text: str) -> str:
+    """Return the host of an option written as a host and an optional port, or the text whole."""
+    written = _BARE_HOST.fullmatch(text)
+    return text if written is None else written.group(1)
+
+
+def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:
+    """Name each host a side's storage options send a reader to, with the option that names it.
+
+    A host of None marks an option a tool does not pass on: one outside the
+    known keys, or a region that a reader could not write into a host name.
+    """
     if not isinstance(options, Mapping):
         return
     for key, value in cast("Mapping[object, object]", options).items():
         name, text = str(key).lower(), str(value)
         setting = f"storage option '{key}'"
-        if name.endswith(_EMULATOR_OPTION):
-            yield setting, "127.0.0.1"
-        elif "://" in text:
-            yield from ((setting, host) for host in _url_hosts(text))
-        elif name.endswith(_HOST_OPTIONS):
-            yield from ((setting, host) for host in _authority_hosts(text))
+        if name in _HOST_OPTIONS:
+            hosts = _url_hosts(text) if "://" in text else [_bare_host(text)]
+            yield from ((setting, host) for host in hosts)
+        elif name in _REGION_OPTIONS:
+            if _REGION.fullmatch(text) is None:
+                yield setting, None
+        elif name not in _NO_HOST_OPTIONS:
+            yield setting, None
 
 
 def _database_hosts(uri: str) -> list[tuple[str, str]]:
-    """Name each server a database URI connects to, from its host and its query alike."""
+    """Name each server a database URI connects to, from its host and its query alike.
+
+    Drivers split a URI in other places than `urlsplit` does: tokio-postgres
+    reads the login up to the first `@` anywhere in it, and takes a `#` into
+    the host. So a URI with an `@` outside its authority, or with a `#`, comes
+    back whole, which no allowed host equals.
+    """
     parts = urlsplit(uri)
     if parts.scheme.startswith("sqlite"):
         return []
+    if "#" in uri or uri.count("@") != parts.netloc.count("@"):
+        return [("uri", uri)]
     hosts = _authority_hosts(parts.netloc)
-    hosts += [value for key, value in parse_qsl(parts.query) if key.lower() in _HOST_PARAMETERS]
+    hosts += [
+        value
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() in _HOST_PARAMETERS
+    ]
     return [("uri", host) for host in hosts]
 
 
-def _destinations(config: SourceRef) -> list[tuple[str, str]]:
+def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     """Name each host a side connects to that its configuration chooses, with the setting.
 
-    BigQuery, MotherDuck, and Hugging Face reach their own service's hosts,
-    which no setting changes, so they name none.
+    A host of None marks a setting a tool does not pass on, since the server
+    cannot check the host it sends a reader to. A BigQuery key file is one: its
+    `token_uri` names the host the sign-in goes to. MotherDuck and Hugging
+    Face, and BigQuery with the server's own credentials, reach their own
+    service's hosts, which no setting changes, so they name none.
     """
     if isinstance(config, SourceConfig):
         return [
@@ -544,14 +646,14 @@ def _destinations(config: SourceRef) -> list[tuple[str, str]]:
             *_option_hosts(config.storage_options),
         ]
     if isinstance(config, DuckDBConfig):
-        return _location_hosts("database", config.database)
+        return [*_location_hosts("database", config.database)]
     if isinstance(config, DatabaseConfig):
-        return _database_hosts(config.uri)
+        return [*_database_hosts(config.uri)]
     if isinstance(config, SnowflakeConfig):
         return [("account", f"{config.account}.snowflakecomputing.com")]
     if isinstance(config, DatabricksConfig):
         return [("server_hostname", config.server_hostname.removeprefix("https://").rstrip("/"))]
-    return []
+    return [] if config.credentials_path is None else [("credentials_path", None)]
 
 
 def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> None:
@@ -564,6 +666,12 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     """
     for side, config in (("source", source), ("target", target)):
         for setting, host in _destinations(config):
+            if host is None:
+                raise ConfigError(
+                    f"The {side} {setting} is not one a tool passes on, since the server "
+                    "cannot check which host it sends a reader to. Leave it out, and ask the "
+                    "person who started the server to give credentials through its environment."
+                )
             if host.lower() not in settings.allowed_hosts:
                 raise ConfigError(
                     f"The {side} {setting} names a host this server may not connect to. A tool "

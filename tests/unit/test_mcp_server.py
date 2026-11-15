@@ -822,16 +822,22 @@ class TestAllowedHosts:
                 id="account-name",
             ),
             pytest.param(
-                "  type: delta\n  table_uri: az://bucket/events\n"
-                "  storage_options: {azure_storage_use_emulator: 'true'}\n",
-                "storage option 'azure_storage_use_emulator'",
-                id="emulator",
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {aws_endpoint_url: 'http://[elsewhere'}\n",
+                "storage option 'aws_endpoint_url'",
+                id="url-that-does-not-parse",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: '//127.0.0.1:5436'}\n",
+                "storage option 's3.endpoint'",
+                id="endpoint-without-scheme-name",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: s3://bucket/events\n"
-                "  storage_options: {proxy_url: 'http://[elsewhere'}\n",
-                "storage option 'proxy_url'",
-                id="url-that-does-not-parse",
+                "  storage_options: {endpoint: 'http:127.0.0.1'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-without-slashes",
             ),
             pytest.param(
                 "  type: iceberg\n  table_uri: gs://other/events\n", "table_uri", id="iceberg"
@@ -863,6 +869,28 @@ class TestAllowedHosts:
                 "  table: t\n",
                 "uri",
                 id="database-second-login",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://db.internal/u:p@127.0.0.1:5440/db\n"
+                "  table: t\n",
+                "uri",
+                id="database-login-in-path",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgres://db.internal:5433/d@127.0.0.1:5433/db\n"
+                "  table: t\n",
+                "uri",
+                id="database-host-in-path",
+            ),
+            pytest.param(
+                "  type: database\n  uri: 'postgresql://db.internal#,127.0.0.1/db'\n  table: t\n",
+                "uri",
+                id="database-fragment",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal/db?host=\n  table: t\n",
+                "uri",
+                id="database-empty-host-parameter",
             ),
             pytest.param(f"{_SNOWFLAKE}  account: elsewhere\n", "account", id="snowflake"),
             pytest.param(
@@ -903,6 +931,12 @@ class TestAllowedHosts:
                 id="delta",
             ),
             pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: 'db.internal:9000', s3.region: eu-west-1, "
+                "s3.access-key-id: x, s3.secret-access-key: y}\n",
+                id="iceberg-credentials",
+            ),
+            pytest.param(
                 "  type: database\n  uri: postgresql://u:p@db.internal:5432/db?sslmode=require\n"
                 "  table: t\n",
                 id="database",
@@ -928,6 +962,61 @@ class TestAllowedHosts:
         )
 
         assert report["columns"] == {"id": "Int64"}
+
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {gcs.service.host: '//127.0.0.1:5436', "
+                "gcs.oauth2.token: x}\n",
+                "storage option 'gcs.service.host'",
+                id="service-host",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: abfs://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {adls.dfs-storage-authority: '127.0.0.1:8811'}\n",
+                "storage option 'adls.dfs-storage-authority'",
+                id="storage-authority",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n"
+                "  storage_options: {azure_storage_use_emulator: 'false'}\n",
+                "storage option 'azure_storage_use_emulator'",
+                id="emulator",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {AWS_REGION: 'evil.example/#'}\n",
+                "storage option 'AWS_REGION'",
+                id="region-that-is-not-a-region",
+            ),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
+                "    storage_options: {google_service_account: sa.json}\n",
+                "storage option 'google_service_account'",
+                id="key-file",
+            ),
+            pytest.param(
+                "  type: bigquery\n  project: analytics\n  table: sales.orders\n"
+                "  credentials_path: sa.json\n",
+                "credentials_path",
+                id="bigquery-key-file",
+            ),
+        ],
+    )
+    def test_it_refuses_a_setting_whose_host_it_cannot_check(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, setting: str
+    ) -> None:
+        """Ensure a setting that can pick a host the server cannot see is refused before it connects."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError, match="is not one a tool passes on") as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target {setting} is not one")
+        read.assert_not_called()
 
     @pytest.mark.parametrize(
         "target",
