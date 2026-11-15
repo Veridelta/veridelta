@@ -24,7 +24,13 @@ from veridelta.connectors import duckdb as duckdb_connectors
 from veridelta.connectors import warehouse as warehouse_connectors
 from veridelta.connectors.base import PushdownSession
 from veridelta.connectors.sql import SQLPushdownCompiler, compile_database_select
-from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
+from veridelta.exceptions import (
+    ConfigError,
+    ConnectorError,
+    VerideltaError,
+    may_quote_data,
+    missing_extra,
+)
 from veridelta.models import (
     BigQueryConfig,
     ConfigFinding,
@@ -90,12 +96,25 @@ def warning_finding(message: str, *, path: Sequence[str | int] | None = None) ->
     return ConfigFinding(severity="warning", message=message, locations=_at(path))
 
 
-def error_from_exception(exc: VerideltaError) -> ConfigFinding:
-    """Build the one error finding for a failure, keeping where a `ConfigError` points."""
+def shown_message(exc: BaseException, *, quote_data: bool) -> str:
+    """Return an error's message, or, unless `quote_data`, a hint in place of one that can quote the data."""
+    if quote_data or not may_quote_data(exc):
+        return str(exc).strip()
+    return (
+        f"{type(exc).__name__}: its message is left out, since it can quote values from the "
+        "data. Run veridelta validate --schemas on the file to read it."
+    )
+
+
+def error_from_exception(exc: VerideltaError, *, quote_data: bool = True) -> ConfigFinding:
+    """Build the one error finding for a failure, keeping where a `ConfigError` points.
+
+    Unless `quote_data`, a message that can quote the data gives way to a hint.
+    """
     locations = exc.locations if isinstance(exc, ConfigError) else ()
     return ConfigFinding(
         severity="error",
-        message=str(exc).strip(),
+        message=shown_message(exc, quote_data=quote_data),
         locations=[
             FindingLocation(
                 path=None if location.path is None else list(location.path),
@@ -320,8 +339,14 @@ def _float_text_findings(
     return findings
 
 
-def pushdown_schema_findings(diff: DiffConfig, pair: WarehousePair) -> list[ConfigFinding]:
-    """Probe a warehouse pair and compile its statements without running them."""
+def pushdown_schema_findings(
+    diff: DiffConfig, pair: WarehousePair, *, quote_data: bool
+) -> list[ConfigFinding]:
+    """Probe a warehouse pair and compile its statements without running them.
+
+    Unless `quote_data`, a driver's message that can quote the data gives way
+    to a hint.
+    """
     try:
         return pair.with_session(
             lambda session, source_table, target_table: _check_pushdown_plan(
@@ -329,4 +354,4 @@ def pushdown_schema_findings(diff: DiffConfig, pair: WarehousePair) -> list[Conf
             )
         )
     except VerideltaError as exc:
-        return [error_from_exception(exc)]
+        return [error_from_exception(exc, quote_data=quote_data)]

@@ -11,7 +11,7 @@ import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import IO, Any, cast
 
 import yaml
 from pydantic import ConfigDict, TypeAdapter, ValidationError
@@ -43,6 +43,10 @@ _ENV_REFERENCE = re.compile(
     r"|(?P<malformed>\$\{)"
 )
 """An escaped `$${`, a `${NAME}` or `${NAME:-default}` reference, or any other `${`."""
+
+
+_ALIAS_LIMIT = 1_000_000
+"""How much text the YAML aliases in one file may repeat, a list or mapping counting one more."""
 
 
 _Path = tuple[str | int, ...]
@@ -88,27 +92,19 @@ def _substitute(match: re.Match[str], path: _Path, unset: list[str] | None) -> s
     return value
 
 
-def _expand_env(
-    value: Any, path: _Path, parents: tuple[int, ...] = (), unset: list[str] | None = None
-) -> Any:
-    """Expand environment references in the strings of a `source` or `target` block."""
-    if id(value) in parents:
-        raise ConfigError(
-            f"The YAML alias at {_location(path)} refers to a mapping or list that contains it.",
-            locations=(ConfigLocation(path=path),),
-        )
+def _expand_env(value: Any, path: _Path, unset: list[str] | None = None) -> Any:
+    """Expand environment references in the strings of a `source` or `target` block.
+
+    The loader has refused any alias loop and bounded what aliases repeat, so the
+    walk ends and its work grows with the file's logical size.
+    """
     # A YAML anchor can share one mapping between both blocks, so an in-place edit reaches both.
     if isinstance(value, dict):
         mapping = cast("dict[object, object]", value)
-        inner = (*parents, id(mapping))
-        return {
-            key: _expand_env(item, (*path, _step(key)), inner, unset)
-            for key, item in mapping.items()
-        }
+        return {key: _expand_env(item, (*path, _step(key)), unset) for key, item in mapping.items()}
     if isinstance(value, list):
         items = cast("list[object]", value)
-        inner = (*parents, id(items))
-        return [_expand_env(item, (*path, index), inner, unset) for index, item in enumerate(items)]
+        return [_expand_env(item, (*path, index), unset) for index, item in enumerate(items)]
     if isinstance(value, str):
         # `sub` never rescans substituted text, so a secret holding `${` arrives intact.
         return _ENV_REFERENCE.sub(lambda match: _substitute(match, path, unset), value)
@@ -211,7 +207,10 @@ def _validation_failure(
     block: str | None = None,
     tag: object = None,
 ) -> ConfigError:
-    """Format a Pydantic failure as the loader's `ConfigError`.
+    """Format a Pydantic failure as the loader's `ConfigError`, to raise `from None`.
+
+    The message names each failure and where it is. The failure's own text also
+    quotes each input, which can be large, so it is not chained as the cause.
 
     Args:
         error (ValidationError): The failure.
@@ -246,6 +245,95 @@ def _yaml_locations(error: yaml.YAMLError) -> tuple[ConfigLocation, ...]:
     return (ConfigLocation(line=mark.line + 1, column=mark.column + 1),)
 
 
+def _check_aliases(root: yaml.Node) -> None:
+    """Refuse a document whose YAML aliases repeat more than `_ALIAS_LIMIT` of text.
+
+    An alias shares its anchor's node, so aliases nested inside aliases multiply:
+    a file under 1 KB can stand for gigabytes once any code walks or prints it. Each
+    node's size is counted once, a scalar as its length and a list or mapping as one
+    plus its contents, and each further visit adds that size to what aliases repeat.
+    """
+    # The loader refuses loops while composing, so the nodes form a graph without
+    # cycles and a size cached on the first visit is the node's whole size.
+    sizes: dict[yaml.Node, int] = {}
+    repeated = 0
+
+    def size(node: yaml.Node) -> int:
+        nonlocal repeated
+        if node in sizes:
+            repeated += sizes[node]
+            if repeated > _ALIAS_LIMIT:
+                mark = node.start_mark
+                raise ConfigError(
+                    f"The YAML aliases in this file repeat more than {_ALIAS_LIMIT:,} characters, "
+                    f"the most a file may repeat. The last one repeats the value at line "
+                    f"{mark.line + 1}, column {mark.column + 1}.",
+                    locations=(ConfigLocation(line=mark.line + 1, column=mark.column + 1),),
+                )
+            return sizes[node]
+        if isinstance(node, yaml.MappingNode):
+            pairs = cast("list[tuple[yaml.Node, yaml.Node]]", node.value)
+            total = 1 + sum(size(key) + size(item) for key, item in pairs)
+        elif isinstance(node, yaml.SequenceNode):
+            items = cast("list[yaml.Node]", node.value)
+            total = 1 + sum(size(item) for item in items)
+        else:
+            total = max(1, len(cast("str", node.value)))
+        sizes[node] = total
+        return total
+
+    size(root)
+
+
+class _AliasCheckingLoader(yaml.SafeLoader):
+    """The loader of `yaml.safe_load`, refusing alias loops and aliases that repeat too much."""
+
+    def __init__(self, stream: IO[str]) -> None:
+        super().__init__(stream)
+        self._open_anchors: set[str] = set()
+        """The anchors of the lists and mappings being composed, which enclose the next node."""
+
+    def compose_node(self, parent: yaml.Node | None, index: int) -> yaml.Node:
+        """Compose the next node, refusing an alias to a list or mapping that encloses it."""
+        # The composer only asks for a node where the next event is one.
+        event = cast("yaml.NodeEvent", self.peek_event())  # type: ignore[no-untyped-call]  # The stub leaves the parser untyped.
+        anchor = event.anchor
+        if isinstance(event, yaml.AliasEvent) and anchor in self._open_anchors:
+            # A loop has no finite size, and walking or printing it never ends or
+            # multiplies. No setting needs one. The composer refuses a repeated anchor
+            # name, so an open anchor always names an enclosing node.
+            mark = cast("yaml.Mark", event.start_mark)
+            raise ConfigError(
+                f"The YAML alias at line {mark.line + 1}, column {mark.column + 1} refers to "
+                "a mapping or list that contains it.",
+                locations=(ConfigLocation(line=mark.line + 1, column=mark.column + 1),),
+            )
+        if anchor is None or isinstance(event, yaml.AliasEvent):
+            return cast("yaml.Node", super().compose_node(parent, index))
+        self._open_anchors.add(anchor)
+        try:
+            return cast("yaml.Node", super().compose_node(parent, index))
+        finally:
+            self._open_anchors.discard(anchor)
+
+    def compose_document(self) -> yaml.Node:
+        """Compose the next document and refuse it if its aliases repeat too much."""
+        # The stub allows None, but a document always composes to a node; an empty file
+        # composes no document at all.
+        node = cast("yaml.Node", super().compose_document())
+        _check_aliases(node)
+        return node
+
+
+def _read_yaml(stream: IO[str]) -> Any:
+    """Parse one YAML document as `yaml.safe_load` does, after checking its aliases."""
+    loader = _AliasCheckingLoader(stream)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
 def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -> SourceRef:
     """Validate a YAML source/target block as a discriminated `SourceRef`."""
     if not isinstance(raw, dict):
@@ -260,7 +348,7 @@ def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -
     try:
         return _SOURCE_REF_ADAPTER.validate_python(payload)
     except ValidationError as e:
-        raise _validation_failure(e, guessed or (), block=label, tag=payload["type"]) from e
+        raise _validation_failure(e, guessed or (), block=label, tag=payload["type"]) from None
 
 
 def load_config(
@@ -293,9 +381,10 @@ def load_config(
             source and the target.
 
     Raises:
-        ConfigError: If the file is missing or not valid YAML, lacks a `source` or
-            `target` block, references an unset environment variable, holds a
-            malformed reference, or fails validation.
+        ConfigError: If the file is missing or not valid YAML, holds an alias inside the
+            value it names, its aliases repeat more than 1,000,000 characters, it lacks
+            a `source` or `target` block, or it references an unset environment
+            variable, holds a malformed reference, or fails validation.
 
     Examples:
         >>> from pathlib import Path
@@ -315,7 +404,7 @@ def load_config(
 
     try:
         with file_path.open("r", encoding="utf-8") as f:
-            parsed_yaml: Any = yaml.safe_load(f)
+            parsed_yaml: Any = _read_yaml(f)
     except yaml.YAMLError as yaml_err:
         raise ConfigError(
             f"Failed to parse YAML file:\n{yaml_err}", locations=_yaml_locations(yaml_err)
@@ -333,7 +422,7 @@ def load_config(
     try:
         diff_cfg = DiffConfig.model_validate(raw_config)
     except ValidationError as e:
-        raise _validation_failure(e) from e
+        raise _validation_failure(e) from None
     return diff_cfg, source_cfg, target_cfg
 
 
@@ -368,5 +457,5 @@ def files_config(
     try:
         diff = DiffConfig.model_validate({"primary_keys": list(primary_keys)})
     except ValidationError as e:
-        raise _validation_failure(e) from e
+        raise _validation_failure(e) from None
     return diff, sides[0], sides[1]

@@ -143,6 +143,15 @@ Expanded values are text:
 - File `options` reach the reader as they are: an expanded option arrives as a string.
 - A database `password` is percent-encoded when it joins the URI, but a `${VAR}` expanded inside `uri` is not. Keep database passwords in `password`.
 
+## Anchors and aliases
+
+A YAML anchor such as `&warehouse` names a value, and an alias such as `*warehouse` repeats it. The merge key `<<: *warehouse` in the [environment variables](#environment-variables) example copies the source's settings into the target this way.
+
+The loader refuses two kinds of alias before it checks any setting, with a `ConfigError` that names a line and column:
+
+- An alias inside the list or mapping it names, such as `nested: &loop [*loop]`. No setting holds a value that contains itself. The error names the alias.
+- Aliases that repeat more than 1,000,000 characters in total. A repeated text counts its length, and a repeated list or mapping counts one character plus everything in it. Aliases nested inside aliases multiply, so a file of a few hundred bytes could otherwise stand for gigabytes. The error names the value repeated last.
+
 ## Loading a file in Python
 
 `load_config` reads a file into the three objects a run needs, and `DiffEngine.run_from_configs` runs them through the same path as the CLI:

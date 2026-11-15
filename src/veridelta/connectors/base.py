@@ -42,9 +42,9 @@ def shown_location(location: str) -> str:
 
     Returns:
         str: The location as `redacted_location` returns it, or a note that it
-            does not parse as a URL.
+            cannot be printed safely.
     """
-    return redacted_location(location) or "a location that does not parse as a URL"
+    return redacted_location(location) or "a location that cannot be printed safely"
 
 
 def without_location(text: str, location: str) -> str:

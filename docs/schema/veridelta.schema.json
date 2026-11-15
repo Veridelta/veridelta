@@ -711,7 +711,7 @@
     },
     "IcebergConfig": {
       "additionalProperties": false,
-      "description": "Immutable settings for an Apache Iceberg table scan.\n\nAttributes:\n    type (Literal[\"iceberg\"]): Source kind, which selects this model.\n    table_uri (str): Catalog identifier or filesystem URI of the table.\n    snapshot_id (int | None): Optional snapshot to time-travel.\n    storage_options (dict[str, str]): Object-store credentials and options.\n        Left out when the config is printed, but kept by `model_dump()`,\n        which the scanner needs.",
+      "description": "Immutable settings for an Apache Iceberg table scan.\n\nAttributes:\n    type (Literal[\"iceberg\"]): Source kind, which selects this model.\n    table_uri (str): Path or object-store URI of the table's metadata\n        file, or of the table's folder. A catalog identifier is refused.\n    snapshot_id (int | None): Optional snapshot to time-travel.\n    storage_options (dict[str, str]): Object-store credentials and options.\n        A key that starts with `py-` or ends with `impl` is refused, since\n        PyIceberg imports the class it names. Left out when the config is\n        printed, but kept by `model_dump()`, which the scanner needs.",
       "properties": {
         "type": {
           "const": "iceberg",
@@ -721,7 +721,7 @@
           "type": "string"
         },
         "table_uri": {
-          "description": "Catalog identifier or filesystem URI of the table.",
+          "description": "Path or object-store URI of the table's metadata file or folder.",
           "title": "Table Uri",
           "type": "string"
         },

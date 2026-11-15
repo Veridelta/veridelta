@@ -22,11 +22,26 @@ from pytest_mock import MockerFixture
 
 from tests.otlp_collector import running_collector
 from veridelta import __version__
-from veridelta.cli import build_parser, crosswalk, main, mcp, run, validate
+from veridelta.cli import (  # pyright: ignore[reportPrivateUsage]
+    _verbose_logging,
+    build_parser,
+    crosswalk,
+    main,
+    mcp,
+    run,
+    validate,
+)
 from veridelta.config import config_json_schema
 from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
 from veridelta.mcp_server import Settings
-from veridelta.models import DiffConfig, DiffRule, RunProvenance, ValueMapEntry, ValueMapProposal
+from veridelta.models import (
+    ConfigFinding,
+    DiffConfig,
+    DiffRule,
+    RunProvenance,
+    ValueMapEntry,
+    ValueMapProposal,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
 
@@ -44,6 +59,15 @@ def recorded_run(mocker: MockerFixture) -> MagicMock:
         MagicMock: The mock, which a test reads to check what `run` passed.
     """
     return mocker.patch("veridelta.cli.collect_provenance", return_value=_RUN_RECORD)
+
+
+def _acted_on(text: str) -> list[str]:
+    """Return the lines of `text` a terminal or a GitHub runner would act on."""
+    return [
+        line
+        for line in text.splitlines()
+        if "##[" in line or line.lstrip().startswith("::") or "\x1b" in line
+    ]
 
 
 class TestCommandLineInterface:
@@ -678,6 +702,101 @@ class TestRunOnTwoFiles:
         assert configured == code == 1
         assert json.loads(capsys.readouterr().out) == expected
 
+    def test_it_quotes_a_header_that_holds_a_line_break_and_an_escape(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a header from the data cannot print a CI workflow command or a color."""
+        header = 'id,"amt\n::error title=Forged::x \x1b[31mred"\n'
+        (files / "a.csv").write_text(f"{header}1,10\n2,20\n", newline="")
+        (files / "b.csv").write_text(f"{header}1,10\n2,21\n", newline="")
+
+        code = self._main(mocker, "a.csv", "b.csv", "--key", "id")
+        out = capsys.readouterr().out
+
+        assert code == 1
+        assert "- 'amt\\n::error title=Forged::x \\x1b[31mred': 1 mismatch" in out
+        assert "\x1b" not in out
+        assert not any(line.startswith("::") for line in out.splitlines())
+
+    @pytest.mark.parametrize("command", ["error title=Forged]x", "add-mask]Total"])
+    def test_it_breaks_a_legacy_workflow_command_in_a_header(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str], command: str
+    ) -> None:
+        """Ensure a printable header holding `##[` prints no line a CI runner acts on."""
+        header = f"id,amt ##[{command}\n"
+        (files / "a.csv").write_text(f"{header}1,10\n2,20\n")
+        (files / "b.csv").write_text(f"{header}1,10\n2,21\n")
+
+        code = self._main(mocker, "a.csv", "b.csv", "--key", "id", "-q")
+        captured = capsys.readouterr()
+
+        assert code == 1
+        assert f"- 'amt ##\\x5b{command}': 1 mismatch" in captured.out
+        assert not any("##[" in line for line in (captured.out + captured.err).splitlines())
+
+    def test_it_quotes_a_header_that_opens_with_a_workflow_command(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a header holding `::` at its start prints inside quotes, mid-line."""
+        header = 'id,"::error title=Forged::x"\n'
+        (files / "a.csv").write_text(f"{header}1,10\n2,20\n")
+        (files / "b.csv").write_text(f"{header}1,10\n2,21\n")
+
+        code = self._main(mocker, "a.csv", "b.csv", "--key", "id", "-q")
+        captured = capsys.readouterr()
+
+        assert code == 1
+        assert "- '::error title=Forged::x': 1 mismatch" in captured.out
+        assert not _acted_on(captured.out + captured.err)
+
+    def test_it_escapes_a_failure_that_quotes_the_data(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure an error naming a key from the data prints nothing a runner acts on."""
+        key = "k ##[error title=Forged]x\n::warning::y"
+        (files / "a.csv").write_text("id,amt\n1,10\n")
+        (files / "b.csv").write_text("id,amt\n1,10\n")
+
+        code = self._main(mocker, "a.csv", "b.csv", "--key", key, "--json")
+        captured = capsys.readouterr()
+
+        assert code == 3
+        assert "'k ##\\x5berror title=Forged]x\\n::warning::y'" in captured.err
+        assert not _acted_on(captured.err)
+        # The JSON keeps the message as written, which stdout redirected to a file holds.
+        assert "##[error title=Forged]x" in json.loads(captured.out)["error"]["message"]
+
+    def test_it_escapes_a_failure_whose_message_breaks_its_line(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure an error from a driver that holds a raw line break cannot start a command."""
+        mocker.patch(
+            "veridelta.cli.DiffEngine.run_from_configs",
+            side_effect=RuntimeError("bad row 'a\n::error::x \x1b[31m'"),
+        )
+
+        code = self._main(mocker, "legacy.csv", "modern.csv", "--key", "id")
+        err = capsys.readouterr().err
+
+        assert code == 3
+        assert "bad row 'a\n\\x3a:error::x \\x1b[31m'" in err
+        assert not _acted_on(err)
+
+    def test_it_escapes_a_configuration_path_in_its_progress(
+        self, files: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a file name holding `##[` prints broken in the progress lines."""
+        (files / "a ##[error]b.yaml").write_text(
+            "primary_keys: [id]\nsource:\n  path: legacy.csv\ntarget:\n  path: modern.csv\n"
+        )
+
+        code = self._main(mocker, "-c", "a ##[error]b.yaml")
+        err = capsys.readouterr().err
+
+        assert code == 1
+        assert "Loading configuration from a ##\\x5berror]b.yaml..." in err
+        assert not _acted_on(err)
+
     def test_it_names_no_configuration_file_in_the_metrics(
         self, files: Path, mocker: MockerFixture
     ) -> None:
@@ -895,6 +1014,79 @@ class TestCrosswalkCommand:
             "F": "Female",
             "M": "Male",
         }
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_it_quotes_a_column_name_a_terminal_would_act_on(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        index: int,
+    ) -> None:
+        """Ensure a header with a line break and an escape stays on its line, in every note."""
+        column = "g\n::error::x \x1b[31m"
+        propose.return_value = [
+            _proposal(column, {"M": ("Male", 5, 5)}, governing_rule_index=index)
+        ]
+
+        crosswalk(crosswalk_args)
+        err = capsys.readouterr().err
+
+        assert "'g\\n::error::x \\x1b[31m': 1 new value_map entry" in err
+        assert f"rules[{index}] already governs 'g\\n::error::x \\x1b[31m'." in err
+        assert "\x1b" not in err
+        assert not any(line.startswith("::") for line in err.splitlines())
+
+    @pytest.mark.parametrize("index", [0, 1, 2])
+    def test_it_breaks_a_legacy_workflow_command_in_a_name_or_a_value(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        index: int,
+    ) -> None:
+        """Ensure `##[` in a column name or a value reaches no line of the evidence."""
+        column = "g ##[error]x"
+        propose.return_value = [
+            _proposal(
+                column, {"M ##[warning]y": ("##[add-mask]z", 5, 5)}, governing_rule_index=index
+            )
+        ]
+
+        crosswalk(crosswalk_args)
+        err = capsys.readouterr().err
+
+        assert "'g ##\\x5berror]x': 1 new value_map entry" in err
+        assert "  'M ##\\x5bwarning]y' -> '##\\x5badd-mask]z': 5 of 5 rows" in err
+        assert f"rules[{index}] already governs 'g ##\\x5berror]x'." in err
+        assert not any("##[" in line for line in err.splitlines())
+
+    @pytest.mark.parametrize(
+        "column",
+        [
+            pytest.param("::error title=Forged::x", id="workflow-command"),
+            pytest.param("g\n::error::x \x1b[31m", id="line-break"),
+            pytest.param("g ##[error]x", id="legacy-command"),
+            pytest.param("g" * 70 + " ::error::y", id="long-line"),
+        ],
+    )
+    def test_it_prints_rules_that_hold_nothing_a_runner_acts_on(
+        self,
+        propose: MagicMock,
+        crosswalk_args: argparse.Namespace,
+        capsys: pytest.CaptureFixture[str],
+        column: str,
+    ) -> None:
+        """Ensure the YAML to paste writes names and values from the data safely, and loads back."""
+        propose.return_value = [_proposal(column, {"M ##[x\n::error::y": (column, 5, 5)})]
+
+        crosswalk(crosswalk_args)
+        out = capsys.readouterr().out
+
+        assert yaml.safe_load(out) == {
+            "rules": [{"column_names": [column], "value_map": {"M ##[x\n::error::y": column}}]
+        }
+        assert not _acted_on(out)
 
     def test_it_passes_the_thresholds_to_the_engine(
         self, propose: MagicMock, crosswalk_args: argparse.Namespace
@@ -1396,6 +1588,30 @@ class TestValidateCommand:
         assert captured.out.startswith("warning: normalize_column_names is on.")
         assert captured.err == f"{path}: valid, with 1 warning.\n"
 
+    def test_it_escapes_a_finding_that_quotes_the_data(
+        self, tmp_path: Path, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a finding naming a stored column prints nothing a runner acts on."""
+        mocker.patch(
+            "veridelta.cli.DiffEngine.check_config_file",
+            return_value=[
+                ConfigFinding(
+                    severity="warning",
+                    message="Neither side has a column named 'a ##[error]b\n::warning::c'.",
+                )
+            ],
+        )
+
+        exit_code = validate(self._args(tmp_path / "veridelta.yaml"))
+        out = capsys.readouterr().out
+
+        assert exit_code == 0
+        assert (
+            out
+            == "warning: Neither side has a column named 'a ##\\x5berror]b\n\\x3a:warning::c'.\n"
+        )
+        assert not _acted_on(out)
+
     def test_it_needs_every_variable_unless_told_otherwise(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -1612,6 +1828,17 @@ class TestVerboseLogging:
         assert code == 1
         assert json.loads(captured.out)["is_match"] is False
         assert "INFO veridelta.connectors.database: Read 2 rows" in captured.err
+
+    def test_it_escapes_a_record_that_quotes_the_data(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure a log line naming something from a source prints nothing a runner acts on."""
+        with _verbose_logging(True):
+            logging.getLogger("veridelta.test").info("Read %s", "t ##[error]x\n::warning::y")
+
+        err = capsys.readouterr().err
+        assert err == "INFO veridelta.test: Read t ##\\x5berror]x\n\\x3a:warning::y\n"
+        assert not _acted_on(err)
 
     def test_it_keeps_the_password_out_of_a_failed_read(
         self, driver: MagicMock, mocker: MockerFixture, capsys: pytest.CaptureFixture[str]
