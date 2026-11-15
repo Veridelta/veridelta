@@ -147,7 +147,10 @@ Expanded values are text:
 
 A YAML anchor such as `&warehouse` names a value, and an alias such as `*warehouse` repeats it. The merge key `<<: *warehouse` in the [environment variables](#environment-variables) example copies the source's settings into the target this way.
 
-The aliases in one file may repeat at most 1,000,000 characters in total, and each list or mapping they repeat counts as one character. Aliases nested inside aliases multiply, so a file of a few hundred bytes could otherwise stand for gigabytes. A file over the limit raises `ConfigError` before any setting is checked, and the error names the line of the value repeated last.
+The loader refuses two kinds of alias before it checks any setting, with a `ConfigError` that names a line and column:
+
+- An alias inside the list or mapping it names, such as `nested: &loop [*loop]`. No setting holds a value that contains itself. The error names the alias.
+- Aliases that repeat more than 1,000,000 characters in total. A repeated text counts its length, and a repeated list or mapping counts one character plus everything in it. Aliases nested inside aliases multiply, so a file of a few hundred bytes could otherwise stand for gigabytes. The error names the value repeated last.
 
 ## Loading a file in Python
 
