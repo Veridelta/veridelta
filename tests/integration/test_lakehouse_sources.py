@@ -280,7 +280,8 @@ class TestCheckedIcebergScan:
             frame = LoaderFactory.load(source).collect()
 
         assert frame.sort("id").equals(_EVENTS if first else _CHANGED)
-        assert source.table_uri in checked
+        # Windows writes the path checked with backslashes alone, and the table_uri with both.
+        assert Path(source.table_uri) in {Path(path) for path in checked}
         assert any(path.endswith(".parquet") for path in checked)
         assert all(Path(path).is_relative_to(tmp_path) for path in checked)
         assert "polars_iceberg plugin" not in capfd.readouterr().err

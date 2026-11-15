@@ -1790,7 +1790,14 @@ class TestLakehouseFiles:
     @pytest.mark.parametrize(
         "uri",
         [
-            pytest.param(Path.as_uri, id="file-uri"),
+            pytest.param(
+                Path.as_uri,
+                id="file-uri",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32",
+                    reason="PyIceberg writes no file at a Windows file URI, such as file:///C:/x.",
+                ),
+            ),
             pytest.param(
                 lambda folder: "file:" + str(folder).lstrip("/"),
                 id="file-uri-without-a-slash",
