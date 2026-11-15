@@ -178,6 +178,11 @@ veridelta = "veridelta.cli:main"
 # Every build uv runs, the release's among them, uses this release of the
 # build backend, so a new one reaches PyPI only through a reviewed change.
 build-constraint-dependencies = ["hatchling==1.32.4"]
+# The lockfile resolves only for Python 3.11.5 and later. Every soupsieve
+# release that fixes its known vulnerabilities needs 3.11.5, so a fork for
+# 3.11.0 to 3.11.4 would pin a vulnerable one for the docs build. Users still
+# install the package on any Python 3.11, as requires-python says.
+environments = ["'3.11.5' <= python_full_version"]
 
 [tool.hatch.build.targets.sdist]
 # The recordings and screenshots serve the docs site, which builds from the
