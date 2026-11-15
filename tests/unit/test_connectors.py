@@ -870,6 +870,49 @@ class TestDatabaseConnector:
 
         read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "link/../x.db",
+            "link/%2E%2E/x.db",
+            "link/.%2e/x.db",
+            "link%2F..%2Fx.db",
+            "link/./../x.db/",
+            "link//..//x.db",
+        ],
+    )
+    def test_it_hands_connectorx_a_sqlite_path_with_no_link_or_dot_left(
+        self, mocker: MockerFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure `..` after a link climbs from where the link leads, as the system reads it.
+
+        ConnectorX folds `..` as text before the system follows a link, so the
+        connector hands it the resolved path and leaves nothing to fold.
+        """
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
+        (tmp_path / "a" / "b").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(tmp_path / "a" / "b", target_is_directory=True)
+        (tmp_path / "x.db").write_bytes(b"")
+        database = tmp_path / "a" / "x.db"
+        database.write_bytes(b"")
+        monkeypatch.chdir(tmp_path)
+
+        DatabaseConnector(DatabaseConfig(uri=f"sqlite://{written}", table="orders")).connect()
+
+        read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
+
+    def test_it_refuses_a_sqlite_path_holding_a_nul(self, mocker: MockerFixture) -> None:
+        """Ensure `%00` fails as a configuration error, before any read."""
+        read = _read_database(mocker)
+
+        with pytest.raises(ConfigError, match="NUL character"):
+            DatabaseConnector(DatabaseConfig(uri="sqlite:///srv/x.db%00", table="t")).connect()
+
+        read.assert_not_called()
+
     def test_it_drops_the_frame_on_close_and_rereads_on_connect(
         self, mocker: MockerFixture
     ) -> None:

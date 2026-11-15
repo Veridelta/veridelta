@@ -790,6 +790,43 @@ class TestCheckDataPaths:
 
         assert sqlite_path(side) == str(tmp_path / "~" / "x.db")
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize("dots", ["..", "%2E%2E", ".%2e"])
+    def test_it_checks_the_sqlite_path_a_link_leads_to(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        dots: str,
+    ) -> None:
+        """Ensure `..` after a link climbs from where the link leads, in the check and the read."""
+        root = tmp_path_factory.mktemp("root").resolve()
+        (root / "a" / "b").mkdir(parents=True)
+        (root / "link").symlink_to(root / "a" / "b", target_is_directory=True)
+        monkeypatch.chdir(root)
+        settings = Settings((root,))
+        inside = _sqlite(f"sqlite://link/{dots}/{dots}/outside/x.db")
+        outside = _sqlite(f"sqlite://link/{dots}/{dots}/{dots}/{tmp_path.name}/x.db")
+
+        check_data_paths(settings, SourceConfig(path="a.csv"), inside)
+        with pytest.raises(ConfigError, match=r"The target SQLite file '.+' is outside"):
+            check_data_paths(settings, SourceConfig(path="a.csv"), outside)
+
+        # The connector opens this text, so no `..` is left for ConnectorX to fold another way.
+        assert sqlite_path(inside) == str(root / "outside" / "x.db")
+        assert sqlite_path(outside) == str(tmp_path.resolve() / "x.db")
+
+    def test_it_refuses_a_sqlite_path_holding_a_nul(self, tmp_path: Path) -> None:
+        """Ensure `%00` fails as a configuration error, not as a crash in the check."""
+        with pytest.raises(ConfigError, match="NUL character"):
+            check_data_paths(
+                Settings((tmp_path,)),
+                SourceConfig(path=str(tmp_path / "a.csv")),
+                _sqlite(f"sqlite://{tmp_path}/x.db%00"),
+            )
+
     def test_it_masks_the_password_of_a_refused_sqlite_path(
         self,
         tmp_path: Path,

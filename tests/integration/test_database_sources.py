@@ -20,6 +20,7 @@ import pytest
 from veridelta.connectors import DatabaseConnector
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConnectorError
+from veridelta.mcp_server import Settings, check_data_paths
 from veridelta.models import DatabaseConfig, DiffConfig, DiffRule, SourceConfig
 
 pytestmark = [pytest.mark.integration]
@@ -215,6 +216,48 @@ class TestDatabaseSources:
         connector.connect()
 
         assert connector.lazyframe().collect()["v"].to_list() == ["named"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "link/../../outside/x.db",
+            "{root}/link/../../outside/x.db",
+            "link/%2E%2E/%2E%2E/outside/x.db",
+            "link/.%2e/%2E./outside/x.db",
+            "link%2F..%2F..%2Foutside%2Fx.db",
+            "link/../../outside/x.db/",
+            "link//..//..//outside//x.db",
+            "link/./.././../outside/x.db",
+        ],
+    )
+    def test_it_reads_the_sqlite_file_the_mcp_check_allows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure `..` after a link reads the file the MCP server's root check resolved.
+
+        ConnectorX folds `..` as text, before the system follows the link, so
+        without the resolved path it would read `outside/x.db` beside the root.
+        """
+        table = "CREATE TABLE t (v TEXT)"
+        insert = "INSERT INTO t VALUES (?)"
+        root = tmp_path / "root"
+        (root / "a" / "b").mkdir(parents=True)
+        (root / "outside").mkdir()
+        (tmp_path / "outside").mkdir()
+        (root / "link").symlink_to(root / "a" / "b", target_is_directory=True)
+        _sqlite(root / "outside" / "x.db", table, rows=[(insert, ("inside",))])
+        _sqlite(tmp_path / "outside" / "x.db", table, rows=[(insert, ("outside",))])
+        monkeypatch.chdir(root)
+        config = DatabaseConfig(uri="sqlite://" + written.format(root=root), table="t")
+
+        check_data_paths(Settings((root,)), SourceConfig(path="a.csv"), config)
+        connector = DatabaseConnector(config)
+        connector.connect()
+
+        assert connector.lazyframe().collect()["v"].to_list() == ["inside"]
 
     def test_it_checks_rules_against_a_zero_row_probe(self, tmp_path: Path) -> None:
         """Ensure `validate --schemas` reads a real table's columns and types, no rows.

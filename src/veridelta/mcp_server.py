@@ -366,8 +366,8 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig):
         named = [("database", config.database)]
-    elif isinstance(config, DatabaseConfig) and urlsplit(config.uri).scheme.startswith("sqlite"):
-        # The connector reads the decoded text as a path on this machine, whatever it looks like.
+    elif isinstance(config, DatabaseConfig) and urlsplit(config.uri).scheme == "sqlite":
+        # The connector opens this resolved text, so a link or `..` leads nowhere else.
         return [("SQLite file", sqlite_path(config))]
     return [
         (setting, local)

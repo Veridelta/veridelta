@@ -22,6 +22,7 @@ error as the cause.
 """
 
 import logging
+import os
 import time
 from abc import abstractmethod
 from collections.abc import Mapping
@@ -111,7 +112,8 @@ class DatabaseConnector(ReaderConnector):
                 does not exist, the partition column holds a NULL or anything
                 but integers, or the read fails.
             ConfigError: If `table` names a database Veridelta cannot quote for,
-                or a probe was asked of a `query`.
+                a probe was asked of a `query`, or a SQLite path holds a NUL
+                character.
         """
         if connectorx is None:
             raise ConnectorError(_DATABASE_EXTRA)
@@ -624,19 +626,32 @@ def sqlite_path(config: DatabaseConfig) -> str:
     """Return the path of the file a `sqlite://` source opens, as the connector opens it.
 
     ConnectorX percent-decodes all the text after `sqlite://`, so this does too,
-    with any `?` or `#` and the `password` field kept in it. A relative path is
-    made absolute against the working directory, and the connector opens that
-    form. SQLite then never reads a leading `file:` as a URI of its own, and no
-    reader expands a leading `~`. The MCP server checks this path against its
-    roots, so the check and the read agree.
+    with any `?` or `#` and the `password` field kept in it. The decoded path is
+    then resolved as the operating system resolves it: made absolute against the
+    working directory, with every link followed and every `.` and `..` folded.
+    The connector hands ConnectorX this text, encoded, so nothing is left for its
+    URL parser to fold another way, SQLite reads no `file:` URI of its own in
+    it, and no reader expands a leading `~`. The MCP server checks this path
+    against its roots, so the check and the read name one file.
 
     Args:
         config (DatabaseConfig): A database source whose URI starts with `sqlite://`.
 
     Returns:
-        str: The decoded path, made absolute.
+        str: The decoded path, resolved.
+
+    Raises:
+        ConfigError: If the decoded path holds a NUL character, which no file
+            name can.
     """
-    return str(Path(unquote(_connection_uri(config)[len(_SQLITE_PREFIX) :])).absolute())
+    decoded = unquote(_connection_uri(config)[len(_SQLITE_PREFIX) :])
+    if "\0" in decoded:
+        raise ConfigError(
+            "A SQLite path holds a NUL character, such as '%00', which no file name can hold. "
+            "Write 'uri' as sqlite:// followed by the file's path."
+        )
+    # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
+    return os.path.realpath(decoded)
 
 
 def _existing_sqlite_uri(path: str) -> str:
