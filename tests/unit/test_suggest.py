@@ -488,8 +488,8 @@ class TestSuggestCommand:
     ) -> None:
         """Ensure a header with a line break and an escape stays on its line, in the note too."""
         header = 'id,"fa\n::error::x \x1b[31m"\n'
-        (tmp_path / "a.csv").write_text(f"{header}1,10.00\n2,20.00\n")
-        (tmp_path / "b.csv").write_text(f"{header}1,10.004\n2,20.004\n")
+        (tmp_path / "a.csv").write_text(f"{header}1,10.00\n2,20.00\n", newline="")
+        (tmp_path / "b.csv").write_text(f"{header}1,10.004\n2,20.004\n", newline="")
         (tmp_path / "veridelta.yaml").write_text(
             "primary_keys: [id]\nsource:\n  path: a.csv\ntarget:\n  path: b.csv\n"
             'rules:\n  - column_names: ["fa\\n::error::x \\e[31m"]\n    cast_to: Float64\n'

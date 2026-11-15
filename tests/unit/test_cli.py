@@ -707,8 +707,8 @@ class TestRunOnTwoFiles:
     ) -> None:
         """Ensure a header from the data cannot print a CI workflow command or a color."""
         header = 'id,"amt\n::error title=Forged::x \x1b[31mred"\n'
-        (files / "a.csv").write_text(f"{header}1,10\n2,20\n")
-        (files / "b.csv").write_text(f"{header}1,10\n2,21\n")
+        (files / "a.csv").write_text(f"{header}1,10\n2,20\n", newline="")
+        (files / "b.csv").write_text(f"{header}1,10\n2,21\n", newline="")
 
         code = self._main(mocker, "a.csv", "b.csv", "--key", "id")
         out = capsys.readouterr().out
