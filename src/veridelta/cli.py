@@ -23,11 +23,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import yaml
 from polars.exceptions import PanicException
 
 from veridelta import __version__
 from veridelta._provenance import collect_provenance
+from veridelta._terminal import printable, printable_text, printable_yaml
 from veridelta.config import config_json_schema, files_config, load_config
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -37,7 +37,7 @@ from veridelta.engine import (
 )
 from veridelta.exceptions import ConfigError, VerideltaError
 from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve
-from veridelta.models import Baseline, printable_name
+from veridelta.models import Baseline
 from veridelta.outputs import OUTPUTS, error_report, output_json_schema, validation_report
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
 from veridelta.telemetry import send_otlp_metrics, write_otlp_metrics
@@ -65,9 +65,17 @@ _LOG_FORMAT = "%(levelname)s %(name)s: %(message)s"
 
 
 def _progress(message: str, *, quiet: bool) -> None:
-    """Write a progress line to stderr."""
+    """Write a progress line to stderr, which can name a file or quote the data."""
     if not quiet:
-        print(message, file=sys.stderr)
+        print(printable_text(message), file=sys.stderr)
+
+
+class _PrintableFormatter(logging.Formatter):
+    """Format a log record as `printable_text` writes it, since a record can quote the data."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Format the record, then escape what a terminal or a CI runner would act on."""
+        return printable_text(super().format(record))
 
 
 @contextmanager
@@ -84,7 +92,7 @@ def _verbose_logging(enabled: bool) -> Generator[None, None, None]:
         return
     logger = logging.getLogger("veridelta")
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    handler.setFormatter(_PrintableFormatter(_LOG_FORMAT))
     level = logger.level
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
@@ -181,7 +189,8 @@ def _report_failure(
             f"https://github.com/Veridelta/veridelta/issues with the {settings} "
             "and this message."
         )
-    print(message, file=sys.stderr)
+    # An error can quote the data, such as a column name or a line of a file.
+    print(printable_text(message), file=sys.stderr)
     if as_json:
         print(json.dumps(error_report(exc), indent=2))
     return EXIT_ERROR
@@ -311,13 +320,13 @@ def _merge_advice(rule: "DiffRule", column: str) -> str:
     """Say where a proposed map for `column` belongs, given the rule governing it."""
     if len(rule.column_names) > 1 or (rule.pattern is not None and rule.column_names):
         return (
-            f"That rule also governs other columns, so move {printable_name(column, quote=True)} "
+            f"That rule also governs other columns, so move {printable(column, quote=True)} "
             "into a rule of its own with the same settings and add these entries there."
         )
     if rule.pattern is not None:
         return (
             f"That rule matches by pattern, so add a rule listing "
-            f"{printable_name(column, quote=True)} by name, with the same settings and these "
+            f"{printable(column, quote=True)} by name, with the same settings and these "
             "entries: a rule naming a column wins over a pattern."
         )
     return "Add these entries to its value_map instead of pasting a second rule."
@@ -332,14 +341,14 @@ def _report_proposals(
     for proposal in proposals:
         count = len(proposal.entries)
         _progress(
-            f"{printable_name(proposal.column)}: {count} new value_map "
+            f"{printable(proposal.column)}: {count} new value_map "
             f"{'entry' if count == 1 else 'entries'}",
             quiet=quiet,
         )
         for entry in proposal.entries:
             _progress(
-                f"  {printable_name(entry.source_value, quote=True)} -> "
-                f"{printable_name(entry.target_value, quote=True)}: "
+                f"  {printable(entry.source_value, quote=True)} -> "
+                f"{printable(entry.target_value, quote=True)}: "
                 f"{entry.agreeing_rows:,} of {entry.rows:,} rows ({entry.confidence:.1%})",
                 quiet=quiet,
             )
@@ -349,7 +358,7 @@ def _report_proposals(
             # printed rule as it stands changes nothing.
             print(
                 f"Note: rules[{index}] already governs "
-                f"{printable_name(proposal.column, quote=True)}. "
+                f"{printable(proposal.column, quote=True)}. "
                 + _merge_advice(rules[index], proposal.column),
                 file=sys.stderr,
             )
@@ -394,16 +403,14 @@ def crosswalk(args: argparse.Namespace) -> int:
             for proposal in proposals
         ]
         # YAML quotes any value it would read as another type, such as `Y` or `1`.
-        print(yaml.safe_dump({"rules": rules}, sort_keys=False), end="")
+        print(printable_yaml({"rules": rules}), end="")
     return EXIT_MATCH
 
 
 def _key_text(keys: dict[str, object]) -> str:
     """Name one row by its primary keys, such as `id=3`."""
     return ", ".join(
-        f"{printable_name(name)}="
-        + (printable_name(value, quote=True) if isinstance(value, str) else repr(value))
-        for name, value in keys.items()
+        f"{printable(name)}={printable(value, quote=True)}" for name, value in keys.items()
     )
 
 
@@ -428,7 +435,7 @@ def _report_suggestions(suggestions: Sequence["RuleSuggestion"], *, quiet: bool)
             else f", the largest gap {suggestion.largest_gap:.6g}"
         )
         _progress(
-            f"{printable_name(suggestion.column)}: {settings} explains "
+            f"{printable(suggestion.column)}: {settings} explains "
             f"{suggestion.explained:,} of {suggestion.differing:,} differing rows{gap}",
             quiet=quiet,
         )
@@ -439,7 +446,7 @@ def _report_suggestions(suggestions: Sequence["RuleSuggestion"], *, quiet: bool)
             # This note ignores `quiet`, as crosswalk's does: a rule pasted after the one
             # that governs the column changes nothing.
             print(
-                f"Note: rules[{index}] governs {printable_name(suggestion.column, quote=True)} "
+                f"Note: rules[{index}] governs {printable(suggestion.column, quote=True)} "
                 "today. The rule below keeps its settings for this column: put it first in rules.",
                 file=sys.stderr,
             )
@@ -478,7 +485,7 @@ def suggest(args: argparse.Namespace) -> int:
             item.rule.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
             for item in suggestions
         ]
-        print(yaml.safe_dump({"rules": rules}, sort_keys=False), end="")
+        print(printable_yaml({"rules": rules}), end="")
     return EXIT_MATCH
 
 
@@ -572,7 +579,7 @@ def validate(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2))
     else:
         for finding in findings:
-            print(f"{finding.severity}: {finding.message}")
+            print(printable_text(f"{finding.severity}: {finding.message}"))
 
     if errors:
         verdict = f"{_plural(len(errors), 'error')}, {_plural(len(warnings), 'warning')}."

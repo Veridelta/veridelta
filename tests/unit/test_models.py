@@ -30,7 +30,6 @@ from veridelta.models import (  # pyright: ignore[reportPrivateUsage]
     SourceType,
     ValueMapEntry,
     ValueMapProposal,
-    printable_name,
 )
 
 pytestmark = [pytest.mark.unit, pytest.mark.fast]
@@ -1182,9 +1181,20 @@ class TestDiffSummaryCalculations:
         assert drift_line in summary.report_summary
         assert shift_line in summary.report_summary
 
-    def test_it_quotes_a_column_name_a_terminal_would_act_on(self) -> None:
-        """Ensure a header with a line break and an escape cannot start a line of its own."""
-        name = "amt\n::error title=Forged::x \x1b[31mred"
+    @pytest.mark.parametrize(
+        ("name", "written"),
+        [
+            pytest.param(
+                "amt\n::error title=Forged::x \x1b[31mred",
+                "'amt\\n::error title=Forged::x \\x1b[31mred'",
+                id="line-break-and-escape",
+            ),
+            pytest.param("::error title=Forged::x", "'::error title=Forged::x'", id="workflow"),
+            pytest.param("amt ##[add-mask]x", "'amt ##\\x5badd-mask]x'", id="legacy-command"),
+        ],
+    )
+    def test_it_quotes_a_column_name_a_terminal_would_act_on(self, name: str, written: str) -> None:
+        """Ensure a header from the data cannot start a line, color it, or hold `##[`."""
         summary = DiffSummary(
             total_rows_source=2,
             total_rows_target=2,
@@ -1197,58 +1207,10 @@ class TestDiffSummaryCalculations:
 
         report = summary.report_summary
 
-        assert "- 'amt\\n::error title=Forged::x \\x1b[31mred': 1 mismatch\n" in report
+        assert f"- {written}: 1 mismatch\n" in report
         assert "\x1b" not in report
-        assert not any(line.startswith("::") for line in report.splitlines())
-
-
-class TestPrintableName:
-    """Validate how a column name from the data is written for a terminal."""
-
-    @pytest.mark.parametrize(
-        "name", ["amount", "Amount total", "_id", "2024 sales", "prix (€)", "naïve"]
-    )
-    def test_it_writes_a_plain_name_as_it_is(self, name: str) -> None:
-        """Ensure an ordinary header reads as it always has."""
-        assert printable_name(name) == name
-
-    @pytest.mark.parametrize(
-        ("name", "written"),
-        [
-            pytest.param("a\nb", "'a\\nb'", id="line-break"),
-            pytest.param("a\x1b[31m", "'a\\x1b[31m'", id="escape"),
-            pytest.param("a\tb", "'a\\tb'", id="tab"),
-            pytest.param("a\x9bb", "'a\\x9bb'", id="c1-control"),
-            pytest.param("::error::x", "'::error::x'", id="workflow-command"),
-            pytest.param(" ::x", "' ::x'", id="leading-space"),
-            pytest.param("'a'", "\"'a'\"", id="quoted"),
-            pytest.param("", "''", id="empty"),
-            pytest.param("amt ##[error]x", "'amt ##\\x5berror]x'", id="legacy-command"),
-            pytest.param("a###[b##[c", "'a###\\x5bb##\\x5bc'", id="legacy-command-twice"),
-            pytest.param("a\n##[x", "'a\\n##\\x5bx'", id="legacy-command-on-a-new-line"),
-        ],
-    )
-    def test_it_quotes_any_other_name(self, name: str, written: str) -> None:
-        """Ensure a name that could act on a terminal or a CI log is written as its repr."""
-        assert printable_name(name) == written
-        assert "##[" not in written
-
-    @pytest.mark.parametrize(
-        ("name", "written"),
-        [
-            pytest.param("amount", "'amount'", id="plain"),
-            pytest.param("a\nb", "'a\\nb'", id="line-break"),
-            pytest.param("x ##[add-mask]y", "'x ##\\x5badd-mask]y'", id="legacy-command"),
-        ],
-    )
-    def test_it_quotes_a_plain_name_when_asked(self, name: str, written: str) -> None:
-        """Ensure a note that quotes every name writes each one the same way."""
-        assert printable_name(name, quote=True) == written
-
-    def test_it_keeps_a_name_that_spells_the_escape_apart(self) -> None:
-        r"""Ensure a name holding the text `\x5b` reads differently from a broken `##[`."""
-        assert printable_name("a ##\\x5bb") == "a ##\\x5bb"
-        assert printable_name("a ##\\x5bb", quote=True) == "'a ##\\\\x5bb'"
+        assert "##[" not in report
+        assert not any(line.lstrip().startswith("::") for line in report.splitlines())
 
 
 class TestDiffResultRowAccess:

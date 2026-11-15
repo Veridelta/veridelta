@@ -30,6 +30,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from veridelta._terminal import printable
 from veridelta.exceptions import ConfigError
 
 if TYPE_CHECKING:
@@ -132,30 +133,6 @@ def normalize_column_name(name: str) -> str:
         str: The name the engine compares by.
     """
     return name.strip().lower()
-
-
-def printable_name(name: str, *, quote: bool = False) -> str:
-    r"""Write a column name for a terminal or a CI log, quoted when it is not plain.
-
-    A name comes from the data, and a terminal or a CI runner acts on some
-    text in it: a line break, an escape sequence, a line that opens with
-    `::`, or `##[` anywhere in a line. A name that starts with a letter, a
-    digit, or an underscore, holds only printable characters, and holds no
-    `##[` is written as it is. Any other name is written as Python's `repr`,
-    as error messages name columns, with the `[` of each `##[` written as
-    `\x5b`.
-
-    Args:
-        name (str): A column name, or another text from the data.
-        quote (bool): Quote the name even when it is plain.
-
-    Returns:
-        str: The name as it is, or quoted with its control characters escaped.
-    """
-    plain = (name[:1].isalnum() or name[:1] == "_") and name.isprintable() and "##[" not in name
-    if plain and not quote:
-        return name
-    return repr(name).replace("##[", "##\\x5b")
 
 
 def mismatch_ratio_of(mismatches: int, source_rows: int) -> float:
@@ -965,7 +942,7 @@ class DiffSummary(BaseModel):
         ]
 
         col_report = "".join(
-            f"- {printable_name(col)}: {count:,} {_noun(count, 'mismatch', 'mismatches')}\n"
+            f"- {printable(col)}: {count:,} {_noun(count, 'mismatch', 'mismatches')}\n"
             for col, count in top_cols
         )
         return f"{base_report}\nTop Column-Level Drifts:\n---------------------------\n{col_report}"
