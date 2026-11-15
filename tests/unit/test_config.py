@@ -79,6 +79,50 @@ class TestYAMLConfigurationParsing:
         assert "unsupported_field" in error_msg
 
     @pytest.mark.parametrize(
+        ("before", "after", "line"),
+        [
+            pytest.param("source:\n  path:\n", "target:\n  path: b.csv\n", 5, id="source-path"),
+            pytest.param(
+                "source:\n  path: a.csv\n  options:\n    storage_options:\n      a:\n",
+                "target:\n  path: b.csv\n",
+                8,
+                id="source-options",
+            ),
+            pytest.param(
+                "source:\n  path: a.csv\ntarget:\n  path: b.csv\njunk:\n", "", 8, id="root-key"
+            ),
+        ],
+    )
+    def test_it_refuses_aliases_that_repeat_more_than_the_limit(
+        self, tmp_path: Path, before: str, after: str, line: int
+    ) -> None:
+        """Ensure nested aliases are refused before any code walks or prints what they repeat.
+
+        Three levels of ten aliases over 1,000 characters repeat over 1,000,000
+        characters. Ten levels would stand for more memory than a runner has, in a
+        file of under 2 KB, wherever the aliases sit. The location is the value the
+        alias past the limit repeats.
+        """
+        text = before + _alias_chain(3, indent=" " * 8) + after + "primary_keys: [id]\n"
+
+        with pytest.raises(ConfigError, match="repeat more than 1,000,000 characters") as exc_info:
+            _load_yaml(tmp_path, text)
+
+        assert exc_info.value.locations == (ConfigLocation(line=line, column=13),)
+
+    def test_it_loads_aliases_that_repeat_less_than_the_limit(self, tmp_path: Path) -> None:
+        """Ensure a file whose aliases repeat about 100,000 characters still loads."""
+        _, source, _ = _load_yaml(
+            tmp_path,
+            "source:\n  path: a.csv\n  options:\n    junk:\n"
+            + _alias_chain(2, indent=" " * 6)
+            + "target:\n  path: b.csv\nprimary_keys: [id]\n",
+        )
+
+        assert isinstance(source, SourceConfig)
+        assert source.options["junk"]["l2"][9][9] == "x" * 1000
+
+    @pytest.mark.parametrize(
         ("blocks", "location"),
         [
             pytest.param(
@@ -202,6 +246,15 @@ def _load_yaml(
     path = tmp_path / "config.yaml"
     path.write_text(text)
     return load_config(path, **kwargs)
+
+
+def _alias_chain(levels: int, *, indent: str) -> str:
+    """Write a mapping whose `l0` holds 1,000 characters and each later level ten aliases."""
+    lines = [f"{indent}l0: &l0 {'x' * 1000}\n"]
+    lines += [
+        f"{indent}l{n}: &l{n} [{', '.join([f'*l{n - 1}'] * 10)}]\n" for n in range(1, levels + 1)
+    ]
+    return "".join(lines)
 
 
 _SNOWFLAKE_BLOCK = (

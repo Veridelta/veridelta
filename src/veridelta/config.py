@@ -11,7 +11,7 @@ import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import IO, Any, cast
 
 import yaml
 from pydantic import ConfigDict, TypeAdapter, ValidationError
@@ -43,6 +43,10 @@ _ENV_REFERENCE = re.compile(
     r"|(?P<malformed>\$\{)"
 )
 """An escaped `$${`, a `${NAME}` or `${NAME:-default}` reference, or any other `${`."""
+
+
+_ALIAS_LIMIT = 1_000_000
+"""How much text the YAML aliases in one file may repeat, each list or mapping counting one."""
 
 
 _Path = tuple[str | int, ...]
@@ -246,6 +250,69 @@ def _yaml_locations(error: yaml.YAMLError) -> tuple[ConfigLocation, ...]:
     return (ConfigLocation(line=mark.line + 1, column=mark.column + 1),)
 
 
+def _check_aliases(root: yaml.Node) -> None:
+    """Refuse a document whose YAML aliases repeat more than `_ALIAS_LIMIT` of text.
+
+    An alias shares its anchor's node, so aliases nested inside aliases multiply:
+    a file under 1 KB can stand for gigabytes once any code walks or prints it. Each
+    node's size is counted once, a scalar as its length and a list or mapping as one
+    plus its contents, and each further visit adds that size to what aliases repeat.
+    """
+    sizes: dict[yaml.Node, int] = {}
+    repeated = 0
+
+    def size(node: yaml.Node, parents: tuple[yaml.Node, ...]) -> int:
+        nonlocal repeated
+        if node in parents:
+            # A loop has no finite size, and a later check refuses it by its setting.
+            return 0
+        if node in sizes:
+            repeated += sizes[node]
+            if repeated > _ALIAS_LIMIT:
+                mark = node.start_mark
+                raise ConfigError(
+                    f"The YAML aliases in this file repeat more than {_ALIAS_LIMIT:,} characters, "
+                    f"the most a file may repeat. The last one repeats the value at line "
+                    f"{mark.line + 1}, column {mark.column + 1}.",
+                    locations=(ConfigLocation(line=mark.line + 1, column=mark.column + 1),),
+                )
+            return sizes[node]
+        inner = (*parents, node)
+        if isinstance(node, yaml.MappingNode):
+            pairs = cast("list[tuple[yaml.Node, yaml.Node]]", node.value)
+            total = 1 + sum(size(key, inner) + size(item, inner) for key, item in pairs)
+        elif isinstance(node, yaml.SequenceNode):
+            items = cast("list[yaml.Node]", node.value)
+            total = 1 + sum(size(item, inner) for item in items)
+        else:
+            total = max(1, len(cast("str", node.value)))
+        sizes[node] = total
+        return total
+
+    size(root, ())
+
+
+class _AliasCheckingLoader(yaml.SafeLoader):
+    """The loader of `yaml.safe_load`, which also checks a document's aliases before building it."""
+
+    def compose_document(self) -> yaml.Node:
+        """Compose the next document and refuse it if its aliases repeat too much."""
+        # The stub allows None, but a document always composes to a node; an empty file
+        # composes no document at all.
+        node = cast("yaml.Node", super().compose_document())
+        _check_aliases(node)
+        return node
+
+
+def _read_yaml(stream: IO[str]) -> Any:
+    """Parse one YAML document as `yaml.safe_load` does, after checking its aliases."""
+    loader = _AliasCheckingLoader(stream)
+    try:
+        return loader.get_single_data()
+    finally:
+        loader.dispose()
+
+
 def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -> SourceRef:
     """Validate a YAML source/target block as a discriminated `SourceRef`."""
     if not isinstance(raw, dict):
@@ -293,9 +360,10 @@ def load_config(
             source and the target.
 
     Raises:
-        ConfigError: If the file is missing or not valid YAML, lacks a `source` or
-            `target` block, references an unset environment variable, holds a
-            malformed reference, or fails validation.
+        ConfigError: If the file is missing or not valid YAML, its aliases repeat more
+            than 1,000,000 characters, it lacks a `source` or `target` block, or it
+            references an unset environment variable, holds a malformed reference, or
+            fails validation.
 
     Examples:
         >>> from pathlib import Path
@@ -315,7 +383,7 @@ def load_config(
 
     try:
         with file_path.open("r", encoding="utf-8") as f:
-            parsed_yaml: Any = yaml.safe_load(f)
+            parsed_yaml: Any = _read_yaml(f)
     except yaml.YAMLError as yaml_err:
         raise ConfigError(
             f"Failed to parse YAML file:\n{yaml_err}", locations=_yaml_locations(yaml_err)
