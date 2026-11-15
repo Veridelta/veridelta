@@ -234,7 +234,10 @@ _LITERAL_ESCAPES: Final[dict[SQLDialect, tuple[tuple[str, str], ...]]] = {
     # closing quote. Backslashes double first, before any other escape adds one.
     SQLDialect.SNOWFLAKE: (("\\", "\\\\"), ("'", "''")),
     # Databricks reads `''` as two adjacent literals and joins them, dropping the apostrophe.
-    SQLDialect.DATABRICKS: (("\\", "\\\\"), ("'", "\\'")),
+    # Spark replaces `${...}` in the raw statement before it parses it, with session conf,
+    # environment, or JVM values. Spark's `unescapeSQLString` reads `\uXXXX` only after that,
+    # so `$` written as `\u0024` reaches the literal, and a regex or a replacement, unchanged.
+    SQLDialect.DATABRICKS: (("\\", "\\\\"), ("'", "\\'"), ("$", "\\u0024")),
     # DuckDB follows the SQL standard, where a backslash is ordinary text.
     SQLDialect.DUCKDB: (("'", "''"),),
     # BigQuery reads backslash escapes too, rejects unknown ones, and refuses a raw line break.

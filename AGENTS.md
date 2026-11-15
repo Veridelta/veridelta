@@ -98,6 +98,7 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [Pushdown to another database goes through the database source, by URI scheme](decisions/database-pushdown-through-connectorx.md)
 - [The docs site is one build of main](decisions/docs-site-from-main.md)
 - [Schema checks read no rows](decisions/schema-checks-read-no-rows.md)
+- [A DuckDB file reads only its own folder](decisions/a-duckdb-file-reads-only-its-own-folder.md)
 - [Git and GitHub are the ledger, and a run record ties a verdict to them](decisions/git-and-github-are-the-ledger.md)
 - [A workflow fixes a vulnerable lockfile in two jobs](decisions/security-updates-in-two-jobs.md)
 

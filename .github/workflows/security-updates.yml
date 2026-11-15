@@ -7,11 +7,12 @@ name: Security Updates
 # or updates the one it opened before, for a maintainer to review and merge.
 #
 # `uv lock` can build a package from source, which runs that package's code, so
-# the job that runs it holds a read-only token and no secret. The job that opens
-# the pull request checks nothing out and installs nothing; it writes the new
-# lockfile through the GitHub API with SECURITY_UPDATES_TOKEN, a token with
-# write access to contents and pull requests. A pull request opened with the
-# workflow's own token would start no CI.
+# the job that runs it holds a read-only token and no secret. It uses no uv
+# cache either, since any step can write one that a later job on main restores.
+# The job that opens the pull request checks nothing out and installs nothing;
+# it writes the new lockfile through the GitHub API with SECURITY_UPDATES_TOKEN,
+# a token with write access to contents and pull requests. A pull request opened
+# with the workflow's own token would start no CI.
 on:
   schedule:
     - cron: "23 10 * * *"
@@ -45,6 +46,7 @@ jobs:
         uses: ./.github/actions/setup
         with:
           sync: "false"
+          enable-cache: "false"
 
       - name: Audit the Lockfile
         id: audit
