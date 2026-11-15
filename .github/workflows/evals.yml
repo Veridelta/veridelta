@@ -53,6 +53,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           group: evals
+          # The job holds a key, so it restores no cache another job could write.
+          enable-cache: "false"
 
       - name: Run the Eval
         env:
