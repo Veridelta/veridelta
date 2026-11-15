@@ -2010,6 +2010,94 @@ class TestLakehouseFiles:
 
         loaded.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "table_uri",
+        [
+            pytest.param("{root}/missing/../events", id="dot-dot"),
+            pytest.param("{root}/missing/%2e%2e/events", id="encoded"),
+            pytest.param("{root}/missing/%2E%2E/events", id="encoded-upper"),
+            pytest.param("{root}/missing/.%2e/events", id="half-encoded"),
+            pytest.param("{root}/missing/.\t./events", id="tab"),
+            pytest.param("{root}/./events", id="dot"),
+            pytest.param("{root}/missing/..", id="last"),
+            pytest.param("{localhost}/missing/../events", id="localhost"),
+            pytest.param(
+                "{root}/link/../events",
+                id="link",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32",
+                    reason="A link on Windows needs a privilege a runner may lack.",
+                ),
+            ),
+            pytest.param("fs{path}/missing/../events", id="fs"),
+            pytest.param("opendal+fs{path}/missing/../events", id="opendal-fs"),
+        ],
+    )
+    def test_it_refuses_a_delta_table_uri_with_a_dot_segment(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        table_uri: str,
+    ) -> None:
+        """Ensure a table URI whose path holds `.` or `..`, in any spelling, is refused before it is read.
+
+        deltalake removes such a segment by its text, so it would read the log
+        of `events`, whose vector lies outside the roots, where the listing
+        walks the folder the system finds: none at all, or the one a link
+        leads to. The server runs in its root, so the path a URI's host
+        starts reads under it.
+        """
+        monkeypatch.chdir(tmp_path)
+        outside = (tmp_path_factory.mktemp("outside") / "vector.bin").as_uri()
+        _with_vectors(tmp_path / "events", {"storageType": "p", "pathOrInlineDv": outside})
+        (tmp_path / "sub" / "deeper").mkdir(parents=True)
+        if "link" in table_uri:
+            (tmp_path / "link").symlink_to(tmp_path / "sub" / "deeper", target_is_directory=True)
+        root = tmp_path.as_uri()
+        uri = table_uri.format(
+            root=root, localhost=f"file://localhost{root[7:]}", path=root.removeprefix("file")
+        )
+        loaded = mocker.patch("deltalake.DeltaTable")
+
+        with pytest.raises(ConfigError, match=r"The target table_uri .* '\.' or '\.\.' segment"):
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri=uri)
+            )
+
+        loaded.assert_not_called()
+
+    def test_it_reads_a_delta_table_path_with_a_dot_segment_as_the_system_does(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure a path with `..` is listed, since deltalake and the listing both read it as the system does."""
+        _ROW.write_delta(tmp_path / "events")
+        target = DeltaLakeConfig(table_uri="events/../events")
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_reads_a_delta_commit_whose_values_hold_a_line_separator(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure a commit is split at a line feed alone, as Delta Lake writes it.
+
+        A writer leaves U+2028, U+2029, and U+0085 unescaped in a commit's
+        statistics, and Python's `splitlines` would split a line at each.
+        Each value gets a commit of its own, whose statistics name it.
+        """
+        table = tmp_path / "events"
+        for note in ("one\u2028two", "three\u2029four", "five\x85six"):
+            pl.DataFrame({"id": [1], "note": [note]}).write_delta(table, mode="append")
+        log = "".join(
+            commit.read_text(encoding="utf-8") for commit in (table / "_delta_log").glob("*.json")
+        )
+        target = DeltaLakeConfig(table_uri="events")
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert all(character in log for character in "\u2028\u2029\x85")
+
     def test_it_reads_the_log_of_a_remote_delta_table_before_the_table(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:

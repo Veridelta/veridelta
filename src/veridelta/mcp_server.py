@@ -43,7 +43,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import SplitResult, parse_qsl, urlsplit
+from urllib.parse import SplitResult, parse_qsl, unquote, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -124,6 +124,9 @@ all the same."""
 
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
+
+_URI_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
+"""The start of a URI: a scheme of two or more characters, since one letter is a Windows drive."""
 
 _HOST_OPTIONS: Final = frozenset(
     {
@@ -723,6 +726,30 @@ def _local_paths(location: str) -> list[str]:
     return [*dict.fromkeys(paths), location]
 
 
+def _holds_dot_segment(location: str) -> bool:
+    """Tell whether a URI holds a `.` or `..` segment, in any spelling a URL parser removes.
+
+    deltalake parses a table URI as the URL standard says. That drops the tabs
+    and line breaks anywhere in it, reads `%2e` as a dot in a segment, and
+    removes each `.` and `..` segment by its text, before any folder is read.
+    This server reads the path a URI names as the system does, which follows
+    a link before `..` leaves it, and finds no folder under one that does not
+    exist. So the two could read different logs. This decodes every `%`
+    escape, as often as one remains, and splits at each character that can
+    end a segment, so it finds more segments than a parser removes, never
+    fewer. A path with no scheme is not a URI, and deltalake opens it as the
+    system does.
+    """
+    text = location.strip(_URL_SPACE)
+    for character in "\t\n\r":
+        text = text.replace(character, "")
+    if _URI_SCHEME.match(text) is None:
+        return False
+    while (decoded := unquote(text)) != text:
+        text = decoded
+    return not {".", ".."}.isdisjoint(re.split(r"[/\\?#]", text))
+
+
 def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
     """Name each path on this machine a side could read: its setting, location, and path."""
     named: list[tuple[str, str]] = []
@@ -852,6 +879,14 @@ def _table_files(
         ConnectorError: If the extra is missing, or the table cannot be listed.
     """
     files: Generator[tuple[str, str, bool], None, DeltaTable | None]
+    if isinstance(config, DeltaLakeConfig) and _holds_dot_segment(config.table_uri):
+        raise ConfigError(
+            f"The {side} table_uri '{shown_location(config.table_uri)}' is a URI with a '.' "
+            "or '..' segment in its path. deltalake removes such a segment by its text before "
+            "it reads the table, where this server reads the folder the system finds, so the "
+            "two could read different tables. Write the URI without the segment, or write "
+            "the table as a path."
+        )
     if isinstance(config, DeltaLakeConfig):
         files, kind, extra = _delta_files(config), "Delta Lake table", "delta"
     else:

@@ -245,8 +245,10 @@ def _log_actions(store: Any, path: str) -> tuple[list[Any], list[Any]]:
     if path.endswith(".json"):
         with store.open_input_stream(path) as stream:
             text: str = stream.read().decode("utf-8")
+        # A commit is JSON, one action to a line that ends at `\n` alone: a writer leaves a
+        # character such as U+2028, which `splitlines` would also split at, unescaped in a value.
         actions: list[dict[str, Any]] = [
-            json.loads(line) for line in text.splitlines() if line.strip()
+            json.loads(line) for line in text.split("\n") if line.strip()
         ]
         added: list[dict[str, Any]] = [action.get("add") or {} for action in actions]
         return (
