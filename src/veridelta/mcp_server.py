@@ -87,8 +87,9 @@ started with another `--max-rows`."""
 DEFAULT_ROW_LIMIT: Final = 20
 """The rows `read_discrepancies` returns when a call names no `limit`."""
 
-_REMOTE_SCHEMES: Final = frozenset(
-    {
+_REMOTE_PREFIXES: Final = tuple(
+    f"{scheme}://"
+    for scheme in (
         "abfs",
         "abfss",
         "adl",
@@ -99,17 +100,19 @@ _REMOTE_SCHEMES: Final = frozenset(
         "hf",
         "http",
         "https",
-        "lakefs",
-        "md",
-        "motherduck",
         "s3",
         "s3a",
-    }
+    )
 )
-"""URI schemes the readers fetch from another machine: object stores, the web,
-Hugging Face, lakeFS, and MotherDuck. Any other location counts as a path on
-this machine, so one the readers would open here is never let through
-unchecked."""
+"""The prefixes of a location that the readers fetch from another machine: an
+object store, the web, or Hugging Face. Polars fetches a location only when one
+of these schemes, in lower case, is followed by `//`, and opens any other as a
+path on this machine, even `s3:x` or `md://x`. So any other location is held to
+the roots. DuckDB and SQLite open even these as a file, so a DuckDB or SQLite
+file is also held to the roots as written."""
+
+_MOTHERDUCK_PREFIXES: Final = ("md:", "motherduck:")
+"""How a DuckDB `database` on MotherDuck starts, which DuckDB never opens as a file."""
 
 _FILE_IO_PROPERTIES: Final = (
     "DEFAULT_NETLOC",
@@ -387,15 +390,19 @@ def _local_paths(location: str) -> list[str]:
     where PyIceberg opens `tmp/x`. deltalake parses the URI as the URL
     standard says, so it also reads a backslash as `/` and strips the spaces
     at its ends. So a file URI
-    yields each of these paths, and the caller holds every one to the roots. A
-    remote location yields none.
+    yields each of these paths, and the caller holds every one to the roots.
+
+    A location yields none only when every reader fetches it from another
+    machine. Polars opens `s3:x/a.parquet`, with no `//`, or `md://x/a.parquet`,
+    as a path relative to the working directory, so any other location yields
+    itself.
     """
-    parts = urlsplit(location)
-    written = location[: len(parts.scheme)]
-    if written in _REMOTE_SCHEMES:
+    if location.startswith(_REMOTE_PREFIXES):
         return []
+    parts = urlsplit(location)
     if parts.scheme != "file":
         return [location]
+    written = location[: len(parts.scheme)]
     standard = url2pathname(urlsplit(location.replace("\\", "/").strip(_URL_SPACE)).path)
     paths = {
         url2pathname(parts.path),
@@ -414,6 +421,8 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str]]:
     if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         return [("table_uri", config.table_uri)]
     if isinstance(config, DuckDBConfig):
+        if config.database.startswith(_MOTHERDUCK_PREFIXES):
+            return []
         return [("database", config.database)]
     if isinstance(config, DatabaseConfig):
         parts = urlsplit(config.uri)
@@ -542,14 +551,21 @@ def _table_files(
 
 
 def _refuse_outside(
-    settings: Settings, side: str, setting: str, location: str, *, quoted: bool = True
+    settings: Settings,
+    side: str,
+    setting: str,
+    location: str,
+    *,
+    quoted: bool = True,
+    as_written: bool = False,
 ) -> None:
     """Refuse a file or folder on this machine that lies outside the roots.
 
     The message quotes the path only when `quoted`, since a path read from a
-    file is a value from it.
+    file is a value from it. With `as_written`, the location is also checked
+    as a path, for a reader that opens even `s3://x` as a file here.
     """
-    for path in _local_paths(location):
+    for path in _local_paths(location) + ([location] if as_written else []):
         if not _opened_inside(settings, path):
             named = f"{setting} '{path}'" if quoted else setting
             raise ConfigError(
@@ -615,7 +631,10 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     for side, config in sides:
         _refuse_an_unlisted_table(side, config)
         for setting, location in _data_locations(config):
-            _refuse_outside(settings, side, setting, location)
+            # DuckDB and SQLite open a file named with a store's scheme, such
+            # as `s3://x/a.duckdb`, from the working directory.
+            opened_here = isinstance(config, (DuckDBConfig, DatabaseConfig))
+            _refuse_outside(settings, side, setting, location, as_written=opened_here)
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
             for setting, location, quoted in _table_files(side, config):

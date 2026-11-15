@@ -735,6 +735,107 @@ class TestCheckDataPaths:
         sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
     )
     @pytest.mark.parametrize(
+        "location",
+        [
+            *(
+                pytest.param(f"{scheme}:out/a.parquet", id=f"{scheme}-without-slashes")
+                for scheme in (
+                    "abfs",
+                    "abfss",
+                    "adl",
+                    "az",
+                    "azure",
+                    "gcs",
+                    "gs",
+                    "hf",
+                    "http",
+                    "https",
+                    "lakefs",
+                    "md",
+                    "motherduck",
+                    "s3",
+                    "s3a",
+                )
+            ),
+            pytest.param("s3:/out/a.parquet", id="s3-with-one-slash"),
+            *(
+                pytest.param(f"{scheme}://out/a.parquet", id=scheme)
+                for scheme in ("lakefs", "md", "motherduck")
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "build",
+        [
+            pytest.param(lambda location: SourceConfig(path=location), id="path"),
+            pytest.param(lambda location: DeltaLakeConfig(table_uri=location), id="delta"),
+            pytest.param(lambda location: IcebergConfig(table_uri=location), id="iceberg"),
+        ],
+    )
+    def test_it_checks_a_location_polars_opens_here_as_a_path(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        location: str,
+        build: Callable[[str], SourceRef],
+    ) -> None:
+        """Ensure a store's scheme without `//`, or a scheme Polars fetches nothing by, leads nowhere.
+
+        Polars opens such a location as a path from the working directory, so
+        a link in the root named like its first part leads out of the root.
+        """
+        monkeypatch.chdir(tmp_path)
+        outside = tmp_path_factory.mktemp("outside")
+        (tmp_path / Path(location).parts[0]).symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ConfigError, match=f"'{re.escape(location)}' is outside the folders"):
+            check_data_paths(Settings((tmp_path,)), build(location), _snowflake())
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    @pytest.mark.parametrize("scheme", ["s3", "https", "hf"])
+    @pytest.mark.parametrize(
+        ("build", "setting"),
+        [
+            pytest.param(
+                lambda file: DuckDBConfig(database=file, table="t"), "database", id="duckdb"
+            ),
+            pytest.param(
+                lambda file: DatabaseConfig(uri=f"sqlite://{file}", table="t"),
+                "SQLite file",
+                id="sqlite",
+            ),
+        ],
+    )
+    def test_it_checks_a_database_file_named_with_a_store_scheme_as_a_path(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        scheme: str,
+        build: Callable[[str], SourceRef],
+        setting: str,
+    ) -> None:
+        """Ensure a DuckDB or SQLite file named like `s3://x/a.db` is held to the roots.
+
+        DuckDB and SQLite open it as a file from the working directory, through
+        a link in the root named `s3:`. DuckDB opens it before the sandbox holds
+        its connection.
+        """
+        monkeypatch.chdir(tmp_path)
+        outside = tmp_path_factory.mktemp("outside")
+        (tmp_path / f"{scheme}:").symlink_to(outside, target_is_directory=True)
+        file = f"{scheme}://out/a.db"
+
+        with pytest.raises(ConfigError, match=f"The source {setting} '{re.escape(file)}'"):
+            check_data_paths(Settings((tmp_path,)), build(file), _snowflake())
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    @pytest.mark.parametrize(
         "uri",
         [
             pytest.param("FILE://{root}/a.csv", id="file-scheme-in-capitals"),
@@ -816,6 +917,9 @@ class TestCheckDataPaths:
             pytest.param(SourceConfig(path="s3://bucket/a.parquet"), id="object-store"),
             pytest.param(SourceConfig(path="https://example.com/a.csv"), id="https"),
             pytest.param(DuckDBConfig(database="md:sales", table="t"), id="motherduck"),
+            pytest.param(
+                DuckDBConfig(database="motherduck:sales", table="t"), id="motherduck-in-full"
+            ),
             pytest.param(
                 DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="orders"),
                 id="database-server",
@@ -1425,6 +1529,57 @@ class TestLakehouseFiles:
 
         with pytest.raises(ConfigError, match=f"The target {setting} '/") as refused:
             read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+        assert _SECRET not in str(refused.value)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    @pytest.mark.parametrize(
+        "remote", [pytest.param(False, id="local"), pytest.param(True, id="remote")]
+    )
+    def test_it_returns_no_row_of_a_data_file_named_by_a_store_scheme_without_slashes(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        remote: bool,
+    ) -> None:
+        """Ensure a data file named `s3:` and a path, with no `//`, is held to the roots.
+
+        PyIceberg writes `s3:link/x.parquet` to the store, where a link leads
+        outside the roots. Polars fetches from a store only after `//`, so it
+        opens that path from the working directory, the root, through a link
+        of the same name there. The table itself lies under the root, or in the
+        store.
+        """
+        store, outside = tmp_path_factory.mktemp("store"), tmp_path_factory.mktemp("outside")
+        (store / "link").symlink_to(outside, target_is_directory=True)
+        (tmp_path / "s3:link").symlink_to(outside, target_is_directory=True)
+        monkeypatch.chdir(tmp_path)
+        properties = {"write.data.path": "s3:link"}
+        _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
+        with _object_store(store) as options:
+            if remote:
+                metadata = _remote_iceberg(tmp_path, store, options, monkeypatch, properties)
+            else:
+                monkeypatch.setattr(
+                    PyArrowFileIO,
+                    "_initialize_s3_fs",
+                    lambda _io, _netloc: SubTreeFileSystem(str(store), LocalFileSystem()),
+                )
+                metadata, options = _iceberg(tmp_path, properties), {"s3.region": "us-east-1"}
+            _write(
+                tmp_path,
+                "source:\n  path: a.parquet\n  format: parquet\n"
+                f"target:\n  type: iceberg\n  table_uri: '{metadata}'\n  storage_options:\n"
+                + "".join(f"    {key}: '{value}'\n" for key, value in options.items())
+                + "primary_keys: [id]\n",
+            )
+            assert list(outside.glob("*.parquet"))
+
+            with pytest.raises(ConfigError, match="The target data file 's3:link/") as refused:
+                read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
 
         assert _SECRET not in str(refused.value)
 
