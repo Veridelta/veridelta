@@ -4,12 +4,13 @@
 """Unit tests for warehouse and lakehouse connector scaffolding."""
 
 import logging
+import sys
 import traceback
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import DEFAULT, MagicMock, call
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import polars as pl
 import pytest
@@ -496,6 +497,11 @@ class TestConnectorLifecycleDefaults:
 _DATABASE_SECRET = "p@ss:w/rd %+&?#"
 """A password holding every character a URI treats specially."""
 
+_POSIX_NAMES = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows allows no `:` or `?` in a file name."
+)
+"""Skip a case whose file name only a POSIX file system takes."""
+
 _CATALOG_SCHEMA = {"attname": pl.String, "atttypmod": pl.Int32, "is_numeric": pl.Boolean}
 """Columns of the Postgres catalog query a `table` read sends first."""
 
@@ -850,6 +856,103 @@ class TestDatabaseConnector:
         DatabaseConnector(DatabaseConfig(uri=f"sqlite://{database}", table="orders")).connect()
 
         read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            pytest.param("file:../x.db", marks=_POSIX_NAMES),
+            pytest.param("file:..%2Fx.db%3Fa=/x.db", marks=_POSIX_NAMES),
+            "~/x.db",
+        ],
+    )
+    def test_it_hands_connectorx_a_relative_sqlite_path_in_full(
+        self, mocker: MockerFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure SQLite gets an absolute path, so it reads no `file:` URI and no `~` of its own."""
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
+        database = tmp_path / unquote(written)
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"")
+        monkeypatch.chdir(tmp_path)
+
+        DatabaseConnector(DatabaseConfig(uri=f"sqlite://{written}", table="orders")).connect()
+
+        read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "link/../x.db",
+            "link/%2E%2E/x.db",
+            "link/.%2e/x.db",
+            "link%2F..%2Fx.db",
+            "link/./../x.db/",
+            "link//..//x.db",
+        ],
+    )
+    def test_it_hands_connectorx_a_sqlite_path_with_no_link_or_dot_left(
+        self, mocker: MockerFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure `..` after a link climbs from where the link leads, as the system reads it.
+
+        ConnectorX folds `..` as text before the system follows a link, so the
+        connector hands it the resolved path and leaves nothing to fold.
+        """
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
+        (tmp_path / "a" / "b").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(tmp_path / "a" / "b", target_is_directory=True)
+        (tmp_path / "x.db").write_bytes(b"")
+        database = tmp_path / "a" / "x.db"
+        database.write_bytes(b"")
+        monkeypatch.chdir(tmp_path)
+
+        DatabaseConnector(DatabaseConfig(uri=f"sqlite://{written}", table="orders")).connect()
+
+        read.assert_called_once_with('SELECT * FROM "orders"', "sqlite://" + quote(str(database)))
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "sqlite+x:///srv/x.db",
+            "SQLite+A:///srv/x.db",
+            " sqlite:///srv/x.db",
+            "sqli\tte:///srv/x.db",
+        ],
+    )
+    def test_it_refuses_a_uri_connectorx_reads_as_sqlite_in_another_form(
+        self, mocker: MockerFixture, uri: str
+    ) -> None:
+        """Ensure a query never reaches ConnectorX through a SQLite URI not written as sqlite://."""
+        read = _read_database(mocker)
+
+        with pytest.raises(ConfigError, match="reads only one that starts with sqlite://"):
+            DatabaseConnector(DatabaseConfig(uri=uri, query="SELECT * FROM t")).connect()
+
+        read.assert_not_called()
+
+    def test_it_reads_an_upper_case_sqlite_scheme_as_sqlite(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure `SQLITE://` reaches ConnectorX as the resolved path, as `sqlite://` does."""
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
+        database = tmp_path / "x.db"
+        database.write_bytes(b"")
+
+        DatabaseConnector(DatabaseConfig(uri=f"SQLITE://{database}", table="t")).connect()
+
+        read.assert_called_once_with('SELECT * FROM "t"', "sqlite://" + quote(str(database)))
+
+    def test_it_refuses_a_sqlite_path_holding_a_nul(self, mocker: MockerFixture) -> None:
+        """Ensure `%00` fails as a configuration error, before any read."""
+        read = _read_database(mocker)
+
+        with pytest.raises(ConfigError, match="NUL character"):
+            DatabaseConnector(DatabaseConfig(uri="sqlite:///srv/x.db%00", table="t")).connect()
+
+        read.assert_not_called()
 
     def test_it_drops_the_frame_on_close_and_rereads_on_connect(
         self, mocker: MockerFixture

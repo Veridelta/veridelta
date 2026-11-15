@@ -9,6 +9,7 @@ import guard: a broken lock or a missing wheel fails loudly instead of skipping.
 
 import contextlib
 import sqlite3
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import quote
@@ -18,7 +19,8 @@ import pytest
 
 from veridelta.connectors import DatabaseConnector
 from veridelta.engine import DiffEngine, LoaderFactory
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.mcp_server import Settings, check_data_paths
 from veridelta.models import DatabaseConfig, DiffConfig, DiffRule, SourceConfig
 
 pytestmark = [pytest.mark.integration]
@@ -196,6 +198,96 @@ class TestDatabaseSources:
             LoaderFactory.load(DatabaseConfig(uri="sqlite://" + quote(str(missing)), table="t"))
 
         assert not missing.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows allows no `:` in a file name.")
+    def test_it_reads_a_path_that_starts_with_file_as_a_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `file:` opens the file of that name, and SQLite reads no URI of its own in it."""
+        table = "CREATE TABLE t (v TEXT)"
+        insert = "INSERT INTO t VALUES (?)"
+        _sqlite(tmp_path / "x.db", table, rows=[(insert, ("beside",))])
+        named = tmp_path / "work" / "file:.."
+        named.mkdir(parents=True)
+        _sqlite(named / "x.db", table, rows=[(insert, ("named",))])
+        monkeypatch.chdir(named.parent)
+
+        connector = DatabaseConnector(DatabaseConfig(uri="sqlite://file:../x.db", table="t"))
+        connector.connect()
+
+        assert connector.lazyframe().collect()["v"].to_list() == ["named"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "link/../../outside/x.db",
+            "{root}/link/../../outside/x.db",
+            "link/%2E%2E/%2E%2E/outside/x.db",
+            "link/.%2e/%2E./outside/x.db",
+            "link%2F..%2F..%2Foutside%2Fx.db",
+            "link/../../outside/x.db/",
+            "link//..//..//outside//x.db",
+            "link/./.././../outside/x.db",
+        ],
+    )
+    def test_it_reads_the_sqlite_file_the_mcp_check_allows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure `..` after a link reads the file the MCP server's root check resolved.
+
+        ConnectorX folds `..` as text, before the system follows the link, so
+        without the resolved path it would read `outside/x.db` beside the root.
+        """
+        table = "CREATE TABLE t (v TEXT)"
+        insert = "INSERT INTO t VALUES (?)"
+        root = tmp_path / "root"
+        (root / "a" / "b").mkdir(parents=True)
+        (root / "outside").mkdir()
+        (tmp_path / "outside").mkdir()
+        (root / "link").symlink_to(root / "a" / "b", target_is_directory=True)
+        _sqlite(root / "outside" / "x.db", table, rows=[(insert, ("inside",))])
+        _sqlite(tmp_path / "outside" / "x.db", table, rows=[(insert, ("outside",))])
+        monkeypatch.chdir(root)
+        config = DatabaseConfig(uri="sqlite://" + written.format(root=root), table="t")
+
+        check_data_paths(Settings((root,)), SourceConfig(path="a.csv"), config)
+        connector = DatabaseConnector(config)
+        connector.connect()
+
+        assert connector.lazyframe().collect()["v"].to_list() == ["inside"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Where ConnectorX opens a `+` scheme's path is only checked on POSIX paths.",
+    )
+    @pytest.mark.parametrize("scheme", ["sqlite+x", "SQLite+A", " sqlite", "sqli\tte"])
+    def test_it_refuses_a_uri_connectorx_reads_as_sqlite_in_another_form(
+        self, tmp_path: Path, scheme: str
+    ) -> None:
+        """Ensure a scheme ConnectorX reads as SQLite is held to the check and to `sqlite://`."""
+        root = tmp_path / "root"
+        root.mkdir()
+        written = _sqlite(
+            tmp_path / "x.db",
+            "CREATE TABLE t (v TEXT)",
+            rows=[("INSERT INTO t VALUES (?)", ("outside",))],
+        )
+        uri = scheme + written.removeprefix("sqlite")
+        config = DatabaseConfig(uri=uri, query="SELECT v FROM t")
+
+        # ConnectorX itself reads the file this URI names.
+        assert pl.read_database_uri("SELECT v FROM t", uri)["v"].to_list() == ["outside"]
+        with pytest.raises(ConfigError, match="reads only one that starts with sqlite://"):
+            check_data_paths(
+                Settings((root,), allow_queries=True),
+                SourceConfig(path=str(root / "a.csv")),
+                config,
+            )
+        with pytest.raises(ConfigError, match="reads only one that starts with sqlite://"):
+            DatabaseConnector(config).connect()
 
     def test_it_checks_rules_against_a_zero_row_probe(self, tmp_path: Path) -> None:
         """Ensure `validate --schemas` reads a real table's columns and types, no rows.

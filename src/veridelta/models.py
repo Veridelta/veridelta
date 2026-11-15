@@ -2053,8 +2053,11 @@ class DatabaseConfig(BaseModel):
             yield (name, self.redacted_uri) if name == "uri" else (name, value)
 
 
-_MOTHERDUCK_PREFIXES: Final = ("md:", "motherduck:")
-"""Prefixes that make a DuckDB `database` a MotherDuck database rather than a file."""
+_MOTHERDUCK_PREFIX: Final = re.compile(r"(?:md|motherduck):", re.IGNORECASE | re.ASCII)
+"""The prefix that makes a DuckDB `database` a MotherDuck database rather than a file.
+
+Case is ignored in ASCII only, as DuckDB ignores it, so a name with the Kelvin
+sign, U+212A, in place of the `k` of `motherduck:` is no MotherDuck database."""
 
 
 class DuckDBConfig(BaseModel):
@@ -2122,9 +2125,10 @@ class DuckDBConfig(BaseModel):
         """Return whether `database` names a MotherDuck database rather than a file.
 
         Returns:
-            bool: Whether `database` starts with `md:` or `motherduck:`, in any case.
+            bool: Whether `database` starts with `md:` or `motherduck:`, in any
+                ASCII case.
         """
-        return self.database.lower().startswith(_MOTHERDUCK_PREFIXES)
+        return _MOTHERDUCK_PREFIX.match(self.database) is not None
 
     @model_validator(mode="after")
     def validate_connection(self) -> "DuckDBConfig":
