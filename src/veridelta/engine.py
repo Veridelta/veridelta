@@ -8,6 +8,8 @@ Polars. Its helpers live in private modules beside it, and `__all__` lists the
 public names, the file loaders from `_reading.py` among them.
 """
 
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Final
@@ -23,6 +25,7 @@ from veridelta._checks import (
     pushdown_findings,
     pushdown_schema_findings,
     regex_findings,
+    shown_message,
     unknown_column_findings,
     warning_finding,
 )
@@ -67,6 +70,7 @@ from veridelta._resolution import (
     reject_unzoned_timezone,
     rewrites_values,
     rules_applied,
+    unconverted_values_error,
     unusable_sentinel_error,
 )
 from veridelta._results import (
@@ -218,7 +222,8 @@ class DiffEngine:
         ConfigError: From `run()` when primary keys are missing, `schema_mode`
             is violated, or a rule cannot apply to the column it names.
         DataIntegrityError: From `run()` when primary keys are not unique on
-            either side after normalization.
+            either side after normalization, or a `cast_to` meets a value it
+            cannot convert.
     """
 
     def __init__(
@@ -244,6 +249,9 @@ class DiffEngine:
         # How each side was read, set by the entry points that load a `SourceRef`,
         # so an error can name the file and its format rather than only a column.
         self._sides: dict[str, str] | None = None
+        # For each side with a `cast_to`, a query that counts the values each cast
+        # cannot convert. It runs only once a collect fails.
+        self._cast_checks: dict[str, pl.LazyFrame] = {}
 
     @classmethod
     def _on_sources(cls, diff: DiffConfig, source: SourceRef, target: SourceRef) -> "DiffEngine":
@@ -282,7 +290,8 @@ class DiffEngine:
         Raises:
             ConfigError: If primary keys are missing, `schema_mode` is violated, or a
                 baseline lists rows by other primary keys than the run compares on.
-            DataIntegrityError: If either dataset repeats a normalized primary key.
+            DataIntegrityError: If either dataset repeats a normalized primary key,
+                or holds a value its `cast_to` cannot convert.
             ConnectorError: If warehouse backends are mixed or connections differ.
 
         Examples:
@@ -360,7 +369,12 @@ class DiffEngine:
 
     @staticmethod
     def check_configs(
-        diff: DiffConfig, source: SourceRef, target: SourceRef, *, schemas: bool = False
+        diff: DiffConfig,
+        source: SourceRef,
+        target: SourceRef,
+        *,
+        schemas: bool = False,
+        quote_data: bool = True,
     ) -> list[ConfigFinding]:
         """Check a loaded configuration for what would stop a run.
 
@@ -391,6 +405,11 @@ class DiffEngine:
             target (SourceRef): Target configuration.
             schemas (bool): Whether to also connect and check the rules against
                 the stored columns.
+            quote_data (bool): Whether a finding may quote what Polars, a
+                reader, or a driver said about a failed schema read, which can
+                hold values from the data. When False, such a finding names the
+                error's type and leaves its message out. The MCP server sets it
+                from `--allow-row-values`.
 
         Returns:
             list[ConfigFinding]: Errors and warnings, empty when nothing is
@@ -415,12 +434,18 @@ class DiffEngine:
                 warning_finding("Schemas were not checked, because of the errors above."),
             ]
         if pair is None:
-            return findings + DiffEngine._local_schema_findings(diff, source, target)
-        return findings + pushdown_schema_findings(diff, pair)
+            return findings + DiffEngine._local_schema_findings(
+                diff, source, target, quote_data=quote_data
+            )
+        return findings + pushdown_schema_findings(diff, pair, quote_data=quote_data)
 
     @staticmethod
     def check_config_file(
-        path: str | Path, *, schemas: bool = False, allow_missing_env: bool = False
+        path: str | Path,
+        *,
+        schemas: bool = False,
+        allow_missing_env: bool = False,
+        quote_data: bool = True,
     ) -> list[ConfigFinding]:
         """Load a configuration file and check it for what would stop a run.
 
@@ -436,6 +461,9 @@ class DiffEngine:
             allow_missing_env (bool): Whether to read an unset `${NAME}` as the
                 text `NAME` and warn, instead of failing, so a file can be
                 checked without its secrets.
+            quote_data (bool): Whether a finding may quote what Polars, a
+                reader, or a driver said about a failed schema read, as in
+                `check_configs`.
 
         Returns:
             list[ConfigFinding]: A warning for each unset variable first, then
@@ -445,7 +473,9 @@ class DiffEngine:
         unset: list[str] | None = [] if allow_missing_env else None
         try:
             diff, source, target = load_config(path, unset_env=unset)
-            findings = DiffEngine.check_configs(diff, source, target, schemas=schemas)
+            findings = DiffEngine.check_configs(
+                diff, source, target, schemas=schemas, quote_data=quote_data
+            )
         except ConfigError as exc:
             findings = [error_from_exception(exc)]
         unset_findings = [
@@ -487,9 +517,13 @@ class DiffEngine:
 
     @classmethod
     def _local_schema_findings(
-        cls, diff: DiffConfig, source: SourceRef, target: SourceRef
+        cls, diff: DiffConfig, source: SourceRef, target: SourceRef, *, quote_data: bool
     ) -> list[ConfigFinding]:
-        """Check the rules against two local sides' stored columns."""
+        """Check the rules against two local sides' stored columns.
+
+        Reading a schema can parse a whole file, such as a JSON one, so unless
+        `quote_data`, a message that can quote a value gives way to a hint.
+        """
         queries = [
             warning_finding(
                 f"The {label} reads a query, which validate does not run, so the rules were "
@@ -503,7 +537,8 @@ class DiffEngine:
         try:
             source_frame, target_frame = schema_frame(source), schema_frame(target)
         except (VerideltaError, OSError, pl.exceptions.PolarsError) as exc:
-            return [error_finding(f"Could not read the schemas: {exc}")]
+            message = shown_message(exc, quote_data=quote_data)
+            return [error_finding(f"Could not read the schemas: {message}")]
         engine = cls(diff, source_frame, target_frame)
         engine._sides = describe_sides(source, target)
         try:
@@ -550,7 +585,8 @@ class DiffEngine:
                 malformed result.
             ConfigError: If a threshold is out of range, or the configuration
                 fails as it would in a run.
-            DataIntegrityError: If either dataset repeats a normalized primary key.
+            DataIntegrityError: If either dataset repeats a normalized primary key,
+                or holds a value its `cast_to` cannot convert.
         """
         # Bad thresholds fail before a session opens or a file is read.
         check_value_map_thresholds(min_confidence, min_support, sample_fraction)
@@ -606,7 +642,8 @@ class DiffEngine:
         Raises:
             ConfigError: If a threshold is out of range, or the configuration fails as
                 it would in a run.
-            DataIntegrityError: If either dataset repeats a normalized primary key.
+            DataIntegrityError: If either dataset repeats a normalized primary key,
+                or holds a value its `cast_to` cannot convert.
 
         Examples:
             >>> import polars as pl
@@ -625,24 +662,25 @@ class DiffEngine:
         prepared._validate_schema()
         stored = prepared.source.collect_schema()
         prepared._normalize_sides()
-        prepared._check_uniqueness()
+        with prepared._unconverted_values():
+            prepared._check_uniqueness()
 
-        columns = prepared._value_map_columns(stored)
-        if not columns:
-            return []
-        joined = prepared._value_map_join(columns, sample_fraction)
-        frames = pl.collect_all(
-            value_map_query(
-                joined,
-                column,
-                mapped_values=list(
-                    (prepared._get_effective_rule(column)["value_map"] or {}).values()
-                ),
-                min_confidence=min_confidence,
-                min_support=min_support,
+            columns = prepared._value_map_columns(stored)
+            if not columns:
+                return []
+            joined = prepared._value_map_join(columns, sample_fraction)
+            frames = pl.collect_all(
+                value_map_query(
+                    joined,
+                    column,
+                    mapped_values=list(
+                        (prepared._get_effective_rule(column)["value_map"] or {}).values()
+                    ),
+                    min_confidence=min_confidence,
+                    min_support=min_support,
+                )
+                for column in columns
             )
-            for column in columns
-        )
         proposals = (
             value_map_proposal(prepared.config, column, frame)
             for column, frame in zip(columns, frames, strict=True)
@@ -673,7 +711,8 @@ class DiffEngine:
         Raises:
             ConfigError: If `max_share` is out of range, the pair is compared where
                 it is stored, or the configuration fails as it would in a run.
-            DataIntegrityError: If either dataset repeats a normalized primary key.
+            DataIntegrityError: If either dataset repeats a normalized primary key,
+                or holds a value its `cast_to` cannot convert.
         """
         check_max_share(max_share)
         if check_backend_pairing(source, target) is not None:
@@ -707,7 +746,8 @@ class DiffEngine:
         Raises:
             ConfigError: If `max_share` is out of range, or the configuration fails
                 as it would in a run.
-            DataIntegrityError: If either dataset repeats a normalized primary key.
+            DataIntegrityError: If either dataset repeats a normalized primary key,
+                or holds a value its `cast_to` cannot convert.
 
         Examples:
             >>> import polars as pl
@@ -813,6 +853,7 @@ class DiffEngine:
 
     def _normalize_sides(self) -> None:
         """Normalize both frames, then check that their primary keys can pair rows."""
+        self._cast_checks = {}
         self.source = self._normalize_frame(self.source, is_source=True)
         self.target = self._normalize_frame(self.target, is_source=False)
         self._check_key_types()
@@ -865,10 +906,43 @@ class DiffEngine:
         # input frame. Stage 6a can turn a String column into a Datetime, so the
         # timezone guard inspects the post-parse schema.
         parsed_schema = frame.collect_schema()
-        return frame.with_columns(
+        normalized = frame.with_columns(
             self._normalize_temporal_expr(column, rules[column], parsed_schema[column])
             for column in temporal
         )
+        cast = [column for column in temporal if rules[column]["cast_to"]]
+        if cast:
+            self._cast_checks["source" if is_source else "target"] = frame.select(
+                (
+                    pl.col(column).is_not_null()
+                    & self._normalize_temporal_expr(
+                        column, rules[column], parsed_schema[column], strict=False
+                    ).is_null()
+                ).sum()
+                for column in cast
+            )
+        return normalized
+
+    @contextmanager
+    def _unconverted_values(self) -> Generator[None]:
+        """Turn a `cast_to` that meets a value it cannot convert into a `DataIntegrityError`.
+
+        Polars' error quotes the values, and an error reaches logs, CI output, and
+        an agent. The `DataIntegrityError` names the column, its target type, and
+        how many values fail. The counting query runs only once a collect has failed.
+
+        Raises:
+            DataIntegrityError: If a side holds a value its `cast_to` cannot convert.
+        """
+        try:
+            yield
+        except pl.exceptions.InvalidOperationError:
+            for side, check in self._cast_checks.items():
+                for column, count in check.collect().row(0, named=True).items():
+                    if count:
+                        target = self._get_effective_rule(column)["cast_to"]
+                        raise unconverted_values_error(column, str(target), side, count) from None
+            raise
 
     def _normalize_value_expr(
         self, column: str, rule: EffectiveRule, dtype: pl.DataType, *, is_source: bool
@@ -948,9 +1022,12 @@ class DiffEngine:
         return expr, applied
 
     def _normalize_temporal_expr(
-        self, column: str, rule: EffectiveRule, dtype: pl.DataType
+        self, column: str, rule: EffectiveRule, dtype: pl.DataType, *, strict: bool = True
     ) -> pl.Expr:
-        """Build stages 6b and 7 for one column: timezone conversion, then cast."""
+        """Build stages 6b and 7 for one column: timezone conversion, then cast.
+
+        With `strict` off, a value the cast cannot convert becomes null.
+        """
         expr = pl.col(column)
         if rule["timezone"]:
             expr = self._convert_time_zone(column, expr, dtype, rule["timezone"])
@@ -962,7 +1039,7 @@ class DiffEngine:
                     f"cannot be cast to {target}. Convert it where it is read, such as in "
                     "a database query."
                 )
-            expr = cast_expr(expr, dtype, CAST_TARGETS[target])
+            expr = cast_expr(expr, dtype, CAST_TARGETS[target], strict=strict)
         return expr.alias(column)
 
     def _convert_time_zone(
@@ -1043,7 +1120,8 @@ class DiffEngine:
             ConfigError: If a primary key is missing or holds two types a join
                 cannot pair, `schema_mode` is violated, a similarity limit needs
                 the missing `fuzzy` extra, or the artifact format has no writer.
-            DataIntegrityError: If either dataset repeats a normalized primary key.
+            DataIntegrityError: If either dataset repeats a normalized primary key,
+                or holds a value its `cast_to` cannot convert.
 
         Examples:
             >>> import polars as pl
@@ -1058,31 +1136,32 @@ class DiffEngine:
         """
         compared_columns, match_expressions = self._plan()
 
-        # Runs after normalization: case folding or sentinel coercion on a key
-        # column can collapse distinct rows into duplicates, and that must fail
-        # here rather than silently exploding the joins below.
-        self._check_uniqueness()
+        with self._unconverted_values():
+            # Runs after normalization: case folding or sentinel coercion on a key
+            # column can collapse distinct rows into duplicates, and that must fail
+            # here rather than silently exploding the joins below.
+            self._check_uniqueness()
 
-        # Each join keeps its left side's order, so the rows come back as their
-        # side holds them on every Polars. Before 2.0 that order was incidental.
-        keys = self.config.primary_keys
-        added_df = self._without_originals(
-            self.target.join(self.source, on=keys, how="anti", maintain_order="left").collect()
-        )
-        removed_df = self._without_originals(
-            self.source.join(self.target, on=keys, how="anti", maintain_order="left").collect()
-        )
-        changed_df, self._forgiven_counts = self._collect_changed_rows(
-            compared_columns, match_expressions
-        )
-        if baseline is None:
-            return self._build_result(added_df, removed_df, changed_df, compared_columns)
-        kept = accept_baseline(
-            baseline, list(keys), (added_df, removed_df, changed_df), compared_columns
-        )
-        return self._build_result(
-            kept.added, kept.removed, kept.changed, compared_columns, kept.rows, kept.accepted
-        )
+            # Each join keeps its left side's order, so the rows come back as their
+            # side holds them on every Polars. Before 2.0 that order was incidental.
+            keys = self.config.primary_keys
+            added_df = self._without_originals(
+                self.target.join(self.source, on=keys, how="anti", maintain_order="left").collect()
+            )
+            removed_df = self._without_originals(
+                self.source.join(self.target, on=keys, how="anti", maintain_order="left").collect()
+            )
+            changed_df, self._forgiven_counts = self._collect_changed_rows(
+                compared_columns, match_expressions
+            )
+            if baseline is None:
+                return self._build_result(added_df, removed_df, changed_df, compared_columns)
+            kept = accept_baseline(
+                baseline, list(keys), (added_df, removed_df, changed_df), compared_columns
+            )
+            return self._build_result(
+                kept.added, kept.removed, kept.changed, compared_columns, kept.rows, kept.accepted
+            )
 
     def _plan(self) -> tuple[list[str], list[pl.Expr]]:
         """Align, validate, and normalize both frames, then build the comparisons."""
