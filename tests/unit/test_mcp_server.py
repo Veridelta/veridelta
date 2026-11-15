@@ -83,7 +83,11 @@ _QUERY = (
 )
 """A configuration whose source is a query, which no probe can describe without running it.
 
-The database is on another machine, so no file of it has to lie under a root."""
+The database is on another machine, so no file of it has to lie under a root,
+and a server reaches it only with its host allowed."""
+
+_QUERY_HOST = "db.example.com"
+"""The host of `_QUERY`'s database."""
 
 _SECRET = "hunter2-do-not-print"
 
@@ -109,7 +113,7 @@ def _in_the_first_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _write(folder: Path, text: str, name: str = "veridelta.yaml") -> Path:
     """Write a configuration file."""
     path = folder / name
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return path
 
 
@@ -240,6 +244,30 @@ class TestSettings:
         """Ensure a cap that would let no row through is refused when the server is built."""
         with pytest.raises(ConfigError, match="at least 1, got 0"):
             Settings((tmp_path,), max_rows=0)
+
+    def test_it_allows_no_host_by_default_and_lowercases_each(self, tmp_path: Path) -> None:
+        """Ensure a server connects to no host unless named, and compares hosts in any case."""
+        settings = Settings((tmp_path,), allowed_hosts=("DB.Example.com", "10.0.0.5", "[::1]"))
+
+        assert Settings((tmp_path,)).allowed_hosts == ()
+        assert settings.allowed_hosts == ("db.example.com", "10.0.0.5", "[::1]")
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "https://db.example.com",
+            "db.example.com:5432",
+            "user@db",
+            "",
+            "::1",
+            "a/b",
+            "\u212aafka.internal",
+        ],
+    )
+    def test_it_refuses_an_allowed_host_that_is_not_a_host(self, tmp_path: Path, host: str) -> None:
+        """Ensure an entry with a scheme, a port, a login, or a letter outside ASCII is refused."""
+        with pytest.raises(ConfigError, match="--allow-host takes a host name"):
+            Settings((tmp_path,), allowed_hosts=(host,))
 
 
 class TestResolvePath:
@@ -403,6 +431,38 @@ class TestCheckConfiguration:
 
         assert report["valid"] is False
         assert report["errors"][0].startswith("Configuration must contain both")
+
+    def test_it_checks_the_configuration_it_connects_with(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure `schemas` loads the file once, so a file swapped after the host check reaches no host.
+
+        The file is rewritten to name a database the server does not allow right
+        after the one load, as an agent racing the check would.
+        """
+        (tmp_path / "a.csv").write_text("id\n1\n")
+        path = _write(
+            tmp_path, "source: {path: a.csv}\ntarget: {path: a.csv}\nprimary_keys: [id]\n"
+        )
+        swapped = (
+            "source: {path: a.csv}\n"
+            "target: {type: database, uri: 'postgresql://u@127.0.0.1:9/db', table: t}\n"
+            "primary_keys: [id]\n"
+        )
+
+        def load_then_swap(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
+            loaded = load_config(*args, **kwargs)
+            path.write_text(swapped)
+            return loaded
+
+        mocker.patch.object(mcp_server, "load_config", side_effect=load_then_swap)
+        checks = mocker.spy(DiffEngine, "check_configs")
+
+        report = check_configuration(Settings((tmp_path,)), "veridelta.yaml", schemas=True)
+
+        assert report["valid"] is True
+        checks.assert_called_once()
+        assert checks.call_args.args[2] == SourceConfig(path="a.csv")
 
 
 class TestRunConfiguration:
@@ -628,9 +688,10 @@ class TestDescribeSide:
     def test_it_will_not_run_a_query_to_learn_its_columns(self, tmp_path: Path) -> None:
         """Ensure a query side is refused with the probe's own reason, and nothing connects."""
         _write(tmp_path, _QUERY)
+        settings = Settings((tmp_path,), allowed_hosts=(_QUERY_HOST,))
 
         with pytest.raises(ConfigError, match="A schema probe reads a 'table'"):
-            describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
+            describe_side(settings, "veridelta.yaml", "source")
 
 
 def _snowflake() -> SnowflakeConfig:
@@ -914,12 +975,66 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match=r"The source path 'a\.csv' is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), _snowflake())
 
-    def test_it_checks_a_scheme_it_does_not_know_as_a_path(self, tmp_path: Path) -> None:
-        """Ensure a made-up scheme cannot carry a path out, since the readers open it here."""
-        escape = "xx:" + "/.." * 64 + "/a.csv"
+    @pytest.mark.parametrize(
+        "side",
+        [
+            pytest.param(SourceConfig(path="xx:" + "/.." * 64 + "/a.csv"), id="made-up"),
+            pytest.param(
+                SourceConfig(path="lakefs://repo" + "/.." * 64 + "/a.csv"), id="polars-unknown"
+            ),
+            pytest.param(
+                DuckDBConfig(database="s3://bucket" + "/.." * 64 + "/x.duckdb", table="t"),
+                id="duckdb-any",
+            ),
+        ],
+    )
+    def test_it_checks_a_location_with_a_scheme_as_a_path_too(
+        self, tmp_path: Path, side: SourceRef
+    ) -> None:
+        """Ensure a scheme cannot carry a path out, since a reader that does not know it opens it here.
+
+        Polars opens `lakefs://` as a relative path, and DuckDB opens every
+        location but MotherDuck's that way, `s3://` included.
+        """
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+    @pytest.mark.parametrize(
+        "build",
+        [
+            pytest.param(
+                lambda uri: DeltaLakeConfig(table_uri=f"fs://{uri.removeprefix('file://')}"),
+                id="fs",
+            ),
+            pytest.param(
+                lambda uri: DeltaLakeConfig(
+                    table_uri=f"opendal+fs://bucket{uri.removeprefix('file://')}"
+                ),
+                id="opendal-fs-with-a-host",
+            ),
+            pytest.param(
+                lambda uri: SourceConfig(path=f"file:{uri.removeprefix('file:///')}"),
+                id="file-without-slashes",
+            ),
+        ],
+    )
+    def test_it_checks_the_path_of_a_local_scheme_as_its_reader_opens_it(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        build: Callable[[str], SourceRef],
+    ) -> None:
+        """Ensure a URI a reader opens here is held to the roots, whatever host it names.
+
+        Delta Lake opens `fs://` and `opendal+fs://` on this machine and ignores
+        the host, and Polars reads `file:a/b` from the top, as `/a/b`.
+        """
+        outside = tmp_path_factory.mktemp("outside")
 
         with pytest.raises(ConfigError, match="outside the folders"):
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path=escape), _snowflake())
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path="a.csv"), build(outside.as_uri())
+            )
 
     def test_it_reads_a_home_path_as_the_readers_do(self, tmp_path: Path) -> None:
         """Ensure `~` is expanded first, since Polars expands it, so it cannot lead out."""
@@ -1079,6 +1194,7 @@ class TestCheckDataPaths:
             pytest.param(SourceConfig(path="s3://bucket/a.parquet"), id="object-store"),
             pytest.param(SourceConfig(path="https://example.com/a.csv"), id="https"),
             pytest.param(DeltaLakeConfig(table_uri="s3://lake/events"), id="delta-remote"),
+            pytest.param(DeltaLakeConfig(table_uri="hdfs://namenode:8020/t"), id="delta-hdfs"),
             pytest.param(DuckDBConfig(database="md:sales", table="t"), id="motherduck"),
             pytest.param(
                 DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="orders"),
@@ -1087,9 +1203,678 @@ class TestCheckDataPaths:
             pytest.param(_snowflake(), id="warehouse"),
         ],
     )
-    def test_it_leaves_remote_data_alone(self, tmp_path: Path, side: SourceRef) -> None:
-        """Ensure data on another machine is read as the command line reads it."""
+    def test_it_leaves_remote_data_to_the_host_check(self, tmp_path: Path, side: SourceRef) -> None:
+        """Ensure data on another machine is not held to the roots, but to the allowed hosts."""
         check_data_paths(Settings((tmp_path,)), side, side)
+
+
+_ALLOWED = (
+    "example.com",
+    "bucket",
+    "db.internal",
+    "[::1]",
+    "xy12345.snowflakecomputing.com",
+    "xy12345.cn-north-1.aws.snowflakecomputing.cn",
+    "adb-1.azuredatabricks.net",
+)
+"""The hosts the host tests' server allows."""
+
+_DATABRICKS = "  type: databricks\n  http_path: /sql/1.0/warehouses/1\n  table: orders\n"
+_SNOWFLAKE = (
+    "  type: snowflake\n  user: analyst\n  warehouse: WH\n  database: DB\n"
+    "  schema_name: PUBLIC\n  table: ORDERS\n"
+)
+
+
+def _remote(root: Path, target: str) -> Path:
+    """Write a configuration whose source is a file under the root and whose target is `target`."""
+    return _write(root, f"source:\n  path: a.csv\ntarget:\n{target}primary_keys: [id]\n")
+
+
+_MOTHERDUCK_NAME = (
+    "database name, which may hold only letters, digits, _, -, and /, and not start with /,"
+)
+"""How a refusal names a MotherDuck `database` whose text before its `?` a tool does not pass on."""
+
+
+class TestAllowedHosts:
+    """Validate the rule that holds every host a side connects to to the hosts the server allows."""
+
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param("  path: https://elsewhere.example/a.csv\n", "path", id="https"),
+            pytest.param("  path: http://169.254.169.254/a.csv\n", "path", id="link-local"),
+            pytest.param("  path: http://127.0.0.1:8080/a.csv\n", "path", id="loopback"),
+            pytest.param("  path: s3://other/a.parquet\n", "path", id="bucket"),
+            pytest.param("  path: 'https:///elsewhere.example/a.csv'\n", "path", id="no-host"),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
+                "    storage_options: {aws_endpoint_url: 'http://127.0.0.1:9000'}\n",
+                "storage option 'aws_endpoint_url'",
+                id="endpoint-url",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'localhost:9000'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-without-scheme",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n"
+                "  storage_options: {azure_storage_account_name: elsewhere}\n",
+                "storage option 'azure_storage_account_name'",
+                id="account-name",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://other/events\n", "table_uri", id="iceberg"
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://127.0.0.1:9000/t\n", "table_uri", id="hdfs"
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'HDFS://127.0.0.1:9000/t'\n",
+                "table_uri",
+                id="hdfs-upper-case",
+            ),
+            pytest.param("  type: delta\n  table_uri: hdfs:///t\n", "table_uri", id="hdfs-no-host"),
+            pytest.param("  type: delta\n  table_uri: dbfs:/t\n", "table_uri", id="dbfs"),
+            pytest.param(
+                "  type: delta\n  table_uri: sftp://elsewhere.example/t\n",
+                "table_uri",
+                id="sftp",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: opendal+s3://other/t\n", "table_uri", id="opendal"
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3n://other/t/metadata/v1.metadata.json\n",
+                "table_uri",
+                id="s3n",
+            ),
+            pytest.param("  path: made-up://127.0.0.1/a.csv\n", "path", id="made-up"),
+            pytest.param(
+                "  type: duckdb\n  database: hdfs://127.0.0.1/x.duckdb\n  table: t\n",
+                "database",
+                id="duckdb-made-up",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: https://elsewhere.example/x.duckdb\n  table: t\n",
+                "database",
+                id="duckdb",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@elsewhere.example/db\n  table: t\n",
+                "uri",
+                id="database",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal,elsewhere.example/db\n"
+                "  table: t\n",
+                "uri",
+                id="database-second-host",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal/db?host=elsewhere.example\n"
+                "  table: t\n",
+                "uri",
+                id="database-host-parameter",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal/db?host=\n  table: t\n",
+                "uri",
+                id="database-empty-host-parameter",
+            ),
+            pytest.param(f"{_SNOWFLAKE}  account: elsewhere\n", "account", id="snowflake"),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: xy12345.cn-north-1\n", "account", id="snowflake-in-china"
+            ),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: elsewhere.example\n",
+                "server_hostname",
+                id="databricks",
+            ),
+        ],
+    )
+    def test_it_refuses_a_host_the_server_does_not_allow(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, setting: str
+    ) -> None:
+        """Ensure each setting that picks where a side connects is refused before it connects."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, target)
+
+        with pytest.raises(
+            ConfigError, match="names a host this server may not connect"
+        ) as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target {setting} names a host")
+        assert "--allow-host" in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param("postgresql://db.internal/u:p@127.0.0.1:5440/db", id="login-in-path"),
+            pytest.param("postgres://db.internal:5433/d@127.0.0.1:5433/db", id="host-in-path"),
+        ],
+    )
+    def test_it_refuses_a_database_uri_with_an_at_sign_after_its_host(
+        self, tmp_path: Path, mocker: MockerFixture, uri: str
+    ) -> None:
+        """Ensure a URI whose driver could read another host after an `@` never connects."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, f"  type: database\n  uri: {uri}\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="'uri' holds an '@' after its host"):
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param(
+                "  path: 'http://elsewhere.example\\@example.com/a.csv'\n",
+                "path",
+                id="backslash",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {aws_endpoint_url: 'http://[elsewhere'}\n",
+                "storage option 'aws_endpoint_url'",
+                id="url-that-does-not-parse",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: '//127.0.0.1:5436'}\n",
+                "storage option 's3.endpoint'",
+                id="endpoint-without-scheme-name",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http:127.0.0.1'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-without-slashes",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: '  hdfs://127.0.0.1:9000/t'\n",
+                "table_uri",
+                id="hdfs-after-spaces",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: abfss://bucket@elsewhere.example/t\n",
+                "table_uri",
+                id="container-at-account",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'hdfs://[::1/t'\n",
+                "table_uri",
+                id="authority-that-does-not-parse",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u:p@elsewhere.example,@db.internal/db\n"
+                "  table: t\n",
+                "uri",
+                id="database-second-login",
+            ),
+            pytest.param(
+                "  type: database\n  uri: 'postgresql://db.internal#,127.0.0.1/db'\n  table: t\n",
+                "uri",
+                id="database-fragment",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: 'http://127.0.0.1:1@bucket', s3.region: x}\n",
+                "storage option 's3.endpoint'",
+                id="iceberg-endpoint-with-a-login",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {aws_endpoint_url: 'http://127.0.0.1:1@db.internal'}\n",
+                "storage option 'aws_endpoint_url'",
+                id="delta-endpoint-with-a-login",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: '127.0.0.1:1@db.internal'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-without-scheme-with-a-login",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http://db.internal:9000/x@127.0.0.1'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-with-an-at-sign-in-its-path",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http://db%2einternal:9000'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-percent-encoded",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {endpoint: 'http://db.internal:90x0'}\n",
+                "storage option 'endpoint'",
+                id="endpoint-with-a-port-that-is-not-digits",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                '  storage_options: {endpoint: "http://\uff44b.internal:9000"}\n',
+                "storage option 'endpoint'",
+                id="endpoint-outside-ascii",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                '  storage_options: {endpoint: "http://db.internal\\t:9000"}\n',
+                "storage option 'endpoint'",
+                id="endpoint-with-a-tab",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {aws_bucket: 'bucket?x'}\n",
+                "storage option 'aws_bucket'",
+                id="bucket-with-a-question-mark",
+            ),
+            pytest.param(
+                "  path: https://u@example.com/a.csv\n", "path", id="location-with-a-login"
+            ),
+            pytest.param(
+                "  path: https://example.com/a@127.0.0.1/a.csv\n",
+                "path",
+                id="location-with-an-at-sign-in-its-path",
+            ),
+            pytest.param(
+                "  path: https://example.com?@127.0.0.1/a.csv\n",
+                "path",
+                id="location-with-a-query-in-its-authority",
+            ),
+            pytest.param(
+                "  path: 'https://example.com:443:80/a.csv'\n", "path", id="location-two-ports"
+            ),
+            pytest.param(
+                '  path: "https://ex\u0430mple.com/a.csv"\n', "path", id="location-outside-ascii"
+            ),
+            pytest.param(
+                '  type: delta\n  table_uri: "hd\\tfs://127.0.0.1/t"\n',
+                "table_uri",
+                id="scheme-with-a-tab",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'sftp://u@db.internal/t'\n",
+                "table_uri",
+                id="sftp-with-a-login",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'https://example.com:1@127.0.0.1/x.duckdb'\n"
+                "  table: t\n",
+                "database",
+                id="duckdb-with-a-login",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal:54x2/db\n  table: t\n",
+                "uri",
+                id="database-port-that-is-not-digits",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@%64b.internal/db\n  table: t\n",
+                "uri",
+                id="database-host-percent-encoded",
+            ),
+            pytest.param(
+                "  type: database\n  uri: 'postgresql://u@db.internal\\x/db'\n  table: t\n",
+                "uri",
+                id="database-backslash",
+            ),
+            pytest.param(
+                "  type: database\n  uri: 'postgresql://u v@db.internal/db'\n  table: t\n",
+                "uri",
+                id="database-login-with-a-space",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal/db?host=db.internal:1\n"
+                "  table: t\n",
+                "uri",
+                id="database-host-parameter-with-a-port",
+            ),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: '127.0.0.1:1@xy12345'\n",
+                "account",
+                id="snowflake-account-with-a-login",
+            ),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: 'adb-1.azuredatabricks.net:8443'\n",
+                "server_hostname",
+                id="databricks-with-a-port",
+            ),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: 'https://u@adb-1.azuredatabricks.net'\n",
+                "server_hostname",
+                id="databricks-with-a-login",
+            ),
+        ],
+    )
+    def test_it_refuses_a_host_written_in_a_shape_readers_split_differently(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, setting: str
+    ) -> None:
+        """Ensure a host is checked only as a host and a port, never as a part of other text.
+
+        The AWS SDK in PyArrow ends `http://127.0.0.1:1@bucket` at its first
+        `:`, so it connects to 127.0.0.1, while a URL parser reads `bucket`.
+        Most cases hold a host the server allows, so each would pass a check
+        that read only that part of the text.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError, match="in the one shape every reader") as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target {setting} does not name its host")
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param("  path: https://EXAMPLE.com:8443/a.csv\n", id="https"),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
+                "    storage_options: {aws_endpoint_url: 'http://[::1]:9000', aws_region: x}\n",
+                id="object-store-endpoint",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {bucket: bucket}\n",
+                id="delta",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: 'db.internal:9000', s3.region: eu-west-1, "
+                "s3.access-key-id: x, s3.secret-access-key: y}\n",
+                id="iceberg-credentials",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u:p@db.internal:5432/db?sslmode=require\n"
+                "  table: t\n",
+                id="database",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://db.internal:8020/t\n", id="delta-hdfs"
+            ),
+            pytest.param("  type: database\n  uri: sqlite://x.db\n  table: t\n", id="sqlite"),
+            pytest.param("  type: duckdb\n  database: x.duckdb\n  table: t\n", id="duckdb-file"),
+            pytest.param(f"{_SNOWFLAKE}  account: XY12345\n", id="snowflake"),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: XY12345.cn-north-1.aws\n", id="snowflake-in-china"
+            ),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: https://adb-1.azuredatabricks.net/\n",
+                id="databricks",
+            ),
+        ],
+    )
+    def test_it_reads_from_a_host_the_server_allows(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure a side whose every host is allowed is read, whatever the case or the port."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        _remote(tmp_path, target)
+
+        report = describe_side(
+            Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target"
+        )
+
+        assert report["columns"] == {"id": "Int64"}
+
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {gcs.service.host: '//127.0.0.1:5436', "
+                "gcs.oauth2.token: x}\n",
+                "storage option 'gcs.service.host'",
+                id="service-host",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: abfs://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {adls.dfs-storage-authority: '127.0.0.1:8811'}\n",
+                "storage option 'adls.dfs-storage-authority'",
+                id="storage-authority",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n"
+                "  storage_options: {azure_storage_use_emulator: 'false'}\n",
+                "storage option 'azure_storage_use_emulator'",
+                id="emulator",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                '  storage_options: {"aws_s\\u212aip_signature": "true"}\n',
+                "storage option 'aws_s\u212aip_signature'",
+                id="key-with-the-kelvin-sign",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n"
+                "  storage_options: {AWS_REGION: 'evil.example/#'}\n",
+                "storage option 'AWS_REGION'",
+                id="region-that-is-not-a-region",
+            ),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
+                "    storage_options: {google_service_account: sa.json}\n",
+                "storage option 'google_service_account'",
+                id="key-file",
+            ),
+            pytest.param(
+                "  type: bigquery\n  project: analytics\n  table: sales.orders\n"
+                "  credentials_path: sa.json\n",
+                "credentials_path",
+                id="bigquery-key-file",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'postgres_scanner:host=127.0.0.1 dbname=d'\n"
+                "  table: t\n",
+                "database extension prefix",
+                id="duckdb-postgres-extension",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'Postgres_Scanner:host=127.0.0.1'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-extension-in-any-case",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'mysql_scanner:host=127.0.0.1 user=u'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-mysql-extension",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'sqlite_scanner:x.db'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-sqlite-extension",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: '1ab:x'\n  table: t\n",
+                "database extension prefix",
+                id="duckdb-extension-with-a-digit-first",
+            ),
+            pytest.param(
+                '  type: duckdb\n  database: "motherduc\\u212a:x"\n  table: t\n',
+                "database extension prefix",
+                id="motherduck-with-the-kelvin-sign",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:?motherduck_host=127.0.0.1&motherduck_use_tls=false'"
+                "\n  table: t\n",
+                "database option other than attach_mode, saas_mode, or session_name",
+                id="motherduck-host",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'MD:sales?attach_mode=single&Motherduck_Port=80'\n"
+                "  table: t\n",
+                "database option other than attach_mode, saas_mode, or session_name",
+                id="motherduck-option-in-any-case",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:sales?attach_mode=single;motherduck_host=x'\n"
+                "  table: t\n",
+                "database option 'attach_mode'",
+                id="motherduck-option-that-hides-another",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x&motherduck_host=127.0.0.1&motherduck_use_tls=false'"
+                "\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-an-ampersand",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x#motherduck_host=127.0.0.1&motherduck_use_tls=false'"
+                "\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-a-hash",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x?attach_mode=single#motherduck_host=127.0.0.1'"
+                "\n  table: t\n",
+                "database option 'attach_mode'",
+                id="motherduck-option-after-a-hash-in-the-options",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'Motherduck:x;motherduck_host=127.0.0.1?saas_mode=1'"
+                "\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-a-semicolon",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x%26motherduck_host%3D127.0.0.1'\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-percent-encoded",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:x motherduck_host=127.0.0.1'\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-option-after-a-space",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md://../outside.duckdb'\n  table: t\n",
+                _MOTHERDUCK_NAME,
+                id="motherduck-scheme-that-duckdb-opens-as-a-file",
+            ),
+        ],
+    )
+    def test_it_refuses_a_setting_whose_host_it_cannot_check(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, setting: str
+    ) -> None:
+        """Ensure a setting that can pick a host the server cannot see is refused before it connects."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError, match="is not one a tool passes on") as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target {setting} is not one")
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(
+                "  type: bigquery\n  project: analytics\n  table: sales.orders\n", id="bigquery"
+            ),
+            pytest.param("  type: duckdb\n  database: md:sales\n  table: t\n", id="motherduck"),
+            pytest.param(
+                "  type: duckdb\n  database: 'MD:_share/sales/23b0d623-1361-421d?saas_mode=1'\n"
+                "  table: t\n",
+                id="motherduck-share",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:'\n  table: t\n", id="motherduck-default"
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'motherduck:sales?attach_mode=single&saas_mode=true"
+                "&session_name=etl-1'\n  table: t\n",
+                id="motherduck-options",
+            ),
+            pytest.param("  path: hf://datasets/org/data/a.parquet\n", id="hugging-face"),
+        ],
+    )
+    def test_it_needs_no_host_for_a_service_that_picks_its_own(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure a side that reaches one service's own hosts needs no `--allow-host`."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        _remote(tmp_path, target)
+
+        report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert report["columns"] == {"id": "Int64"}
+
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@${VD_MCP_SECRET}.elsewhere.example/db\n"
+                "  table: t\n",
+                "uri",
+                id="database",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://${VD_MCP_SECRET}.elsewhere.example/t\n",
+                "table_uri",
+                id="hdfs",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: 'http://${VD_MCP_SECRET}:1@bucket'}\n",
+                "storage option 's3.endpoint'",
+                id="endpoint-in-a-shape-readers-split-differently",
+            ),
+        ],
+    )
+    def test_it_names_the_setting_and_not_a_host_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, setting: str
+    ) -> None:
+        """Ensure a value a host takes from the environment stays out of the refusal."""
+        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError, match=re.escape(f"The target {setting} ")) as refused:
+            run_configuration(Settings((tmp_path,), allowed_hosts=("bucket",)), "veridelta.yaml")
+
+        assert _SECRET not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("md:sales?${VD_MCP_SECRET}=1", id="motherduck-option"),
+            pytest.param("md:sales&${VD_MCP_SECRET}=1", id="motherduck-name"),
+            pytest.param("${VD_MCP_SECRET}_scanner:host=127.0.0.1", id="duckdb-extension"),
+        ],
+    )
+    def test_it_names_no_duckdb_text_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database: str
+    ) -> None:
+        """Ensure a refused DuckDB `database` keeps a value from the environment out of the refusal."""
+        monkeypatch.setenv("VD_MCP_SECRET", "hunter2_do_not_print")
+        _remote(tmp_path, f"  type: duckdb\n  database: '{database}'\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="is not one a tool passes on") as refused:
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert "hunter2" not in str(refused.value)
+
+    def test_a_check_with_schemas_connects_to_no_host_it_does_not_allow(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure `schemas` refuses a host before it reads a column."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, "  path: http://127.0.0.1:8080/a.csv\n")
+
+        with pytest.raises(ConfigError, match="The target path names a host"):
+            check_configuration(Settings((tmp_path,)), "veridelta.yaml", schemas=True)
+
+        read.assert_not_called()
 
 
 class TestEnvironmentValues:
@@ -1733,12 +2518,34 @@ class TestServer:
             assert "ConfigError: The source path" in _text(result), tool
             assert _SECRET not in _text(result), tool
 
+    def test_it_fails_the_call_for_a_host_it_does_not_allow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure no tool that opens a side sends an environment value to a host not allowed."""
+        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
+        _remote(tmp_path, "  path: http://127.0.0.1:1/a.csv?t=${VD_MCP_SECRET}\n")
+        settings = Settings((tmp_path,), allow_row_values=True)
+        calls: list[tuple[str, dict[str, Any]]] = [
+            ("validate_config", {"path": "veridelta.yaml", "schemas": True}),
+            ("run_comparison", {"path": "veridelta.yaml"}),
+            ("describe_schema", {"path": "veridelta.yaml", "side": "target"}),
+            ("read_discrepancies", {"path": "veridelta.yaml", "kind": "added"}),
+            ("propose_value_maps", {"path": "veridelta.yaml"}),
+            ("suggest_rules", {"path": "veridelta.yaml"}),
+        ]
+
+        for tool, arguments in calls:
+            result = _call(settings, arguments, tool=tool)
+
+            assert result.is_error is True, tool
+            assert "ConfigError: The target path names a host" in _text(result), tool
+
     def test_it_fails_to_describe_a_query(self, tmp_path: Path) -> None:
         """Ensure a side read through a query fails the call, named as `run --json` names it."""
         _write(tmp_path, _QUERY)
 
         result = _call(
-            Settings((tmp_path,)),
+            Settings((tmp_path,), allowed_hosts=(_QUERY_HOST,)),
             {"path": "veridelta.yaml", "side": "source"},
             tool="describe_schema",
         )
@@ -1820,9 +2627,7 @@ class TestServer:
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
         """Ensure any failure reaches the agent as `run --json` names one, not a bare refusal."""
-        mocker.patch(
-            "veridelta.engine.DiffEngine.check_config_file", side_effect=RuntimeError("boom")
-        )
+        mocker.patch.object(DiffEngine, "check_configs", side_effect=RuntimeError("boom"))
         _write(tmp_path, _VALID)
 
         result = _call(Settings((tmp_path,), allow_row_values=True), {"path": "veridelta.yaml"})
@@ -1834,9 +2639,7 @@ class TestServer:
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
         """Ensure a message from Polars or a driver, which can quote a cell, stays out by default."""
-        mocker.patch(
-            "veridelta.engine.DiffEngine.check_config_file", side_effect=RuntimeError(_CANARY)
-        )
+        mocker.patch("veridelta.engine.DiffEngine.check_configs", side_effect=RuntimeError(_CANARY))
         _write(tmp_path, _VALID)
 
         result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
@@ -1998,7 +2801,7 @@ class TestServer:
         )
 
         result = _call(
-            Settings((tmp_path,), allow_row_values=True),
+            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
             {"path": "veridelta.yaml", "schemas": True},
         )
 

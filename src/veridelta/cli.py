@@ -36,7 +36,7 @@ from veridelta.engine import (
     DiffEngine,
 )
 from veridelta.exceptions import ConfigError, VerideltaError
-from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, serve
+from veridelta.mcp_server import DEFAULT_ROW_CAP, Settings, allowed_host, serve
 from veridelta.models import Baseline
 from veridelta.outputs import OUTPUTS, error_report, output_json_schema, validation_report
 from veridelta.report import DEFAULT_MAX_ROWS, write_html, write_markdown
@@ -157,6 +157,14 @@ def _directory(text: str) -> Path:
     if not path.is_dir():
         raise argparse.ArgumentTypeError(f"not a directory: {text!r}")
     return path
+
+
+def _host(text: str) -> str:
+    """Parse `--allow-host`, a host with no scheme or port, in lowercase."""
+    try:
+        return allowed_host(text)
+    except ConfigError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 def _report_failure(
@@ -514,11 +522,12 @@ def mcp(args: argparse.Namespace) -> int:
     there, as it would for a person running the command line in it. Stdout
     carries the protocol, so this command prints nothing else there. Values
     from the data stay out of every result unless `--allow-row-values` is
-    given, and then a call returns at most `--max-rows` of them.
+    given, and then a call returns at most `--max-rows` of them. A side
+    connects to another machine only when `--allow-host` names its host.
 
     Args:
-        args (argparse.Namespace): Parsed arguments carrying the roots and the
-            row-value settings.
+        args (argparse.Namespace): Parsed arguments carrying the roots, the
+            row-value settings, and the allowed hosts.
 
     Returns:
         int: `EXIT_MATCH` once the host disconnects or Ctrl-C stops the server,
@@ -531,6 +540,7 @@ def mcp(args: argparse.Namespace) -> int:
             allow_row_values=args.allow_row_values,
             max_rows=args.max_rows,
             allow_queries=args.allow_queries,
+            allowed_hosts=tuple(args.allow_host or ()),
         )
         os.chdir(settings.roots[0])
         serve(settings)
@@ -814,6 +824,17 @@ def _add_mcp_arguments(mcp_parser: argparse.ArgumentParser) -> None:
         help=(
             "Let a tool run a side's query, which runs as written. A DuckDB file still "
             "reads other files only from under the roots. Off by default."
+        ),
+    )
+    mcp_parser.add_argument(
+        "--allow-host",
+        action="append",
+        type=_host,
+        metavar="HOST",
+        help=(
+            "A host a side may connect to, such as a database server, a bucket, or a URL's "
+            "host. Repeat it for more hosts. Without it, a tool reads only data on this "
+            "machine, MotherDuck, Hugging Face, or BigQuery with the server's own credentials."
         ),
     )
     mcp_parser.add_argument(

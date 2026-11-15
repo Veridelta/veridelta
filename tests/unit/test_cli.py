@@ -1236,13 +1236,15 @@ def _serve_args(
     allow_row_values: bool = False,
     max_rows: int = 50,
     allow_queries: bool = False,
+    allow_host: list[str] | None = None,
 ) -> argparse.Namespace:
-    """Build the arguments `veridelta mcp` parses, with row values and queries off by default."""
+    """Build the arguments `veridelta mcp` parses, with row values, queries, and hosts off."""
     return argparse.Namespace(
         root=roots,
         allow_row_values=allow_row_values,
         max_rows=max_rows,
         allow_queries=allow_queries,
+        allow_host=allow_host,
     )
 
 
@@ -1285,6 +1287,25 @@ class TestMCPCommand:
         assert build_parser().parse_args(["mcp"]).allow_queries is False
         assert build_parser().parse_args(["mcp", "--allow-queries"]).allow_queries is True
 
+    def test_it_takes_each_allowed_host_in_lowercase(self) -> None:
+        """Ensure `--allow-host` repeats, and no host is allowed unless it is given."""
+        args = build_parser().parse_args(
+            ["mcp", "--allow-host", "DB.Example.com", "--allow-host", "10.0.0.5"]
+        )
+
+        assert args.allow_host == ["db.example.com", "10.0.0.5"]
+        assert build_parser().parse_args(["mcp"]).allow_host is None
+
+    def test_it_refuses_an_allowed_host_with_a_scheme(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure an entry that is not a bare host is an argument error, before anything starts."""
+        with pytest.raises(SystemExit) as stopped:
+            build_parser().parse_args(["mcp", "--allow-host", "https://db.example.com"])
+
+        assert stopped.value.code == 2
+        assert "--allow-host takes a host name" in capsys.readouterr().err
+
     @pytest.mark.parametrize(
         ("value", "message"),
         [("0", "must be at least 1, got 0"), ("many", "expected a whole number, got 'many'")],
@@ -1306,9 +1327,19 @@ class TestMCPCommand:
         monkeypatch.chdir(tmp_path)
         serve = mocker.patch("veridelta.cli.serve")
 
-        assert mcp(_serve_args(None, allow_row_values=True, max_rows=5, allow_queries=True)) == 0
+        args = _serve_args(
+            None, allow_row_values=True, max_rows=5, allow_queries=True, allow_host=["db.internal"]
+        )
+
+        assert mcp(args) == 0
         serve.assert_called_once_with(
-            Settings((tmp_path,), allow_row_values=True, max_rows=5, allow_queries=True)
+            Settings(
+                (tmp_path,),
+                allow_row_values=True,
+                max_rows=5,
+                allow_queries=True,
+                allowed_hosts=("db.internal",),
+            )
         )
 
     def test_it_serves_from_the_first_root(

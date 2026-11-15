@@ -27,6 +27,7 @@ from veridelta._checks import (
     regex_findings,
     shown_message,
     unknown_column_findings,
+    unset_variable_findings,
     warning_finding,
 )
 from veridelta._matching import (
@@ -478,14 +479,7 @@ class DiffEngine:
             )
         except ConfigError as exc:
             findings = [error_from_exception(exc)]
-        unset_findings = [
-            warning_finding(
-                f"Environment variable '{name}' is not set, so its references were checked "
-                f"as the text '{name}'."
-            )
-            for name in unset or []
-        ]
-        return [*unset_findings, *findings]
+        return [*unset_variable_findings(unset or []), *findings]
 
     @staticmethod
     def read_schema(config: SourceRef) -> pl.Schema:
