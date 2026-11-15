@@ -199,7 +199,7 @@ The file is one line of JSON in OTLP's JSON encoding, as the [OpenTelemetry file
 
 `HEADERS`, `TIMEOUT`, and `PROTOCOL` also have a metrics form, such as `OTEL_EXPORTER_OTLP_METRICS_HEADERS`. The metrics form wins over the general one, as it does in the OpenTelemetry SDKs.
 
-Header keys and values are percent-encoded, as in `OTEL_RESOURCE_ATTRIBUTES`, so `Bearer <token>` is written `Bearer%20<token>`. No header value appears in a log line or an error, and neither does the endpoint's query. The send follows no redirect, so a header never reaches a second host. Over HTTPS, the endpoint's certificate is checked against the system's trust store.
+Header keys and values are percent-encoded, as in `OTEL_RESOURCE_ATTRIBUTES`, so `Bearer <token>` is written `Bearer%20<token>`. No header value appears in a log line or an error, and neither does the endpoint's query. An endpoint must percent-encode a space, a control character, or a character outside ASCII. Veridelta refuses one written as is, and the error names the variable, not its value. The send follows no redirect, so a header never reaches a second host. Over HTTPS, the endpoint's certificate is checked against the system's trust store.
 
 The send is one attempt, with no retry. When it fails, such as on an unreachable endpoint, an HTTP error, or the timeout, the run exits `3` after writing its files. Under `--json`, stdout then holds the error object instead of the summary. An unusable variable, or a protocol other than `http/json`, fails the run the same way before anything is sent.
 
