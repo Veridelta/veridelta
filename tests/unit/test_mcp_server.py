@@ -18,7 +18,8 @@ import re
 import shutil
 import sys
 import threading
-from collections.abc import Awaitable, Callable, Iterator
+import uuid
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -46,7 +47,11 @@ from pytest_mock import MockerFixture
 from veridelta import __version__, mcp_server
 from veridelta.config import load_config
 from veridelta.connectors.database import sqlite_path
-from veridelta.connectors.lakehouse import IcebergConnector
+from veridelta.connectors.lakehouse import (
+    DeltaLakeConnector,
+    IcebergConnector,
+    deletion_vector_files,
+)
 from veridelta.engine import DiffEngine
 from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError
 from veridelta.mcp_server import (
@@ -1667,6 +1672,41 @@ def _read_two_ways(root: Path, outside: Path, layer: str) -> str:
     return str(metadata)
 
 
+_Z85 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#"
+"""The alphabet in which a Delta Lake log writes the UUID of a deletion vector at a relative path."""
+
+
+def _relative_vector(folder: str, name: uuid.UUID) -> str:
+    """Write the relative path a Delta Lake log records for a deletion vector: a folder, then Z85."""
+    encoded = ""
+    for start in range(0, 16, 4):
+        number = int.from_bytes(name.bytes[start : start + 4], "big")
+        encoded += "".join(_Z85[number // 85**place % 85] for place in range(4, -1, -1))
+    return folder + encoded
+
+
+def _with_vectors(table: Path, *vectors: Mapping[str, object]) -> None:
+    """Write `_ROW` to a table that allows deletion vectors, and record each vector on its file.
+
+    Each vector gets a commit of its own, which adds the table's one data file
+    again, with the vector. No vector's file is written: the listing reads
+    where the log stores each, never the file.
+    """
+    _ROW.write_delta(
+        table, delta_write_options={"configuration": {"delta.enableDeletionVectors": "true"}}
+    )
+    log = table / "_delta_log"
+    first = (log / f"{0:020}.json").read_text(encoding="utf-8").splitlines()
+    (added,) = [json.loads(line)["add"] for line in first if '"add"' in line]
+    for version, vector in enumerate(vectors, start=1):
+        removed = {"path": added["path"], "dataChange": True, "deletionTimestamp": version}
+        stored = {"offset": 1, "sizeInBytes": 34, "cardinality": 1, **vector}
+        commit = [{"remove": removed}, {"add": dict(added, deletionVector=stored)}]
+        (log / f"{version:020}.json").write_text(
+            "".join(json.dumps(action) + "\n" for action in commit), encoding="utf-8"
+        )
+
+
 class TestLakehouseFiles:
     """Validate the folder rule on each file a Delta Lake or Iceberg table names."""
 
@@ -1763,15 +1803,233 @@ class TestLakehouseFiles:
         table = mocker.patch("deltalake.DeltaTable")
         table.return_value.file_uris.return_value = [uri.format(outside=outside)]
         target = DeltaLakeConfig(table_uri="s3://lake/events", storage_options={"region": "eu"})
+        settings = Settings((tmp_path,), allowed_hosts=("lake",))
 
         if refused:
             with pytest.raises(ConfigError, match=r"The target data file .* is outside"):
-                check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+                check_data_paths(settings, SourceConfig(path="a.csv"), target)
         else:
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+            check_data_paths(settings, SourceConfig(path="a.csv"), target)
         table.assert_called_once_with(
             "s3://lake/events", version=None, storage_options={"region": "eu"}
         )
+
+    def test_it_names_each_deletion_vector_where_its_log_stores_it(self, tmp_path: Path) -> None:
+        """Ensure a vector at its own path or at a relative one is listed, and one inline is not.
+
+        A checkpoint records the vectors as well, which the listing reads too.
+        """
+        table, own = tmp_path / "events", (tmp_path / "vectors" / "own.bin").as_uri()
+        first, second = uuid.uuid4(), uuid.uuid4()
+        _with_vectors(
+            table,
+            {"storageType": "p", "pathOrInlineDv": own},
+            {"storageType": "u", "pathOrInlineDv": _relative_vector("ab", first)},
+            {"storageType": "u", "pathOrInlineDv": _relative_vector("", second)},
+            {"storageType": "i", "pathOrInlineDv": "inline"},
+        )
+        DeltaTable(str(table)).create_checkpoint()
+
+        loaded = DeltaTable(str(table))
+        named = set(deletion_vector_files(loaded, {}))
+        check_data_paths(
+            Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
+        )
+
+        # Delta Lake joins a relative vector to the table's URI, as deltalake writes it.
+        folder = loaded.table_uri.rstrip("/")
+        assert named == {
+            own,
+            f"{folder}/ab/deletion_vector_{first}.bin",
+            f"{folder}/deletion_vector_{second}.bin",
+        }
+
+    def test_it_refuses_a_deletion_vector_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a vector a log stores at its own path, outside every root, is refused.
+
+        A vector's file chooses which rows a scan drops, so one outside the
+        roots would tell an agent about a file it may not read.
+        """
+        outside = (tmp_path_factory.mktemp("outside") / "vector.bin").as_uri()
+        _with_vectors(tmp_path / "events", {"storageType": "p", "pathOrInlineDv": outside})
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConfigError, match=r"The target deletion vector '.*' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    def test_it_refuses_a_relative_deletion_vector_linked_outside(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a vector at a relative path is checked where it lies, after its links."""
+        name = uuid.uuid4()
+        table = tmp_path / "events"
+        _with_vectors(table, {"storageType": "u", "pathOrInlineDv": _relative_vector("", name)})
+        secret = tmp_path_factory.mktemp("outside") / "vector.bin"
+        secret.write_bytes(b"\x01")
+        (table / f"deletion_vector_{name}.bin").symlink_to(secret)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConfigError, match=r"The target deletion vector '.*' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.parametrize(
+        ("vector", "reason"),
+        [
+            pytest.param(
+                {"storageType": "x", "pathOrInlineDv": "x"}, "unknown kind", id="unknown-kind"
+            ),
+            pytest.param(
+                {"storageType": "u", "pathOrInlineDv": _relative_vector("../", uuid.uuid4())},
+                "other characters than letters and digits",
+                id="folder-that-climbs",
+            ),
+        ],
+    )
+    def test_it_refuses_a_deletion_vector_it_cannot_place(
+        self, tmp_path: Path, vector: Mapping[str, object], reason: str
+    ) -> None:
+        """Ensure a vector whose file the listing cannot name as Delta Lake does is refused.
+
+        Delta Lake joins a relative vector's folder to the table's URI as a
+        URL, so a folder of other characters than letters and digits, such as
+        `../`, can lead anywhere.
+        """
+        _with_vectors(tmp_path / "events", vector)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match=f"could not be listed.*{reason}"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_holds_a_deletion_vector_elsewhere_to_the_allowed_hosts(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure a vector in another bucket is refused unless its host is allowed.
+
+        The log names the host, so the refusal leaves it out.
+        """
+        vector = {"storageType": "p", "pathOrInlineDv": "s3://other-bucket/vector.bin"}
+        _with_vectors(tmp_path / "events", vector)
+        target = DeltaLakeConfig(table_uri="events")
+        allowed = Settings((tmp_path,), allowed_hosts=("other-bucket",))
+
+        with pytest.raises(ConfigError, match="The target deletion vector names a host") as refused:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        check_data_paths(allowed, SourceConfig(path="a.csv"), target)
+
+        assert "other-bucket" not in str(refused.value)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    def test_it_lists_a_delta_table_again_as_its_scan_starts(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure a scan checks the files of the version it reads, though the first listing missed one.
+
+        A table can gain a file between the listing a tool starts with and
+        the scan, so the scan lists the table again, and reads the version it
+        checked.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        (added,) = DeltaTable(str(tmp_path / "events")).file_uris()
+        secret = tmp_path_factory.mktemp("outside") / "secret.parquet"
+        Path(added).rename(secret)
+        Path(added).symlink_to(secret)
+        mocker.patch.object(mcp_server, "check_data_paths")
+        _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        with pytest.raises(VerideltaError, match=r"The scanned data file '.*' is outside"):
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    def test_it_stops_a_delta_scan_at_a_file_that_changed_after_it_started(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure a data file that becomes a link out of the roots after a scan starts is never read.
+
+        The scan checks each data file again just before it opens it.
+        """
+        _ROW.with_columns(note=pl.lit("public")).write_delta(tmp_path / "events")
+        (added,) = DeltaTable(str(tmp_path / "events")).file_uris()
+        secret = tmp_path_factory.mktemp("outside") / "secret.parquet"
+        shutil.copy(added, secret)
+        start = DeltaLakeConnector.connect
+
+        def start_then_swap(connector: DeltaLakeConnector) -> None:
+            start(connector)
+            Path(added).unlink()
+            Path(added).symlink_to(secret)
+
+        mocker.patch.object(
+            DeltaLakeConnector, "connect", autospec=True, side_effect=start_then_swap
+        )
+        _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        with pytest.raises(VerideltaError, match="about to open a file outside") as stopped:
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+        assert str(secret) not in str(stopped.value)
+
+    @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
+    def test_it_holds_a_file_iceberg_metadata_names_elsewhere_to_the_allowed_hosts(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        listed: bool,
+    ) -> None:
+        """Ensure a table in an allowed bucket cannot lead a scan to a file in another bucket.
+
+        Its metadata names a manifest list in a bucket the server does not
+        allow. The listing refuses it, and so does the scan, which checks each
+        file's host just before it opens it, though the listing found nothing.
+        The metadata names the host, so the refusal leaves it out.
+        """
+        store = tmp_path_factory.mktemp("store")
+        _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
+        with _object_store(store) as options:
+            metadata = _remote_iceberg(tmp_path, store, options, monkeypatch)
+            written = store / metadata.removeprefix("s3://")
+            document = json.loads(written.read_text(encoding="utf-8"))
+            for snapshot in document["snapshots"]:
+                snapshot["manifest-list"] = "s3://other-bucket/list.avro"
+            written.write_text(json.dumps(document), encoding="utf-8")
+            if not listed:
+                mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
+            _write(
+                tmp_path,
+                "source:\n  path: a.parquet\n  format: parquet\n"
+                f"target:\n  type: iceberg\n  table_uri: '{metadata}'\n  storage_options:\n"
+                + "".join(f"    {key}: '{value}'\n" for key, value in options.items())
+                + "primary_keys: [id]\n",
+            )
+
+            with pytest.raises(VerideltaError, match="names a host this server may not") as refused:
+                read_rows(
+                    Settings((tmp_path,), allow_row_values=True, allowed_hosts=_STORE_HOSTS),
+                    "veridelta.yaml",
+                    "changed",
+                )
+
+        assert "other-bucket" not in str(refused.value)
 
     def test_it_accepts_a_remote_iceberg_table(
         self,
@@ -1784,8 +2042,9 @@ class TestLakehouseFiles:
         with _object_store(store) as options:
             metadata = _remote_iceberg(tmp_path, store, options, monkeypatch)
             target = IcebergConfig(table_uri=metadata, storage_options=options)
+            settings = Settings((tmp_path,), allowed_hosts=_STORE_HOSTS)
 
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+            check_data_paths(settings, SourceConfig(path="a.csv"), target)
 
     @pytest.mark.parametrize(
         "uri",
@@ -2005,21 +2264,30 @@ class TestLakehouseFiles:
 
         check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
-    def test_it_leaves_a_remote_file_to_the_reader(self, tmp_path: Path) -> None:
-        """Ensure a file on another machine is not held to the roots."""
+    def test_it_holds_a_remote_file_to_the_allowed_hosts(self, tmp_path: Path) -> None:
+        """Ensure a file on another machine is held to the allowed hosts, not to the roots.
+
+        The metadata names the host, so the refusal leaves it out.
+        """
         metadata = json.loads(Path(_iceberg(tmp_path)).read_text())
         for snapshot in metadata["snapshots"]:
             snapshot["manifest-list"] = "https://example.invalid/snap.avro"
         copy = tmp_path / "v1.metadata.json"
         copy.write_text(json.dumps(metadata))
+        target = IcebergConfig(table_uri=str(copy))
 
-        # The folder rule lets the manifest list through, and this FileIO opens no web address.
+        with pytest.raises(ConfigError, match="The target manifest list names a host") as refused:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        # The host and the folder rules let the manifest list through, and this FileIO
+        # opens no web address.
         with pytest.raises(ConnectorError, match="could not be listed"):
             check_data_paths(
-                Settings((tmp_path,)),
+                Settings((tmp_path,), allowed_hosts=("example.invalid",)),
                 SourceConfig(path="a.csv"),
-                IcebergConfig(table_uri=str(copy)),
+                target,
             )
+
+        assert "example.invalid" not in str(refused.value)
 
     @pytest.mark.parametrize("scheme", ["hdfs", "viewfs"])
     @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
@@ -2035,8 +2303,9 @@ class TestLakehouseFiles:
 
         PyArrow opens an `hdfs` or `viewfs` file through libhdfs, which it can
         load from the working directory, the first root, where an agent can
-        write one. The table lies under the root and names no host, so only the
-        FileIO stands between the table's manifest list and that library.
+        write one. The table lies under the root, and the server allows the
+        host its manifest list names, so only the FileIO stands between the
+        manifest list and that library.
         """
         monkeypatch.chdir(tmp_path)
         (tmp_path / "libhdfs.so").write_bytes(b"code an agent wrote")
@@ -2061,8 +2330,10 @@ class TestLakehouseFiles:
             f"target:\n  type: iceberg\n  table_uri: '{metadata}'\nprimary_keys: [id]\n",
         )
 
+        settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=("namenode",))
+
         with pytest.raises(ConnectorError, match="through a scheme other than file: or an object"):
-            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+            read_rows(settings, "veridelta.yaml", "changed")
 
         assert loads == []
 
