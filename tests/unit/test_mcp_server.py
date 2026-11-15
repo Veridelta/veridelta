@@ -83,6 +83,9 @@ The database is on another machine, so no file of it has to lie under a root."""
 
 _SECRET = "hunter2-do-not-print"
 
+_CANARY = "CANARY-123-45-6789"
+"""A cell value that a server started without `--allow-row-values` never returns."""
+
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
 """The CSV files the CI jobs and the recording compare."""
 
@@ -1478,10 +1481,154 @@ class TestServer:
         )
         _write(tmp_path, _VALID)
 
-        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
+        result = _call(Settings((tmp_path,), allow_row_values=True), {"path": "veridelta.yaml"})
 
         assert result.is_error is True
         assert _text(result).endswith("RuntimeError: boom")
+
+    def test_it_leaves_out_the_message_of_an_unexpected_failure_unless_rows_are_allowed(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a message from Polars or a driver, which can quote a cell, stays out by default."""
+        mocker.patch(
+            "veridelta.engine.DiffEngine.check_config_file", side_effect=RuntimeError(_CANARY)
+        )
+        _write(tmp_path, _VALID)
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
+
+        assert result.is_error is True
+        assert "RuntimeError: its message is left out" in _text(result)
+        assert "--allow-row-values" in _text(result)
+        assert _CANARY not in _text(result)
+
+    def test_it_leaves_out_a_cell_a_schema_check_quotes_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `validate_config` with `schemas` keeps a JSON value out of its findings.
+
+        The finding is the call's result rather than a failure, so it never
+        passes through the check that a failed call's message gets.
+        """
+        monkeypatch.chdir(tmp_path)
+        rows = ",".join(f'{{"id": {i}, "v": "x"}}' for i in range(200))
+        (tmp_path / "a.json").write_text(f'[{rows}, {{"id": 999, "v": {{"ssn": "{_CANARY}"}}}}]')
+        (tmp_path / "b.json").write_text(f"[{rows}]")
+        _write(
+            tmp_path,
+            "source: {path: a.json, format: json}\ntarget: {path: b.json, format: json}\n"
+            "primary_keys: [id]\n",
+        )
+        arguments = {"path": "veridelta.yaml", "schemas": True}
+
+        default = _call(Settings((tmp_path,)), arguments)
+        allowed = _call(Settings((tmp_path,), allow_row_values=True), arguments)
+
+        assert default.is_error is False
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert _CANARY in _text(allowed)
+
+    def test_it_never_returns_a_cell_a_cast_cannot_convert(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a failed `cast_to` names the column and a count, on any server."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.csv").write_text(f"id,amount\n1,10\n2,{_CANARY}\n")
+        (tmp_path / "b.csv").write_text("id,amount\n1,10\n2,11\n")
+        _write(tmp_path, _VALID + "rules: [{column_names: [amount], cast_to: Int64}]\n")
+
+        for settings in (Settings((tmp_path,)), Settings((tmp_path,), allow_row_values=True)):
+            result = _call(settings, {"path": "veridelta.yaml"}, tool="run_comparison")
+
+            assert result.is_error is True
+            assert "DataIntegrityError: Column 'amount' sets cast_to='Int64', but 1 value" in _text(
+                result
+            )
+            assert _CANARY not in _text(result)
+
+    def test_it_leaves_out_a_cell_that_fails_to_parse_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a CSV value past the rows the reader infers types from stays out by default.
+
+        Polars quotes the value it cannot parse, and a third party who writes
+        the file chooses that text.
+        """
+        monkeypatch.chdir(tmp_path)
+        rows = "".join(f"{i},{i}\n" for i in range(200))
+        (tmp_path / "a.csv").write_text(f"id,amount\n{rows}200,{_CANARY}\n")
+        (tmp_path / "b.csv").write_text(f"id,amount\n{rows}")
+        _write(tmp_path, _VALID)
+
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+
+        assert default.is_error is True
+        assert _text(default).endswith(
+            "ComputeError: its message is left out, since it can quote values from the data, "
+            "and this server was started without --allow-row-values. Run the configuration "
+            "with veridelta run to read the message."
+        )
+        assert allowed.is_error is True
+        assert _CANARY in _text(allowed)
+
+    def test_it_leaves_out_a_cell_a_pushdown_cast_cannot_convert_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure DuckDB's error for a failed `CAST`, which quotes the value, stays out by default."""
+        monkeypatch.chdir(tmp_path)
+        with duckdb.connect(str(tmp_path / "warehouse.duckdb")) as connection:
+            connection.execute(
+                f"CREATE TABLE src AS SELECT * FROM (VALUES (1, '10'), (2, '{_CANARY}')) t(id, amount)"
+            )
+            connection.execute(
+                "CREATE TABLE tgt AS SELECT * FROM (VALUES (1, '10'), (2, '11')) t(id, amount)"
+            )
+        side = "  type: duckdb\n  database: warehouse.duckdb\n  pushdown: true\n"
+        _write(
+            tmp_path,
+            f"source:\n{side}  table: src\ntarget:\n{side}  table: tgt\nprimary_keys: [id]\n"
+            "rules: [{column_names: [amount], cast_to: Int64}]\n",
+        )
+
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert _CANARY in _text(allowed)
+
+    def test_it_leaves_out_a_driver_message_unless_rows_are_allowed(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a source error that quotes its driver stays out, and one in Veridelta's words stays."""
+        _write(tmp_path, _VALID)
+        run = mocker.patch("veridelta.mcp_server.DiffEngine.run_from_configs")
+        quoted = ConnectorError(f"Warehouse statement failed: {_CANARY}", quotes_data=True)
+
+        run.side_effect = quoted
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+        run.side_effect = ConnectorError("Pushdown needs SQL Server 2022.")
+        own = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert _text(allowed).endswith(f"ConnectorError: Warehouse statement failed: {_CANARY}")
+        assert _text(own).endswith("ConnectorError: Pushdown needs SQL Server 2022.")
 
     def test_it_never_returns_a_secret_from_the_configuration(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -1489,7 +1636,8 @@ class TestServer:
         """Ensure a password read from the environment stays out of a result, even in an error.
 
         The database read fails with the full connection URI, as a driver's
-        error can, and the result still holds only the masked form.
+        error can, and the result still holds only the masked form. The server
+        allows row values, or the driver's message would be left out whole.
         """
         monkeypatch.setenv("VD_MCP_PASSWORD", _SECRET)
         uri = f"postgresql://analyst:{_SECRET}@db.internal/sales"
@@ -1505,7 +1653,10 @@ class TestServer:
             "  table: orders\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
         )
 
-        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", "schemas": True})
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml", "schemas": True},
+        )
 
         shown = json.dumps(result.structured_content) + _text(result)
         assert result.structured_content is not None
@@ -1557,7 +1708,7 @@ class TestServer:
         result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
 
         assert result.is_error is True
-        assert "PanicException: not yet implemented" in _text(result)
+        assert "PanicException: its message is left out" in _text(result)
 
     def test_it_leaves_the_root_logger_as_it_found_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -173,7 +173,8 @@ class DuckDBConnector(ReaderConnector):
             )
             raise ConnectorError(
                 f"DuckDB read of {self._subject} from '{self._config.database}' failed: "
-                f"{mask_secrets(str(exc), token)}"
+                f"{mask_secrets(str(exc), token)}",
+                quotes_data=True,
             ) from None
         logger.info(
             "Read %d rows of %s from %s in %.3fs",
@@ -287,7 +288,8 @@ class DuckDBPushdownSession(PushdownSession):
             )
             raise ConnectorError(
                 f"DuckDB {query_type} statement on '{self._config.database}' failed: "
-                f"{mask_secrets(str(exc), self._token)}"
+                f"{mask_secrets(str(exc), self._token)}",
+                quotes_data=True,
             ) from None
         logger.info(
             "Ran DuckDB %s statement on %s in %.3fs, %d rows",
