@@ -764,6 +764,47 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match="outside the folders"):
             check_data_paths(Settings((tmp_path,)), side, _snowflake())
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="The forms are POSIX paths, and a link needs a privilege a runner may lack.",
+    )
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("file:{outside_relative}/a.csv", id="file-uri-without-a-slash"),
+            pytest.param("file:{outside_backslashed}\\a.csv", id="file-uri-with-backslashes"),
+            pytest.param("file:{root}/.. ", id="file-uri-ending-in-a-space"),
+            pytest.param("{root}/link/../../{outside_name}/a.csv", id="parent-of-a-link"),
+            pytest.param(
+                "file://{root}/link/../../{outside_name}/a.csv", id="uri-parent-of-a-link"
+            ),
+        ],
+    )
+    def test_it_checks_a_path_as_each_reader_parses_it(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, path: str
+    ) -> None:
+        """Ensure a path is held to the roots however a reader parses it.
+
+        Polars and deltalake read a file URI as the URL standard says: from
+        `/`, with a backslash as `/`, and without the spaces at its ends.
+        PyArrow folds `..` into the folder before it follows a link, and the
+        system follows the link first.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        (tmp_path / "deep" / "er").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(tmp_path / "deep" / "er", target_is_directory=True)
+        side = SourceConfig(
+            path=path.format(
+                root=tmp_path,
+                outside_relative=str(outside).lstrip("/"),
+                outside_backslashed=str(outside).replace("/", "\\"),
+                outside_name=outside.name,
+            )
+        )
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
     def test_it_reads_a_home_path_as_the_readers_do(self, tmp_path: Path) -> None:
         """Ensure `~` is expanded first, since Polars expands it, so it cannot lead out."""
         with pytest.raises(ConfigError, match="outside the folders"):
@@ -1032,25 +1073,42 @@ class TestLakehouseFiles:
 
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param(Path.as_uri, id="file-uri"),
+            pytest.param(
+                lambda folder: "file:" + str(folder).lstrip("/"),
+                id="file-uri-without-a-slash",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32", reason="The URI names a POSIX path."
+                ),
+            ),
+        ],
+    )
     def test_it_returns_no_row_of_a_local_file_a_remote_table_names(
         self,
         tmp_path: Path,
         tmp_path_factory: pytest.TempPathFactory,
         monkeypatch: pytest.MonkeyPatch,
+        uri: Callable[[Path], str],
     ) -> None:
         """Ensure a table in an object store cannot read a file on this machine outside the roots.
 
-        Its metadata and manifests lie in the store, and a `file://` URI names
-        its data file, outside the roots. A tool refuses it before the scan
-        opens a file.
+        Its metadata and manifests lie in the store, and a file URI names its
+        data file, outside the roots. Without a slash after `file:`, Polars
+        reads that path from `/`, and PyIceberg from the working directory. A
+        tool refuses it before the scan opens a file.
         """
         store, outside = tmp_path_factory.mktemp("store"), tmp_path_factory.mktemp("outside")
-        monkeypatch.chdir(tmp_path)
         _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
         with _object_store(store) as options:
+            # PyIceberg writes the data file from `/`, where Polars reads it.
+            monkeypatch.chdir(tmp_path.anchor)
             metadata = _remote_iceberg(
-                tmp_path, store, options, monkeypatch, {"write.data.path": outside.as_uri()}
+                tmp_path, store, options, monkeypatch, {"write.data.path": uri(outside)}
             )
+            monkeypatch.chdir(tmp_path)
             _write(
                 tmp_path,
                 "source:\n  path: a.parquet\n  format: parquet\n"
@@ -1068,6 +1126,7 @@ class TestLakehouseFiles:
         ("properties", "options", "refused"),
         [
             pytest.param({"s3.endpoint": "http://elsewhere"}, {}, "s3.endpoint", id="store"),
+            pytest.param({"DEFAULT_SCHEME": "file"}, {}, "DEFAULT_SCHEME", id="default-store"),
             pytest.param(
                 {"py-io-impl": "pyiceberg.io.pyarrow.PyArrowFileIO"}, {}, "py-io-impl", id="code"
             ),
@@ -1326,6 +1385,73 @@ class TestLakehouseFiles:
 
         assert _SECRET not in str(refused.value)
         compare.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="The URI names a POSIX path.")
+    @pytest.mark.parametrize(
+        ("target", "setting"),
+        [
+            pytest.param(
+                "  type: iceberg\n  table_uri: '{metadata}'\n", "data file", id="iceberg-data-file"
+            ),
+            pytest.param("  path: '{secret}'\n  format: parquet\n", "path", id="path"),
+        ],
+    )
+    def test_it_returns_no_row_of_a_file_uri_without_a_slash(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        target: str,
+        setting: str,
+    ) -> None:
+        """Ensure a file named `file:` and a path without its first `/` is held to the roots.
+
+        Polars reads that path from `/`, outside the roots, and PyIceberg from
+        the working directory, inside one. Nothing under the root names the
+        file but the table's manifest, or the configuration.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        monkeypatch.chdir(tmp_path.anchor)  # PyIceberg writes the data file where Polars reads it.
+        metadata = _iceberg(tmp_path, {"write.data.path": "file:" + str(outside).lstrip("/")})
+        monkeypatch.chdir(tmp_path)
+        (secret,) = outside.iterdir()
+        _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\ntarget:\n"
+            + target.format(metadata=metadata, secret="file:" + str(secret).lstrip("/"))
+            + "primary_keys: [id]\n",
+        )
+
+        with pytest.raises(ConfigError, match=f"The target {setting} '/") as refused:
+            read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+        assert _SECRET not in str(refused.value)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    def test_it_refuses_a_data_file_named_through_the_parent_of_a_link(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a data file is held to the roots where PyIceberg reads it, as well as Polars.
+
+        A scan through PyIceberg folds `..` before it follows the link, so it
+        reads a file outside the roots, where the system reads one under them.
+        """
+        secret = tmp_path_factory.mktemp("outside") / "secret.parquet"
+        _ROW.write_parquet(secret)
+        (tmp_path / "deep" / "er").mkdir(parents=True)
+        (tmp_path / "link").symlink_to(tmp_path / "deep" / "er", target_is_directory=True)
+        with _catalog(tmp_path) as catalog:
+            table = catalog.create_table("lake.events", schema=_ROW.to_arrow().schema)
+            table.add_files([f"{tmp_path}/link/../../{secret.parent.name}/{secret.name}"])
+            metadata = catalog.load_table("lake.events").metadata_location
+
+        with pytest.raises(ConfigError, match=r"The target data file '.*/link/\.\./\.\./"):
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path="a.csv"), IcebergConfig(table_uri=metadata)
+            )
 
 
 class TestEnvironmentValues:

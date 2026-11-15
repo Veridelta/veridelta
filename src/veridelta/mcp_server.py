@@ -112,20 +112,29 @@ this machine, so one the readers would open here is never let through
 unchecked."""
 
 _FILE_IO_PROPERTIES: Final = (
+    "DEFAULT_NETLOC",
+    "DEFAULT_SCHEME",
     "adls.",
     "auth.",
+    "buffer-size",
     "client.",
     "gcs.",
     "hdfs.",
+    "header.",
     "hf.",
     "oss.",
     "py-",
     "s3.",
     "token",
     "uri",
+    "warehouse",
 )
 """The prefixes of the properties PyIceberg builds a FileIO from: the code to
-load, and how it reaches each store and signs each request."""
+load, the store a location without a scheme lies in, and how it reaches each
+store and signs each request."""
+
+_URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
+"""The C0 controls and the space, which a URL parser strips from both ends of a URL."""
 
 _MCP_EXTRA = missing_extra("mcp", "veridelta mcp")
 
@@ -327,8 +336,14 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     working directory, as the command line does, so the check does too. The
     command runs the server in its first root, where the two agree, but a
     program that calls `serve()` from another folder gets the same check.
+
+    The readers disagree on a `..` after a link. The system follows the link
+    first, and PyArrow drops the link and the `..` without following it. So
+    the path must lie under a root read either way.
     """
-    return _under_roots(settings, Path(location).expanduser().resolve())
+    path = Path(location).expanduser()
+    folded = Path(os.path.abspath(path))
+    return all(_under_roots(settings, each.resolve()) for each in (path, folded))
 
 
 def _roots(settings: Settings) -> str:
@@ -367,7 +382,11 @@ def _local_paths(location: str) -> list[str]:
     The readers disagree on a file URI. Polars decodes `%` escapes and takes
     only a lower-case `file` scheme, so it opens `FILE://x` as a path relative
     to the working directory, as it does `S3://x`. PyIceberg takes the scheme in
-    any case, adds a host to the path, and decodes nothing. So a file URI
+    any case, adds a host to the path, and decodes nothing. Polars and
+    deltalake start the path at `/`, so they open `file:tmp/x` as `/tmp/x`,
+    where PyIceberg opens `tmp/x`. deltalake parses the URI as the URL
+    standard says, so it also reads a backslash as `/` and strips the spaces
+    at its ends. So a file URI
     yields each of these paths, and the caller holds every one to the roots. A
     remote location yields none.
     """
@@ -377,9 +396,11 @@ def _local_paths(location: str) -> list[str]:
         return []
     if parts.scheme != "file":
         return [location]
+    standard = url2pathname(urlsplit(location.replace("\\", "/").strip(_URL_SPACE)).path)
     paths = {
         url2pathname(parts.path),
         parts.netloc + url2pathname(parts.path.replace("%", "%25")),
+        standard if os.path.isabs(standard) else os.sep + standard,
     }
     if written != "file":
         paths.add(location)
