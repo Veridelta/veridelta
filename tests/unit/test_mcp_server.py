@@ -726,6 +726,39 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match="outside the folders"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path=escape), _snowflake())
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param("FILE://{root}/a.csv", id="file-scheme-in-capitals"),
+            pytest.param("S3://{root}/a.csv", id="remote-scheme-in-capitals"),
+            pytest.param("file://link{root}/a.csv", id="file-host"),
+            pytest.param("file://{root}/x%2Fy/../../a.csv", id="escaped-slash"),
+        ],
+    )
+    def test_it_checks_a_uri_where_each_reader_opens_it(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        uri: str,
+    ) -> None:
+        """Ensure a URI the readers open in different places is held to the roots in each.
+
+        Polars opens a scheme in capitals as a folder of that name, and decodes
+        `%` escapes. PyIceberg opens a host as a folder, and decodes none.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        monkeypatch.chdir(tmp_path)
+        for name in ("FILE:", "S3:", "link"):
+            (tmp_path / name).symlink_to(outside, target_is_directory=True)
+        side = SourceConfig(path=uri.format(root=tmp_path))
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
     def test_it_reads_a_home_path_as_the_readers_do(self, tmp_path: Path) -> None:
         """Ensure `~` is expanded first, since Polars expands it, so it cannot lead out."""
         with pytest.raises(ConfigError, match="outside the folders"):
@@ -847,12 +880,30 @@ class TestLakehouseFiles:
                 settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
             )
 
-    @pytest.mark.parametrize("by", ["metadata file", "table folder"])
-    def test_it_accepts_an_iceberg_table_under_a_root(self, tmp_path: Path, by: str) -> None:
-        """Ensure a table whose files all lie under a root passes, named either way."""
+    @pytest.mark.parametrize(
+        "hint",
+        [
+            pytest.param(None, id="metadata-file"),
+            pytest.param("{name}.metadata.json", id="hint-file-name"),
+            pytest.param("{name}", id="hint-name"),
+            pytest.param("7", id="hint-version"),
+        ],
+    )
+    def test_it_accepts_an_iceberg_table_under_a_root(
+        self, tmp_path: Path, hint: str | None
+    ) -> None:
+        """Ensure a table whose files all lie under a root passes, by its metadata file or folder.
+
+        A folder's version hint names the metadata file in full, by name, or by
+        version number, and the check finds it where PyIceberg does.
+        """
         metadata = Path(_iceberg(tmp_path))
-        (metadata.parent / "version-hint.text").write_text(metadata.name)
-        table_uri = str(metadata) if by == "metadata file" else str(metadata.parent.parent)
+        shutil.copy(metadata, metadata.parent / "v7.metadata.json")
+        table_uri = str(metadata)
+        if hint is not None:
+            name = metadata.name.removesuffix(".metadata.json")
+            (metadata.parent / "version-hint.text").write_text(hint.format(name=name))
+            table_uri = str(metadata.parent.parent)
 
         check_data_paths(
             Settings((tmp_path,)), SourceConfig(path="a.csv"), IcebergConfig(table_uri=table_uri)
@@ -871,7 +922,51 @@ class TestLakehouseFiles:
         ) as refused:
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
-        assert str(refused.value).startswith(f"The target {layer} '{outside}")
+        if layer == "metadata file":
+            # The version hint's text is a value from a file, so the message leaves it out.
+            assert str(refused.value).startswith("The target metadata file that '")
+            assert str(outside) not in str(refused.value)
+        else:
+            assert str(refused.value).startswith(f"The target {layer} '{outside}")
+
+    def test_it_refuses_a_table_in_a_catalog(self, tmp_path: Path) -> None:
+        """Ensure a name Polars reads as a catalog table is refused, though a folder has that name."""
+        metadata = Path(_iceberg(tmp_path))
+        (metadata.parent / "version-hint.text").write_text(metadata.name)
+        shutil.copytree(metadata.parent.parent, tmp_path / "lake.events")
+        target = IcebergConfig(table_uri="lake.events")
+
+        with pytest.raises(ConfigError, match="names a table in a PyIceberg catalog"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    def test_it_refuses_a_version_hint_linked_outside(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a version hint that links out of a root is refused before it is read."""
+        metadata = Path(_iceberg(tmp_path))
+        secret = tmp_path_factory.mktemp("outside") / "hint"
+        secret.write_text(_SECRET)
+        (metadata.parent / "version-hint.text").symlink_to(secret)
+        target = IcebergConfig(table_uri=str(metadata.parent.parent))
+
+        with pytest.raises(ConfigError, match=r"The target version hint .* is outside") as refused:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert _SECRET not in str(refused.value)
+
+    def test_it_leaves_the_version_hint_out_of_an_error(self, tmp_path: Path) -> None:
+        """Ensure the text of a version hint that names no metadata file is not quoted."""
+        metadata = Path(_iceberg(tmp_path))
+        (metadata.parent / "version-hint.text").write_text(_SECRET)
+        target = IcebergConfig(table_uri=str(metadata.parent.parent))
+
+        with pytest.raises(ConnectorError, match="names could not be read") as refused:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert _SECRET not in str(refused.value)
 
     def test_it_checks_the_snapshot_a_side_pins(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
@@ -931,7 +1026,7 @@ class TestLakehouseFiles:
         "target",
         [
             pytest.param(DeltaLakeConfig(table_uri="missing"), id="delta"),
-            pytest.param(IcebergConfig(table_uri="missing.metadata.json"), id="iceberg"),
+            pytest.param(IcebergConfig(table_uri="lake/missing.metadata.json"), id="iceberg"),
         ],
     )
     def test_it_refuses_a_table_it_cannot_list(
@@ -950,7 +1045,7 @@ class TestLakehouseFiles:
             pytest.param("deltalake", DeltaLakeConfig(table_uri="events"), "delta", id="delta"),
             pytest.param(
                 "pyiceberg.io",
-                IcebergConfig(table_uri="events.metadata.json"),
+                IcebergConfig(table_uri="lake/events.metadata.json"),
                 "iceberg",
                 id="iceberg",
             ),
