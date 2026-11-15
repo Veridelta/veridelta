@@ -1283,6 +1283,37 @@ class TestDiffSummaryCalculations:
         assert drift_line in summary.report_summary
         assert shift_line in summary.report_summary
 
+    @pytest.mark.parametrize(
+        ("name", "written"),
+        [
+            pytest.param(
+                "amt\n::error title=Forged::x \x1b[31mred",
+                "'amt\\n::error title=Forged::x \\x1b[31mred'",
+                id="line-break-and-escape",
+            ),
+            pytest.param("::error title=Forged::x", "'::error title=Forged::x'", id="workflow"),
+            pytest.param("amt ##[add-mask]x", "'amt ##\\x5badd-mask]x'", id="legacy-command"),
+        ],
+    )
+    def test_it_quotes_a_column_name_a_terminal_would_act_on(self, name: str, written: str) -> None:
+        """Ensure a header from the data cannot start a line, color it, or hold `##[`."""
+        summary = DiffSummary(
+            total_rows_source=2,
+            total_rows_target=2,
+            added_count=0,
+            removed_count=0,
+            changed_count=1,
+            is_match=False,
+            column_mismatches={name: 1},
+        )
+
+        report = summary.report_summary
+
+        assert f"- {written}: 1 mismatch\n" in report
+        assert "\x1b" not in report
+        assert "##[" not in report
+        assert not any(line.lstrip().startswith("::") for line in report.splitlines())
+
 
 class TestDiffResultRowAccess:
     """Validate row-level access to the discrepancies behind the summary."""

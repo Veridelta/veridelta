@@ -30,6 +30,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from veridelta._terminal import printable
 from veridelta.exceptions import ConfigError
 
 if TYPE_CHECKING:
@@ -956,7 +957,7 @@ class DiffSummary(BaseModel):
         ]
 
         col_report = "".join(
-            f"- {col}: {count:,} {_noun(count, 'mismatch', 'mismatches')}\n"
+            f"- {printable(col)}: {count:,} {_noun(count, 'mismatch', 'mismatches')}\n"
             for col, count in top_cols
         )
         return f"{base_report}\nTop Column-Level Drifts:\n---------------------------\n{col_report}"
