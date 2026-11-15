@@ -8,15 +8,18 @@ test sees what an agent's host sees: the tool list, the structured result, and
 whether a call failed.
 """
 
+import functools
 import json
 import logging
 import re
 import shutil
 import sys
+import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
@@ -29,7 +32,9 @@ from deltalake import DeltaTable
 from mcp import Client
 from mcp.types import CallToolResult, Tool
 from polars.exceptions import PanicException
+from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.io.pyarrow import PyArrowFileIO
 from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
@@ -769,7 +774,6 @@ class TestCheckDataPaths:
         [
             pytest.param(SourceConfig(path="s3://bucket/a.parquet"), id="object-store"),
             pytest.param(SourceConfig(path="https://example.com/a.csv"), id="https"),
-            pytest.param(DeltaLakeConfig(table_uri="s3://lake/events"), id="delta-remote"),
             pytest.param(DuckDBConfig(database="md:sales", table="t"), id="motherduck"),
             pytest.param(
                 DatabaseConfig(uri="postgresql://analyst@db.internal/sales", table="orders"),
@@ -788,13 +792,19 @@ _ROW = pl.DataFrame({"id": [1], "note": [_SECRET]})
 
 
 @contextmanager
-def _catalog(lake: Path) -> Iterator[SqlCatalog]:
+def _catalog(lake: Path, warehouse: str | None = None, **options: str) -> Iterator[SqlCatalog]:
     """Open an Iceberg catalog with one namespace, kept in a SQLite file under `lake`.
 
-    The catalog's SQLite connections close on exit, since the suite fails on
-    the warning Python gives for one left open.
+    Its tables go to `warehouse`, or else to `lake`. The catalog's SQLite
+    connections close on exit, since the suite fails on the warning Python
+    gives for one left open.
     """
-    catalog = SqlCatalog("veridelta", uri=f"sqlite:///{lake / 'catalog.db'}", warehouse=str(lake))
+    catalog = SqlCatalog(
+        "veridelta",
+        uri=f"sqlite:///{lake / 'catalog.db'}",
+        warehouse=warehouse or str(lake),
+        **options,
+    )
     try:
         catalog.create_namespace("lake")
         yield catalog
@@ -835,6 +845,71 @@ def _one_layer_outside(root: Path, outside: Path, layer: str) -> str:
     copy = root / "v1.metadata.json"
     copy.write_text(json.dumps(metadata))
     return str(copy)
+
+
+class _Store(SimpleHTTPRequestHandler):
+    """Answer each read of an S3 object from a local folder."""
+
+    def log_message(self, format: str, *args: object) -> None:
+        """Keep request lines out of the test output."""
+
+
+@contextmanager
+def _object_store(folder: Path) -> Iterator[dict[str, str]]:
+    """Serve `folder` as an S3 store on a free local port until the block ends.
+
+    It stands in for an object store such as one moto runs: PyArrow reads each
+    object over S3 from it, the bucket being the folder's first level.
+
+    Yields:
+        dict[str, str]: The `storage_options` that reach it.
+    """
+    server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Store, directory=str(folder)))
+    thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
+    thread.start()
+    try:
+        yield {
+            "s3.endpoint": f"http://127.0.0.1:{server.server_port}",
+            "s3.access-key-id": "veridelta",
+            "s3.secret-access-key": "veridelta",
+            "s3.region": "us-east-1",
+        }
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def _remote_iceberg(
+    lake: Path,
+    store: Path,
+    options: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    properties: dict[str, str] | None = None,
+) -> str:
+    """Write an Iceberg table that holds `_ROW` to `s3://bucket/wh` in the store at `store`.
+
+    PyArrow writes an S3 object as a multipart upload, which the stand-in
+    store does not take, so the writes go straight to its folder. Every read
+    goes over S3.
+
+    Returns:
+        str: The table's metadata file, as an `s3://` URI.
+    """
+    for folder in ("metadata", "data"):
+        (store / "bucket" / "wh" / "lake" / "events" / folder).mkdir(parents=True)
+    with monkeypatch.context() as writes:
+        writes.setattr(
+            PyArrowFileIO,
+            "_initialize_s3_fs",
+            lambda _io, _netloc: SubTreeFileSystem(str(store), LocalFileSystem()),
+        )
+        with _catalog(lake, "s3://bucket/wh", **options) as catalog:
+            table = catalog.create_table(
+                "lake.events", schema=_ROW.to_arrow().schema, properties=properties or {}
+            )
+            table.append(_ROW.to_arrow())
+            return str(catalog.load_table("lake.events").metadata_location)
 
 
 class TestLakehouseFiles:
@@ -879,6 +954,174 @@ class TestLakehouseFiles:
             check_data_paths(
                 settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
             )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    @pytest.mark.parametrize(("link", "setting"), [("commit", "log file"), ("log", "log")])
+    def test_it_refuses_a_delta_log_linked_outside(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, link: str, setting: str
+    ) -> None:
+        """Ensure a commit, or the whole log, that links out of a root is refused before it is read.
+
+        A commit read through a link would quote its target's text in an
+        error, or name data files the scan then reports missing.
+        """
+        table = tmp_path / "events"
+        _ROW.write_delta(table)
+        outside = tmp_path_factory.mktemp("outside")
+        log = table / "_delta_log"
+        if link == "log":
+            log.rename(outside / "_delta_log")
+            log.symlink_to(outside / "_delta_log", target_is_directory=True)
+        else:
+            secret = outside / "commit.json"
+            secret.write_text(_SECRET)
+            (log / "00000000000000000001.json").symlink_to(secret)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConfigError, match=f"The target {setting} '.*' is outside") as refused:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert _SECRET not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        ("uri", "refused"),
+        [
+            pytest.param("s3://lake/events/part-0.parquet", False, id="remote-file"),
+            pytest.param("{outside}/part-0.parquet", True, id="local-file"),
+        ],
+    )
+    def test_it_lists_a_remote_delta_table(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        uri: str,
+        refused: bool,
+    ) -> None:
+        """Ensure a table in an object store has each data file on this machine held to the roots.
+
+        The store is mocked: the log names the files that the test gives it.
+        """
+        outside = tmp_path_factory.mktemp("outside").as_uri()
+        table = mocker.patch("deltalake.DeltaTable")
+        table.return_value.file_uris.return_value = [uri.format(outside=outside)]
+        target = DeltaLakeConfig(table_uri="s3://lake/events", storage_options={"region": "eu"})
+
+        if refused:
+            with pytest.raises(ConfigError, match=r"The target data file .* is outside"):
+                check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        else:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        table.assert_called_once_with(
+            "s3://lake/events", version=None, storage_options={"region": "eu"}
+        )
+
+    def test_it_accepts_a_remote_iceberg_table(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a table whose files all lie in an object store passes."""
+        store = tmp_path_factory.mktemp("store")
+        with _object_store(store) as options:
+            metadata = _remote_iceberg(tmp_path, store, options, monkeypatch)
+            target = IcebergConfig(table_uri=metadata, storage_options=options)
+
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_returns_no_row_of_a_local_file_a_remote_table_names(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a table in an object store cannot read a file on this machine outside the roots.
+
+        Its metadata and manifests lie in the store, and a `file://` URI names
+        its data file, outside the roots. A tool refuses it before the scan
+        opens a file.
+        """
+        store, outside = tmp_path_factory.mktemp("store"), tmp_path_factory.mktemp("outside")
+        monkeypatch.chdir(tmp_path)
+        _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
+        with _object_store(store) as options:
+            metadata = _remote_iceberg(
+                tmp_path, store, options, monkeypatch, {"write.data.path": outside.as_uri()}
+            )
+            _write(
+                tmp_path,
+                "source:\n  path: a.parquet\n  format: parquet\n"
+                f"target:\n  type: iceberg\n  table_uri: '{metadata}'\n  storage_options:\n"
+                + "".join(f"    {key}: '{value}'\n" for key, value in options.items())
+                + "primary_keys: [id]\n",
+            )
+
+            with pytest.raises(ConfigError, match="The target data file") as refused:
+                read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
+
+        assert _SECRET not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        ("properties", "options", "refused"),
+        [
+            pytest.param({"s3.endpoint": "http://elsewhere"}, {}, "s3.endpoint", id="store"),
+            pytest.param(
+                {"py-io-impl": "pyiceberg.io.pyarrow.PyArrowFileIO"}, {}, "py-io-impl", id="code"
+            ),
+            pytest.param(
+                {"s3.endpoint": "http://elsewhere"},
+                {"s3.endpoint": "http://elsewhere"},
+                None,
+                id="same-as-storage-options",
+            ),
+            pytest.param({"write.target-file-size-bytes": "1024"}, {}, None, id="table-property"),
+        ],
+    )
+    def test_it_refuses_metadata_that_says_how_files_are_read(
+        self,
+        tmp_path: Path,
+        properties: dict[str, str],
+        options: dict[str, str],
+        refused: str | None,
+    ) -> None:
+        """Ensure a table cannot point its scan at other manifests than the listing reads.
+
+        A scan through PyIceberg reads the manifests with the metadata's own
+        properties merged over `storage_options`, and the listing does not.
+        """
+        target = IcebergConfig(table_uri=_iceberg(tmp_path, properties), storage_options=options)
+
+        if refused is None:
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        else:
+            with pytest.raises(ConfigError, match=rf"sets '{refused}', which says how"):
+                check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_refuses_storage_options_that_choose_the_code(self, tmp_path: Path) -> None:
+        """Ensure a `py-` key in `storage_options` is refused before any file is read."""
+        target = IcebergConfig(
+            table_uri="lake/events.metadata.json",
+            storage_options={"s3.region": "eu", "py-io-impl": "pyiceberg.io.fsspec.FsspecFileIO"},
+        )
+
+        with pytest.raises(ConfigError, match="storage_options set 'py-io-impl'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_checks_each_path_before_it_lists_a_table(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure no table is listed, which can reach a store, while a side names a path outside."""
+        listing = mocker.patch.object(mcp_server, "_table_files")
+        source = IcebergConfig(table_uri="lake/events.metadata.json")
+        outside = SourceConfig(path=str(tmp_path.parent / "a.csv"))
+
+        with pytest.raises(ConfigError, match="The target path"):
+            check_data_paths(Settings((tmp_path,)), source, outside)
+
+        listing.assert_not_called()
 
     @pytest.mark.parametrize(
         "hint",
@@ -1007,7 +1250,7 @@ class TestLakehouseFiles:
         check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     def test_it_leaves_a_remote_file_to_the_reader(self, tmp_path: Path) -> None:
-        """Ensure a file on another machine is not held to the roots, as a remote table is not."""
+        """Ensure a file on another machine is not held to the roots."""
         metadata = json.loads(Path(_iceberg(tmp_path)).read_text())
         for snapshot in metadata["snapshots"]:
             snapshot["manifest-list"] = "https://example.invalid/snap.avro"
