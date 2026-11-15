@@ -43,7 +43,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import SplitResult, parse_qsl, urlsplit
+from urllib.parse import SplitResult, parse_qsl, unquote, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -54,7 +54,7 @@ from veridelta import __version__
 from veridelta._checks import error_from_exception, unset_variable_findings
 from veridelta.config import load_config, referenced_variables
 from veridelta.connectors.base import mask_secrets, shown_location, without_location
-from veridelta.connectors.database import sqlite_path
+from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.connectors.lakehouse import checked_file_io, checking_iceberg_files
 from veridelta.engine import (
@@ -273,6 +273,13 @@ _OPTION_VALUE: Final = re.compile(r"[A-Za-z0-9_-]*")
 _HOST_PARAMETERS: Final = frozenset({"host", "hostaddr", "socket"})
 """Query parameters of a database URI that name the server to connect to, which a
 driver reads in place of, or beside, the URI's host."""
+
+_FILE_PARAMETERS: Final = frozenset(
+    {"sslcert", "sslkey", "sslrootcert", "ssl-ca", "trust_server_certificate_ca"}
+)
+"""Query parameters of a database URI that name a file on this machine, which
+ConnectorX opens for TLS: Postgres's certificate, key, and certificate
+authority, MySQL's certificate authority, and SQL Server's."""
 
 _HOST: Final = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*|\[[0-9a-f:.]+\]")
 """An allowed host: DNS labels, an IPv4 address, or an IPv6 address in brackets.
@@ -972,13 +979,60 @@ def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:
             yield setting, None
 
 
-def _database_hosts(uri: str) -> list[tuple[str, str]]:
+def _refuse_database_uri(side: str, config: DatabaseConfig) -> None:
+    """Refuse a database `uri` whose reader opens a file here, or signs in where no check sees.
+
+    ConnectorX's BigQuery reader opens the key file the path names, and the
+    key file names the host its sign-in goes to. Its Redshift IAM reader signs
+    in through AWS at hosts its options choose. Postgres, MySQL, and SQL
+    Server open the TLS files `_FILE_PARAMETERS` names. Oracle looks an
+    `alias` up in a file on this machine, and decodes the path into its
+    connect string, where a decoded `?` adds options that can name a proxy.
+    A parameter is matched in ASCII only, as the readers match it.
+    """
+    parts = connectorx_url(config.uri)
+    if parts.scheme == "bigquery":
+        raise ConfigError(
+            f"The {side} uri reads BigQuery through ConnectorX, which signs in with a key file "
+            "on this machine, and the key file names the host the sign-in goes to, so a tool "
+            "does not read it. Use a source of type bigquery instead, which signs in with "
+            "the server's own credentials."
+        )
+    if parts.scheme == "redshift-iam":
+        raise ConfigError(
+            f"The {side} uri signs in to Redshift through AWS, at hosts its options choose, "
+            "so a tool does not read it. Write it as redshift:// with a user and a password."
+        )
+    names = {
+        key.lower() for key, _ in parse_qsl(parts.query, keep_blank_values=True) if key.isascii()
+    }
+    files = sorted(names & _FILE_PARAMETERS)
+    if files:
+        raise ConfigError(
+            f"The {side} uri parameter '{files[0]}' names a file on this machine, which the "
+            "driver opens and this server does not check, so a tool does not pass it on. "
+            "Leave it out."
+        )
+    if parts.scheme == "oracle" and ("alias" in names or "%" in parts.path):
+        raise ConfigError(
+            f"The {side} uri has Oracle find its host in a TNS alias or in a path with a '%', "
+            "so the server cannot check which host it connects to. Write the host in the uri, "
+            "and the service name without '%'."
+        )
+
+
+def _database_hosts(config: DatabaseConfig) -> list[tuple[str, str]]:
     """Name each server a database URI connects to, from its host and its query alike.
 
     A URI that does not match `_DATABASE_URI` comes back whole, which no allowed
     host equals. A host parameter can list several servers, separated by
-    commas, as a URI's authority can.
+    commas, as a URI's authority can. ConnectorX's Trino reader decodes the
+    whole URI, with the `password` field in it, before it finds the host, so
+    such a URI is checked decoded.
     """
+    uri = config.uri
+    if connectorx_url(uri).scheme == "trino":
+        uri = unquote(connection_uri(config))
     parts = urlsplit(uri)
     if parts.scheme.startswith("sqlite"):
         return []
@@ -1047,7 +1101,7 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     if isinstance(config, DuckDBConfig):
         return _duckdb_hosts(config)
     if isinstance(config, DatabaseConfig):
-        return [*_database_hosts(config.uri)]
+        return [*_database_hosts(config)]
     if isinstance(config, SnowflakeConfig):
         # The driver ends the host in `.cn` when the account's second label starts with `cn-`.
         labels = config.account.split(".")
@@ -1069,6 +1123,8 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
+        if isinstance(config, DatabaseConfig):
+            _refuse_database_uri(side, config)
         for setting, host in _destinations(config):
             if host is None:
                 raise ConfigError(
