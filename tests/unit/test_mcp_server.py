@@ -2642,7 +2642,7 @@ class TestLakehouseFiles:
         check_data_paths(
             settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events", version=0)
         )
-        with pytest.raises(ConfigError, match=r"The target data file .* is outside the folders"):
+        with pytest.raises(ConfigError, match=r"The target data file is outside the folders"):
             check_data_paths(
                 settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
             )
@@ -2766,7 +2766,7 @@ class TestLakehouseFiles:
         _with_vectors(tmp_path / "events", {"storageType": "p", "pathOrInlineDv": outside})
         target = DeltaLakeConfig(table_uri="events")
 
-        with pytest.raises(ConfigError, match=r"The target deletion vector '.*' is outside"):
+        with pytest.raises(ConfigError, match=r"The target deletion vector is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.skipif(
@@ -2784,7 +2784,7 @@ class TestLakehouseFiles:
         (table / f"deletion_vector_{name}.bin").symlink_to(secret)
         target = DeltaLakeConfig(table_uri="events")
 
-        with pytest.raises(ConfigError, match=r"The target deletion vector '.*' is outside"):
+        with pytest.raises(ConfigError, match=r"The target deletion vector is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.parametrize(
@@ -3369,21 +3369,31 @@ class TestLakehouseFiles:
     def test_it_refuses_an_iceberg_file_outside_the_roots(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, layer: str
     ) -> None:
-        """Ensure each file the scan reads is held to the roots, before it is opened."""
+        """Ensure each file the scan reads is held to the roots, before it is opened.
+
+        A file the metadata names is a value from the table, as a partition's
+        folder is, so the message quotes it only on a server that allows row
+        values.
+        """
         outside = tmp_path_factory.mktemp("outside")
         target = IcebergConfig(table_uri=_one_layer_outside(tmp_path, outside, layer))
+        refusals: list[str] = []
 
-        with pytest.raises(
-            ConfigError, match="outside the folders this server reads from"
-        ) as refused:
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        for allowed in (False, True):
+            with pytest.raises(
+                ConfigError, match="outside the folders this server reads from"
+            ) as refused:
+                check_data_paths(
+                    Settings((tmp_path,), allow_row_values=allowed),
+                    SourceConfig(path="a.csv"),
+                    target,
+                )
+            refusals.append(str(refused.value))
 
-        if layer == "metadata file":
-            # The version hint's text is a value from a file, so the message leaves it out.
-            assert str(refused.value).startswith("The target metadata file that '")
-            assert str(outside) not in str(refused.value)
-        else:
-            assert str(refused.value).startswith(f"The target {layer} '{outside}")
+        setting = "metadata file that '" if layer == "metadata file" else f"{layer} "
+        assert refusals[0].startswith(f"The target {setting}")
+        assert str(outside) not in refusals[0]
+        assert str(outside) in refusals[1]
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
@@ -3428,7 +3438,7 @@ class TestLakehouseFiles:
             assert first is not None
             table.add_files([str(secret)])
             metadata = catalog.load_table("lake.events").metadata_location
-        settings = Settings((tmp_path,))
+        settings = Settings((tmp_path,), allow_row_values=True)
 
         pinned = IcebergConfig(table_uri=metadata, snapshot_id=first.snapshot_id)
         check_data_paths(settings, SourceConfig(path="a.csv"), pinned)
@@ -3707,7 +3717,9 @@ class TestLakehouseFiles:
 
         with pytest.raises(ConfigError, match=r"The target data file '.*/link/\.\./\.\./"):
             check_data_paths(
-                Settings((tmp_path,)), SourceConfig(path="a.csv"), IcebergConfig(table_uri=metadata)
+                Settings((tmp_path,), allow_row_values=True),
+                SourceConfig(path="a.csv"),
+                IcebergConfig(table_uri=metadata),
             )
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The locations name POSIX paths.")
@@ -5668,6 +5680,75 @@ class TestServer:
         assert _CANARY not in _text(default)
         assert _text(allowed).endswith(f"ConnectorError: Warehouse statement failed: {_CANARY}")
         assert _text(own).endswith("ConnectorError: Pushdown needs SQL Server 2022.")
+
+    @pytest.mark.parametrize("kind", ["iceberg", "delta"])
+    def test_it_leaves_out_a_lakehouse_reader_message_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    ) -> None:
+        """Ensure a reader's message about a lakehouse table's files stays out by default.
+
+        PyIceberg quotes a file named as the table's metadata as it refuses
+        it, and deltalake quotes a value in the log it cannot parse, so either
+        message can hold a cell of a file named in the table's place.
+        """
+        monkeypatch.chdir(tmp_path)
+        if kind == "iceberg":
+            (tmp_path / "rows.metadata.json").write_text(
+                json.dumps([{"id": 1, "ssn": _CANARY}]), encoding="utf-8"
+            )
+            table_uri = "./rows.metadata.json"
+        else:
+            log = tmp_path / "events" / "_delta_log"
+            log.mkdir(parents=True)
+            (log / "00000000000000000000.json").write_text(
+                json.dumps({"protocol": {"minReaderVersion": _CANARY, "minWriterVersion": 2}})
+                + "\n",
+                encoding="utf-8",
+            )
+            table_uri = "events"
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: {kind}\n  table_uri: '{table_uri}'\nprimary_keys: [id]\n",
+        )
+
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+
+        checked = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", "schemas": True})
+
+        assert default.is_error is True
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert allowed.is_error is True
+        assert "could not be listed" in _text(allowed)
+        assert _CANARY in _text(allowed)
+        assert "ConnectorError: its message is left out" in _text(checked)
+        assert _CANARY not in _text(checked)
+
+    def test_it_returns_a_lakehouse_refusal_in_its_own_words_on_any_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a table refused for what its log records, in Veridelta's words, keeps the message."""
+        monkeypatch.chdir(tmp_path)
+        _with_a_sidecar(tmp_path / "events", "sidecar.parquet", "classic")
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert result.is_error is True
+        assert "could not be listed" in _text(result)
+        assert "checkpoint sidecar" in _text(result)
 
     def test_it_never_returns_a_secret_from_the_configuration(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
