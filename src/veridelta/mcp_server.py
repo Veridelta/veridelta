@@ -690,14 +690,24 @@ def _local_paths(location: str) -> list[str]:
     return [*dict.fromkeys(paths), location]
 
 
-def _wal_beside(path: str) -> str:
-    """Add `.wal` to a database's path as DuckDB's `GetWALPath` does.
+# Each log DuckDB names beside a database file, by the setting a refusal names.
+# A read-only open replays `.wal`, and `.wal.checkpoint` after a crash during a
+# checkpoint. Only a read-write open writes `.wal.recovery`, but it is checked too.
+_DUCKDB_LOGS = (
+    ("database's WAL", ".wal"),
+    ("database's checkpoint WAL", ".wal.checkpoint"),
+    ("database's recovery WAL", ".wal.recovery"),
+)
+
+
+def _wal_beside(path: str, suffix: str = ".wal") -> str:
+    """Add a log's suffix to a database's path as DuckDB's `AddSuffixToPath` does.
 
     It goes before the first `?` in the path rather than at the end, so
     `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
     """
     mark = path.find("?")
-    return f"{path}.wal" if mark < 0 else f"{path[:mark]}.wal{path[mark:]}"
+    return f"{path}{suffix}" if mark < 0 else f"{path[:mark]}{suffix}{path[mark:]}"
 
 
 def _resolved_database(side: str, database: str) -> str:
@@ -722,7 +732,7 @@ def _resolved_database(side: str, database: str) -> str:
     except OSError as exc:
         raise ConfigError(
             f"The {side} database '{database}' does not resolve to an existing file, so "
-            "this server cannot tell which file and write-ahead log DuckDB would open. "
+            "this server cannot tell which file and write-ahead logs DuckDB would open. "
             "Write the path of an existing DuckDB file."
         ) from exc
 
@@ -900,16 +910,18 @@ def _refuse_outside(
 def _as_checked(settings: Settings, side: str, config: SourceRef) -> SourceRef:
     """Return a side as a tool opens it, with a DuckDB file named by the path checked.
 
-    DuckDB replays the write-ahead log beside the file as it opens it, before
-    the sandbox applies, so the log is held to the roots as the file is. A
+    DuckDB replays the write-ahead logs beside the file as it opens it, before
+    the sandbox applies, so each log is held to the roots as the file is. A
     resolved path that names another machine, as a Windows long path does,
     is refused too.
     """
     if not isinstance(config, DuckDBConfig) or config.is_motherduck:
         return config
     database = _resolved_database(side, config.database)
-    for setting, path in (("database", database), ("database's WAL", _wal_beside(database))):
-        _refuse_outside(settings, side, setting, path, path)
+    _refuse_outside(settings, side, "database", database, database)
+    for setting, suffix in _DUCKDB_LOGS:
+        log = _wal_beside(database, suffix)
+        _refuse_outside(settings, side, setting, log, log)
     return config.model_copy(update={"database": database})
 
 
@@ -929,7 +941,7 @@ def check_data_paths(
     pattern at all, since Polars expands one with another matcher. A DuckDB
     file's path must resolve to an existing file, and the side returned names
     the file by that resolved path, so DuckDB opens the file checked and the
-    log beside it. A Delta Lake or Iceberg table, wherever it lies, has
+    logs beside it. A Delta Lake or Iceberg table, wherever it lies, has
     every file on this machine that its scan reads checked too, since its log
     or metadata can name a file anywhere. Data on another machine that a side names, such as an
     object store, a database server, or a warehouse, is held to the hosts the

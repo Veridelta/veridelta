@@ -110,6 +110,13 @@ _SECRET = "hunter2-do-not-print"
 _CANARY = "CANARY-123-45-6789"
 """A cell value that a server started without `--allow-row-values` never returns."""
 
+_DUCKDB_LOGS = [
+    (".wal", "WAL"),
+    (".wal.checkpoint", "checkpoint WAL"),
+    (".wal.recovery", "recovery WAL"),
+]
+"""Each log DuckDB names beside a database file, with the name a refusal gives it."""
+
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
 """The CSV files the CI jobs and the recording compare."""
 
@@ -967,6 +974,7 @@ class TestCheckDataPaths:
         ("database", "file"),
         [("{root}/x.duckdb", "x.duckdb"), ("~", "home")],
     )
+    @pytest.mark.parametrize(("suffix", "log"), _DUCKDB_LOGS)
     def test_it_refuses_a_duckdb_write_ahead_log_linked_outside(
         self,
         tmp_path: Path,
@@ -974,41 +982,47 @@ class TestCheckDataPaths:
         monkeypatch: pytest.MonkeyPatch,
         database: str,
         file: str,
+        suffix: str,
+        log: str,
     ) -> None:
-        """Ensure the WAL beside a DuckDB file is held to the roots, since DuckDB replays it.
+        """Ensure each log beside a DuckDB file is held to the roots, since DuckDB replays it.
 
         DuckDB opens the path it is handed with `.wal` added as it opens the
         file, before the sandbox applies, and follows a link there to another
-        database's log. Python would read `~.wal` as the home of a user named
-        `.wal`, where DuckDB adds `.wal` to the home folder.
+        database's log. When that log ends in a checkpoint the file holds, as
+        a crash during a checkpoint leaves it, a read-only open replays
+        `.wal.checkpoint` instead. Python would read `~.wal` as the home of a
+        user named `.wal`, where DuckDB adds `.wal` to the home folder.
         """
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
         wal.write_bytes(b"")
         (tmp_path / file).write_bytes(b"")
-        (tmp_path / f"{file}.wal").symlink_to(wal)
+        (tmp_path / f"{file}{suffix}").symlink_to(wal)
         target = DuckDBConfig(database=database.format(root=tmp_path), table="t")
 
-        with pytest.raises(ConfigError, match=r"The target database's WAL '.+' is outside"):
+        with pytest.raises(ConfigError, match=f"The target database's {log} '.+' is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
+    @pytest.mark.parametrize(("suffix", "log"), _DUCKDB_LOGS)
     def test_it_refuses_a_duckdb_write_ahead_log_that_a_question_mark_moves_outside(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, suffix: str, log: str
     ) -> None:
-        """Ensure the WAL is checked where DuckDB puts it, before the first `?` of the path.
+        """Ensure each log is checked where DuckDB puts it, before the first `?` of the path.
 
-        For `L?/x.duckdb`, DuckDB replays `L.wal?/x.duckdb`, in another
-        folder, which here is a link out of the root. `L?/x.duckdb.wal` is
-        under the root, so a check of that path alone would pass.
+        For `L?/x.duckdb`, DuckDB replays `L.wal?/x.duckdb`, or
+        `L.wal.checkpoint?/x.duckdb`, in another folder, which here is a link
+        out of the root. `L?/x.duckdb.wal` is under the root, so a check of
+        that path alone would pass.
         """
         (tmp_path / "L?").mkdir()
         (tmp_path / "L?" / "x.duckdb").write_bytes(b"")
-        _link_folder(tmp_path / "L.wal?", tmp_path_factory.mktemp("outside"))
+        _link_folder(tmp_path / f"L{suffix}?", tmp_path_factory.mktemp("outside"))
         target = DuckDBConfig(database="L?/x.duckdb", table="t")
 
-        wal = tmp_path / "L.wal?" / "x.duckdb"
-        with pytest.raises(ConfigError, match=re.escape(f"The target database's WAL '{wal}' is")):
+        wal = tmp_path / f"L{suffix}?" / "x.duckdb"
+        with pytest.raises(ConfigError, match=re.escape(f"The target database's {log} '{wal}' is")):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
