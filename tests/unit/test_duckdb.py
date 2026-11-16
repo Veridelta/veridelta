@@ -124,7 +124,10 @@ class TestDuckDBConnector:
         held = [call.execute("SET TimeZone = 'UTC'")]
         # Each folder ends in the platform's separator, so `/data` admits no `/data-old`.
         folder = f"{Path('/data')}{os.sep}"
-        held += [call.execute(statement) for statement in compile_duckdb_sandbox([folder])]
+        # On Windows the sandbox also turns off DuckDB's local file system.
+        other_files = duckdb_connector._FOLDERS_HOLD
+        sandbox = compile_duckdb_sandbox([folder], other_files=other_files)
+        held += [call.execute(statement) for statement in sandbox]
         assert connection.mock_calls[: len(held) + 1] == [
             *held,
             call.sql('SELECT * FROM "main"."orders"'),
