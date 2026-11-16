@@ -61,7 +61,12 @@ from veridelta.connectors.base import (
 )
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import sandboxed
-from veridelta.connectors.lakehouse import checked_file_io, checking_iceberg_files
+from veridelta.connectors.lakehouse import (
+    checked_file_io,
+    checking_table_files,
+    deletion_vector_files,
+    delta_log_vectors,
+)
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
     DEFAULT_MIN_CONFIDENCE,
@@ -89,6 +94,7 @@ from veridelta.models import (
 from veridelta.outputs import ValidationReport, validation_report
 
 if TYPE_CHECKING:
+    from deltalake import DeltaTable
     from mcp.server import MCPServer
 
 INSTRUCTIONS: Final = (
@@ -122,8 +128,14 @@ must be allowed, even one no reader is known to take: a reader that knows more
 schemes than this module, such as `hdfs`, `sftp`, or `s3n`, connects to the host
 all the same."""
 
+_TWICE_DECODED: Final = frozenset({"fs", "opendal+fs"})
+"""URI schemes whose path deltalake decodes twice before it reads a table's log."""
+
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
+
+_URI_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
+"""The start of a URI: a scheme of two or more characters, since one letter is a Windows drive."""
 
 _HOST_OPTIONS: Final = frozenset(
     {
@@ -233,6 +245,17 @@ _URL: Final = re.compile(
 The authority runs to the first `/`, where every reader ends it. No `@`, `\\`, or
 control character may follow, since a reader that looks for a login or a
 separator further on would find a host there."""
+
+_NAMED_FILE: Final = re.compile(
+    rf"[A-Za-z][A-Za-z0-9+.-]*:(?://([^/]*)(?:/[^\\\x00-\x1f\x7f]*)?|(?!//){_PAST_AUTHORITY})"
+)
+"""The URI of a file a table's log or metadata names, its authority, if any, in the group.
+
+It is `_URL`'s shape, but with an `@` allowed after the authority, since a
+Delta Lake log can name a file in a partition such as `owner=ann@x.com`. Only
+the authority chooses the host for the readers of such a file: deltalake's
+store, fixed to the table's host, and PyIceberg's FileIO, which reads the
+authority up to the first `/`."""
 
 _DATABASE_URI: Final = re.compile(
     r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^@/?#\\\x00-\x20\x7f]*@)?([^@/?#\\\x00-\x20\x7f]*)"
@@ -556,8 +579,26 @@ def _under_both_readings(settings: Settings, text: str) -> bool:
         return False
     path = Path(text)
     folded = Path(os.path.abspath(path))
+    return all(_under_roots(settings, Path(_real_path(str(each)))) for each in (path, folded))
+
+
+def _real_path(text: str) -> str:
+    r"""Resolve a path as the system does, following its links.
+
+    Windows' `realpath` adds back each name past the part it found with
+    `join`, which reads a name such as `C:` as a drive and drops the folders
+    before it. A URI read as a path holds one, as in `file:\C:\x`, so the
+    path would read as relative to the drive. Where the result has no root,
+    the path is resolved up to its last name, and the name is added with a
+    separator. A result that still has no root comes back as `realpath` gave it.
+    """
     # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
-    return all(_under_roots(settings, Path(os.path.realpath(each))) for each in (path, folded))
+    resolved = os.path.realpath(text)
+    head, name = os.path.split(os.path.normpath(text))
+    if os.path.isabs(resolved) or not name:
+        return resolved
+    parent = _real_path(head)
+    return f"{parent.rstrip(os.sep)}{os.sep}{name}" if os.path.isabs(parent) else resolved
 
 
 def _opened_inside(settings: Settings, location: str) -> bool:
@@ -615,22 +656,28 @@ def _roots(settings: Settings) -> str:
     return ", ".join(str(root) for root in settings.roots)
 
 
-def _refuse_opened(settings: Settings, path: str) -> None:
-    """Refuse a file on this machine that an Iceberg scan is about to open, outside the roots.
+def _refuse_opened(settings: Settings, location: str, remote: bool) -> None:
+    """Refuse a file that a lakehouse scan is about to open, outside the roots or on a host not allowed.
 
-    The path is the one PyArrow opens: relative to the working directory, and
-    with no `~` expanded. PyArrow drops a folder and the `..` after it before
-    it follows a link, so the path must lie under a root read either way. The
-    message leaves the path out, since the table's files named it.
+    A path on this machine is the one PyArrow opens: relative to the working
+    directory, and with no `~` expanded. PyArrow drops a folder and the `..`
+    after it before it follows a link, so the path must lie under a root read
+    either way. A file on another machine is held to the allowed hosts, as a
+    configuration's location is. The message leaves the file out, since the
+    table's files named it.
 
     Raises:
-        ConfigError: If the path lies outside every root.
+        ConfigError: If the path lies outside every root, or the file on a host
+            the server does not allow.
     """
-    if not _under_both_readings(settings, path):
+    if remote:
+        for _, host in _location_hosts("file", location, _NAMED_FILE):
+            _refuse_host(settings, "A file that a lakehouse scan was about to open", host)
+    elif not _under_both_readings(settings, location):
         raise ConfigError(
-            "An Iceberg scan was about to open a file outside the folders this server reads "
-            f"from: {_roots(settings)}, so it was stopped. A tool reads data on this machine "
-            "only from under them."
+            "A Delta Lake or Iceberg scan was about to open a file outside the folders this "
+            f"server reads from: {_roots(settings)}, so it was stopped. A tool reads data on "
+            "this machine only from under them."
         )
 
 
@@ -638,13 +685,18 @@ def _refuse_opened(settings: Settings, path: str) -> None:
 def _reading(settings: Settings) -> Generator[None]:
     """Hold what a tool's sides read to the roots, while they read.
 
-    A DuckDB file's connection reads other files only from under the roots,
-    and an Iceberg scan opens a file on this machine only from under them,
-    each checked just before it is opened.
+    A DuckDB file's connection reads other files only from under the roots.
+    A Delta Lake or Iceberg scan opens a file on this machine only from under
+    them, and one elsewhere only on an allowed host, each checked just before
+    it is opened. A Delta Lake scan lists and checks its table's files again
+    as it starts, and reads the version it checked.
     """
     with (
         sandboxed(settings.roots),
-        checking_iceberg_files(functools.partial(_refuse_opened, settings)),
+        checking_table_files(
+            functools.partial(_refuse_opened, settings),
+            functools.partial(_checked_delta_table, settings),
+        ),
     ):
         yield
 
@@ -761,6 +813,49 @@ def _local_paths(location: str, named: str) -> list[str]:
     return [*dict.fromkeys(paths), location]
 
 
+def _url_text(location: str) -> str:
+    """Return a URI as a URL parser reads it: with no space at its ends, and no tab or line break."""
+    text = location.strip(_URL_SPACE)
+    for character in "\t\n\r":
+        text = text.replace(character, "")
+    return text
+
+
+def _holds_dot_segment(location: str) -> bool:
+    """Tell whether a URI holds a `.` or `..` segment, in any spelling a URL parser removes.
+
+    deltalake parses a table URI as the URL standard says. That drops the tabs
+    and line breaks anywhere in it, reads `%2e` as a dot in a segment, and
+    removes each `.` and `..` segment by its text, before any folder is read.
+    This server reads the path a URI names as the system does, which follows
+    a link before `..` leaves it, and finds no folder under one that does not
+    exist. So the two could read different logs. This decodes every `%`
+    escape, as often as one remains, and splits at each character that can
+    end a segment, so it finds more segments than a parser removes, never
+    fewer. A path with no scheme is not a URI, and deltalake opens it as the
+    system does.
+    """
+    text = _url_text(location)
+    if _URI_SCHEME.match(text) is None:
+        return False
+    while (decoded := unquote(text)) != text:
+        text = decoded
+    return not {".", ".."}.isdisjoint(re.split(r"[/\\?#]", text))
+
+
+def _decoded_twice(location: str) -> bool:
+    """Tell whether a table URI holds a `%` escape that deltalake decodes twice.
+
+    deltalake decodes the path of an `fs:` or `opendal+fs:` URI twice before
+    it reads the log, so it reads `%2565` as `e`. This server and the files
+    the table lists decode it once, so the log the listing reads and the one
+    deltalake reads could differ. Any `%` in such a URI counts.
+    """
+    text = _url_text(location)
+    scheme = _URI_SCHEME.match(text)
+    return scheme is not None and scheme.group()[:-1].lower() in _TWICE_DECODED and "%" in text
+
+
 def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
     """Name each path on this machine a side could read: its setting, location, and path."""
     named: list[tuple[str, str]] = []
@@ -781,32 +876,58 @@ def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
     ]
 
 
-def _delta_files(side: str, config: DeltaLakeConfig) -> Iterator[tuple[str, str, bool]]:
+def _delta_files(
+    side: str, config: DeltaLakeConfig
+) -> Generator[tuple[str, str, bool], None, "DeltaTable"]:
     """Name each file a scan of a Delta Lake table reads, from the version it reads.
 
     The log of a table on this machine comes first, each entry before the log
     is read, since a commit or checkpoint can be a link out of the table's
     folder. The walk follows no link, so each one is checked before it is
-    opened. The data files then come from the log.
+    opened. The data files then come from the log, and so do the deletion
+    vectors, which a log can store at a path of their own, anywhere. A
+    checkpoint can name a sidecar anywhere too, which deltalake reads as it
+    loads the table, so the log is read before deltalake reads it, and a
+    table whose log records a sidecar is refused.
+
+    A path that starts with `~` is expanded as Polars expands it, and
+    deltalake reads the expanded path, since it expands only `~` and `~/` and
+    would read `~alice/t` as a folder of that name.
+
+    Returns:
+        DeltaTable: The table, at the version whose files were named.
     """
     from deltalake import DeltaTable
 
-    for local in _local_paths(config.table_uri, f"{side} table_uri"):
-        log = Path(local).expanduser() / "_delta_log"
+    uri = config.table_uri
+    if uri.startswith("~"):
+        # deltalake expands only `~` and `~/`, and reads `~alice/t` as a folder of that name,
+        # where the walk, as Polars does, reads the home of the user it names. So deltalake
+        # gets the path the walk reads.
+        uri = str(Path(uri).expanduser())
+    logged: list[str] = []
+    for local in _local_paths(uri, f"{side} table_uri"):
+        # Absolute, so a reading such as `s3:/b/t`, from `s3://b/t`, names no host.
+        log = Path(local).expanduser().absolute() / "_delta_log"
         yield "log", str(log), True
         for folder, folders, files in os.walk(log):
             for name in sorted(folders + files):
                 yield "log file", os.path.join(folder, name), True
-    table = DeltaTable(
-        config.table_uri, version=config.version, storage_options=config.storage_options or None
-    )
+            logged += [os.path.join(folder, name) for name in sorted(files)]
+    # deltalake reads each sidecar a checkpoint names as it loads the table, so the log is
+    # read first, and a log that names one is refused.
+    vectors = delta_log_vectors(uri, config.storage_options, logged)
+    table = DeltaTable(uri, version=config.version, storage_options=config.storage_options or None)
     for uri in table.file_uris():
         yield "data file", uri, True
+    for location in deletion_vector_files(table, vectors):
+        yield "deletion vector", location, True
+    return table
 
 
 def _iceberg_files(
-    config: IcebergConfig, check: Callable[[str], None]
-) -> Iterator[tuple[str, str, bool]]:
+    config: IcebergConfig, check: Callable[[str, bool], None]
+) -> Generator[tuple[str, str, bool], None, None]:
     """Name each file a scan of an Iceberg table reads, each before it is opened.
 
     A table folder's version hint, the manifest list, and each manifest name
@@ -818,8 +939,8 @@ def _iceberg_files(
 
     The files are read as the scan on this server reads them: through the
     FileIO `checked_file_io` builds from `storage_options` alone, whatever the
-    metadata's own properties say, which runs `check` on each path here and
-    opens no file through a scheme outside an object store's.
+    metadata's own properties say, which runs `check` on each file and opens
+    none through a scheme outside an object store's.
     """
     from pyiceberg.serializers import FromInputFile
 
@@ -860,7 +981,7 @@ def _iceberg_files(
 
 def _table_files(
     settings: Settings, side: str, config: DeltaLakeConfig | IcebergConfig
-) -> Iterator[tuple[str, str, bool]]:
+) -> Generator[tuple[str, str, bool], None, "DeltaTable | None"]:
     """Name each file that the scan of a lakehouse table reads.
 
     A table's log or metadata names its files by full URI, so they can lie
@@ -868,16 +989,38 @@ def _table_files(
     would read the same log or metadata. An Iceberg table's files are read
     with the scan's own check, as well as the caller's.
 
+    Returns:
+        DeltaTable | None: A Delta Lake table, at the version listed, or None
+            for an Iceberg table.
+
     Raises:
+        ConfigError: If a Delta Lake table URI could lead deltalake to another
+            log than the one this server lists.
         ConnectorError: If the extra is missing, or the table cannot be listed.
     """
+    files: Generator[tuple[str, str, bool], None, DeltaTable | None]
+    if isinstance(config, DeltaLakeConfig) and _holds_dot_segment(config.table_uri):
+        raise ConfigError(
+            f"The {side} table_uri '{shown_location(config.table_uri)}' is a URI with a '.' "
+            "or '..' segment in its path. deltalake removes such a segment by its text before "
+            "it reads the table, where this server reads the folder the system finds, so the "
+            "two could read different tables. Write the URI without the segment, or write "
+            "the table as a path."
+        )
+    if isinstance(config, DeltaLakeConfig) and _decoded_twice(config.table_uri):
+        raise ConfigError(
+            f"The {side} table_uri '{shown_location(config.table_uri)}' is an fs: or "
+            "opendal+fs: URI with a '%' escape. deltalake decodes such a URI's path twice "
+            "before it reads the table, where this server decodes it once, so the two could "
+            "read different tables. Write the table as a path, or as a file: URI."
+        )
     if isinstance(config, DeltaLakeConfig):
         files, kind, extra = _delta_files(side, config), "Delta Lake table", "delta"
     else:
         check = functools.partial(_refuse_opened, settings)
         files, kind, extra = _iceberg_files(config, check), "Iceberg table", "iceberg"
     try:
-        yield from files
+        return (yield from files)
     except ImportError as exc:
         raise ConnectorError(missing_extra(extra, f"Reading a {kind}")) from exc
     except Exception as exc:
@@ -970,12 +1113,13 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     pattern at all, since Polars expands one with another matcher. A Delta
     Lake or Iceberg table, wherever it lies, has every file on this machine
     that its scan reads checked too, since its log or metadata can name a
-    file anywhere. Data on another machine that a side names, such as an
-    object store, a database server, or a warehouse, is held to the hosts the
-    server allows by `_refuse_hosts`, which a caller runs first, since listing
-    a table's files connects to its host. A Snowflake key file is a file on
-    this machine, which the driver opens before it connects, so it must lie
-    under a root too.
+    file anywhere, and every file elsewhere held to the hosts the server
+    allows. Data on another machine that a side names, such as an object
+    store, a database server, or a warehouse, is held to those hosts by
+    `_refuse_hosts`, which a caller runs first, since listing a table's files
+    connects to its host. A Snowflake key file is a file on this machine,
+    which the driver opens before it connects, so it must lie under a root
+    too.
 
     Every location the configuration names is checked before any file is
     opened, of either side: the listings come last.
@@ -987,7 +1131,8 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
 
     Raises:
         ConfigError: If a file or folder a side reads, or a Snowflake key file,
-            is outside every root.
+            is outside every root, or a file a lakehouse table names lies on a
+            host the server does not allow.
         ConnectorError: If the files of a lakehouse table cannot be listed.
     """
     sides = (("source", source), ("target", target))
@@ -1002,8 +1147,44 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
             for setting, location, quoted in _table_files(settings, side, config):
-                for local in _local_paths(location, f"{side} {setting}"):
-                    _refuse_outside(settings, side, setting, location, local, quoted=quoted)
+                _refuse_listed(settings, side, setting, location, quoted=quoted)
+
+
+def _refuse_listed(
+    settings: Settings, side: str, setting: str, location: str, *, quoted: bool
+) -> None:
+    """Refuse a file a lakehouse table names, outside the roots or on a host the server does not allow.
+
+    A log or metadata names a file by any location, so the file is checked as
+    a configuration's location is: each path on this machine a reader could
+    open for it, and the host it names. The message about a host leaves the
+    location out, since a file named it.
+    """
+    for local in _local_paths(location, f"{side} {setting}"):
+        _refuse_outside(settings, side, setting, location, local, quoted=quoted)
+    for _, host in _location_hosts(setting, location, _NAMED_FILE):
+        _refuse_host(settings, f"The {side} {setting}", host)
+
+
+def _checked_delta_table(settings: Settings, config: DeltaLakeConfig) -> "DeltaTable":
+    """List and check every file a scan of a Delta Lake table reads, and return the version checked.
+
+    A scan on this server calls this as it starts, and reads only the files of
+    the version returned, so a file the table gains after `check_data_paths`
+    listed it is checked too.
+
+    Raises:
+        ConfigError: If a file lies outside every root, or on a host the
+            server does not allow.
+        ConnectorError: If the files cannot be listed.
+    """
+    files = _table_files(settings, "scanned", config)
+    while True:
+        try:
+            setting, location, quoted = next(files)
+        except StopIteration as listed:
+            return cast("DeltaTable", listed.value)
+        _refuse_listed(settings, "scanned", setting, location, quoted=quoted)
 
 
 def _host(text: str) -> str:
@@ -1016,23 +1197,26 @@ def _host(text: str) -> str:
     return text if written is None else written.group(1)
 
 
-def _url_host(url: str) -> str:
-    """Return the host a URL names, the empty host for none, or the URL whole when it is unclear."""
-    written = _URL.fullmatch(url)
+def _url_host(url: str, shape: re.Pattern[str] = _URL) -> str:
+    """Return the host a URL in `shape` names, the empty host for none, or the URL whole when it is unclear."""
+    written = shape.fullmatch(url)
     if written is None:
         return url
     authority = written.group(1)
     return _host(authority) if authority else ""
 
 
-def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
+def _location_hosts(
+    setting: str, location: str, shape: re.Pattern[str] = _URL
+) -> list[tuple[str, str]]:
     """Name the host a data location reaches, or none for a path here or a service's own hosts.
 
     Every scheme of two or more characters counts, other than a local or a
     service one, so a scheme this module has never heard of still needs its
     host allowed. One character is a drive letter, such as `C:`, and no scheme.
     `urlsplit` finds the scheme as a reader that skips leading spaces does, and
-    the location must then match `_URL` as written. A location with no host,
+    the location must then match `shape` as written: `_URL`, or `_NAMED_FILE`
+    for a file a table's log or metadata names. A location with no host,
     such as `hdfs:///t`, names the empty host, which is never allowed, since its
     reader would pick the host from elsewhere.
     """
@@ -1041,7 +1225,7 @@ def _location_hosts(setting: str, location: str) -> list[tuple[str, str]]:
         len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES
     ):
         return []
-    return [(setting, _url_host(location))]
+    return [(setting, _url_host(location, shape))]
 
 
 def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:
@@ -1220,29 +1404,36 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
         for setting, host in _destinations(config):
-            if host is None:
-                raise ConfigError(
-                    f"The {side} {setting} is not one a tool passes on, since the server "
-                    "cannot check which host it sends a reader to. Leave it out. A credential "
-                    "can come from the server's environment instead, which the person who "
-                    "started it sets."
-                )
-            if host and (not host.isascii() or _HOST.fullmatch(host.lower()) is None):
-                raise ConfigError(
-                    f"The {side} {setting} does not name its host in the one shape every "
-                    "reader splits alike, so a tool could check one host and a reader connect "
-                    "to another. Write the host as DNS labels or an IP address in ASCII, with "
-                    "at most a port of digits after it, as in host:port or "
-                    "scheme://host:port/path. Leave out '@', '%', '\\', spaces, and control "
-                    "characters, other than in a database URI's login."
-                )
-            if host.lower() not in settings.allowed_hosts:
-                raise ConfigError(
-                    f"The {side} {setting} names a host this server may not connect to. A tool "
-                    "connects only to the hosts the person who started the server names with "
-                    "--allow-host, so read data under the roots instead, or ask them to add "
-                    "the host."
-                )
+            _refuse_host(settings, f"The {side} {setting}", host)
+
+
+def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
+    """Refuse a host the server does not allow, in a message that starts with `named` and leaves the host out.
+
+    Raises:
+        ConfigError: If the host is None, not in `_HOST_AND_PORT`'s shape, or
+            not allowed.
+    """
+    if host is None:
+        raise ConfigError(
+            f"{named} is not one a tool passes on, since the server cannot check which host "
+            "it sends a reader to. Leave it out. A credential can come from the server's "
+            "environment instead, which the person who started it sets."
+        )
+    if host and (not host.isascii() or _HOST.fullmatch(host.lower()) is None):
+        raise ConfigError(
+            f"{named} does not name its host in the one shape every reader splits alike, so "
+            "a tool could check one host and a reader connect to another. Write the host as "
+            "DNS labels or an IP address in ASCII, with at most a port of digits after it, as "
+            "in host:port or scheme://host:port/path. Leave out '@', '%', '\\', spaces, and "
+            "control characters, other than in a database URI's login."
+        )
+    if host.lower() not in settings.allowed_hosts:
+        raise ConfigError(
+            f"{named} names a host this server may not connect to. A tool connects only to "
+            "the hosts the person who started the server names with --allow-host, so read "
+            "data under the roots instead, or ask them to add the host."
+        )
 
 
 def check_configuration(

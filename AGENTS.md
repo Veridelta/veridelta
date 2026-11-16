@@ -103,5 +103,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [A workflow fixes a vulnerable lockfile in two jobs](decisions/security-updates-in-two-jobs.md)
 - [An Iceberg table loads from its path, never from a catalog](decisions/iceberg-tables-load-from-a-path.md)
 - [The MCP server connects only to the hosts its operator allows](decisions/mcp-server-connects-only-to-allowed-hosts.md)
+- [The MCP server reads a Delta Lake table's data files through PyArrow](decisions/mcp-delta-scan-reads-through-pyarrow.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.
