@@ -14,6 +14,8 @@ import re
 import shutil
 import struct
 import sys
+import tempfile
+import uuid
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -30,14 +32,17 @@ from pyarrow.fs import LocalFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
 from pytest_mock import MockerFixture
 
+from veridelta import mcp_server
 from veridelta.connectors import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.lakehouse import (
+    CheckedDeltaTable,
     _static_table,  # pyright: ignore[reportPrivateUsage] - pins the table the loader builds
     checked_file_io,
     checking_table_files,
 )
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError
+from veridelta.mcp_server import Settings
 from veridelta.models import DeltaLakeConfig, DiffConfig, DiffRule, IcebergConfig, SourceConfig
 
 pytestmark = [pytest.mark.integration]
@@ -134,40 +139,50 @@ def _name_a_class_in_the_metadata(metadata: str) -> None:
     path.write_text(json.dumps(document), encoding="utf-8")
 
 
-def _listed(config: DeltaLakeConfig) -> DeltaTable:
+def _listed(config: DeltaLakeConfig) -> CheckedDeltaTable:
     """Stand in for the MCP server's listing: return the table at the version a scan reads."""
-    return DeltaTable(config.table_uri, version=config.version)
+    return CheckedDeltaTable(DeltaTable(config.table_uri, version=config.version))
 
 
-def _unlisted(config: DeltaLakeConfig) -> DeltaTable:
+def _unlisted(config: DeltaLakeConfig) -> CheckedDeltaTable:
     """Stand in for the listing where no Delta Lake table is read."""
     raise AssertionError(f"An Iceberg scan listed the Delta Lake table {config.table_uri}.")
 
 
-def _delete_with_a_vector(table: Path, vector: Path, row: int) -> None:
+_Z85 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#"
+"""The alphabet in which a Delta Lake log writes the UUID of a deletion vector at a relative path."""
+
+
+def _delete_with_a_vector(table: Path, vector: Path | None, row: int) -> None:
     """Delete one row of the data file the table's first commit adds, with a vector at `vector`.
 
     deltalake rewrites a file to delete from it, so the test writes the
     deletion vector and the commit that records it, as Spark would. The file
     holds a version byte, then the bitmap's size, Delta's portable roaring
     bitmap of the deleted row, and its CRC-32. The commit records the vector
-    at its own path, as a URI.
+    at its own path, as a URI, or, with no `vector`, at a path relative to
+    the table, in a folder `ab`, as Spark writes it.
     """
     bitmap = struct.pack("<II", 12346, 1) + struct.pack("<HH", 0, 0)
     bitmap = struct.pack("<iqi", 1681511377, 1, 0) + bitmap + struct.pack("<IH", 16, row)
+    if vector is None:
+        name = uuid.uuid4()
+        vector = table / "ab" / f"deletion_vector_{name}.bin"
+        vector.parent.mkdir()
+        encoded = ""
+        for start in range(0, 16, 4):
+            number = int.from_bytes(name.bytes[start : start + 4], "big")
+            encoded += "".join(_Z85[number // 85**place % 85] for place in range(4, -1, -1))
+        stored = {"storageType": "u", "pathOrInlineDv": f"ab{encoded}"}
+    else:
+        stored = {"storageType": "p", "pathOrInlineDv": vector.as_uri()}
     vector.write_bytes(
         b"\x01" + struct.pack(">i", len(bitmap)) + bitmap + struct.pack(">I", zlib.crc32(bitmap))
     )
     log = table / "_delta_log"
     actions = [json.loads(line) for line in (log / f"{0:020}.json").read_text("utf-8").splitlines()]
     (added,) = [action["add"] for action in actions if "add" in action]
-    descriptor = {
-        "storageType": "p",
-        "pathOrInlineDv": vector.as_uri(),
-        "offset": 1,
-        "sizeInBytes": len(bitmap),
-        "cardinality": 1,
-    }
+    descriptor = {**stored, "offset": 1, "sizeInBytes": len(bitmap), "cardinality": 1}
     removed = {"path": added["path"], "dataChange": True, "deletionTimestamp": 1}
     commit = [{"remove": removed}, {"add": dict(added, deletionVector=descriptor)}]
     version = len(list(log.glob("*.json")))
@@ -200,6 +215,25 @@ def _vectored(path: Path) -> DeltaLakeConfig:
     )
     _CHANGED.write_delta(path, mode="append")
     _delete_with_a_vector(path, path.parent / "vector.bin", 1)
+    return DeltaLakeConfig(table_uri=str(path))
+
+
+def _relatively_vectored(path: Path) -> DeltaLakeConfig:
+    """Write a table of two files, one of whose rows a vector at a path relative to the table deletes."""
+    _EVENTS.write_delta(
+        path, delta_write_options={"configuration": {"delta.enableDeletionVectors": "true"}}
+    )
+    _CHANGED.write_delta(path, mode="append")
+    _delete_with_a_vector(path, None, 1)
+    return DeltaLakeConfig(table_uri=str(path))
+
+
+def _checkpointed(path: Path) -> DeltaLakeConfig:
+    """Write a table whose log holds a checkpoint, and a commit after it."""
+    _EVENTS.write_delta(path)
+    _CHANGED.write_delta(path, mode="append")
+    DeltaTable(str(path)).create_checkpoint()
+    _EVENTS.with_columns(pl.col("id") + 10).write_delta(path, mode="append")
     return DeltaLakeConfig(table_uri=str(path))
 
 
@@ -449,8 +483,55 @@ class TestCheckedDeltaScan:
         assert frame.equals(expected)
         assert frame.schema == expected.schema
         assert not any(remote for _, remote in checked)
-        listed = _listed(config).file_uris()
+        listed = _listed(config).table.file_uris()
         assert sorted(Path(path) for path, _ in checked) == sorted(Path(uri) for uri in listed)
+
+    @pytest.mark.parametrize(
+        "table",
+        [
+            _versioned,
+            _evolved,
+            *(
+                pytest.param(
+                    vectored,
+                    id=vectored.__name__,
+                    marks=pytest.mark.skipif(
+                        Version(pl.__version__) < Version("1.40.0"),
+                        reason="Polars reads a table with deletion vectors from 1.40.0 on, "
+                        "so an older one gives no rows to compare with.",
+                    ),
+                )
+                for vectored in (_vectored, _relatively_vectored)
+            ),
+            _checkpointed,
+            _blanked,
+            _emptied,
+        ],
+    )
+    def test_the_server_reads_the_rows_polars_reads(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        table: Callable[[Path], DeltaLakeConfig],
+    ) -> None:
+        """Ensure the MCP server's scan reads every row the command line reads, and leaves no copy behind.
+
+        The server loads a table on this machine from a copy of the log it
+        checked, in the system's temporary folder, and runs in its first root.
+        """
+        monkeypatch.chdir(tmp_path)
+        temporary = tmp_path_factory.mktemp("temporary")
+        monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+        config = table(tmp_path / "events")
+        expected = LoaderFactory.load(config).collect()
+
+        with mcp_server._reading(Settings((tmp_path,))):  # pyright: ignore[reportPrivateUsage] - the block every tool reads its sides in
+            frame = LoaderFactory.load(config).collect()
+
+        assert frame.equals(expected)
+        assert frame.schema == expected.schema
+        assert list(temporary.iterdir()) == []
 
     def test_it_drops_the_rows_a_deletion_vector_deletes(self, tmp_path: Path) -> None:
         """Ensure a row a vector deletes is gone, from the file it was deleted from alone."""
@@ -525,7 +606,7 @@ class TestCheckedDeltaScan:
 
         assert frame.equals(expected)
         assert not any(remote for _, remote in checked)
-        listed = _listed(config).file_uris()
+        listed = _listed(config).table.file_uris()
         assert sorted(Path(path) for path, _ in checked) == sorted(Path(uri) for uri in listed)
 
     def test_it_opens_a_remote_file_through_deltalake(

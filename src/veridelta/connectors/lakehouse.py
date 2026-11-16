@@ -24,12 +24,17 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 import uuid
+import weakref
 from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from importlib import import_module
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
@@ -59,7 +64,7 @@ _file_check: ContextVar[Callable[[str, bool], None] | None] = ContextVar(
 It takes a path on this machine, with False, or the URI of a file on another
 machine, with True."""
 
-_delta_listing: ContextVar[Callable[[DeltaLakeConfig], "DeltaTable"] | None] = ContextVar(
+_delta_listing: ContextVar[Callable[[DeltaLakeConfig], "CheckedDeltaTable"] | None] = ContextVar(
     "veridelta_delta_listing", default=None
 )
 """What lists and checks every file of a Delta Lake table, and returns the version it checked."""
@@ -78,7 +83,8 @@ would then run a library that anyone who can write to that root put there."""
 
 @contextmanager
 def checking_table_files(
-    check: Callable[[str, bool], None], delta_table: Callable[[DeltaLakeConfig], "DeltaTable"]
+    check: Callable[[str, bool], None],
+    delta_table: Callable[[DeltaLakeConfig], "CheckedDeltaTable"],
 ) -> Generator[None]:
     """Check each file that a Delta Lake or Iceberg scan inside the block opens.
 
@@ -96,16 +102,18 @@ def checking_table_files(
     check can run. So inside the block, `delta_table` lists and checks every
     file of the version a scan reads, and the scan reads that version's data
     files through one PyArrow file system that calls `check` with each one
-    just before it opens it. The log and the deletion vectors are read in
-    Rust, right after `delta_table` checks them.
+    just before it opens it. deltalake reads the log and the deletion vectors
+    in Rust: those of a table on this machine from the copy `delta_table`
+    made of the files it checked, and those of a table elsewhere, or a vector
+    a log stores at its own path, right after `delta_table` checks them.
 
     Args:
         check (Callable[[str, bool], None]): Raises to refuse a file: a path on
             this machine, absolute or relative to the working directory, with
             False, or the URI of a file on another machine, with True.
-        delta_table (Callable[[DeltaLakeConfig], DeltaTable]): Lists and
-            checks every file of a Delta Lake table, and returns the table at
-            the version it checked.
+        delta_table (Callable[[DeltaLakeConfig], CheckedDeltaTable]): Lists
+            and checks every file of a Delta Lake table, and returns the table
+            at the version it checked.
 
     Yields:
         None: Control, for the scans to run inside the block.
@@ -165,6 +173,63 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
 
 _DELTA_LOCAL_SCHEMES: Final = frozenset({"file", "fs", "opendal+fs"})
 """The schemes whose table deltalake reads from this machine's disk, whatever host they name."""
+
+
+def delta_reads_here(table_uri: str) -> bool:
+    """Tell whether deltalake reads a table from this machine's disk: a path, or a URI of a local scheme.
+
+    A one-letter scheme is a Windows drive.
+    """
+    scheme = urlsplit(table_uri).scheme
+    return len(scheme) < 2 or scheme in _DELTA_LOCAL_SCHEMES
+
+
+class DeltaLogCopy:
+    """A private folder for a copy of a Delta Lake table's log, removed once nothing refers to it."""
+
+    def __init__(self) -> None:
+        """Make the folder, in the system's temporary folder, readable by this user alone."""
+        self.folder = Path(tempfile.mkdtemp(prefix="veridelta-delta-log-"))
+        weakref.finalize(self, shutil.rmtree, self.folder, ignore_errors=True)
+
+
+@dataclass(frozen=True)
+class CheckedDeltaTable:
+    """A Delta Lake table at the version a listing checked, and where each file it names lies.
+
+    deltalake reads a table's log as it loads the table, in Rust, where no
+    check runs. So the MCP server copies the log of a table on this machine,
+    each file just after its check, into a `DeltaLogCopy`, and loads `table`
+    from the copy: deltalake then reads the log the server read, and nothing
+    else. Such a table names a file of its own in the copy, and `located`
+    names it in `folder`, the table's own folder, where a scan opens it.
+
+    Attributes:
+        table (DeltaTable): The table, at the version checked.
+        folder (Path | None): The folder of a table on this machine whose log
+            `table` was loaded from a copy of, or None for a table deltalake
+            loaded itself.
+        copy (DeltaLogCopy | None): The copy, kept while the table is.
+    """
+
+    table: "DeltaTable"
+    folder: Path | None = None
+    copy: DeltaLogCopy | None = None
+
+    def located(self, name: str) -> str:
+        """Name the file a scan opens for one the table names, by path or by URI.
+
+        deltalake names a file of the table by its path, but a deletion
+        vector by URI, each from the table's URI, with every `%` escape kept.
+        A file that lies elsewhere keeps its name.
+        """
+        if self.folder is None:
+            return name
+        uri = self.table.table_uri
+        for start in (uri, uri.removeprefix("file:///" if sys.platform == "win32" else "file://")):
+            if name.startswith(start):
+                return os.path.join(self.folder, name[len(start) :])
+        return name
 
 
 _Z85: Final = (
@@ -301,10 +366,9 @@ def delta_log_vectors(
 
     arrow = _arrow()
     found: list[tuple[Any, str]] = [(arrow.fs.LocalFileSystem(), path) for path in files]
-    scheme = urlsplit(table_uri).scheme
-    if len(scheme) > 1 and scheme not in _DELTA_LOCAL_SCHEMES:
-        # One letter is a Windows drive. deltalake's storage of a table on this machine
-        # can crash as it lists a folder, so only a table elsewhere is read through it.
+    if not delta_reads_here(table_uri):
+        # deltalake's storage of a table on this machine can crash as it lists a folder,
+        # so only a table elsewhere is read through it.
         store = arrow.fs.PyFileSystem(DeltaStorageHandler(table_uri, storage_options or None))
         selector = arrow.fs.FileSelector("_delta_log", allow_not_found=True, recursive=True)
         found += [(store, each.path) for each in store.get_file_info(selector)]
@@ -360,7 +424,7 @@ def _deleted_rows(table: "DeltaTable") -> dict[str, list[int]]:
 
 
 def _checked_delta_scan(
-    table: "DeltaTable", check: Callable[[str, bool], None], storage_options: dict[str, str]
+    checked: CheckedDeltaTable, check: Callable[[str, bool], None], storage_options: dict[str, str]
 ) -> pl.LazyFrame:
     """Scan a Delta Lake table's data files through a file system that checks each just before it opens it.
 
@@ -379,12 +443,14 @@ def _checked_delta_scan(
 
     A table on this machine, under any scheme deltalake reads from its disk,
     has each file opened here, at the path that `check` gets: the one
-    `file_uris` names, or the path of the URI it names. One in an object
+    `file_uris` names, or the path of the URI it names, in the table's own
+    folder where the table was loaded from a copy of its log. One in an object
     store has each file opened through deltalake's own storage, which reaches
     only the table's host, and `check` gets the file's URI.
 
     Args:
-        table (DeltaTable): The table, at the version that the listing checked.
+        checked (CheckedDeltaTable): The table, at the version that the
+            listing checked.
         check (Callable[[str, bool], None]): Raises to refuse a file.
         storage_options (dict[str, str]): The validated storage options.
 
@@ -397,6 +463,7 @@ def _checked_delta_scan(
     """
     from deltalake.fs import DeltaStorageHandler
 
+    table = checked.table
     arrow = _arrow()
     # deltalake's handler returns PyArrow files, of no known type.
     handler: Any = DeltaStorageHandler
@@ -437,7 +504,9 @@ def _checked_delta_scan(
             "The files a Delta Lake table lists do not pair up with the fragments it builds, "
             "so this server reads none of them."
         )
-    files = arrow.fs.PyFileSystem(CheckedDeltaFiles({path: uri for uri, (path, _) in pairs}))
+    files = arrow.fs.PyFileSystem(
+        CheckedDeltaFiles({path: checked.located(uri) for uri, (path, _) in pairs})
+    )
     form = arrow.dataset.ParquetFileFormat(
         default_fragment_scan_options=arrow.dataset.ParquetFragmentScanOptions(pre_buffer=True)
     )

@@ -19,9 +19,12 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import sys
+import tempfile
 import threading
 import uuid
+import zlib
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
@@ -41,6 +44,7 @@ import pytest
 from deltalake import DeltaTable
 from mcp import Client
 from mcp.types import CallToolResult, Tool
+from packaging.version import Version
 from polars.exceptions import PanicException
 from pyarrow import fs as arrow_fs
 from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
@@ -2578,6 +2582,17 @@ def _with_vectors(table: Path, *vectors: Mapping[str, object]) -> None:
         )
 
 
+def _vector_deleting(row: int) -> bytes:
+    """Write the file of a deletion vector that deletes one row.
+
+    It holds a version byte, then the bitmap's size, Delta's portable roaring
+    bitmap of the row, and its CRC-32.
+    """
+    bitmap = struct.pack("<II", 12346, 1) + struct.pack("<HH", 0, 0)
+    bitmap = struct.pack("<iqi", 1681511377, 1, 0) + bitmap + struct.pack("<IH", 16, row)
+    return b"\x01" + struct.pack(">i", len(bitmap)) + bitmap + struct.pack(">I", zlib.crc32(bitmap))
+
+
 def _store_at(mocker: MockerFixture, folder: Path) -> None:
     """Stand in for deltalake's storage of a table in an object store with `folder`, which holds its log."""
     mocker.patch("deltalake.fs.DeltaStorageHandler")
@@ -3175,6 +3190,157 @@ class TestLakehouseFiles:
             read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
 
         assert str(secret) not in str(stopped.value)
+
+    @pytest.mark.skipif(
+        Version(pl.__version__) < Version("1.40.0"),
+        reason="Polars reads a table with deletion vectors from 1.40.0 on, so an older one "
+        "refuses the table before any vector is read.",
+    )
+    def test_it_loads_a_delta_table_from_the_log_it_checked(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure a commit written after the scan read the log is never read, nor the vector it names.
+
+        deltalake reads the log again as it loads a table. A commit a writer
+        adds in that moment, naming a vector outside the roots, would choose
+        which rows the scan drops, from a file no check saw. The scan loads
+        the table from the copy of the log it read instead.
+        """
+        table = tmp_path / "events"
+        pl.DataFrame({"id": [1, 2]}).write_delta(
+            table, delta_write_options={"configuration": {"delta.enableDeletionVectors": "true"}}
+        )
+        vector = tmp_path_factory.mktemp("outside") / "vector.bin"
+        vector.write_bytes(_vector_deleting(0))
+        log = table / "_delta_log"
+        first = (log / f"{0:020}.json").read_text(encoding="utf-8").splitlines()
+        (added,) = [json.loads(line)["add"] for line in first if '"add"' in line]
+        stored: dict[str, object] = {"storageType": "p", "pathOrInlineDv": vector.as_uri()}
+        stored |= {"offset": 1, "sizeInBytes": len(vector.read_bytes()) - 9, "cardinality": 1}
+        removed = {"path": added["path"], "dataChange": True, "deletionTimestamp": 1}
+        commit = [{"remove": removed}, {"add": dict(added, deletionVector=stored)}]
+        read = delta_log_vectors
+
+        def read_then_commit(*args: Any) -> list[dict[str, Any]]:
+            vectors = read(*args)
+            (log / f"{1:020}.json").write_text(
+                "".join(json.dumps(action) + "\n" for action in commit), encoding="utf-8"
+            )
+            return vectors
+
+        mocker.patch.object(
+            mcp_server, "check_data_paths", side_effect=lambda _, source, target: (source, target)
+        )
+        mocker.patch.object(mcp_server, "delta_log_vectors", side_effect=read_then_commit)
+        pl.DataFrame({"id": [1, 2]}).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert report["verdict"] == "match"
+        assert (log / f"{1:020}.json").exists()
+
+    @pytest.mark.parametrize("replaced", ["log file", "deletion vector"])
+    def test_it_refuses_a_file_replaced_as_it_is_checked(
+        self, tmp_path: Path, mocker: MockerFixture, replaced: str
+    ) -> None:
+        """Ensure a commit or a vector that another file replaces just after its check is never copied.
+
+        deltalake reads the copy of the log, and of each vector at a relative
+        path, that the scan makes just after each check. A file renamed over
+        one in that moment is another file, though its text is the same.
+        """
+        table, name = tmp_path / "events", uuid.uuid4()
+        _with_vectors(table, {"storageType": "u", "pathOrInlineDv": _relative_vector("", name)})
+        files = {
+            "log file": table / "_delta_log" / f"{1:020}.json",
+            "deletion vector": table / f"deletion_vector_{name}.bin",
+        }
+        files["deletion vector"].write_bytes(_vector_deleting(0))
+        swapped = tmp_path / "swapped"
+        shutil.copyfile(files[replaced], swapped)
+        check = mcp_server._refuse_listed  # pyright: ignore[reportPrivateUsage] - the hook runs it, then replaces the file
+
+        def check_then_replace(
+            settings: Settings, side: str, setting: str, location: str, *, quoted: bool
+        ) -> None:
+            check(settings, side, setting, location, quoted=quoted)
+            if setting == replaced and Path(location) == files[replaced]:
+                os.replace(swapped, files[replaced])
+
+        mocker.patch.object(mcp_server, "_refuse_listed", side_effect=check_then_replace)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="was replaced as this server checked it"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert not swapped.exists()
+
+    def test_it_copies_no_log_under_a_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a table on this machine is refused when the system's temporary folder lies under a root.
+
+        Whoever writes under the roots could change the copy of the log there
+        before deltalake reads it.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        (tmp_path / "temporary").mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temporary"))
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="temporary folder lies under a folder"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+        assert list((tmp_path / "temporary").iterdir()) == []
+
+    def test_it_copies_the_files_in_a_folder_of_a_delta_log(self, tmp_path: Path) -> None:
+        """Ensure a table whose log holds a folder is read, with the folder checked and its files copied.
+
+        A v2 checkpoint keeps its sidecars in `_delta_log/_sidecars`, which
+        the walk of the log enters.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        sidecars = tmp_path / "events" / "_delta_log" / "_sidecars"
+        sidecars.mkdir()
+        _ROW.write_parquet(sidecars / "unused.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert "note" in report["columns"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows allows no ':' in a folder's name.")
+    def test_it_refuses_a_delta_table_uri_whose_readings_each_hold_a_log(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a URI that readers read as two folders, each holding a log, is refused.
+
+        deltalake reads `file:///…/events` as the folder it names, and a
+        reader that knows no scheme as a folder named `file:` in the working
+        directory. The copy holds one log, so the server reads neither.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        uri = (tmp_path / "events").as_uri()
+        shutil.copytree(tmp_path / "events", Path(uri).absolute())
+        loaded = mocker.patch("deltalake.DeltaTable")
+
+        with pytest.raises(ConnectorError, match="more than one holds a Delta Lake log"):
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri=uri)
+            )
+
+        loaded.assert_not_called()
 
     @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
     def test_it_holds_a_file_iceberg_metadata_names_elsewhere_to_the_allowed_hosts(
