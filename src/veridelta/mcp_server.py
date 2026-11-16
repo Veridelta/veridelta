@@ -137,6 +137,9 @@ _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 _URI_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 """The start of a URI: a scheme of two or more characters, since one letter is a Windows drive."""
 
+_SPECIAL_SCHEMES: Final = frozenset({"file", "ftp", "http", "https", "ws", "wss"})
+"""The schemes a URL parser reads without their slashes, as in `http:host`."""
+
 _HOST_OPTIONS: Final = frozenset(
     {
         "account_name",
@@ -1454,6 +1457,54 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
     return [*_location_hosts("database", config.database)]
 
 
+def _storage_options(config: SourceRef) -> object:
+    """Return the `storage_options` a side hands its reader, or None for a side that takes none."""
+    if isinstance(config, SourceConfig):
+        return config.options.get("storage_options")
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return config.storage_options
+    return None
+
+
+def _refuse_plain_http(side: str, config: SourceRef) -> None:
+    """Refuse a storage option that sends a reader to its endpoint over anything but HTTPS.
+
+    Polars and PyIceberg take the scheme from the endpoint, so an `http` one
+    sends the credentials and the rows unencrypted, as `aws_allow_http` would
+    for deltalake, which a tool refuses as a key it does not know. So a host
+    option's value with a scheme passes only when it starts with `https://`,
+    in lowercase, the one form every reader takes as HTTPS: the AWS SDK in
+    PyArrow takes any other as a host name. A value has a scheme when it holds
+    `://`, or when it holds a `:` and the text before the first one is one of
+    `_SPECIAL_SCHEMES`, in ASCII and any case, since the URL parser behind Polars reads such a
+    value as a URL without its slashes, and a number after it as an IPv4
+    address. No host is excepted, this machine's included, as none is for
+    `aws_allow_http`. Other text, such as `minio.internal:9000`, or a bucket
+    named `https` with no `:`, passes:
+    PyArrow then uses HTTPS, and object_store fails before it connects. The
+    message names the option and not its value, which can hold a `${NAME}`
+    value.
+
+    Raises:
+        ConfigError: If a host option's value has a scheme and does not start with `https://`.
+    """
+    options = _storage_options(config)
+    if not isinstance(options, Mapping):
+        return
+    for key, value in cast("Mapping[object, object]", options).items():
+        name, text = str(key), str(value)
+        if not (name.isascii() and name.lower() in _HOST_OPTIONS) or text.startswith("https://"):
+            continue
+        scheme, colon, _ = text.partition(":")
+        if "://" in text or (colon and scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES):
+            raise ConfigError(
+                f"The {side} storage option '{key}' names a host by a scheme other than "
+                "https, so a reader could send its credentials and rows unencrypted. A tool "
+                "reaches an endpoint only over HTTPS, on this machine too, so write it as "
+                "https://host:port, in lowercase."
+            )
+
+
 def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     """Name each host a side connects to that its configuration chooses, with the setting.
 
@@ -1464,14 +1515,11 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     credentials reach their own service's hosts, so they name none.
     """
     if isinstance(config, SourceConfig):
-        return [
-            *_location_hosts("path", config.path),
-            *_option_hosts(config.options.get("storage_options")),
-        ]
+        return [*_location_hosts("path", config.path), *_option_hosts(_storage_options(config))]
     if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         return [
             *_location_hosts("table_uri", config.table_uri),
-            *_option_hosts(config.storage_options),
+            *_option_hosts(_storage_options(config)),
         ]
     if isinstance(config, DuckDBConfig):
         return _duckdb_hosts(config)
@@ -1494,14 +1542,16 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     side that could reach any host could send one there, or reach a service on
     this machine or its network. A host written in any shape but
     `_HOST_AND_PORT`'s is refused on its own, since readers split it in
-    different places. The message names the setting and not the host, which
-    can hold such a value.
+    different places. An endpoint is refused over plain HTTP, by
+    `_refuse_plain_http`. The message names the setting and not the host,
+    which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
         for setting, host in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host)
+        _refuse_plain_http(side, config)
 
 
 def _refuse_host(settings: Settings, named: str, host: str | None) -> None:

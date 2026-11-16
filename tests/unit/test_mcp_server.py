@@ -2419,11 +2419,14 @@ _STORE_HOSTS = ("bucket", "127.0.0.1")
 
 
 @contextmanager
-def _object_store(folder: Path) -> Iterator[dict[str, str]]:
+def _object_store(folder: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]:
     """Serve `folder` as an S3 store on a free local port until the block ends.
 
     It stands in for an object store such as one moto runs: PyArrow reads each
-    object over S3 from it, the bucket being the folder's first level.
+    object over S3 from it, the bucket being the folder's first level. A tool
+    reaches an endpoint only over HTTPS, so the options name it with
+    `https://`. The store has no certificate, so PyArrow's S3 file system,
+    patched until the test ends, reaches it over HTTP.
 
     Yields:
         dict[str, str]: The `storage_options` that reach it.
@@ -2431,9 +2434,16 @@ def _object_store(folder: Path) -> Iterator[dict[str, str]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Store, directory=str(folder)))
     thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
     thread.start()
+    endpoint, s3 = f"127.0.0.1:{server.server_port}", arrow_fs.S3FileSystem
+    # PyIceberg imports S3FileSystem when it opens a store, and passes keywords only.
+    monkeypatch.setattr(
+        arrow_fs,
+        "S3FileSystem",
+        lambda **options: s3(**{**options, "endpoint_override": f"http://{endpoint}"}),
+    )
     try:
         yield {
-            "s3.endpoint": f"http://127.0.0.1:{server.server_port}",
+            "s3.endpoint": f"https://{endpoint}",
             "s3.access-key-id": "veridelta",
             "s3.secret-access-key": "veridelta",
             "s3.region": "us-east-1",
@@ -3194,7 +3204,7 @@ class TestLakehouseFiles:
         """
         store = tmp_path_factory.mktemp("store")
         _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             metadata = _remote_iceberg(tmp_path, store, options, monkeypatch)
             written = store / metadata.removeprefix("s3://")
             document = json.loads(written.read_text(encoding="utf-8"))
@@ -3228,7 +3238,7 @@ class TestLakehouseFiles:
     ) -> None:
         """Ensure a table whose files all lie in an object store passes."""
         store = tmp_path_factory.mktemp("store")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             metadata = _remote_iceberg(tmp_path, store, options, monkeypatch)
             target = IcebergConfig(table_uri=metadata, storage_options=options)
             settings = Settings((tmp_path,), allowed_hosts=_STORE_HOSTS)
@@ -3271,7 +3281,7 @@ class TestLakehouseFiles:
         """
         store, outside = tmp_path_factory.mktemp("store"), tmp_path_factory.mktemp("outside")
         _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             # PyIceberg writes the data file from `/`, where Polars reads it.
             monkeypatch.chdir(tmp_path.anchor)
             metadata = _remote_iceberg(
@@ -3667,7 +3677,7 @@ class TestLakehouseFiles:
         monkeypatch.chdir(tmp_path)
         properties = {"write.data.path": "s3:link"}
         _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             if remote:
                 metadata = _remote_iceberg(tmp_path, store, options, monkeypatch, properties)
             else:
@@ -3843,6 +3853,9 @@ _ALLOWED = (
 )
 """The hosts the host tests' server allows."""
 
+_FILE_OPTIONS = "  format: parquet\n  options:\n    storage_options: "
+"""The settings of a file target up to its `storage_options`, which a flow mapping follows."""
+
 _DATABRICKS = "  type: databricks\n  http_path: /sql/1.0/warehouses/1\n  table: orders\n"
 _SNOWFLAKE = (
     "  type: snowflake\n  user: analyst\n  warehouse: WH\n  database: DB\n"
@@ -3993,6 +4006,124 @@ class TestAllowedHosts:
         assert str(refused.value).startswith(f"The target {setting} names a host")
         assert "--allow-host" in str(refused.value)
         read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("target", "key", "endpoint"),
+        [
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "aws_endpoint",
+                "http://[::1]:9000",
+                id="file-on-this-machine",
+            ),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "AWS_ENDPOINT_URL",
+                "HTTP://db.internal:9000",
+                id="file-in-upper-case",
+            ),
+            pytest.param(
+                "  path: az://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "azure_endpoint",
+                "Http://db.internal:10000",
+                id="file-in-azure",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: ",
+                "s3.endpoint",
+                "http://db.internal:9000",
+                id="iceberg",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
+                "endpoint",
+                "http://db.internal:9000/",
+                id="delta",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n  storage_options: ",
+                "azure_storage_endpoint",
+                "ws://db.internal:10000",
+                id="other-scheme",
+            ),
+            pytest.param(
+                "  path: az://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "azure_storage_endpoint",
+                "http:2130706433",
+                id="http-without-slashes",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n  storage_options: ",
+                "azure_storage_endpoint",
+                "HTTPS://db.internal:10000",
+                id="https-in-upper-case",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: ",
+                "s3.endpoint",
+                "Https:443",
+                id="https-without-slashes",
+            ),
+        ],
+    )
+    def test_it_refuses_an_endpoint_over_plain_http(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, key: str, endpoint: str
+    ) -> None:
+        """Ensure a reader is never sent to an endpoint but over HTTPS, not even on this machine.
+
+        Polars and PyIceberg take the scheme from the endpoint, in any case,
+        so plain HTTP would carry the credentials and the rows unencrypted.
+        The URL parser behind Polars reads `http:2130706433` as plain HTTP to
+        127.0.0.1, where the host check reads a host named `http`, and the AWS
+        SDK in PyArrow reads `HTTPS://` as part of a host name, so only
+        `https://` in lowercase passes. Every host is allowed, `http` and
+        `https` too, and the refusal names the option, not its value.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, f"{target}{{{key}: '{endpoint}'}}\n")
+        settings = Settings((tmp_path,), allowed_hosts=(*_ALLOWED, "http", "https"))
+
+        with pytest.raises(
+            ConfigError, match="names a host by a scheme other than https"
+        ) as refused:
+            describe_side(settings, "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target storage option '{key}' names")
+        assert endpoint not in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(
+                "  path: s3://file/a.parquet\n" + _FILE_OPTIONS + "{aws_bucket: file}\n",
+                id="file-in-a-bucket-named-file",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://https/events\n"
+                "  storage_options: {azure_container_name: https, account_name: bucket}\n",
+                id="delta-in-a-container-named-https",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://WSS/events\n  storage_options: {bucket: WSS}\n",
+                id="delta-in-a-bucket-named-wss",
+            ),
+        ],
+    )
+    def test_it_reads_from_a_bucket_named_like_a_scheme(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure a bucket or a container named like a scheme, with no `:`, is not an endpoint."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, target)
+        settings = Settings((tmp_path,), allowed_hosts=(*_ALLOWED, "file", "https", "wss"))
+
+        report = describe_side(settings, "veridelta.yaml", "target")
+
+        assert report["columns"] == {"id": "Int64"}
 
     def test_it_refuses_a_snowflake_key_file_outside_the_roots_before_it_connects(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
@@ -4253,8 +4384,13 @@ class TestAllowedHosts:
             pytest.param("  path: https://EXAMPLE.com:8443/a.csv\n", id="https"),
             pytest.param(
                 "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
-                "    storage_options: {aws_endpoint_url: 'http://[::1]:9000', aws_region: x}\n",
+                "    storage_options: {aws_endpoint_url: 'https://[::1]:9000', aws_region: x}\n",
                 id="object-store-endpoint",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n"
+                "  storage_options: {azure_storage_endpoint: 'https://db.internal:10000'}\n",
+                id="endpoint-over-https-in-azure",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: s3://bucket/events\n"
