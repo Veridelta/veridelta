@@ -2076,6 +2076,41 @@ class TestCheckDataPaths:
 
         assert "host.example" not in str(refused.value)
 
+    @pytest.mark.parametrize("scheme", ["dbfs", "DBFS"])
+    def test_it_refuses_a_dbfs_uri_whatever_host_it_names(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        scheme: str,
+    ) -> None:
+        """Ensure a `dbfs:` table, or a file a table names that way, fails before deltalake opens it.
+
+        Once the server's environment allows it, deltalake opens a `dbfs:`
+        URI's path on this machine and ignores its host, so an allowed host
+        would lead to a table outside every root.
+        """
+        import deltalake
+
+        outside = tmp_path_factory.mktemp("outside") / "events"
+        _ROW.write_delta(outside)
+        monkeypatch.setenv("MOUNT_ALLOW_UNSAFE_RENAME", "true")
+        opened = mocker.spy(deltalake, "DeltaTable")
+        settings = Settings((tmp_path,), allowed_hosts=("bucket.example.com",))
+        uri = f"{scheme}://bucket.example.com{outside.as_uri().removeprefix('file://')}"
+
+        with pytest.raises(ConfigError, match="The source table_uri is a dbfs: URI"):
+            check_data_paths(settings, DeltaLakeConfig(table_uri=uri), _snowflake())
+
+        opened.assert_not_called()
+        listed = [("deletion vector", f"{uri}/vector.bin", True)]
+        mocker.patch.object(mcp_server, "_table_files", return_value=iter(listed))
+        side = DeltaLakeConfig(table_uri=str(tmp_path / "t"))
+
+        with pytest.raises(ConfigError, match="The source deletion vector is a dbfs: URI"):
+            check_data_paths(settings, side, _snowflake())
+
     def test_it_refuses_a_listed_file_uri_python_cannot_read_as_a_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
@@ -3299,6 +3334,31 @@ class TestLakehouseFiles:
 
         loaded.assert_not_called()
         assert list((tmp_path / "temporary").iterdir()) == []
+
+    def test_it_copies_no_log_into_a_folder_whose_path_holds_a_percent(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a table on this machine is refused, naming the temporary folder, when its path holds a `%`.
+
+        deltalake decodes a `%` escape in the copy's path, so it would read
+        another folder, and fail with a message that names neither.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        temporary = tmp_path_factory.mktemp("outside") / "a%20b"
+        temporary.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="temporary folder holds a '%'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+        assert list(temporary.iterdir()) == []
 
     def test_it_copies_the_files_in_a_folder_of_a_delta_log(self, tmp_path: Path) -> None:
         """Ensure a table whose log holds a folder is read, with the folder checked and its files copied.

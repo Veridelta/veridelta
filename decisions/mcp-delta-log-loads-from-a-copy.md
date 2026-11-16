@@ -13,6 +13,6 @@ generated: { by: claude-code, at: 2026-11-16T16:23:07+00:00 }
 
 **Alternative considered:** Load the table from its own folder, then compare the version, the actions, and the device and number of each log and vector file deltalake read with those the server checked, and refuse a scan whose files differ.
 
-**Why rejected:** deltalake reports neither the files it read nor a vector's descriptor, so the comparison would rest on stats taken around its read. A file swapped in for that read and swapped back would pass. The copy leaves deltalake no file in the table's folder to read, and costs one copy of the log for each listing.
+**Why rejected:** deltalake reports neither the files it read nor a vector's descriptor, so the comparison would rest on stats taken around its read. A file swapped in for that read and swapped back would pass. The copy leaves deltalake no file in the table's folder to read, and costs one copy of the log for each listing. The copy itself compares two stats of each file, around its check and its open, so two swaps that bracket the check or the open still get through. Checking the path of the open file would close that, but Linux, macOS, and Windows each give it through a call of their own, so the stats stay.
 
 **How to reverse:** In `_delta_files`, set `copy` to None for every table, which loads the table from its own folder as before, and delete `DeltaLogCopy`, `_copy_checked`, and the copy's paragraph in `rules/security.md` and `docs/agents.md`.

@@ -762,12 +762,22 @@ def _local_paths(location: str, named: str) -> list[str]:
     3.14. The message names `named`, the setting, but not the value, which a
     table's files can hold.
 
+    A `dbfs:` URI is refused whatever its host: deltalake opens its path on
+    this machine, and ignores the host, once the server's environment allows
+    it to.
+
     Raises:
         ConfigError: If a `file:` URI names a host, a local scheme's URI has
-            a path that starts with `//`, or Python cannot convert one of the
-            URI's paths.
+            a path that starts with `//`, Python cannot convert one of the
+            URI's paths, or the location is a `dbfs:` URI.
     """
     parts = _split(location)
+    if parts is not None and parts.scheme == "dbfs":
+        raise ConfigError(
+            f"The {named} is a dbfs: URI. deltalake opens its path on this machine whatever "
+            "host it names, so this server refuses it. Write it as a path under the folders "
+            "this server reads from."
+        )
     if parts is None or parts.scheme not in _LOCAL_SCHEMES:
         return [location]
     standard = _split(location.replace("\\", "/").strip(_URL_SPACE))
@@ -929,7 +939,9 @@ def _copy_checked(source: str, target: Path, seen: os.stat_result | None) -> Non
     is open, the path must name the same file, by its device and number, as
     before the check. Otherwise another file was swapped in, whether before
     the file was opened or after, so it is refused before it is read: a file
-    opened after such a swap could lie anywhere.
+    opened after such a swap could lie anywhere. Two swaps that bracket the
+    check or the open leave the path naming the same file at both stats, so
+    they pass, as `rules/security.md` says.
 
     Raises:
         ValueError: If the path names another file than before the check.
@@ -1035,7 +1047,14 @@ def _delta_files(
         raise ValueError(
             "the system's temporary folder lies under a folder this server reads from, where "
             "this server would copy the table's log for deltalake to read. Start the server "
-            "with TMPDIR, or TEMP on Windows, set to a folder outside them"
+            "with TMPDIR set to a folder outside them"
+        )
+    if copy is not None and "%" in str(copy.folder):
+        # deltalake decodes a `%` escape in the copy's path, and would read another folder.
+        raise ValueError(
+            "the path of the system's temporary folder holds a '%', which deltalake would "
+            "decode as it reads the copy of the table's log there. Start the server with "
+            "TMPDIR set to a folder whose path holds none"
         )
     logged, logs = yield from _delta_log(side, uri, copy)
     if len(logs) > 1:
