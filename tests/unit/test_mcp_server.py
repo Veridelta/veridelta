@@ -2144,17 +2144,28 @@ class TestCheckDataPaths:
             pytest.param("{outside}/k.pem", id="absolute"),
             pytest.param("../{outside_name}/k.pem", id="relative"),
             pytest.param("~/k.pem", id="home"),
+            pytest.param("./~/k.pem", id="home-after-a-dot"),
         ],
     )
     def test_it_refuses_a_snowflake_key_file_outside_the_roots(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, path: str
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
     ) -> None:
         """Ensure the key file the driver opens here is held to the roots, by its setting alone.
 
-        The path can hold a `${NAME}` value, so the message leaves it out.
+        The driver drops a leading `./` before it expands `~`, so `./~/k.pem`
+        is the key in the home folder, outside the root that holds the
+        working directory. The path can hold a `${NAME}` value, so the message
+        leaves it out.
         """
         outside = tmp_path_factory.mktemp("outside")
         (outside / "k.pem").write_text("not a real key\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(outside))
+        monkeypatch.setenv("USERPROFILE", str(outside))
+        monkeypatch.chdir(tmp_path)
         side = _key_pair(path.format(outside=outside, outside_name=outside.name))
 
         with pytest.raises(

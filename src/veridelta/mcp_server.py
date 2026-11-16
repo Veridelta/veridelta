@@ -984,12 +984,19 @@ def _refuse_key_file(settings: Settings, side: str, config: SourceRef) -> None:
     under a root read either way. The message names the setting and not the
     path, which can hold a `${NAME}` value.
 
+    The driver expands `~` with `Path.expanduser`, unlike the readers, and
+    `Path` drops a leading `./` first, so the driver opens `./~/k.pem` in the
+    home folder. The check expands the text the same way, once the text as
+    written is held off another machine.
+
     Raises:
         ConfigError: If the key file lies outside every root.
     """
     if not isinstance(config, SnowflakeConfig) or config.private_key_path is None:
         return
-    if not _opened_inside(settings, config.private_key_path):
+    location = config.private_key_path
+    as_opened = str(Path(location).expanduser())
+    if names_another_machine(location) or not _under_both_readings(settings, as_opened):
         raise ConfigError(
             f"The {side} private_key_path is outside the folders this server reads from: "
             f"{_roots(settings)}. The driver opens the key file on this machine, and a tool "
