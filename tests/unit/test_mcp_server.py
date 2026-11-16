@@ -3432,6 +3432,91 @@ class TestLakehouseFiles:
             assert value not in shown
 
     @pytest.mark.parametrize(
+        ("credential", "value", "hidden"),
+        [
+            ("adls.account-key: ${VD_AZURE_PART}", "U0VDUkVU+/+/abcdSECRET==", "U0VDUkVU"),
+            (
+                "adls.sas-token: ${VD_AZURE_PART}",
+                "sv=2024-01-01&sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D",
+                "c2lnbmF0dXJl",
+            ),
+            ("adls.sas-token: sv=2024-01-01", "hunter2+not/a%41credential\u00e9", "hunter2"),
+        ],
+        ids=["account-key", "sas-token", "any-value"],
+    )
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
+    def test_it_returns_no_environment_value_an_azure_path_encodes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        credential: str,
+        value: str,
+        hidden: str,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a variable in an Azure table's path comes back masked, though encoded.
+
+        The Azure SDK percent-encodes some characters of a request's path,
+        such as `+`, `%`, `#`, and any outside ASCII, and PyArrow quotes the
+        path that results, so the error holds no longer the variable's value
+        as written. The mock fails each read with such a path, encoded as the
+        Azure SDK encodes it.
+        """
+        monkeypatch.setenv("VD_AZURE_PART", value)
+
+        def refusing(**_: str) -> MagicMock:
+            def refuse(path: str, *_: object) -> None:
+                written = quote(path, safe="!$&'()*,;=:/")
+                raise OSError(
+                    f"GetProperties failed for 'https://acct.blob.core.windows.net/{written}'"
+                    ". Azure Error: [AuthenticationFailed] 403 Forbidden"
+                )
+
+            return MagicMock(
+                open_input_file=MagicMock(side_effect=refuse),
+                open_input_stream=MagicMock(side_effect=refuse),
+            )
+
+        monkeypatch.setitem(arrow_fs.__dict__, "AzureFileSystem", refusing)
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\ntarget:\n  type: iceberg\n"
+            "  table_uri: abfs://lake/x${VD_AZURE_PART}/metadata/v1.metadata.json\n"
+            f"  storage_options:\n    adls.account-name: acct\n    {credential}\n"
+            "primary_keys: [id]\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        shown = json.dumps(result.structured_content) + _text(result)
+        assert "/lake/x***/metadata/v1.metadata.json'" in shown
+        assert hidden not in shown
+
+    def test_it_masks_a_value_whose_characters_are_encoded_in_either_case(self) -> None:
+        """Ensure an encoded character counts, whether its hex digits are upper or lower case."""
+        secrets = mcp_server._secrets_pattern(("a+b/c€d",))  # pyright: ignore[reportPrivateUsage] - the mask on its own
+
+        masked = mcp_server._masked(  # pyright: ignore[reportPrivateUsage] - the mask on its own
+            ["a%2bb%2Fc%e2%82%ACd", "a+b/c€d", "a%2Bb/c€d", "a b/c€d"], secrets
+        )
+
+        assert masked == ["***", "***", "***", "a b/c€d"]
+
+    @pytest.mark.parametrize(
         "uri",
         [
             pytest.param(
@@ -5953,6 +6038,31 @@ class TestServer:
         }
         for result in (failed, described):
             assert _SECRET not in json.dumps(result.structured_content) + _text(result)
+
+    def test_it_masks_a_value_with_a_query_before_it_leaves_out_the_query(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a value from `${NAME}` that is a URL with a query is masked whole in a failure.
+
+        Left out first, the query would leave the rest of the URL unlike the
+        value, and so unmasked.
+        """
+        value = f"postgresql://analyst:{_SECRET}@db.internal/sales?sslmode=require"
+        monkeypatch.setenv("VD_MCP_URL", value)
+        mocker.patch.object(
+            DiffEngine, "check_configs", side_effect=RuntimeError(f"cannot open '{value}'")
+        )
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: a.csv\n"
+            "  options:\n    new_columns: ['${VD_MCP_URL}']\nprimary_keys: [id]\n",
+        )
+
+        result = _call(Settings((tmp_path,), allow_row_values=True), {"path": "veridelta.yaml"})
+
+        assert result.is_error is True
+        assert _text(result).endswith("RuntimeError: cannot open '***'")
 
     def test_it_fails_the_call_when_polars_panics(
         self, tmp_path: Path, mocker: MockerFixture

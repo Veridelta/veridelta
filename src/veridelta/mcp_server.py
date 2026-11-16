@@ -1861,12 +1861,11 @@ def _failure(exc: BaseException, *, row_values: bool) -> str:
     Polars, a reader, or a driver can quote cells in its message, so unless the
     server allows row values, such a message gives way to a fixed hint. A
     Veridelta error keeps its own, which names columns and counts, unless it
-    quotes a reader's or a driver's text. Each URL in the message loses its
-    query, which can hold a credential the reader signed with.
+    quotes a reader's or a driver's text.
     """
     if may_quote_data(exc) and not row_values:
         return f"{type(exc).__name__}: {_WITHHELD}"
-    return f"{type(exc).__name__}: {without_queries(str(exc).strip())}"
+    return f"{type(exc).__name__}: {str(exc).strip()}"
 
 
 def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
@@ -1907,10 +1906,39 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
     )
 
 
-def _masked(value: Any, secrets: tuple[str, ...]) -> Any:
+def _written_or_encoded(secret: str) -> str:
+    """Return a pattern for a secret as written, or with any of its characters percent-encoded.
+
+    The Azure SDK percent-encodes some characters of a file's path, such as
+    `+` and `%`, and PyArrow quotes the path that results in its errors, so a
+    secret placed in the path comes back in a form of its own.
+    """
+    pieces: list[str] = []
+    for char in secret:
+        encoded = quote(char, safe="")
+        if encoded == char:
+            pieces.append(re.escape(char))
+            continue
+        # The hex digits can be written in either case.
+        hexed = "".join(
+            f"[{c.upper()}{c.lower()}]" if c.isalpha() else re.escape(c) for c in encoded
+        )
+        pieces.append(f"(?:{re.escape(char)}|{hexed})")
+    return "".join(pieces)
+
+
+def _secrets_pattern(secrets: tuple[str, ...]) -> re.Pattern[str] | None:
+    """Match any secret, as written or percent-encoded, trying the longest first."""
+    if not secrets:
+        return None
+    ordered = sorted(set(secrets), key=len, reverse=True)
+    return re.compile("|".join(_written_or_encoded(secret) for secret in ordered))
+
+
+def _masked(value: Any, secrets: re.Pattern[str] | None) -> Any:
     """Mask each secret in every string of an answer, the keys of a mapping included."""
     if isinstance(value, str):
-        return mask_secrets(value, *secrets)
+        return value if secrets is None else secrets.sub("***", value)
     if isinstance(value, dict):
         mapping = cast("dict[str, Any]", value)
         return {_masked(key, secrets): _masked(item, secrets) for key, item in mapping.items()}
@@ -1930,16 +1958,19 @@ def _answer(
 
     The SDK passes only a `ToolError`'s message on to the agent, so every
     failure becomes one, named as `run --json` names it, with the secrets
-    masked there too. Unless `row_values` is set, a message that can quote
-    the data is left out.
+    masked there too, and then each URL's query left out, since a query can
+    hold a credential a reader signed with. A secret is masked as written,
+    or with any of its characters percent-encoded. Unless `row_values` is
+    set, a message that can quote the data is left out.
     """
+    pattern = _secrets_pattern(secrets)
     try:
         result = work()
     except (Exception, PanicException) as exc:
         # A panic in Polars is no `Exception`, and would stop the server instead.
-        failure = _failure(exc, row_values=row_values)
-        raise tool_error(mask_secrets(failure, *secrets)) from exc
-    return cast("_R", _masked(result, secrets))
+        failure = _masked(_failure(exc, row_values=row_values), pattern)
+        raise tool_error(without_queries(failure)) from exc
+    return cast("_R", _masked(result, pattern))
 
 
 def build_server(settings: Settings) -> "MCPServer":
