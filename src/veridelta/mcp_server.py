@@ -693,19 +693,32 @@ def _local_paths(location: str) -> list[str]:
     return [*dict.fromkeys(paths), location]
 
 
-def _duckdb_wal(database: str) -> str:
-    r"""Name the write-ahead log DuckDB replays as it opens a database file.
+def _wal_beside(path: str) -> str:
+    r"""Add `.wal` to a database's path as DuckDB's `GetWALPath` does.
 
-    DuckDB names it from the path `_open` hands it, which has `~` expanded,
-    so `~` and `~.wal` cannot name different homes. Its `GetWALPath` puts
-    `.wal` before the first `?` in the path rather than at the end, so
+    It goes before the first `?` in the path rather than at the end, so
     `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder. A
     Windows long path, which starts with `\\?\`, has `.wal` added at the
     end.
     """
-    path = os.path.expanduser(database)
     mark = -1 if path.startswith(_LONG_PATH) else path.find("?")
     return f"{path}.wal" if mark < 0 else f"{path[:mark]}.wal{path[mark:]}"
+
+
+def _duckdb_wals(database: str) -> list[str]:
+    """Name each write-ahead log DuckDB may replay as it opens a database file.
+
+    DuckDB names the log from the path `_open` hands it, which has `~`
+    expanded, once it has made that path absolute and folded it: a link is
+    followed, and `.`, `..`, `//`, and a trailing separator are dropped. So
+    `x.duckdb/.` has its log at `x.duckdb.wal` in the working directory, a
+    link named `x.duckdb` has it beside the file the link leads to, and a `?`
+    in the working directory moves it. DuckDB folds a part it cannot resolve
+    without following links, so the log is named from the path folded either
+    way, as the file is checked either way.
+    """
+    path = os.path.abspath(os.path.expanduser(database))
+    return list(dict.fromkeys(_wal_beside(each) for each in (path, os.path.realpath(path))))
 
 
 def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
@@ -717,7 +730,8 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig) and not config.is_motherduck:
         # DuckDB replays the write-ahead log beside the file as it opens it, before the sandbox.
-        named = [("database", config.database), ("database's WAL", _duckdb_wal(config.database))]
+        wals = _duckdb_wals(config.database)
+        named = [("database", config.database), *(("database's WAL", wal) for wal in wals)]
     elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)

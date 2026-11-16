@@ -963,7 +963,14 @@ class TestCheckDataPaths:
         sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
     )
     @pytest.mark.parametrize(
-        ("database", "link"), [("{root}/x.duckdb", "x.duckdb.wal"), ("~", "home.wal")]
+        ("database", "link"),
+        [
+            ("{root}/x.duckdb", "x.duckdb.wal"),
+            ("~", "home.wal"),
+            ("x.duckdb/", "x.duckdb.wal"),
+            ("x.duckdb/.", "x.duckdb.wal"),
+            ("x.duckdb//", "x.duckdb.wal"),
+        ],
     )
     def test_it_refuses_a_duckdb_write_ahead_log_linked_outside(
         self,
@@ -978,7 +985,9 @@ class TestCheckDataPaths:
         DuckDB opens the expanded path with `.wal` added as it opens the
         file, before the sandbox applies, and follows a link there to another
         database's log. Python would read `~.wal` as the home of a user named
-        `.wal`, where DuckDB adds `.wal` to the home folder.
+        `.wal`, where DuckDB adds `.wal` to the home folder. DuckDB drops a
+        trailing separator or `.` before it adds `.wal`, where the text as
+        written would name `x.duckdb/.wal`.
         """
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
         wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
@@ -1003,23 +1012,72 @@ class TestCheckDataPaths:
         _link_folder(tmp_path / "L.wal?", tmp_path_factory.mktemp("outside"))
         target = DuckDBConfig(database="L?/x.duckdb", table="t")
 
-        with pytest.raises(ConfigError, match=r"The target database's WAL 'L\.wal\?/x\.duckdb' is"):
+        wal = tmp_path / "L.wal?" / "x.duckdb"
+        with pytest.raises(ConfigError, match=re.escape(f"The target database's WAL '{wal}' is")):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
-    def test_it_names_the_write_ahead_log_duckdb_writes(self, tmp_path: Path) -> None:
+    def test_it_refuses_a_duckdb_write_ahead_log_that_the_working_directory_moves_outside(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a `?` in the working directory moves the WAL of a relative path, as in DuckDB.
+
+        DuckDB makes the path absolute before it puts `.wal` before the first
+        `?`, so with the server in `r?oot`, `x.duckdb` has its log at
+        `r.wal?oot/x.duckdb`, here a link out of the root.
+        """
+        root = tmp_path / "r?oot"
+        root.mkdir()
+        _link_folder(tmp_path / "r.wal?oot", tmp_path_factory.mktemp("outside"))
+        monkeypatch.chdir(root)
+        target = DuckDBConfig(database="x.duckdb", table="t")
+
+        with pytest.raises(ConfigError, match=r"The target database's WAL '.+' is outside"):
+            check_data_paths(Settings((root,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_refuses_the_write_ahead_log_beside_the_file_a_link_leads_to(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a link named as the database has its WAL checked beside the file it leads to.
+
+        DuckDB follows the link before it adds `.wal`, so for a link
+        `x.duckdb` to `sub/y.duckdb` it replays `sub/y.duckdb.wal`, here a
+        link out of the root, and never looks for `x.duckdb.wal`.
+        """
+        wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
+        wal.write_bytes(b"")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "y.duckdb").write_bytes(b"")
+        (tmp_path / "sub" / "y.duckdb.wal").symlink_to(wal)
+        (tmp_path / "x.duckdb").symlink_to(tmp_path / "sub" / "y.duckdb")
+        target = DuckDBConfig(database="x.duckdb", table="t")
+
+        named = re.escape(str(tmp_path / "sub" / "y.duckdb.wal"))
+        with pytest.raises(ConfigError, match=f"The target database's WAL '{named}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
+    @pytest.mark.parametrize("database", ["L?/x.duckdb", "L?/x.duckdb/."])
+    def test_it_names_the_write_ahead_log_duckdb_writes(
+        self, tmp_path: Path, database: str
+    ) -> None:
         """Ensure the server's name for the WAL is the file DuckDB writes, `?` and all."""
         (tmp_path / "L?").mkdir()
         (tmp_path / "L.wal?").mkdir()
-        database = str(tmp_path / "L?" / "x.duckdb")
         connection = duckdb.connect(database)
         try:
             connection.execute("CREATE TABLE t (id INTEGER)")
 
-            wal = mcp_server._duckdb_wal(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
+            wals = mcp_server._duckdb_wals(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
 
-            assert Path(wal) == tmp_path / "L.wal?" / "x.duckdb"
-            assert Path(wal).is_file()
+            assert [Path(wal) for wal in wals] == [tmp_path / "L.wal?" / "x.duckdb"]
+            assert Path(wals[0]).is_file()
         finally:
             connection.close()
 
@@ -1027,7 +1085,7 @@ class TestCheckDataPaths:
         r"""Ensure a path that starts with `\\?\` keeps its `?`, as DuckDB keeps it."""
         database = "\\\\?\\C:\\data?\\x.duckdb"
 
-        wal = mcp_server._duckdb_wal(database)  # pyright: ignore[reportPrivateUsage] - DuckDB names this log on Windows alone
+        wal = mcp_server._wal_beside(database)  # pyright: ignore[reportPrivateUsage] - DuckDB names this log on Windows alone
 
         assert wal == f"{database}.wal"
 
