@@ -87,7 +87,12 @@ class TestDuckDBConnector:
             assert connector.lazyframe().collect().equals(frame)
             assert connector.lazyframe().collect_schema() == frame.schema
 
-        driver.connect.assert_called_once_with("warehouse.duckdb", read_only=True)
+        # As a DuckDB database, so neither the text nor the file's header picks an extension.
+        driver.connect.assert_called_once_with(
+            "duckdb:warehouse.duckdb",
+            read_only=True,
+            config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+        )
         driver.connect.return_value.sql.assert_called_once_with('SELECT * FROM "main"."orders"')
 
     def test_it_sends_a_query_verbatim(self, mocker: MockerFixture) -> None:
@@ -157,6 +162,75 @@ class TestDuckDBConnector:
             call.sql('SELECT * FROM "orders"'),
         ]
         assert connection.mock_calls[: len(held)] == held
+
+    def test_it_expands_the_home_folder_before_duckdb_does(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure DuckDB gets `~` expanded as the MCP server's check expands it.
+
+        DuckDB reads `~` as HOME alone, and as the root folder when HOME is
+        unset, where Python asks the system for the home folder.
+        """
+        driver = _driver(mocker)
+        home = tmp_path / "home"
+        # POSIX reads HOME, Windows USERPROFILE.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+
+        DuckDBConnector(DuckDBConfig(database="~/warehouse.duckdb", table="t")).connect()
+
+        assert driver.connect.call_args.args == (f"duckdb:{home}/warehouse.duckdb",)
+
+    @pytest.mark.parametrize(
+        ("database", "home"),
+        [
+            pytest.param("//srv/warehouse.duckdb", None, id="two-slashes"),
+            pytest.param("~//srv/warehouse.duckdb", "/", id="home-of-the-root-folder"),
+        ],
+    )
+    def test_it_refuses_a_path_duckdb_reads_as_no_type(
+        self,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        database: str,
+        home: str | None,
+    ) -> None:
+        """Ensure no path reaches DuckDB as `duckdb://`, from which it strips no type.
+
+        DuckDB would open the relative file `duckdb:/srv/warehouse.duckdb`
+        instead, and by its first bytes, through the SQLite extension if
+        that is what the file holds.
+        """
+        driver = _driver(mocker)
+        if home is not None:
+            # POSIX reads HOME, Windows USERPROFILE.
+            monkeypatch.setenv("HOME", home)
+            monkeypatch.setenv("USERPROFILE", home)
+        connector = DuckDBConnector(DuckDBConfig(database=database, table="t"))
+        session = DuckDBPushdownSession(DuckDBConfig(database=database, table="t", pushdown=True))
+
+        with pytest.raises(ConnectorError, match="starts with //, once ~ is expanded") as refused:
+            connector.connect()
+        with pytest.raises(ConnectorError, match="starts with //, once ~ is expanded"):
+            session.connect()
+
+        assert str(refused.value).startswith("The DuckDB 'database' starts with //")
+        driver.connect.assert_not_called()
+
+    def test_it_refuses_a_home_path_with_no_home_folder(self, mocker: MockerFixture) -> None:
+        """Ensure DuckDB is never handed `~`, which it expands where Python found no home.
+
+        Python leaves the text as written when the system names no home
+        folder, so the MCP server checks a folder `~` in the working
+        directory, while DuckDB would read `~` as HOME alone.
+        """
+        driver = _driver(mocker)
+        mocker.patch.object(os.path, "expanduser", side_effect=lambda path: path)
+
+        with pytest.raises(ConnectorError, match="names no home folder"):
+            DuckDBConnector(DuckDBConfig(database="~/warehouse.duckdb", table="t")).connect()
+
+        driver.connect.assert_not_called()
 
     def test_it_closes_a_connection_whose_setup_fails(self, mocker: MockerFixture) -> None:
         """Ensure a connection is released when a setting fails, before any read."""
@@ -467,7 +541,11 @@ class TestDuckDBPushdownSession:
         session.close()
         session.close()
 
-        driver.connect.assert_called_once_with("warehouse.duckdb", read_only=True)
+        driver.connect.assert_called_once_with(
+            "duckdb:warehouse.duckdb",
+            read_only=True,
+            config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+        )
         assert connection.mock_calls[0] == call.execute("SET TimeZone = 'UTC'")
         assert connection.sql.call_args_list == [call("SELECT 1"), call("SELECT 2")]
         assert first.collect().equals(frame)

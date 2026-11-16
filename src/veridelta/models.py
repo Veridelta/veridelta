@@ -8,6 +8,7 @@ Python, and the results a comparison returns.
 """
 
 import math
+import os
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -2059,6 +2060,27 @@ _MOTHERDUCK_PREFIX: Final = re.compile(r"(?:md|motherduck):", re.IGNORECASE | re
 Case is ignored in ASCII only, as DuckDB ignores it, so a name with the Kelvin
 sign, U+212A, in place of the `k` of `motherduck:` is no MotherDuck database."""
 
+_DUCKDB_EXTENSION_PREFIX: Final = re.compile(r"[A-Za-z0-9_]{2,}:(?!//)", re.ASCII)
+"""The start of a DuckDB `database` that DuckDB opens through an extension, such
+as `sqlite:x.db` or `postgres:host=db`.
+
+DuckDB reads two or more ASCII letters, digits, or underscores before the first
+colon, with no `//` after it, as the name of the extension that opens the
+database, and loads that extension before any setting of the connection
+applies. One letter is a drive letter, such as `C:`.
+
+The connector puts `duckdb:` before every file's path, so DuckDB never reads a
+type from the text itself. This refusal names the mistake before that. Keep
+the prefix in `_open` if this pattern changes."""
+
+_FILE_URI: Final = re.compile(r"file:", re.IGNORECASE | re.ASCII)
+"""The start of a `file:` URI, which DuckDB reads otherwise than a check of its path.
+
+DuckDB opens `file://host/x.duckdb` as `/host/x.duckdb`, and keeps a `%`
+escape, a `?`, or a `#` as part of the file's name, where a URI parser takes
+the host away and decodes the rest. So a `database` is a plain path, which
+DuckDB and the MCP server read alike."""
+
 
 class DuckDBConfig(BaseModel):
     """Immutable settings for reading a DuckDB or MotherDuck table or query into a local comparison.
@@ -2139,8 +2161,10 @@ class DuckDBConfig(BaseModel):
 
         Raises:
             ValueError: If both or neither of `table` and `query` are set,
-                `database` is in memory or holds a token, a token is set for a
-                file, or `pushdown` is set on a `query`.
+                `database` is in memory, is a `file:` URI, starts with `~`
+                and a user's name, opens through a DuckDB extension, or holds
+                a token, a token is set for a file, or `pushdown` is set on a
+                `query`.
         """
         if (self.table is None) == (self.query is None):
             raise ValueError("A DuckDB source reads a 'table' or runs a 'query'; set exactly one.")
@@ -2151,6 +2175,25 @@ class DuckDBConfig(BaseModel):
             raise ValueError(
                 "':memory:' opens a new, empty database. Point 'database' at a DuckDB "
                 "file or an md: database."
+            )
+        if _FILE_URI.match(self.database) is not None:
+            raise ValueError(
+                "'database' is a file: URI, whose host and escapes DuckDB reads as part of "
+                "a path. Write the DuckDB file's path itself, such as /data/warehouse.duckdb."
+            )
+        if self.database[:1] == "~" and self.database[1:2] not in ("", "/", os.sep):
+            # DuckDB adds the text after `~` to the home folder, where Python reads a user's name.
+            raise ValueError(
+                "'database' starts with ~ and a name, as in ~name/, which DuckDB does not read "
+                "as that user's home folder. Write the path itself, or start it with ~/ for "
+                "your own home folder."
+            )
+        if not self.is_motherduck and _DUCKDB_EXTENSION_PREFIX.match(self.database) is not None:
+            raise ValueError(
+                "'database' starts with a name and a colon, as in sqlite:, so DuckDB would "
+                "open it through an extension, which Veridelta does not load. Point it at a "
+                "DuckDB file, written as ./name when the name holds a colon, or at an md: "
+                "database. Read a SQLite file through a database source, with a sqlite:// URI."
             )
         if self.is_motherduck and "token" in self.database.partition("?")[2].lower():
             raise ValueError(

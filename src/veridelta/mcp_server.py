@@ -269,15 +269,6 @@ the login up to the first `@` anywhere in it, and takes a `#` into the host. So
 a URI passes only with no `@` past its login, no `#`, and no `\\`, space, or
 control character where a host or a login stands."""
 
-_EXTENSION_PREFIX: Final = re.compile(r"[^:/\\]{2,}:(?!//)")
-"""The start of a DuckDB `database` that DuckDB opens through an extension, such
-as `postgres_scanner:host=db port=5432`.
-
-DuckDB reads two or more letters, digits, or underscores before the first colon,
-with no `//` after it, as the name of an extension, and loads it to connect
-before any setting of the server applies. The pattern takes any character but a
-path separator, so it matches every name DuckDB reads, and a few it does not."""
-
 _MOTHERDUCK_NAME: Final = re.compile(
     r"(?:md|motherduck):(?:[A-Za-z0-9_-][A-Za-z0-9_/-]*)?", re.IGNORECASE | re.ASCII
 )
@@ -614,8 +605,12 @@ def _opened_inside(settings: Settings, location: str) -> bool:
     the path must lie under a root read either way. The text as written is
     held off another machine before `Path` reads it, as `_under_both_readings`
     says.
+
+    A leading `~` is expanded by `os.path.expanduser` on the text as written,
+    as the readers expand it. `Path` would drop a leading `./` and fold `//`
+    first, and so read `./~/x` as a file in the home folder.
     """
-    expanded = str(Path(location).expanduser())
+    expanded = os.path.expanduser(location)
     return not names_another_machine(location) and _under_both_readings(settings, expanded)
 
 
@@ -740,7 +735,7 @@ def _local_paths(location: str, named: str) -> list[str]:
     Readers disagree on a URI. Polars and DuckDB open one whose scheme they do
     not know, such as `lakefs://r/t`, as a relative path. Polars opens even
     `s3:x/a.parquet`, with no `//`, `md://x/a.parquet`, or `FILE://x` that
-    way, and DuckDB opens `s3://b/x.duckdb` too. So the location is checked as
+    way, and DuckDB opens `lakefs://r/x.duckdb` too. So the location is checked as
     written, whatever its scheme.
 
     A local scheme's URI opens its path, and the readers read that path
@@ -811,6 +806,53 @@ def _local_paths(location: str, named: str) -> list[str]:
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.
     return [*dict.fromkeys(paths), location]
+
+
+# Each log DuckDB names beside a database file, by the setting a refusal names.
+# A read-only open replays `.wal`, and `.wal.checkpoint` after a crash during a
+# checkpoint. Only a read-write open writes `.wal.recovery`, but it is checked too.
+_DUCKDB_LOGS = (
+    ("database's WAL", ".wal"),
+    ("database's checkpoint WAL", ".wal.checkpoint"),
+    ("database's recovery WAL", ".wal.recovery"),
+)
+
+
+def _wal_beside(path: str, suffix: str = ".wal") -> str:
+    """Add a log's suffix to a database's path as DuckDB's `AddSuffixToPath` does.
+
+    It goes before the first `?` in the path rather than at the end, so
+    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
+    """
+    mark = path.find("?")
+    return f"{path}{suffix}" if mark < 0 else f"{path[:mark]}{suffix}{path[mark:]}"
+
+
+def _resolved_database(side: str, database: str) -> str:
+    """Resolve a DuckDB file's path to the text the server checks and hands DuckDB.
+
+    DuckDB makes the path absolute and resolves it with the system's
+    `realpath`. Where that fails, as past the links the system follows, it
+    folds the rest of the path by text, which no reading here matches. So
+    the server resolves the path itself, with every link followed and every
+    `..` folded, and the connector opens that text, in which DuckDB finds
+    nothing left to resolve. The system must also open the text as written,
+    so a file followed by a separator or by `..` is refused on every Python
+    version, where `os.path.realpath` before 3.13 folds it by text.
+
+    Raises:
+        ConfigError: If the path does not lead to an existing file.
+    """
+    expanded = os.path.expanduser(database)
+    try:
+        os.stat(expanded)
+        return os.path.realpath(expanded, strict=True)
+    except OSError as exc:
+        raise ConfigError(
+            f"The {side} database '{database}' does not resolve to an existing file, so "
+            "this server cannot tell which file and write-ahead logs DuckDB would open. "
+            "Write the path of an existing DuckDB file."
+        ) from exc
 
 
 def _url_text(location: str) -> str:
@@ -904,11 +946,11 @@ def _delta_files(
         # deltalake expands only `~` and `~/`, and reads `~alice/t` as a folder of that name,
         # where the walk, as Polars does, reads the home of the user it names. So deltalake
         # gets the path the walk reads.
-        uri = str(Path(uri).expanduser())
+        uri = os.path.expanduser(uri)
     logged: list[str] = []
     for local in _local_paths(uri, f"{side} table_uri"):
         # Absolute, so a reading such as `s3:/b/t`, from `s3://b/t`, names no host.
-        log = Path(local).expanduser().absolute() / "_delta_log"
+        log = Path(os.path.expanduser(local)).absolute() / "_delta_log"
         yield "log", str(log), True
         for folder, folders, files in os.walk(log):
             for name in sorted(folders + files):
@@ -1085,12 +1127,19 @@ def _refuse_key_file(settings: Settings, side: str, config: SourceRef) -> None:
     under a root read either way. The message names the setting and not the
     path, which can hold a `${NAME}` value.
 
+    The driver expands `~` with `Path.expanduser`, unlike the readers, and
+    `Path` drops a leading `./` first, so the driver opens `./~/k.pem` in the
+    home folder. The check expands the text the same way, once the text as
+    written is held off another machine.
+
     Raises:
         ConfigError: If the key file lies outside every root.
     """
     if not isinstance(config, SnowflakeConfig) or config.private_key_path is None:
         return
-    if not _opened_inside(settings, config.private_key_path):
+    location = config.private_key_path
+    as_opened = str(Path(location).expanduser())
+    if names_another_machine(location) or not _under_both_readings(settings, as_opened):
         raise ConfigError(
             f"The {side} private_key_path is outside the folders this server reads from: "
             f"{_roots(settings)}. The driver opens the key file on this machine, and a tool "
@@ -1099,7 +1148,27 @@ def _refuse_key_file(settings: Settings, side: str, config: SourceRef) -> None:
         )
 
 
-def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -> None:
+def _as_checked(settings: Settings, side: str, config: SourceRef) -> SourceRef:
+    """Return a side as a tool opens it, with a DuckDB file named by the path checked.
+
+    DuckDB replays the write-ahead logs beside the file as it opens it, before
+    the sandbox applies, so each log is held to the roots as the file is. A
+    resolved path that names another machine, as a Windows long path does,
+    is refused too.
+    """
+    if not isinstance(config, DuckDBConfig) or config.is_motherduck:
+        return config
+    database = _resolved_database(side, config.database)
+    _refuse_outside(settings, side, "database", database, database)
+    for setting, suffix in _DUCKDB_LOGS:
+        log = _wal_beside(database, suffix)
+        _refuse_outside(settings, side, setting, log, log)
+    return config.model_copy(update={"database": database})
+
+
+def check_data_paths(
+    settings: Settings, source: SourceRef, target: SourceRef
+) -> tuple[SourceRef, SourceRef]:
     """Refuse a side whose data on this machine lies outside the roots.
 
     Every tool that opens a side calls this first, since a column name or an
@@ -1110,16 +1179,18 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     holds a glob character is a pattern, and every file it matches must
     resolve under a root. A pattern may not reach `..`, since a match can be a
     link that `..` then leaves from its target. A `file:` URI may not hold a
-    pattern at all, since Polars expands one with another matcher. A Delta
-    Lake or Iceberg table, wherever it lies, has every file on this machine
-    that its scan reads checked too, since its log or metadata can name a
-    file anywhere, and every file elsewhere held to the hosts the server
-    allows. Data on another machine that a side names, such as an object
-    store, a database server, or a warehouse, is held to those hosts by
-    `_refuse_hosts`, which a caller runs first, since listing a table's files
-    connects to its host. A Snowflake key file is a file on this machine,
-    which the driver opens before it connects, so it must lie under a root
-    too.
+    pattern at all, since Polars expands one with another matcher. A DuckDB
+    file's path must resolve to an existing file, and the side returned names
+    the file by that resolved path, so DuckDB opens the file checked and the
+    logs beside it. A Delta Lake or Iceberg table, wherever it lies, has
+    every file on this machine that its scan reads checked too, since its log
+    or metadata can name a file anywhere, and every file elsewhere held to the
+    hosts the server allows. Data on another machine that a side names, such
+    as an object store, a database server, or a warehouse, is held to those
+    hosts by `_refuse_hosts`, which a caller runs first, since listing a
+    table's files connects to its host. A Snowflake key file is a file on this
+    machine, which the driver opens before it connects, so it must lie under
+    a root too.
 
     Every location the configuration names is checked before any file is
     opened, of either side: the listings come last.
@@ -1129,13 +1200,19 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
         source (SourceRef): The source configuration.
         target (SourceRef): The target configuration.
 
+    Returns:
+        tuple[SourceRef, SourceRef]: The source and the target to open, each
+            DuckDB file named by its resolved path.
+
     Raises:
         ConfigError: If a file or folder a side reads, or a Snowflake key file,
-            is outside every root, or a file a lakehouse table names lies on a
-            host the server does not allow.
+            is outside every root, a DuckDB file's path does not resolve, or a
+            file a lakehouse table names lies on a host the server does not
+            allow.
         ConnectorError: If the files of a lakehouse table cannot be listed.
     """
     sides = (("source", source), ("target", target))
+    checked: list[SourceRef] = []
     for side, config in sides:
         # A SQLite path carries the `password` field, as the driver reads it.
         password = config.password if isinstance(config, DatabaseConfig) else None
@@ -1144,10 +1221,12 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
                 settings, side, setting, location, local, expanded=True, password=password
             )
         _refuse_key_file(settings, side, config)
+        checked.append(_as_checked(settings, side, config))
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
             for setting, location, quoted in _table_files(settings, side, config):
                 _refuse_listed(settings, side, setting, location, quoted=quoted)
+    return checked[0], checked[1]
 
 
 def _refuse_listed(
@@ -1330,13 +1409,18 @@ def _database_hosts(config: DatabaseConfig) -> list[tuple[str, str]]:
 def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
     """Name each host a DuckDB `database` reaches, or None for one the server cannot check.
 
-    A database DuckDB opens through an extension, such as Postgres's, connects
-    to whatever its text names, so it names None. So does a MotherDuck option a
-    tool does not pass on, such as `motherduck_host`. A MotherDuck database with
-    none of those reaches MotherDuck's own hosts, and names none. The whole text
-    is checked, since the extension finds an option after a `&` or a `#` before
-    the `?` as well. The text can hold a `${NAME}` value, so only a known
-    option's name is repeated.
+    A MotherDuck option a tool does not pass on, such as `motherduck_host`,
+    names None. A MotherDuck database with none of those reaches MotherDuck's
+    own hosts, and names none. The whole text is checked, since the extension
+    finds an option after a `&` or a `#` before the `?` as well. The text can
+    hold a `${NAME}` value, so only a known option's name is repeated.
+
+    Any other `database` is a file's path, checked as any location is:
+    `DuckDBConfig` refuses one that DuckDB would open through an extension,
+    such as `sqlite:x.db`, a `file:` URI, whose host DuckDB opens as a
+    folder, and `~name`, which DuckDB reads as HOME followed by `name`. The
+    connector expands `~/` as the check does, and opens the file as a DuckDB
+    database, whatever it holds.
     """
     if config.is_motherduck:
         name, _, query = config.database.partition("?")
@@ -1352,8 +1436,6 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
             if _OPTION_VALUE.fullmatch(value) is None:
                 return [(f"database option '{key}'", None)]
         return []
-    if _EXTENSION_PREFIX.match(config.database) is not None:
-        return [("database extension prefix", None)]
     return [*_location_hosts("database", config.database)]
 
 
@@ -1473,7 +1555,7 @@ def check_configuration(
     else:
         if schemas:
             _refuse_hosts(settings, source, target)
-            check_data_paths(settings, source, target)
+            source, target = check_data_paths(settings, source, target)
         with _reading(settings):
             findings = DiffEngine.check_configs(
                 diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
@@ -1485,7 +1567,7 @@ def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceR
     """Load a configuration a tool opens, refusing data outside the roots or on a host not allowed."""
     diff, source, target = load_config(resolve_path(settings, path))
     _refuse_hosts(settings, source, target)
-    check_data_paths(settings, source, target)
+    source, target = check_data_paths(settings, source, target)
     return diff, source, target
 
 

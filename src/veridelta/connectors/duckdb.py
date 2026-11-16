@@ -13,7 +13,8 @@ Two tables in one database that both opt into `pushdown` are compared inside
 DuckDB instead: `DuckDBPushdownSession` runs each compiled statement on one
 connection and reads back only counts and keys.
 
-A file opens read-only, so the read can never change it. A MotherDuck database
+A file opens read-only, so the read can never change it, and as a DuckDB
+database, so no extension loads to open a SQLite file. A MotherDuck database
 opens read-write, because a read-only connection needs a read-scaling token.
 Each session reads time in UTC, so a timestamp with a time zone, or a date cast
 in a `query`, does not depend on the machine. A file's connection reads other
@@ -75,6 +76,27 @@ _READ_STATEMENT_KINDS: Final = ("SELECT", "PRAGMA", "EXPLAIN", "CALL", "MULTI")
 SHOW, DESCRIBE, SUMMARIZE, FROM, and VALUES parse as SELECT. DuckDB 2.0
 parses PIVOT as MULTI, the several statements it expands into, so MULTI stays.
 """
+
+_DUCKDB_TYPE: Final = "duckdb:"
+"""The prefix that makes DuckDB open a file as a DuckDB database, through no extension.
+
+DuckDB strips it and opens the rest of the text as a path, so it opens the path
+that `DuckDBConfig` and the MCP server check, whatever the file holds."""
+
+_NO_HOME: Final = (
+    "The DuckDB 'database' starts with ~, and the system names no home folder to expand it "
+    "to. Set HOME, or USERPROFILE on Windows, or write the path itself."
+)
+
+_TWO_SLASHES: Final = (
+    "The DuckDB 'database' starts with //, once ~ is expanded, and DuckDB does not open "
+    "such a path as the file it names. Start the path with one /, and write a Windows "
+    "share as \\\\server\\share."
+)
+
+_NO_EXTENSIONS: Final = {"autoinstall_known_extensions": False, "autoload_known_extensions": False}
+"""Settings that stop DuckDB from installing or loading an extension by itself while
+it opens a file, such as `httpfs` for a path that starts with a URL's scheme."""
 
 _UNREADABLE_TYPES: Final = frozenset({"interval", "union"})
 """DuckDB types Polars cannot import: it raises on some results and panics on others."""
@@ -323,15 +345,34 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
     A file is held to its own folder, or inside `sandboxed` to the folders
     that names, before any statement of the caller's or any view in the file
     runs. A connection whose setup fails is closed.
+
+    A file opens as a DuckDB database, whatever its first bytes say, with no
+    extension loading by itself. Otherwise DuckDB reads a SQLite file's header
+    as a reason to install and load the extension that opens it, before any
+    setting of the sandbox applies.
+
+    A leading `~` is expanded here, with the function and text the MCP
+    server's check expands, so DuckDB never does. DuckDB reads `~` as `HOME`
+    alone, which may be unset where the system still names a home folder.
+
+    Raises:
+        ConnectorError: If the path still starts with `~`, since the system
+            names no home folder, or starts with `//`, once `~` is expanded.
+            DuckDB strips no type from `duckdb://`, so it would open a file
+            whose name starts with `duckdb:` instead, by its first bytes.
     """
     setup = ["SET TimeZone = 'UTC'"]
     if token is None:
-        connection = duckdb.connect(config.database, read_only=True)
+        path = os.path.expanduser(config.database)
+        if path.startswith("~"):
+            raise ConnectorError(_NO_HOME)
+        if path.startswith("//"):
+            raise ConnectorError(_TWO_SLASHES)
+        connection = duckdb.connect(f"{_DUCKDB_TYPE}{path}", read_only=True, config=_NO_EXTENSIONS)
         folders = _sandbox.get()
         if folders is None:
             # A view in the file runs as its author wrote it, so it reads only beside the file.
-            # DuckDB expands `~` in a path, so the folder does too.
-            folders = (_folder(Path(config.database).expanduser().resolve().parent),)
+            folders = (_folder(Path(path).resolve().parent),)
         setup += compile_duckdb_sandbox(folders)
     else:
         # A read-only MotherDuck connection needs a read-scaling token, so it opens read-write.

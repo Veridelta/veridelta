@@ -9,6 +9,7 @@ whether a call failed.
 """
 
 import functools
+import getpass
 import glob
 import importlib.util
 import json
@@ -17,6 +18,7 @@ import ntpath
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import threading
 import uuid
@@ -117,6 +119,13 @@ _SECRET = "hunter2-do-not-print"
 
 _CANARY = "CANARY-123-45-6789"
 """A cell value that a server started without `--allow-row-values` never returns."""
+
+_DUCKDB_LOGS = [
+    (".wal", "WAL"),
+    (".wal.checkpoint", "checkpoint WAL"),
+    (".wal.recovery", "recovery WAL"),
+]
+"""Each log DuckDB names beside a database file, with the name a refusal gives it."""
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
 """The CSV files the CI jobs and the recording compare."""
@@ -836,6 +845,30 @@ class TestDescribeSide:
 
         assert _SECRET not in str(caught.value)
 
+    def test_it_names_no_file_in_the_home_folder_for_a_folder_named_home(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a missing `./~/x` lists the folder `~` it names, not the home folder outside.
+
+        The check reads `./~/x` under the working directory, so it passes, and
+        the error for a missing file lists the data files beside it. `Path`
+        drops the `./` and expands `~`, so it would list the home folder.
+        """
+        home = tmp_path_factory.mktemp("home")
+        (home / "payroll.csv").write_text("id\n1\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(tmp_path, "source:\n  path: a.csv\ntarget:\n  path: ./~/x.csv\nprimary_keys: [id]\n")
+
+        with pytest.raises(ConnectorError, match="does not exist") as caught:
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert "payroll" not in str(caught.value)
+
     def test_it_will_not_run_a_query_to_learn_its_columns(self, tmp_path: Path) -> None:
         """Ensure a query side is refused with the probe's own reason, and nothing connects."""
         _write(tmp_path, _QUERY)
@@ -922,6 +955,7 @@ class TestCheckDataPaths:
     def test_it_accepts_data_under_a_root(self, tmp_path: Path) -> None:
         """Ensure a relative file, a file in full, and a DuckDB file under a root pass."""
         settings = Settings((tmp_path,))
+        (tmp_path / "x.duckdb").write_bytes(b"")
 
         check_data_paths(
             settings,
@@ -1024,6 +1058,338 @@ class TestCheckDataPaths:
             check_data_paths(Settings((home,)), SourceConfig(path=str(home / "a.csv")), side)
 
         assert sqlite_path(side) == str(tmp_path / "~" / "x.db")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        ("build", "setting", "location"),
+        [
+            pytest.param(lambda path: SourceConfig(path=path), "path", "./~/x.csv", id="file"),
+            pytest.param(
+                lambda path: DuckDBConfig(database=path, table="t"),
+                "database",
+                "./~/x.duckdb",
+                id="duckdb",
+            ),
+        ],
+    )
+    def test_it_reads_a_folder_named_home_as_the_readers_do(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        build: Callable[[str], SourceRef],
+        setting: str,
+        location: str,
+    ) -> None:
+        """Ensure `./~/x` names a folder `~` in the working directory, in the check and the read.
+
+        `Path` drops the `./` and then expands `~`, so it would check the home
+        folder, here under the root, while the reader opens the link named `~`.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        (tmp_path / "~").symlink_to(outside, target_is_directory=True)
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(ConfigError, match=f"The target {setting} '{location}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), build(location))
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A home folder of `/` and a path from it are POSIX forms."
+    )
+    def test_it_reads_a_duckdb_home_path_as_duckdb_is_handed_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `~//x` with a home folder of `/` reaches DuckDB as the resolved `/x`.
+
+        The connector expands the text to `//x`, which Linux and macOS read as
+        `/x` and DuckDB opens as no file, so the server hands DuckDB the path
+        it resolved, which starts with one `/`.
+        """
+        monkeypatch.setenv("HOME", "/")
+        (tmp_path / "x.duckdb").write_bytes(b"")
+        database = f"~/{tmp_path / 'x.duckdb'}"
+
+        _, target = check_data_paths(
+            Settings((tmp_path,)),
+            SourceConfig(path=str(tmp_path / "a.csv")),
+            DuckDBConfig(database=database, table="t"),
+        )
+
+        assert isinstance(target, DuckDBConfig)
+        assert target.database == os.path.realpath(tmp_path / "x.duckdb")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        ("database", "file"),
+        [("{root}/x.duckdb", "x.duckdb"), ("~", "home")],
+    )
+    @pytest.mark.parametrize(("suffix", "log"), _DUCKDB_LOGS)
+    def test_it_refuses_a_duckdb_write_ahead_log_linked_outside(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        database: str,
+        file: str,
+        suffix: str,
+        log: str,
+    ) -> None:
+        """Ensure each log beside a DuckDB file is held to the roots, since DuckDB replays it.
+
+        DuckDB opens the path it is handed with `.wal` added as it opens the
+        file, before the sandbox applies, and follows a link there to another
+        database's log. When that log ends in a checkpoint the file holds, as
+        a crash during a checkpoint leaves it, a read-only open replays
+        `.wal.checkpoint` instead. Python would read `~.wal` as the home of a
+        user named `.wal`, where DuckDB adds `.wal` to the home folder.
+        """
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
+        wal.write_bytes(b"")
+        (tmp_path / file).write_bytes(b"")
+        (tmp_path / f"{file}{suffix}").symlink_to(wal)
+        target = DuckDBConfig(database=database.format(root=tmp_path), table="t")
+
+        with pytest.raises(ConfigError, match=f"The target database's {log} '.+' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
+    @pytest.mark.parametrize(("suffix", "log"), _DUCKDB_LOGS)
+    def test_it_refuses_a_duckdb_write_ahead_log_that_a_question_mark_moves_outside(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, suffix: str, log: str
+    ) -> None:
+        """Ensure each log is checked where DuckDB puts it, before the first `?` of the path.
+
+        For `L?/x.duckdb`, DuckDB replays `L.wal?/x.duckdb`, or
+        `L.wal.checkpoint?/x.duckdb`, in another folder, which here is a link
+        out of the root. `L?/x.duckdb.wal` is under the root, so a check of
+        that path alone would pass.
+        """
+        (tmp_path / "L?").mkdir()
+        (tmp_path / "L?" / "x.duckdb").write_bytes(b"")
+        _link_folder(tmp_path / f"L{suffix}?", tmp_path_factory.mktemp("outside"))
+        target = DuckDBConfig(database="L?/x.duckdb", table="t")
+
+        wal = tmp_path / f"L{suffix}?" / "x.duckdb"
+        with pytest.raises(ConfigError, match=re.escape(f"The target database's {log} '{wal}' is")):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
+    def test_it_refuses_a_duckdb_write_ahead_log_that_the_working_directory_moves_outside(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a `?` in the working directory moves the WAL of a relative path, as in DuckDB.
+
+        DuckDB makes the path absolute before it puts `.wal` before the first
+        `?`, so with the server in `r?oot`, `x.duckdb` has its log at
+        `r.wal?oot/x.duckdb`, here a link out of the root.
+        """
+        root = tmp_path / "r?oot"
+        root.mkdir()
+        (root / "x.duckdb").write_bytes(b"")
+        _link_folder(tmp_path / "r.wal?oot", tmp_path_factory.mktemp("outside"))
+        monkeypatch.chdir(root)
+        target = DuckDBConfig(database="x.duckdb", table="t")
+
+        with pytest.raises(ConfigError, match=r"The target database's WAL '.+' is outside"):
+            check_data_paths(Settings((root,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_refuses_the_write_ahead_log_beside_the_file_a_link_leads_to(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a link named as the database has its WAL checked beside the file it leads to.
+
+        DuckDB follows the link before it adds `.wal`, so for a link
+        `x.duckdb` to `sub/y.duckdb` it replays `sub/y.duckdb.wal`, here a
+        link out of the root, and never looks for `x.duckdb.wal`.
+        """
+        wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
+        wal.write_bytes(b"")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "y.duckdb").write_bytes(b"")
+        (tmp_path / "sub" / "y.duckdb.wal").symlink_to(wal)
+        (tmp_path / "x.duckdb").symlink_to(tmp_path / "sub" / "y.duckdb")
+        target = DuckDBConfig(database="x.duckdb", table="t")
+
+        named = re.escape(str(tmp_path / "sub" / "y.duckdb.wal"))
+        with pytest.raises(ConfigError, match=f"The target database's WAL '{named}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_refuses_the_write_ahead_log_beside_the_file_a_link_and_dots_lead_to(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure `lnk/../x.duckdb` has its WAL checked in the folder above the link's target.
+
+        DuckDB follows `lnk` to `real/deep` before the `..`, so it opens
+        `real/x.duckdb` and replays `real/x.duckdb.wal`, here a link out of the
+        root. Folded by text alone, the path names `x.duckdb` in the root.
+        """
+        wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
+        wal.write_bytes(b"")
+        (tmp_path / "real" / "deep").mkdir(parents=True)
+        (tmp_path / "lnk").symlink_to(tmp_path / "real" / "deep", target_is_directory=True)
+        for file in (tmp_path / "x.duckdb", tmp_path / "real" / "x.duckdb"):
+            file.write_bytes(b"")
+        (tmp_path / "real" / "x.duckdb.wal").symlink_to(wal)
+        target = DuckDBConfig(database="lnk/../x.duckdb", table="t")
+
+        named = re.escape(str(tmp_path / "real" / "x.duckdb.wal"))
+        with pytest.raises(ConfigError, match=f"The target database's WAL '{named}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "database",
+        [
+            "missing.duckdb",
+            "missing/../x.duckdb",
+            "lnk/../missing/../lnk2/../x.duckdb",
+            "x.duckdb/",
+            "x.duckdb/.",
+            "x.duckdb/../x.duckdb",
+            "file.duckdb/../x.duckdb",
+        ],
+    )
+    def test_it_refuses_a_duckdb_path_that_does_not_resolve(
+        self, tmp_path: Path, database: str
+    ) -> None:
+        """Ensure a DuckDB path the system cannot open as written is refused, on every Python.
+
+        DuckDB follows the links up to the first part it cannot resolve, and
+        folds the rest by text. So for `lnk/../missing/../lnk2/../x.duckdb` it
+        opens `real/x.duckdb` and replays the log beside it. `os.path.realpath`
+        follows `lnk2` too and names `other/x.duckdb`, and `os.path.abspath`
+        follows no link and names `x.duckdb` in the root. A file, or a link to
+        one, followed by a separator or `..` is no folder to the system, while
+        `os.path.realpath` before Python 3.13 folds the `..` by text.
+        """
+        for folder in ("real/deep", "other/deep", "sub"):
+            (tmp_path / folder).mkdir(parents=True)
+        (tmp_path / "lnk").symlink_to(tmp_path / "real" / "deep", target_is_directory=True)
+        (tmp_path / "real" / "lnk2").symlink_to(
+            tmp_path / "other" / "deep", target_is_directory=True
+        )
+        for each in ("x.duckdb", "real/x.duckdb", "other/x.duckdb", "sub/x.duckdb"):
+            (tmp_path / each).write_bytes(b"")
+        (tmp_path / "file.duckdb").symlink_to(tmp_path / "sub" / "x.duckdb")
+        target = DuckDBConfig(database=database, table="t")
+
+        with pytest.raises(ConfigError, match=re.escape(f"The target database '{database}' does")):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_refuses_a_duckdb_path_through_more_links_than_the_system_follows(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure a chain of 41 links, each inside the root, is refused before DuckDB opens it.
+
+        The system's `realpath` stops after 40 links, and DuckDB then folds
+        `c0/..` by text, so it would open `x.duckdb` in the root and replay
+        the log beside it, here a link out of the root. `os.path.realpath`
+        follows every link and names `real/x.duckdb`.
+        """
+        wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
+        wal.write_bytes(b"")
+        (tmp_path / "real" / "deep").mkdir(parents=True)
+        for file in (tmp_path / "x.duckdb", tmp_path / "real" / "x.duckdb"):
+            file.write_bytes(b"")
+        (tmp_path / "x.duckdb.wal").symlink_to(wal)
+        (tmp_path / "c40").symlink_to(tmp_path / "real" / "deep", target_is_directory=True)
+        for link in range(40):
+            (tmp_path / f"c{link}").symlink_to(f"c{link + 1}", target_is_directory=True)
+        target = DuckDBConfig(database="c0/../x.duckdb", table="t")
+
+        with pytest.raises(
+            ConfigError, match=re.escape("The target database 'c0/../x.duckdb' does")
+        ):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
+    def test_it_names_the_write_ahead_log_duckdb_writes(self, tmp_path: Path) -> None:
+        """Ensure the server's name for the WAL is the file DuckDB writes, `?` and all."""
+        (tmp_path / "L?").mkdir()
+        (tmp_path / "L.wal?").mkdir()
+        database = os.path.realpath(tmp_path / "L?" / "x.duckdb")
+        connection = duckdb.connect(database)
+        try:
+            connection.execute("CREATE TABLE t (id INTEGER)")
+
+            wal = mcp_server._wal_beside(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
+
+            assert Path(wal) == tmp_path / "L.wal?" / "x.duckdb"
+            assert Path(wal).is_file()
+        finally:
+            connection.close()
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            pytest.param(
+                lambda settings: check_configuration(settings, "veridelta.yaml", schemas=True),
+                id="validate_config",
+            ),
+            pytest.param(
+                lambda settings: describe_side(settings, "veridelta.yaml", "target"),
+                id="describe_schema",
+            ),
+            pytest.param(
+                lambda settings: read_rows(settings, "veridelta.yaml", "added"),
+                id="read_discrepancies",
+            ),
+            pytest.param(
+                lambda settings: run_configuration(settings, "veridelta.yaml"),
+                id="run_comparison",
+            ),
+            pytest.param(
+                lambda settings: propose_maps(settings, "veridelta.yaml"),
+                id="propose_value_maps",
+            ),
+            pytest.param(lambda settings: suggest(settings, "veridelta.yaml"), id="suggest_rules"),
+        ],
+    )
+    def test_each_tool_hands_duckdb_the_path_it_checked(
+        self, tmp_path: Path, mocker: MockerFixture, call: Callable[[Settings], object]
+    ) -> None:
+        """Ensure every tool opens a DuckDB file by its resolved path, which DuckDB keeps as it is.
+
+        A path with no link and no `..` left in it is one DuckDB cannot
+        resolve to another file than the one the server checked, whichever
+        way its own resolution goes.
+        """
+        (tmp_path / "sub").mkdir()
+        with duckdb.connect(str(tmp_path / "x.duckdb")) as connection:
+            connection.execute("CREATE TABLE t AS SELECT 1 AS id, 'a' AS v")
+        (tmp_path / "a.csv").write_text("id,v\n1,a\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  type: duckdb\n"
+            f"  database: {json.dumps(os.path.join('sub', '..', 'x.duckdb'))}\n"
+            "  table: t\nprimary_keys: [id]\n",
+        )
+        connect = mocker.spy(duckdb, "connect")
+
+        call(Settings((tmp_path,), allow_row_values=True))
+
+        resolved = os.path.realpath(tmp_path / "x.duckdb")
+        connect.assert_called_once_with(f"duckdb:{resolved}", read_only=True, config=mocker.ANY)
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
@@ -1632,10 +1998,14 @@ class TestCheckDataPaths:
 
         monkeypatch.setattr(socket, "gethostname", lambda: "this-machine")
         converted = mocker.spy(mcp_server, "url2pathname")
-        sides = (
-            SourceConfig(path=path),
-            DuckDBConfig(database=path.replace("a.csv", "a.duckdb"), table="t"),
-        )
+        sides: list[SourceRef] = [SourceConfig(path=path)]
+        database = path.replace("a.csv", "a.duckdb")
+        if database.startswith("file:"):
+            # `DuckDBConfig` refuses a `file:` URI itself, before the server reads its path.
+            with pytest.raises(ValueError, match="is a file: URI"):
+                DuckDBConfig(database=database, table="t")
+        else:
+            sides.append(DuckDBConfig(database=database, table="t"))
 
         for side in sides:
             with pytest.raises(
@@ -1893,17 +2263,28 @@ class TestCheckDataPaths:
             pytest.param("{outside}/k.pem", id="absolute"),
             pytest.param("../{outside_name}/k.pem", id="relative"),
             pytest.param("~/k.pem", id="home"),
+            pytest.param("./~/k.pem", id="home-after-a-dot"),
         ],
     )
     def test_it_refuses_a_snowflake_key_file_outside_the_roots(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, path: str
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
     ) -> None:
         """Ensure the key file the driver opens here is held to the roots, by its setting alone.
 
-        The path can hold a `${NAME}` value, so the message leaves it out.
+        The driver drops a leading `./` before it expands `~`, so `./~/k.pem`
+        is the key in the home folder, outside the root that holds the
+        working directory. The path can hold a `${NAME}` value, so the message
+        leaves it out.
         """
         outside = tmp_path_factory.mktemp("outside")
         (outside / "k.pem").write_text("not a real key\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(outside))
+        monkeypatch.setenv("USERPROFILE", str(outside))
+        monkeypatch.chdir(tmp_path)
         side = _key_pair(path.format(outside=outside, outside_name=outside.name))
 
         with pytest.raises(
@@ -2736,7 +3117,9 @@ class TestLakehouseFiles:
         secret = tmp_path_factory.mktemp("outside") / "secret.parquet"
         Path(added).rename(secret)
         Path(added).symlink_to(secret)
-        mocker.patch.object(mcp_server, "check_data_paths")
+        mocker.patch.object(
+            mcp_server, "check_data_paths", side_effect=lambda _, source, target: (source, target)
+        )
         _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
         _write(
             tmp_path,
@@ -3931,6 +4314,7 @@ class TestAllowedHosts:
         mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
         mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
         _remote(tmp_path, target)
+        (tmp_path / "x.duckdb").write_bytes(b"")
 
         report = describe_side(
             Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target"
@@ -3983,37 +4367,6 @@ class TestAllowedHosts:
                 "  credentials_path: sa.json\n",
                 "credentials_path",
                 id="bigquery-key-file",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: 'postgres_scanner:host=127.0.0.1 dbname=d'\n"
-                "  table: t\n",
-                "database extension prefix",
-                id="duckdb-postgres-extension",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: 'Postgres_Scanner:host=127.0.0.1'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-extension-in-any-case",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: 'mysql_scanner:host=127.0.0.1 user=u'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-mysql-extension",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: 'sqlite_scanner:x.db'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-sqlite-extension",
-            ),
-            pytest.param(
-                "  type: duckdb\n  database: '1ab:x'\n  table: t\n",
-                "database extension prefix",
-                id="duckdb-extension-with-a-digit-first",
-            ),
-            pytest.param(
-                '  type: duckdb\n  database: "motherduc\\u212a:x"\n  table: t\n',
-                "database extension prefix",
-                id="motherduck-with-the-kelvin-sign",
             ),
             pytest.param(
                 "  type: duckdb\n  database: 'md:?motherduck_host=127.0.0.1&motherduck_use_tls=false'"
@@ -4086,6 +4439,119 @@ class TestAllowedHosts:
 
         assert str(refused.value).startswith(f"The target {setting} is not one")
         read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("sqlite:x.db", id="sqlite"),
+            pytest.param("SQLITE:x.db", id="sqlite-in-any-case"),
+            pytest.param("sqlite:{outside}", id="sqlite-outside-the-roots"),
+            pytest.param("sqlite:../x.db", id="sqlite-relative"),
+            pytest.param("sqlite_scanner:x.db", id="sqlite-extension"),
+            pytest.param("postgres_scanner:host=127.0.0.1 dbname=d", id="postgres-extension"),
+            pytest.param("Postgres:host=127.0.0.1", id="postgres-in-any-case"),
+            pytest.param("mysql_scanner:host=127.0.0.1 user=u", id="mysql-extension"),
+            pytest.param("ducklake:x.ducklake", id="ducklake"),
+            pytest.param("duckdb:x.duckdb", id="duckdb"),
+            pytest.param("1ab:x", id="digit-first"),
+        ],
+    )
+    def test_it_refuses_a_duckdb_database_opened_through_an_extension(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        database: str,
+    ) -> None:
+        """Ensure no text before a colon picks the extension DuckDB opens a side through.
+
+        DuckDB loads that extension before the sandbox applies, and opens the
+        text after the prefix, which the check would read as another path.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        written = database.format(outside=tmp_path_factory.mktemp("outside") / "x.db")
+        _remote(tmp_path, f"  type: duckdb\n  database: {json.dumps(written)}\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="open it through an extension") as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert written not in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("file://elsewhere{root}/x.duckdb", id="host"),
+            pytest.param("file://LOCALHOST{root}/x.duckdb", id="localhost-uppercase"),
+            pytest.param("file://elsewhere:22{root}/x.duckdb", id="host-and-port"),
+            pytest.param("file://%2e%2e{root}/x.duckdb", id="escaped-host"),
+            pytest.param("file:///{root}/x.duckdb#/../../x.duckdb", id="fragment"),
+        ],
+    )
+    def test_it_refuses_a_duckdb_file_uri(
+        self, tmp_path: Path, mocker: MockerFixture, database: str
+    ) -> None:
+        """Ensure a `file:` URI whose path lies under the roots opens no file elsewhere.
+
+        DuckDB opens `file://elsewhere/<root>/x.duckdb` as `/elsewhere/<root>/x.duckdb`,
+        outside the roots, while each path the check reads from the URI lies under them.
+        """
+        connect = mocker.patch("duckdb.connect")
+        written = database.format(root=tmp_path.as_posix())
+        _remote(tmp_path, f"  type: duckdb\n  database: {json.dumps(written)}\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="is a file: URI") as refused:
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert written not in str(refused.value)
+        connect.assert_not_called()
+
+    def test_it_refuses_a_duckdb_database_in_a_user_home(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure `~<user>/..` opens no file outside the roots that the check read inside them.
+
+        The check reads the user's home from the system, and DuckDB adds the
+        text after `~` to HOME, then folds each `..` without the system, so
+        the two reach different files whenever the homes sit at different depths.
+        """
+        connect = mocker.patch("duckdb.connect")
+        written = f"~{getpass.getuser()}/../../x.duckdb"
+        _remote(tmp_path, f"  type: duckdb\n  database: {json.dumps(written)}\n  table: t\n")
+
+        with pytest.raises(ConfigError, match="starts with ~ and a name") as refused:
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert written not in str(refused.value)
+        connect.assert_not_called()
+
+    def test_it_opens_a_sqlite_file_at_a_duckdb_path_through_no_extension(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a SQLite file under the roots, named as a DuckDB file, installs no extension.
+
+        DuckDB reads a SQLite file's header as a reason to download its SQLite
+        extension, from a host no `--allow-host` names, and load it before the
+        sandbox applies. Its extensions live under the home folder, which
+        points into this test's folder, so one it installed would show there.
+        """
+        home = tmp_path_factory.mktemp("home")
+        # POSIX reads HOME, Windows USERPROFILE.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.chdir(tmp_path)
+        with sqlite3.connect(tmp_path / "x.db") as connection:
+            connection.execute("CREATE TABLE t (id INTEGER)")
+        connection.close()
+        _remote(tmp_path, "  type: duckdb\n  database: x.db\n  table: t\n")
+
+        with pytest.raises(ConnectorError, match="not a valid DuckDB database file"):
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert list(home.rglob("*")) == []
 
     @pytest.mark.parametrize(
         ("uri", "refusal"),
@@ -4242,7 +4708,8 @@ class TestAllowedHosts:
         monkeypatch.setenv("VD_MCP_SECRET", "hunter2_do_not_print")
         _remote(tmp_path, f"  type: duckdb\n  database: '{database}'\n  table: t\n")
 
-        with pytest.raises(ConfigError, match="is not one a tool passes on") as refused:
+        refusal = "is not one a tool passes on|open it through an extension"
+        with pytest.raises(ConfigError, match=refusal) as refused:
             run_configuration(Settings((tmp_path,)), "veridelta.yaml")
 
         assert "hunter2" not in str(refused.value)

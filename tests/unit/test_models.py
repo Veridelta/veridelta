@@ -3,7 +3,9 @@
 
 """Unit tests for Veridelta configuration and result data models."""
 
+import os
 import re
+import sys
 from typing import get_args
 
 import polars as pl
@@ -1093,6 +1095,112 @@ class TestDuckDBConfig:
     def test_it_tells_motherduck_from_a_file(self, database: str, motherduck: bool) -> None:
         """Ensure only the `md:` and `motherduck:` prefixes name a MotherDuck database."""
         assert DuckDBConfig(database=database, table="t").is_motherduck is motherduck
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("sqlite:warehouse.db", id="sqlite"),
+            pytest.param("SQLITE:warehouse.db", id="sqlite-uppercase"),
+            pytest.param("sqlite:/elsewhere/warehouse.db", id="sqlite-absolute"),
+            pytest.param("sqlite:../warehouse.db", id="sqlite-relative"),
+            pytest.param("sqlite_scanner:warehouse.db", id="extension-name"),
+            pytest.param("postgres:host=db.internal port=5432", id="postgres"),
+            pytest.param("postgres_scanner:host=db.internal", id="postgres-extension-name"),
+            pytest.param("mysql:host=db.internal user=u", id="mysql"),
+            pytest.param("ducklake:metadata.ducklake", id="ducklake"),
+            pytest.param("duckdb:warehouse.duckdb", id="duckdb"),
+            pytest.param("1ab:x", id="digit-first"),
+            pytest.param("data:warehouse.duckdb", id="folder-with-a-colon"),
+            pytest.param("postgres:", id="prefix-alone"),
+        ],
+    )
+    def test_it_refuses_a_database_duckdb_opens_through_an_extension(self, database: str) -> None:
+        """Ensure a `database` that would make DuckDB load an extension is refused, value unsaid.
+
+        DuckDB reads two or more ASCII letters, digits, or underscores before a
+        colon as the extension that opens the database, and loads it before
+        any setting of the connection applies.
+        """
+        with pytest.raises(ValidationError, match="open it through an extension") as refused:
+            DuckDBConfig(database=database, table="t")
+
+        assert database not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("file://host/data/warehouse.duckdb", id="host"),
+            pytest.param("file://LOCALHOST/data/warehouse.duckdb", id="localhost-uppercase"),
+            pytest.param("file://localhost/data/warehouse.duckdb", id="localhost"),
+            pytest.param("file://host:22/data/warehouse.duckdb", id="host-and-port"),
+            pytest.param("file://%2e%2e/data/warehouse.duckdb", id="escaped-host"),
+            pytest.param("file:///data/warehouse.duckdb", id="empty-host"),
+            pytest.param("file:////host/data/warehouse.duckdb", id="four-slashes"),
+            pytest.param("file:///data/%2e%2e/warehouse.duckdb", id="escape"),
+            pytest.param("file:///data/warehouse.duckdb#/../x.duckdb", id="fragment"),
+            pytest.param("file:/data/warehouse.duckdb", id="one-slash"),
+            pytest.param("file:warehouse.duckdb", id="no-slash"),
+            pytest.param("FILE:///data/warehouse.duckdb", id="uppercase"),
+        ],
+    )
+    def test_it_refuses_a_file_uri(self, database: str) -> None:
+        """Ensure a `file:` URI is refused, value unsaid, since DuckDB reads it as no parser does.
+
+        DuckDB opens `file://host/x` as `/host/x` and keeps a `%` escape, a
+        `?`, or a `#` in the name, so a check of the URI's path reads another file.
+        """
+        with pytest.raises(ValidationError, match="is a file: URI") as refused:
+            DuckDBConfig(database=database, table="t")
+
+        assert database not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("warehouse.duckdb", id="relative"),
+            pytest.param("./data:2026/warehouse.duckdb", id="colon-after-a-dot"),
+            pytest.param("C:/data/warehouse.duckdb", id="drive-letter"),
+            pytest.param("C:\\data\\warehouse.duckdb", id="drive-letter-backslash"),
+            pytest.param("s3://bucket/warehouse.duckdb", id="url"),
+            pytest.param("motherduc\u212a:x", id="kelvin-sign"),
+            pytest.param("a-b:x", id="hyphen"),
+            pytest.param("md:sales", id="motherduck"),
+            pytest.param("~/warehouse.duckdb", id="home"),
+            pytest.param(f"~{os.sep}warehouse.duckdb", id="home-and-separator"),
+            pytest.param("~", id="home-alone"),
+            pytest.param("data/~name/warehouse.duckdb", id="tilde-inside"),
+        ],
+    )
+    def test_it_takes_a_database_duckdb_opens_without_an_extension(self, database: str) -> None:
+        """Ensure a path, a drive letter, or a MotherDuck database is no extension prefix."""
+        assert DuckDBConfig(database=database, table="t").database == database
+
+    @pytest.mark.parametrize(
+        "database",
+        [
+            pytest.param("~daemon/warehouse.duckdb", id="user"),
+            pytest.param("~postgres/../../data/warehouse.duckdb", id="user-and-parent"),
+            pytest.param("~_name/warehouse.duckdb", id="underscore"),
+            pytest.param("~~/warehouse.duckdb", id="two-tildes"),
+            pytest.param("~.duckdb", id="file-name"),
+        ],
+    )
+    def test_it_refuses_a_user_home_in_a_database(self, database: str) -> None:
+        """Ensure `~name` is refused, value unsaid, since DuckDB and Python read it apart.
+
+        DuckDB adds the text after `~` to the home folder, so `~daemon/x` opens
+        `<home>daemon/x`, while Python and the MCP server's check read daemon's home.
+        """
+        with pytest.raises(ValidationError, match="starts with ~ and a name") as refused:
+            DuckDBConfig(database=database, table="t")
+
+        assert database not in str(refused.value)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="a backslash separates folders on Windows")
+    def test_it_refuses_a_tilde_and_a_backslash_on_posix(self) -> None:
+        """Ensure a backslash after `~` is refused where it is part of a name, as in a user's name."""
+        with pytest.raises(ValidationError, match="starts with ~ and a name"):
+            DuckDBConfig(database="~\\warehouse.duckdb", table="t")
 
     def test_it_takes_a_token_for_motherduck_only(self) -> None:
         """Ensure a token set on a file is refused rather than silently unused."""
