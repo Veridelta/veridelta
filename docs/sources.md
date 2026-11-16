@@ -247,7 +247,7 @@ A file's views and macros run as their author wrote them, so a file from someone
 - No extension installs or loads by itself, so a URL, which needs DuckDB's `httpfs` extension, fails too. `LOAD` and `INSTALL` fail as well.
 - The settings lock, so a `query` cannot change them. `SET threads = 1` fails, while `SET VARIABLE` still works.
 
-Put the files a view or a `query` reads beside the database file, or in a folder under it. The [MCP server](agents.md#mcp-server) holds a file to its roots instead.
+Put the files a view or a `query` reads beside the database file, or in a folder under it. The [MCP server](agents.md#mcp-server) holds a file to its roots instead, and on Windows lets it open no other file.
 
 DuckDB lets one process write to a file, or several read it, but not both at once. Close a notebook's read-write connection before a run reads the same file.
 

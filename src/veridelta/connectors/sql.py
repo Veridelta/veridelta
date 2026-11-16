@@ -818,7 +818,9 @@ def compile_duckdb_select(table: str, *, probe: bool = False) -> str:
     return f"{read} WHERE 1 = 0" if probe else read
 
 
-def compile_duckdb_sandbox(directories: Sequence[str]) -> tuple[str, ...]:
+def compile_duckdb_sandbox(
+    directories: Sequence[str], *, other_files: bool = True
+) -> tuple[str, ...]:
     """Compile the statements that hold a DuckDB connection to some directories.
 
     Run right after the connection opens, they stop DuckDB from installing or
@@ -826,19 +828,30 @@ def compile_duckdb_sandbox(directories: Sequence[str]) -> tuple[str, ...]:
     and lock the configuration, so no later statement, a `query` included,
     can undo them. The database the connection already opened stays readable.
 
+    Without `other_files`, they also disable DuckDB's file system on this
+    machine, so the connection opens no other file, even under `directories`.
+    DuckDB refuses the file system by its name before it resolves a path, and
+    a statement that would spill to disk fails too. As access is cut, DuckDB
+    resolves the open database's path through that file system, so the file
+    system is disabled after it.
+
     Args:
         directories (Sequence[str]): The folders files may be read from. DuckDB
             matches each as a prefix, so each should end in a path separator.
+        other_files (bool): Whether the connection may open files under
+            `directories`. Defaults to True.
 
     Returns:
         tuple[str, ...]: The statements, in the order they must run.
     """
     allowed = ", ".join(_string_literal(SQLDialect.DUCKDB, folder) for folder in directories)
+    no_files = () if other_files else ("SET disabled_filesystems = 'LocalFileSystem'",)
     return (
         "SET autoinstall_known_extensions = false",
         "SET autoload_known_extensions = false",
         f"SET allowed_directories = [{allowed}]",
         "SET enable_external_access = false",
+        *no_files,
         "SET lock_configuration = true",
     )
 

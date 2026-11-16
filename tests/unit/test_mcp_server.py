@@ -52,6 +52,7 @@ from pytest_mock import MockerFixture
 from veridelta import __version__, mcp_server
 from veridelta.config import load_config
 from veridelta.connectors import base, database
+from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.lakehouse import (
     DeltaLakeConnector,
@@ -763,8 +764,14 @@ class TestRunConfiguration:
 
         compare.assert_not_called()
 
-    def test_it_runs_a_query_when_the_server_allows_queries(self, tmp_path: Path) -> None:
-        """Ensure `--allow-queries` lets a query read its database and files under the roots."""
+    def test_it_runs_a_query_when_the_server_allows_queries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure `--allow-queries` lets a query read its database and files under the roots.
+
+        This holds where DuckDB's check of the roots holds, as on Linux and macOS.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", True)
         (tmp_path / "a.csv").write_text("id\n1\n")
         _queried(tmp_path, f"SELECT t.id FROM t JOIN read_csv('{tmp_path / 'a.csv'}') USING (id)")
 
@@ -784,6 +791,30 @@ class TestRunConfiguration:
             run_configuration(Settings((tmp_path,), allow_queries=True), "veridelta.yaml")
 
         assert _SECRET not in str(refused.value)
+
+    def test_it_lets_a_query_open_no_other_file_where_duckdbs_check_of_the_roots_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure an allowed query reads only its database where the roots do not hold, as on Windows.
+
+        The server cannot see the paths a query names, so DuckDB opens none.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", False)
+        settings = Settings((tmp_path,), allow_queries=True)
+        (tmp_path / "a.csv").write_text("id\n1\n")
+        _queried(tmp_path, f"SELECT t.id FROM t JOIN read_csv('{tmp_path / 'a.csv'}') USING (id)")
+        _write(
+            tmp_path,
+            "source:\n  type: duckdb\n  database: warehouse.duckdb\n  query: SELECT id FROM t\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            "table.yaml",
+        )
+
+        report = run_configuration(settings, "table.yaml")
+
+        assert report["verdict"] == "match"
+        with pytest.raises(ConnectorError, match="File system LocalFileSystem has been disabled"):
+            run_configuration(settings, "veridelta.yaml")
 
     def test_it_fails_on_a_configuration_that_cannot_run(self, tmp_path: Path) -> None:
         """Ensure a broken file stops the run, as `run` exits 3, instead of becoming a finding."""

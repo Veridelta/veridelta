@@ -14,10 +14,12 @@ is refused before anything resolves it, even when it leads under a root, and
 so is one that Python 3.11's `Path` would fold to a path on this machine, such
 as `\\\localhost\C$\x.csv`. So is a `file:` URI that names a host, one whose
 path starts with `//`, and one whose path Python cannot convert, as Windows
-before Python 3.14 cannot one with a second `:`.
+before Python 3.14 cannot one with a second `:`. A DuckDB file's connection
+opens no other file there, however a query or a view writes the path.
 
-Each path is built from `tmp_path` with the system's own separators, never
-from POSIX text.
+A `subst` drive stands in for a mapped network drive, since mapping one, even
+to a share on this machine, needs administrator rights. Each path is built
+from `tmp_path` with the system's own separators, never from POSIX text.
 """
 
 import ctypes
@@ -69,6 +71,12 @@ _ON_WINDOWS = pytest.mark.skipif(
 
 _OUTSIDE = r"The source [\w ]+'.*' is outside the folders this server reads from"
 """The refusal of a source path that resolves outside every root."""
+
+_DISABLED = "File system LocalFileSystem has been disabled"
+"""DuckDB's refusal of a file in a server's DuckDB connection on Windows.
+
+DuckDB raises it as it looks up the file system for the path, before it
+resolves the path, so a share path reaches no machine."""
 
 _Form = Callable[[Path, str], str]
 """A way to write the path of a named file in a folder."""
@@ -337,16 +345,25 @@ def _write(root: Path, source: str) -> None:
     )
 
 
-def _query(root: Path, path: str) -> RunReport:
-    """Run a DuckDB query of the CSV file at `path` through a server with queries allowed, and return its report.
+def _query(root: Path, query: str) -> RunReport:
+    """Run a DuckDB query in `w.duckdb` under the root through a server with queries allowed, and return its report.
 
     The configuration compares the query with `x.csv` under the root.
     """
     if not (root / "w.duckdb").exists():
         _duckdb(root / "w.duckdb")
-    query = f"SELECT id, v FROM read_csv('{path}')"
     _write(root, f"  type: duckdb\n  database: w.duckdb\n  query: {json.dumps(query)}\n")
     return run_configuration(Settings((root,), allow_queries=True), "veridelta.yaml")
+
+
+def _read_csv(path: str) -> str:
+    """Write a query of the CSV file at `path`."""
+    return f"SELECT id, v FROM read_csv('{path}')"
+
+
+def _attach(path: str) -> str:
+    """Write a query that attaches the DuckDB file at `path` and reads its table `t`."""
+    return f"ATTACH '{path}' AS other (READ_ONLY); SELECT id, 'inside' AS v FROM other.t"
 
 
 def _short(path: Path) -> str:
@@ -390,7 +407,7 @@ def _substituted(folder: Path) -> Iterator[str]:
         if given.returncode == 0:
             break
     else:
-        pytest.skip("Every drive letter is taken, so subst has none to give.")
+        pytest.skip("subst gave no drive letter: each is taken, or subst refused it.")
     try:
         yield drive
     finally:
@@ -979,9 +996,15 @@ class TestDuckDBSides:
 
         assert list(report["columns"]) == ["id"]
 
+    def test_it_runs_a_query_of_its_own_database(self, tmp_path: Path, inside: Path) -> None:
+        """Ensure an allowed query still reads the database's own tables, so each refusal here is about files."""
+        assert _query(tmp_path, "SELECT id, 'inside' AS v FROM t")["verdict"] == "match"
+
+    @pytest.mark.parametrize("statement", [_read_csv, _attach])
     @pytest.mark.parametrize(
         "form",
         [
+            pytest.param(lambda root, path: str(path), id="as-written"),
             pytest.param(
                 lambda root, path: _lowercase_drive(str(path)), id="lowercase-drive-letter"
             ),
@@ -994,65 +1017,79 @@ class TestDuckDBSides:
                 id="drive-relative-and-dot-dot",
             ),
             pytest.param(
-                lambda root, path: f"{root.as_posix()}/../{path.parent.name}/{path.name}",
-                id="root-and-dot-dot",
+                lambda root, path: f"{path.drive.lower()}..\\{path.parent.name}\\{path.name}",
+                id="lowercase-drive-relative-and-dot-dot",
             ),
-        ],
-    )
-    def test_it_holds_a_query_to_the_roots_however_windows_writes_the_path(
-        self, tmp_path: Path, inside: Path, outside: Path, form: Callable[[Path, Path], str]
-    ) -> None:
-        """Ensure DuckDB's sandbox refuses a file outside the roots, however a query writes its path.
-
-        The working directory is the root, so `C:..` is the folder above it,
-        which holds the folder outside.
-        """
-        with pytest.raises(ConnectorError, match="Permission Error"):
-            _query(tmp_path, form(tmp_path, outside))
-
-    @pytest.mark.parametrize(
-        "form",
-        [
-            pytest.param(lambda root, path: str(path), id="as-written"),
             pytest.param(
                 lambda root, path: f"{root.as_posix()}/../{path.parent.name}/{path.name}",
                 id="root-and-dot-dot",
             ),
         ],
     )
-    def test_it_reads_a_query_under_the_roots(
-        self, tmp_path: Path, inside: Path, form: Callable[[Path, Path], str]
+    def test_it_opens_no_file_from_a_query_however_windows_writes_the_path(
+        self,
+        tmp_path: Path,
+        inside: Path,
+        outside: Path,
+        form: Callable[[Path, Path], str],
+        statement: Callable[[str], str],
     ) -> None:
-        """Ensure DuckDB's sandbox reads a file under the root, so each refusal here is the sandbox's own."""
-        assert _query(tmp_path, form(tmp_path, inside))["verdict"] == "match"
+        """Ensure a query reads or attaches no file, under the root or outside it, however it writes the path.
+
+        DuckDB's own check of the roots reads `c:..`, with a lowercase letter,
+        as a name under the working directory, the root, while Windows opens
+        the folder above it, which holds the folder outside.
+        """
+        for csv in (inside, outside):
+            target = csv if statement is _read_csv else _duckdb(csv.with_suffix(".duckdb"))
+            with pytest.raises(ConnectorError, match=_DISABLED):
+                _query(tmp_path, statement(form(tmp_path, target)))
+
+    def test_it_runs_a_view_that_opens_no_file(
+        self, tmp_path: Path, inside: Path, outside: Path
+    ) -> None:
+        """Ensure a view stored in the file opens no file either, on a server without queries."""
+        lowercase = f"{outside.drive.lower()}..\\{outside.parent.name}\\{outside.name}"
+        with duckdb.connect(str(tmp_path / "w.duckdb")) as connection:
+            connection.execute(f"CREATE VIEW o AS SELECT id, v FROM read_csv('{lowercase}')")
+        _write(tmp_path, "  type: duckdb\n  database: w.duckdb\n  table: o\n")
+
+        with pytest.raises(ConnectorError, match=_DISABLED):
+            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
 
     @pytest.mark.parametrize("name", ["x.csv", "*.csv"])
-    def test_it_holds_a_query_through_a_junction_to_the_folder_it_leads_to(
+    def test_it_opens_no_file_from_a_query_through_a_junction(
         self, tmp_path: Path, inside: Path, outside: Path, name: str
     ) -> None:
-        """Ensure DuckDB's sandbox follows a junction before it matches the roots.
-
-        It reads a file, or a pattern, through a junction to a folder under
-        the root, and refuses one through a junction to a folder outside.
-        """
+        """Ensure a query reads no file, or pattern, through a junction to a folder under the root or outside."""
         _csv(tmp_path / "sub" / "x.csv", "inside")
 
         with (
             _junction(tmp_path / "k", tmp_path / "sub") as here,
             _junction(tmp_path / "j", outside.parent) as there,
         ):
-            assert _query(tmp_path, f"{here}\\{name}")["verdict"] == "match"
-            with pytest.raises(ConnectorError, match="Permission Error"):
-                _query(tmp_path, f"{there}\\{name}")
+            for link in (here, there):
+                with pytest.raises(ConnectorError, match=_DISABLED):
+                    _query(tmp_path, _read_csv(f"{link}\\{name}"))
 
+    @pytest.mark.parametrize("statement", [_read_csv, _attach])
     @pytest.mark.parametrize("form", _ELSEWHERE)
-    def test_it_reads_no_query_on_another_machine_or_a_device(
-        self, tmp_path: Path, inside: Path, outside: Path, form: Callable[[Path], str]
+    def test_it_reaches_no_machine_or_device_a_query_names(
+        self,
+        tmp_path: Path,
+        inside: Path,
+        outside: Path,
+        form: Callable[[Path], str],
+        statement: Callable[[str], str],
     ) -> None:
-        r"""Ensure a query fails on a file outside the roots written as a share or a device path.
+        r"""Ensure a query of a share or a device path fails before DuckDB resolves the path.
 
-        The server never sees a query's paths, so this holds DuckDB to it. The
-        test cannot tell whether DuckDB reached the machine before it failed.
+        The server never sees a query's paths. DuckDB's own check of the roots
+        resolves a share path, which reaches the machine it names, before it
+        refuses it. With its file system disabled, DuckDB refuses the path as
+        it looks the file system up, before any resolving, and `_DISABLED` is
+        that refusal.
         """
-        with pytest.raises(ConnectorError):
-            _query(tmp_path, form(outside))
+        target = outside if statement is _read_csv else _duckdb(outside.with_suffix(".duckdb"))
+        with pytest.raises(ConnectorError, match=_DISABLED):
+            _query(tmp_path, statement(form(target)))

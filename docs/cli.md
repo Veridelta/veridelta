@@ -330,7 +330,7 @@ veridelta mcp --root .
 | :--- | :--- |
 | `--root DIR` | A folder from which the tools may read configuration files and data on this machine. Repeat it for more folders. Default: the current directory. |
 | `--allow-row-values` | Let `read_discrepancies`, `propose_value_maps`, and `suggest_rules` return values from the data. Off by default. |
-| `--allow-queries` | Let a tool run a side's `query`, which runs as written. A DuckDB file still reads other files only from under the roots. Off by default. |
+| `--allow-queries` | Let a tool run a side's `query`, which runs as written. A DuckDB file still reads other files only from under the roots, and on Windows none at all. Off by default. |
 | `--allow-host HOST` | A host a side may connect to, such as a database server, a bucket, or a URL's host, with no scheme or port. Repeat it for more hosts. Default: none, so a tool reads only data under the roots, MotherDuck, Hugging Face, or BigQuery with the server's own credentials. |
 | `--max-rows N` | The most rows, value map entries, or example keys one call returns, at least 1. Default: 50. |
 | `-v`, `--verbose` | Print each file opened, connection, read, and pushdown statement on stderr; see [Logging](#logging). |

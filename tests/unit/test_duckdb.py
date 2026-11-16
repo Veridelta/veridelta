@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
+from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession, sandboxed
 from veridelta.connectors.sql import SQLDialect, compile_duckdb_sandbox
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -128,6 +129,39 @@ class TestDuckDBConnector:
             *held,
             call.sql('SELECT * FROM "main"."orders"'),
         ]
+
+    @pytest.mark.parametrize("folders_hold", [True, False])
+    def test_it_opens_no_other_file_when_sandboxed_where_duckdbs_folders_do_not_hold(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, folders_hold: bool
+    ) -> None:
+        """Ensure a sandboxed file opens no other file on a system such as Windows.
+
+        There DuckDB's folder check lets some paths out, and the server cannot
+        see the paths a query or a view names.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", folders_hold)
+        connection = _driver(mocker).connect.return_value
+
+        with sandboxed([Path("/data")]):
+            DuckDBConnector(_FILE).connect()
+
+        sandbox = compile_duckdb_sandbox([f"{Path('/data')}{os.sep}"], other_files=folders_hold)
+        held = [call.execute("SET TimeZone = 'UTC'"), *map(call.execute, sandbox)]
+        assert connection.mock_calls[: len(held)] == held
+
+    def test_it_holds_a_file_outside_the_sandbox_to_its_folder_wherever_it_runs(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure a file outside the MCP server still reads the files beside it, on Windows too."""
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", False)
+        monkeypatch.chdir(tmp_path)
+        connection = _driver(mocker).connect.return_value
+
+        DuckDBConnector(_FILE).connect()
+
+        sandbox = compile_duckdb_sandbox([f"{tmp_path.resolve()}{os.sep}"])
+        held = [call.execute("SET TimeZone = 'UTC'"), *map(call.execute, sandbox)]
+        assert connection.mock_calls[: len(held)] == held
 
     @pytest.mark.parametrize(
         ("database", "folder"),

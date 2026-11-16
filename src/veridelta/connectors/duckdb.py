@@ -20,6 +20,7 @@ Each session reads time in UTC, so a timestamp with a time zone, or a date cast
 in a `query`, does not depend on the machine. A file's connection reads other
 files only from the file's own folder, or inside `sandboxed`, from the folders
 that names, since a view stored in the file runs whatever its author wrote.
+Inside `sandboxed` on Windows, it opens no other file at all.
 
 A token never reaches a log line or an error. It goes to DuckDB as a
 connection setting, never in the connection string, and a failed read is
@@ -28,6 +29,7 @@ reported with the token replaced and without the driver's exception attached.
 
 import logging
 import os
+import sys
 import time
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
@@ -107,6 +109,17 @@ _NESTED_TYPES: Final = frozenset({"struct", "list", "array", "map"})
 _sandbox: ContextVar[tuple[str, ...] | None] = ContextVar("veridelta_duckdb_sandbox", default=None)
 """The folders a file's connection may read other files from, or None for no limit."""
 
+_FOLDERS_HOLD: Final = os.path.sep != "\\" and sys.platform not in ("cygwin", "msys")
+r"""Whether DuckDB's `allowed_directories` holds a statement to its folders on this system.
+
+On Windows it does not, in DuckDB 1.5. DuckDB reads a drive-relative path with
+a lowercase letter, such as `c:..\x.csv`, as a name under the working
+directory, so it passes the check. Then it opens the path as Windows reads it,
+in the folder above that directory. DuckDB also resolves a share path, which
+reaches the machine it names, before it refuses it. Cygwin and MSYS read such
+paths as Windows does. A test sets this attribute.
+"""
+
 
 @contextmanager
 def sandboxed(directories: Iterable[Path]) -> Generator[None]:
@@ -115,9 +128,11 @@ def sandboxed(directories: Iterable[Path]) -> Generator[None]:
     A `query` runs as written, and so does each view stored in the file. A
     connection to a file reads other files, attaches databases, and loads
     extensions only from under the file's own folder, or, inside the block,
-    only from under `directories`, whatever its statements ask. The MCP server
-    opens every side inside this block. A MotherDuck connection is not held, since its
-    extension loads and reaches MotherDuck over the network.
+    only from under `directories`, whatever its statements ask. On Windows,
+    where DuckDB's folder check does not hold, a connection opened inside the
+    block opens no other file at all. The MCP server opens every side inside
+    this block. A MotherDuck connection is not held, since its extension
+    loads and reaches MotherDuck over the network.
 
     Args:
         directories (Iterable[Path]): The folders, resolved.
@@ -344,7 +359,9 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
 
     A file is held to its own folder, or inside `sandboxed` to the folders
     that names, before any statement of the caller's or any view in the file
-    runs. A connection whose setup fails is closed.
+    runs. Inside `sandboxed` on a system where DuckDB's folder check does not
+    hold, the file opens no other file at all. A connection whose setup fails
+    is closed.
 
     A file opens as a DuckDB database, whatever its first bytes say, with no
     extension loading by itself. Otherwise DuckDB reads a SQLite file's header
@@ -369,11 +386,10 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
         if path.startswith("//"):
             raise ConnectorError(_TWO_SLASHES)
         connection = duckdb.connect(f"{_DUCKDB_TYPE}{path}", read_only=True, config=_NO_EXTENSIONS)
-        folders = _sandbox.get()
-        if folders is None:
-            # A view in the file runs as its author wrote it, so it reads only beside the file.
-            folders = (_folder(Path(path).resolve().parent),)
-        setup += compile_duckdb_sandbox(folders)
+        held = _sandbox.get()
+        # A view in the file runs as its author wrote it, so it reads only beside the file.
+        folders = held if held is not None else (_folder(Path(path).resolve().parent),)
+        setup += compile_duckdb_sandbox(folders, other_files=held is None or _FOLDERS_HOLD)
     else:
         # A read-only MotherDuck connection needs a read-scaling token, so it opens read-write.
         connection = duckdb.connect(config.database, config={"motherduck_token": token})

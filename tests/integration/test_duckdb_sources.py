@@ -19,6 +19,7 @@ import polars as pl
 import pytest
 
 from veridelta.connectors import DuckDBConnector, DuckDBPushdownSession
+from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -651,9 +652,14 @@ class TestDuckDBPushdown:
             session.close()
 
     def test_it_reads_only_files_under_its_folders_when_sandboxed(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure a query reads a file under the folders, and none beside them, even by prefix."""
+        """Ensure a query reads a file under the folders, and none beside them, even by prefix.
+
+        This is DuckDB's own check of the folders, which holds on Linux and
+        macOS, so it runs here on every system.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", True)
         root = tmp_path / "root"
         root.mkdir()
         database = _duckdb(root / "warehouse.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
@@ -682,6 +688,56 @@ class TestDuckDBPushdown:
         assert inside["id"].to_list() == [1]
         assert table["id"].to_list() == [1]
         assert "hunter2" not in str(refused.value)
+
+    def test_it_opens_no_other_file_when_sandboxed_where_duckdbs_folders_do_not_hold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a sandboxed file reads its own tables and views, and opens no other file.
+
+        On Windows, DuckDB's check of the folders lets some paths out, so a
+        query or a view may open no file at all there, even under the folders.
+        DuckDB refuses its file system by name before it resolves the path.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", False)
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.csv").write_text("id\n1\n", encoding="utf-8", newline="")
+        _duckdb(root / "other.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        database = _duckdb(
+            root / "warehouse.duckdb",
+            "CREATE TABLE t AS SELECT 1 AS id",
+            "CREATE VIEW plus AS SELECT id + 1 AS id FROM t",
+            f"CREATE VIEW csv AS SELECT * FROM read_csv('{root / 'a.csv'}')",
+        )
+
+        def read(table: str | None = None, query: str | None = None) -> pl.DataFrame:
+            connector = DuckDBConnector(DuckDBConfig(database=database, table=table, query=query))
+            connector.connect()
+            return connector.lazyframe().collect()
+
+        disabled = "File system LocalFileSystem has been disabled"
+        with sandboxed([root]):
+            table = read(table="t")
+            view = read(table="plus")
+            joined = read(query="SELECT t.id FROM t JOIN plus ON plus.id = t.id + 1")
+            with pytest.raises(ConnectorError, match=disabled):
+                read(table="csv")
+            for query in (
+                f"SELECT * FROM read_csv('{root / 'a.csv'}')",
+                f"SELECT * FROM glob('{root / '*'}')",
+                f"ATTACH '{root / 'other.duckdb'}' AS other; SELECT 1 AS id",
+            ):
+                with pytest.raises(ConnectorError, match=disabled):
+                    read(query=query)
+            with pytest.raises(ConnectorError, match="lock"):
+                read(query="SET disabled_filesystems = ''; SELECT 1 AS id")
+        # Outside the block, a file still reads the files beside it.
+        beside = read(table="csv")
+
+        assert table["id"].to_list() == [1]
+        assert view["id"].to_list() == [2]
+        assert joined["id"].to_list() == [1]
+        assert beside["id"].to_list() == [1]
 
     def test_it_compares_a_view_that_casts_what_polars_cannot_read(self, tmp_path: Path) -> None:
         """Ensure an INTERVAL column fails the probe by name, and a casting view compares."""
