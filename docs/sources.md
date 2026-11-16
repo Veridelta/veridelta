@@ -249,7 +249,7 @@ A file's views and macros run as their author wrote them, so a file from someone
 
 Put the files a view or a `query` reads beside the database file, or in a folder under it. The [MCP server](agents.md#mcp-server) holds a file to its roots instead.
 
-DuckDB replays the write-ahead log beside the file as it opens it, such as `warehouse.duckdb.wal`, so rows a writer has not yet checkpointed are read. A query that needs more memory than the machine gives it spills into the folder `warehouse.duckdb.tmp` beside the file, which DuckDB removes when it is done. The read fails when a log, or that folder, is a link that leads out of the file's folder, since DuckDB would replay rows from elsewhere or write there. The [MCP server](agents.md#mcp-server) spills into a folder of its own instead.
+DuckDB replays the write-ahead log beside the file as it opens it, such as `warehouse.duckdb.wal`, so rows a writer has not yet checkpointed are read. A query that needs more memory than the machine gives it spills into the folder `warehouse.duckdb.tmp` beside the file, which DuckDB removes when it is done. The read fails when a log, or that folder, is a link that leads out of the file's folder, since DuckDB would replay rows from elsewhere or write there. The check looks at the folder once, as the read starts, so it holds against a file that arrives with such a link, not against another process that changes the folder while DuckDB opens the file. The [MCP server](agents.md#mcp-server) spills into a folder of its own instead.
 
 DuckDB lets one process write to a file, or several read it, but not both at once. Close a notebook's read-write connection before a run reads the same file.
 

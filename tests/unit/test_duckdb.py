@@ -3,9 +3,11 @@
 
 """Unit tests for the DuckDB and MotherDuck connector, with the driver replaced."""
 
+import errno
 import logging
 import os
 import sys
+import tempfile
 import traceback
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -15,6 +17,7 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
+from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.duckdb import DuckDBConnector, DuckDBPushdownSession, sandboxed
 from veridelta.connectors.sql import SQLDialect, compile_duckdb_sandbox
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -575,8 +578,17 @@ _BESIDE = [
 ]
 """Each path DuckDB names beside a file, with the name a refusal gives it."""
 
+_NO_QUESTION_MARK = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows allows no `?` in a file or folder name."
+)
+
+_LISTED = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows lists no open descriptors, so only the path is looked up again.",
+)
+
 _LINKED = "is a link, lies in a folder reached through one, or is not a file"
-_CHANGED = "or a log beside it changed while DuckDB opened it"
+_CHANGED = "or the file or a log beside it changed while DuckDB opened it"
 
 
 def _file(tmp_path: Path) -> DuckDBConfig:
@@ -610,7 +622,7 @@ class TestDuckDBFilesBeside:
         elsewhere = tmp_path_factory.mktemp("elsewhere")
         Path(f"{config.database}{suffix}").symlink_to(elsewhere, target_is_directory=True)
 
-        with pytest.raises(ConnectorError, match=f"file's {name} '.+' leads out of the folder"):
+        with pytest.raises(ConnectorError, match=f"file's {name} '.+' lies outside the folder"):
             DuckDBConnector(config).connect()
 
         driver.connect.assert_not_called()
@@ -628,6 +640,40 @@ class TestDuckDBFilesBeside:
         DuckDBConnector(config).connect()
 
         driver.connect.assert_called_once()
+
+    @_NO_QUESTION_MARK
+    def test_it_reads_a_file_in_a_folder_whose_name_holds_a_question_mark(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a log path that names nothing is no refusal, though `?` puts it in another folder.
+
+        DuckDB adds `.wal` before the first `?`, so the log of `q?a/x` is
+        `q.wal?a/x`. The spill folder is set to the file's path with `.tmp` at
+        its very end, which lies beside the file.
+        """
+        driver = _driver(mocker)
+        config = _file(tmp_path / "q?a")
+
+        DuckDBConnector(config).connect()
+
+        settings = driver.connect.call_args.kwargs["config"]
+        assert Path(settings["temp_directory"]) == Path(f"{config.database}.tmp")
+
+    @_NO_QUESTION_MARK
+    def test_it_refuses_a_log_that_a_question_mark_puts_in_another_folder(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a log DuckDB would replay from a folder beside the file's is refused, link or not."""
+        driver = _driver(mocker)
+        config = _file(tmp_path / "q?a")
+        log = tmp_path / "q.wal?a" / "data" / "warehouse.duckdb"
+        log.parent.mkdir(parents=True)
+        log.write_bytes(b"")
+
+        with pytest.raises(ConnectorError, match=r"file's WAL '.+' lies outside the folder"):
+            DuckDBConnector(config).connect()
+
+        driver.connect.assert_not_called()
 
 
 class TestDuckDBSandboxedOpen:
@@ -708,6 +754,47 @@ class TestDuckDBSandboxedOpen:
 
         driver.connect.assert_not_called()
 
+    def test_it_creates_a_spill_folder_once_and_only_for_a_file(
+        self, opening: _Opening, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a block that opens no file creates no folder, and one that opens two shares one."""
+        created = mocker.spy(tempfile, "mkdtemp")
+        with sandboxed([tmp_path]):
+            pass
+        created.assert_not_called()
+        config = _file(tmp_path)
+        driver = opening(Path(config.database))
+
+        with sandboxed([tmp_path]):
+            DuckDBConnector(config).connect()
+            DuckDBConnector(config).connect()
+
+        created.assert_called_once()
+        folders = {
+            each.kwargs["config"]["temp_directory"] for each in driver.connect.call_args_list
+        }
+        assert folders == {created.spy_return}
+
+    def test_it_opens_one_file_at_a_time(self, opening: _Opening, tmp_path: Path) -> None:
+        """Ensure no other read's DuckDB connection opens a descriptor while one is confirmed."""
+        config = _file(tmp_path)
+        driver = opening(Path(config.database))
+        open_the_file = driver.connect.side_effect
+        held: list[bool] = []
+
+        def connect(*args: object, **kwargs: object) -> MagicMock:
+            held.append(duckdb_connector._OPENING.locked())  # pyright: ignore[reportPrivateUsage] - the lock is what keeps reads apart
+            return open_the_file(*args, **kwargs)
+
+        driver.connect.side_effect = connect
+
+        with sandboxed([tmp_path]):
+            DuckDBConnector(config).connect()
+
+        assert held == [True]
+        assert not duckdb_connector._OPENING.locked()  # pyright: ignore[reportPrivateUsage] - the lock is what keeps reads apart
+
+    @_LISTED
     def test_it_refuses_a_file_duckdb_does_not_hold_open(
         self, mocker: MockerFixture, tmp_path: Path
     ) -> None:
@@ -723,6 +810,54 @@ class TestDuckDBSandboxedOpen:
 
         connection.close.assert_called_once_with()
         connection.sql.assert_not_called()
+
+    @_LISTED
+    def test_it_refuses_a_file_another_read_held_open_before(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a descriptor of the file that another read already held does not count.
+
+        A tool call that holds the file open, through a hard link, would
+        otherwise let another call's DuckDB open a file elsewhere unseen.
+        """
+        config = _file(tmp_path)
+        connection = _driver(mocker).connect.return_value
+        descriptor = os.open(config.database, os.O_RDONLY)
+        try:
+            with sandboxed([tmp_path]), pytest.raises(ConnectorError, match=_CHANGED):
+                DuckDBConnector(config).connect()
+        finally:
+            os.close(descriptor)
+
+        connection.close.assert_called_once_with()
+
+    def test_it_refuses_where_the_descriptors_cannot_be_listed(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure a system that should list its descriptors, and cannot, opens no file."""
+        monkeypatch.setattr("veridelta.connectors.duckdb._DESCRIPTORS", str(tmp_path / "none"))
+        driver = _driver(mocker)
+
+        with sandboxed([tmp_path]), pytest.raises(ConnectorError, match="could not list the files"):
+            DuckDBConnector(_file(tmp_path)).connect()
+
+        driver.connect.assert_not_called()
+
+    def test_it_names_why_a_path_could_not_be_looked_up(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure a folder the server may not open is reported as such, not as a link."""
+        denied = PermissionError(errno.EACCES, "Permission denied")
+        monkeypatch.setattr(duckdb_connector, "_looked_up", MagicMock(side_effect=denied))
+        driver = _driver(mocker)
+
+        with (
+            sandboxed([tmp_path]),
+            pytest.raises(ConnectorError, match=r"could not be looked up.+: Permission denied"),
+        ):
+            DuckDBConnector(_file(tmp_path)).connect()
+
+        driver.connect.assert_not_called()
 
     def test_it_refuses_a_log_that_appears_while_duckdb_opens_the_file(
         self, opening: _Opening, tmp_path: Path
@@ -747,7 +882,7 @@ class TestDuckDBSandboxedOpen:
         self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Ensure a system that lists no descriptors, as Windows, still reads an unchanged file."""
-        monkeypatch.setattr("veridelta.connectors.duckdb._DESCRIPTORS", str(tmp_path / "none"))
+        monkeypatch.setattr("veridelta.connectors.duckdb._DESCRIPTORS", None)
         connection = _driver(mocker).connect.return_value
 
         with sandboxed([tmp_path]):
@@ -758,23 +893,33 @@ class TestDuckDBSandboxedOpen:
     def test_it_skips_a_descriptor_closed_since_it_was_listed(
         self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Ensure a descriptor that closed between the listing and its check counts as none."""
+        """Ensure a descriptor that closed between the listing and its check counts as none.
+
+        The listing here holds a closed descriptor throughout, and the one
+        `connect` opens once it runs.
+        """
         config = _file(tmp_path)
         listed = tmp_path / "descriptors"
         listed.mkdir()
-        descriptor = os.open(config.database, os.O_RDONLY)
-        try:
-            for name in (str(descriptor), "1048575"):
-                (listed / name).write_bytes(b"")
-            monkeypatch.setattr("veridelta.connectors.duckdb._DESCRIPTORS", str(listed))
-            connection = _driver(mocker).connect.return_value
+        (listed / "1048575").write_bytes(b"")
+        monkeypatch.setattr("veridelta.connectors.duckdb._DESCRIPTORS", str(listed))
+        driver = _driver(mocker)
+        descriptors: list[int] = []
 
+        def connect(*_: object, **__: object) -> MagicMock:
+            descriptors.append(os.open(config.database, os.O_RDONLY))
+            (listed / str(descriptors[-1])).write_bytes(b"")
+            return driver.connect.return_value
+
+        driver.connect.side_effect = connect
+        try:
             with sandboxed([tmp_path]):
                 DuckDBConnector(config).connect()
         finally:
-            os.close(descriptor)
+            for descriptor in descriptors:
+                os.close(descriptor)
 
-        connection.sql.assert_called_once_with('SELECT * FROM "orders"')
+        driver.connect.return_value.sql.assert_called_once_with('SELECT * FROM "orders"')
 
 
 _PUSHDOWN = DuckDBConfig(database="warehouse.duckdb", table="src", pushdown=True)

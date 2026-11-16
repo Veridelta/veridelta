@@ -53,7 +53,7 @@ from veridelta import __version__, mcp_server
 from veridelta.config import load_config
 from veridelta.connectors import base, database
 from veridelta.connectors.database import sqlite_path
-from veridelta.connectors.duckdb import beside
+from veridelta.connectors.duckdb import DuckDBPushdownSession, beside, sandboxed
 from veridelta.connectors.lakehouse import (
     DeltaLakeConnector,
     IcebergConnector,
@@ -1393,6 +1393,59 @@ class TestCheckDataPaths:
 
         with pytest.raises(ConnectorError, match=refusal):
             describe_side(Settings((root,)), "veridelta.yaml", "source")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows creates a symbolic link only with a privilege, and lists no descriptors.",
+    )
+    def test_it_refuses_a_duckdb_folder_swapped_while_another_call_holds_the_file(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a descriptor another tool call holds does not confirm what DuckDB opened.
+
+        One call holds the file open through a hard link in the root, as a
+        long pushdown does. Another call's folder becomes a link out of the
+        root while DuckDB opens the file, and returns before the connector
+        looks again, so only a descriptor DuckDB opened then may count.
+        """
+        root, outside = tmp_path / "root", tmp_path_factory.mktemp("outside")
+        for folder, column in ((root / "data", "checked"), (outside, "elsewhere")):
+            folder.mkdir(parents=True, exist_ok=True)
+            _duckdb_table(folder / "x.duckdb", column)
+        (root / "other").mkdir()
+        os.link(root / "data" / "x.duckdb", root / "other" / "y.duckdb")
+        _write(
+            root,
+            "source:\n  type: duckdb\n  database: data/x.duckdb\n  table: t\n"
+            "target:\n  path: a.csv\nprimary_keys: [checked]\n",
+        )
+        monkeypatch.chdir(root)
+        held = DuckDBPushdownSession(
+            DuckDBConfig(database=str(root / "other" / "y.duckdb"), table="t", pushdown=True)
+        )
+        connect = duckdb.connect
+
+        def swapped(*args: Any, **kwargs: Any) -> Any:
+            (root / "data").rename(root / "checked")
+            (root / "data").symlink_to(outside, target_is_directory=True)
+            try:
+                return connect(*args, **kwargs)
+            finally:
+                (root / "data").unlink()
+                (root / "checked").rename(root / "data")
+
+        with sandboxed([root]):
+            held.connect()
+            try:
+                mocker.patch.object(duckdb, "connect", side_effect=swapped)
+                with pytest.raises(ConnectorError, match="DuckDB did not open the DuckDB file"):
+                    describe_side(Settings((root,)), "veridelta.yaml", "source")
+            finally:
+                held.close()
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."

@@ -794,6 +794,28 @@ class TestDuckDBFilesBesideTheDatabase:
         assert folder == Path(f"{Path(database).resolve()}.tmp")
         assert sorted(path.name for path in tmp_path.iterdir()) == ["w.duckdb"]
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows allows no `?` in a folder name.")
+    @pytest.mark.usefixtures("_little_memory")
+    def test_it_reads_and_spills_a_file_in_a_folder_whose_name_holds_a_question_mark(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure such a file reads, and spills beside itself rather than into a folder beside its own.
+
+        DuckDB names a log or its default spill folder with the suffix before
+        the first `?`, so for `q?a/w.duckdb` they lie under `q.wal?a` and
+        `q.tmp?a`, which name nothing here.
+        """
+        written = _duckdb(tmp_path / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        (tmp_path / "q?a").mkdir()
+        database = str(Path(written).rename(tmp_path / "q?a" / "w.duckdb"))
+
+        frame = LoaderFactory.load(DuckDBConfig(database=database, table="t")).collect()
+        folder = _spilled(database)
+
+        assert frame["id"].to_list() == [1]
+        assert folder == Path(f"{Path(database).resolve()}.tmp")
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["q?a"]
+
     @pytest.mark.usefixtures("_little_memory")
     def test_it_spills_into_a_folder_of_the_sandboxs_own(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
