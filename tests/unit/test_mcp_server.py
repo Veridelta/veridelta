@@ -4073,12 +4073,45 @@ class TestAllowedHosts:
         _remote(tmp_path, f"{target}{{{key}: '{endpoint}'}}\n")
         settings = Settings((tmp_path,), allowed_hosts=(*_ALLOWED, "http", "https"))
 
-        with pytest.raises(ConfigError, match="by a scheme other than https") as refused:
+        with pytest.raises(
+            ConfigError, match="names a host by a scheme other than https"
+        ) as refused:
             describe_side(settings, "veridelta.yaml", "target")
 
         assert str(refused.value).startswith(f"The target storage option '{key}' names")
         assert endpoint not in str(refused.value)
         read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(
+                "  path: s3://file/a.parquet\n" + _FILE_OPTIONS + "{aws_bucket: file}\n",
+                id="file-in-a-bucket-named-file",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://https/events\n"
+                "  storage_options: {azure_container_name: https, account_name: bucket}\n",
+                id="delta-in-a-container-named-https",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://WSS/events\n  storage_options: {bucket: WSS}\n",
+                id="delta-in-a-bucket-named-wss",
+            ),
+        ],
+    )
+    def test_it_reads_from_a_bucket_named_like_a_scheme(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure a bucket or a container named like a scheme, with no `:`, is not an endpoint."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, target)
+        settings = Settings((tmp_path,), allowed_hosts=(*_ALLOWED, "file", "https", "wss"))
+
+        report = describe_side(settings, "veridelta.yaml", "target")
+
+        assert report["columns"] == {"id": "Int64"}
 
     def test_it_refuses_a_snowflake_key_file_outside_the_roots_before_it_connects(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture

@@ -1460,11 +1460,12 @@ def _refuse_plain_http(side: str, config: SourceRef) -> None:
     option's value with a scheme passes only when it starts with `https://`,
     in lowercase, the one form every reader takes as HTTPS: the AWS SDK in
     PyArrow takes any other as a host name. A value has a scheme when it holds
-    `://`, or when the text before its first `:` is one of `_SPECIAL_SCHEMES`,
-    in ASCII and any case, since the URL parser behind Polars reads such a
+    `://`, or when it holds a `:` and the text before the first one is one of
+    `_SPECIAL_SCHEMES`, in ASCII and any case, since the URL parser behind Polars reads such a
     value as a URL without its slashes, and a number after it as an IPv4
     address. No host is excepted, this machine's included, as none is for
-    `aws_allow_http`. Other text, such as `minio.internal:9000`, passes:
+    `aws_allow_http`. Other text, such as `minio.internal:9000`, or a bucket
+    named `https` with no `:`, passes:
     PyArrow then uses HTTPS, and object_store fails before it connects. The
     message names the option and not its value, which can hold a `${NAME}`
     value.
@@ -1479,10 +1480,10 @@ def _refuse_plain_http(side: str, config: SourceRef) -> None:
         name, text = str(key), str(value)
         if not (name.isascii() and name.lower() in _HOST_OPTIONS) or text.startswith("https://"):
             continue
-        scheme = text.partition(":")[0]
-        if "://" in text or (scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES):
+        scheme, colon, _ = text.partition(":")
+        if "://" in text or (colon and scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES):
             raise ConfigError(
-                f"The {side} storage option '{key}' names an endpoint by a scheme other than "
+                f"The {side} storage option '{key}' names a host by a scheme other than "
                 "https, so a reader could send its credentials and rows unencrypted. A tool "
                 "reaches an endpoint only over HTTPS, on this machine too, so write it as "
                 "https://host:port, in lowercase."
