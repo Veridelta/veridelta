@@ -137,6 +137,9 @@ _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 _URI_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 """The start of a URI: a scheme of two or more characters, since one letter is a Windows drive."""
 
+_SPECIAL_SCHEMES: Final = frozenset({"file", "ftp", "http", "https", "ws", "wss"})
+"""The schemes a URL parser reads without their slashes, as in `http:host`."""
+
 _HOST_OPTIONS: Final = frozenset(
     {
         "account_name",
@@ -1449,32 +1452,40 @@ def _storage_options(config: SourceRef) -> object:
 
 
 def _refuse_plain_http(side: str, config: SourceRef) -> None:
-    """Refuse a storage option that sends a reader to its endpoint over plain HTTP.
+    """Refuse a storage option that sends a reader to its endpoint over anything but HTTPS.
 
-    Polars and PyIceberg take the scheme from the endpoint, in any case, so an
-    `http://` one sends the credentials and the rows unencrypted, as
-    `aws_allow_http` would for deltalake, which a tool refuses as a key it does
-    not know. So a host option's value with a scheme passes only with
-    `https`. No host is excepted, this machine's included, as none is for
-    `aws_allow_http`. A value with no scheme passes: PyArrow then uses HTTPS,
-    and object_store fails before it connects. The message names the option
-    and not its value, which can hold a `${NAME}` value.
+    Polars and PyIceberg take the scheme from the endpoint, so an `http` one
+    sends the credentials and the rows unencrypted, as `aws_allow_http` would
+    for deltalake, which a tool refuses as a key it does not know. So a host
+    option's value with a scheme passes only when it starts with `https://`,
+    in lowercase, the one form every reader takes as HTTPS: the AWS SDK in
+    PyArrow takes any other as a host name. A value has a scheme when it holds
+    `://`, or when the text before its first `:` is one of `_SPECIAL_SCHEMES`,
+    in ASCII and any case, since the URL parser behind Polars reads such a
+    value as a URL without its slashes, and a number after it as an IPv4
+    address. No host is excepted, this machine's included, as none is for
+    `aws_allow_http`. Other text, such as `minio.internal:9000`, passes:
+    PyArrow then uses HTTPS, and object_store fails before it connects. The
+    message names the option and not its value, which can hold a `${NAME}`
+    value.
 
     Raises:
-        ConfigError: If a host option's value names a scheme other than `https`.
+        ConfigError: If a host option's value has a scheme and does not start with `https://`.
     """
     options = _storage_options(config)
     if not isinstance(options, Mapping):
         return
     for key, value in cast("Mapping[object, object]", options).items():
-        name, (scheme, separator, _) = str(key), str(value).partition("://")
-        endpoint = name.isascii() and name.lower() in _HOST_OPTIONS and separator
-        if endpoint and not (scheme.isascii() and scheme.lower() == "https"):
+        name, text = str(key), str(value)
+        if not (name.isascii() and name.lower() in _HOST_OPTIONS) or text.startswith("https://"):
+            continue
+        scheme = text.partition(":")[0]
+        if "://" in text or (scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES):
             raise ConfigError(
                 f"The {side} storage option '{key}' names an endpoint by a scheme other than "
-                "https, so a reader would send its credentials and rows unencrypted. A tool "
+                "https, so a reader could send its credentials and rows unencrypted. A tool "
                 "reaches an endpoint only over HTTPS, on this machine too, so write it as "
-                "https://host:port."
+                "https://host:port, in lowercase."
             )
 
 

@@ -2435,6 +2435,7 @@ def _object_store(folder: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dic
     thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
     thread.start()
     endpoint, s3 = f"127.0.0.1:{server.server_port}", arrow_fs.S3FileSystem
+    # PyIceberg imports S3FileSystem when it opens a store, and passes keywords only.
     monkeypatch.setattr(
         arrow_fs,
         "S3FileSystem",
@@ -4034,6 +4035,25 @@ class TestAllowedHosts:
                 "ws://db.internal:10000",
                 id="other-scheme",
             ),
+            pytest.param(
+                "  path: az://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "azure_storage_endpoint",
+                "http:2130706433",
+                id="http-without-slashes",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n  storage_options: ",
+                "azure_storage_endpoint",
+                "HTTPS://db.internal:10000",
+                id="https-in-upper-case",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: ",
+                "s3.endpoint",
+                "Https:443",
+                id="https-without-slashes",
+            ),
         ],
     )
     def test_it_refuses_an_endpoint_over_plain_http(
@@ -4043,13 +4063,18 @@ class TestAllowedHosts:
 
         Polars and PyIceberg take the scheme from the endpoint, in any case,
         so plain HTTP would carry the credentials and the rows unencrypted.
-        The host is allowed, and the refusal names the option, not its value.
+        The URL parser behind Polars reads `http:2130706433` as plain HTTP to
+        127.0.0.1, where the host check reads a host named `http`, and the AWS
+        SDK in PyArrow reads `HTTPS://` as part of a host name, so only
+        `https://` in lowercase passes. Every host is allowed, `http` and
+        `https` too, and the refusal names the option, not its value.
         """
         read = mocker.patch.object(DiffEngine, "read_schema")
         _remote(tmp_path, f"{target}{{{key}: '{endpoint}'}}\n")
+        settings = Settings((tmp_path,), allowed_hosts=(*_ALLOWED, "http", "https"))
 
         with pytest.raises(ConfigError, match="by a scheme other than https") as refused:
-            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+            describe_side(settings, "veridelta.yaml", "target")
 
         assert str(refused.value).startswith(f"The target storage option '{key}' names")
         assert endpoint not in str(refused.value)
@@ -4319,8 +4344,8 @@ class TestAllowedHosts:
             ),
             pytest.param(
                 "  type: delta\n  table_uri: az://bucket/events\n"
-                "  storage_options: {azure_storage_endpoint: 'HTTPS://db.internal:10000'}\n",
-                id="endpoint-over-https-in-upper-case",
+                "  storage_options: {azure_storage_endpoint: 'https://db.internal:10000'}\n",
+                id="endpoint-over-https-in-azure",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: s3://bucket/events\n"
