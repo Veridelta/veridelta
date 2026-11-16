@@ -1314,7 +1314,9 @@ def _location_hosts(
     named = shape.fullmatch(location) if shape is _NAMED_FILE else None
     account = None if named is None else azure_account(parts.scheme, named.group(1) or "")
     if account is not None:
-        return [(setting, _host(part)) for part in account]
+        # The FileIO opens the container as written, port and all, so it is checked whole.
+        container, host = account
+        return [(setting, container), (setting, _host(host))]
     return [(setting, _url_host(location, shape))]
 
 

@@ -13,15 +13,19 @@ import json
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
+from importlib.util import find_spec
 from pathlib import Path
+from unittest.mock import Mock
 
 import polars as pl
+import pyarrow.fs
 import pytest
 from deltalake import DeltaTable
 from deltalake.fs import DeltaStorageHandler
@@ -349,6 +353,66 @@ class TestIcebergMetadataProperties:
         assert MarkerFileIO.loads == 0
 
 
+def _mock_azure(monkeypatch: pytest.MonkeyPatch, file_system: object = None) -> Mock:
+    """Stand in for PyArrow's Azure file system, which returns `file_system`.
+
+    The mock goes into the module's namespace, without reading the name first:
+    PyArrow's Windows wheel for 3.14 ships no Azure file system, and reading
+    the name there raises ImportError.
+    """
+    azure = Mock(return_value=file_system)
+    monkeypatch.setitem(pyarrow.fs.__dict__, "AzureFileSystem", azure)
+    return azure
+
+
+_SIGN_WITH_EACH_KEY = """
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from veridelta.connectors.lakehouse import checked_file_io
+from veridelta.exceptions import ConfigError
+
+
+class NotFound(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_HEAD
+
+    def log_message(self, *args):
+        pass
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), NotFound)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+at = f"127.0.0.1:{server.server_address[1]}"
+local = {
+    "adls.account-name": "acct",
+    "adls.blob-storage-authority": at,
+    "adls.dfs-storage-authority": at,
+    "adls.blob-storage-scheme": "http",
+    "adls.dfs-storage-scheme": "http",
+}
+try:
+    checked_file_io({**local, "adls.account-key": "not-base64!"}, lambda *_: None).new_input(
+        "abfs://lake/x"
+    )
+except ConfigError:
+    print("refused", flush=True)
+for key in json.loads(sys.argv[1]):
+    io = checked_file_io({**local, "adls.account-key": key}, lambda *_: None)
+    try:
+        io.new_input("abfs://lake/x").open()
+    except OSError:
+        print(key, flush=True)
+"""
+"""A script that signs a request with each key it is given, through the FileIO, at a local server."""
+
+
 class TestCheckedIcebergScan:
     """Validate the Iceberg scan the MCP server runs, which checks each file before it opens it.
 
@@ -422,12 +486,15 @@ class TestCheckedIcebergScan:
         [
             {"adls.account-key": "a2V5"},
             {"adls.sas-token": "sv=2024"},
-            {"adls.client-id": "app", "adls.client-secret": "marker", "adls.tenant-id": "t"},
         ],
-        ids=["account-key", "sas-token", "client-secret"],
+        ids=["account-key", "sas-token"],
     )
     def test_it_opens_an_azure_file_in_its_container(
-        self, tmp_path: Path, mocker: MockerFixture, location: str, credential: dict[str, str]
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        location: str,
+        credential: dict[str, str],
     ) -> None:
         """Ensure a file Spark names as `container@host` opens in that container, at the account named.
 
@@ -436,10 +503,7 @@ class TestCheckedIcebergScan:
         """
         (tmp_path / "lake" / "wh").mkdir(parents=True)
         (tmp_path / "lake" / "wh" / "data.parquet").write_bytes(b"rows")
-        azure = mocker.patch(
-            "pyarrow.fs.AzureFileSystem",
-            return_value=SubTreeFileSystem(str(tmp_path), LocalFileSystem()),
-        )
+        azure = _mock_azure(monkeypatch, SubTreeFileSystem(str(tmp_path), LocalFileSystem()))
         checked: list[tuple[str, bool]] = []
         io = checked_file_io(
             {"adls.account-name": "acct", **credential}, lambda *opened: checked.append(opened)
@@ -465,10 +529,10 @@ class TestCheckedIcebergScan:
         ids=["other-account", "longer-host", "other-host", "port", "kelvin", "no-account"],
     )
     def test_it_opens_no_azure_file_in_another_account(
-        self, mocker: MockerFixture, account: str, location: str
+        self, monkeypatch: pytest.MonkeyPatch, account: str, location: str
     ) -> None:
         """Ensure a table cannot send the FileIO's credential to an account its options do not name."""
-        azure = mocker.patch("pyarrow.fs.AzureFileSystem")
+        azure = _mock_azure(monkeypatch)
         options = {"adls.account-key": "a2V5"} | ({"adls.account-name": account} if account else {})
         io = checked_file_io(options, lambda *_: None)
 
@@ -479,30 +543,88 @@ class TestCheckedIcebergScan:
         azure.assert_not_called()
 
     @pytest.mark.parametrize(
-        "options",
+        ("options", "refusal"),
         [
-            {},
-            {"adls.account-key": ""},
-            {"adls.client-id": "identity"},
-            {"adls.client-id": "app", "adls.tenant-id": "t"},
+            ({}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.account-key": ""}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.sas-token": " "}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.client-id": "identity"}, "cannot sign in with"),
+            ({"adls.client-id": "app", "adls.tenant-id": "t"}, "cannot sign in with"),
+            (
+                {"adls.client-id": "app", "adls.client-secret": "marker", "adls.tenant-id": "t"},
+                "cannot sign in with",
+            ),
+            ({"adls.account-key": "a2V5", "adls.tenant-id": "t"}, "cannot sign in with"),
+            ({"adls.account-key": "not-base64!"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V5\n"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V5===="}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V5Zg==a2V5"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "-_-_"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V\u00e9"}, "'adls.account-key' is not base64"),
         ],
-        ids=["none", "empty-key", "managed-identity", "no-secret"],
+        ids=[
+            "none",
+            "empty-key",
+            "blank-sas-token",
+            "managed-identity",
+            "no-secret",
+            "client-secret",
+            "key-and-tenant",
+            "not-base64",
+            "newline",
+            "excess-padding",
+            "data-after-padding",
+            "url-safe",
+            "not-ascii",
+        ],
     )
     @pytest.mark.parametrize(
         "location",
         ["abfs://lake/wh/data.parquet", "abfss://lake@acct.dfs.core.windows.net/wh/data.parquet"],
     )
-    def test_it_builds_no_azure_file_system_without_a_credential(
-        self, mocker: MockerFixture, options: dict[str, str], location: str
+    def test_it_builds_no_azure_file_system_that_can_end_the_process(
+        self, monkeypatch: pytest.MonkeyPatch, options: dict[str, str], refusal: str, location: str
     ) -> None:
-        """Ensure PyArrow never signs in as the machine does, which can run az and end the process."""
-        azure = mocker.patch("pyarrow.fs.AzureFileSystem")
+        """Ensure PyArrow is given no credential on which it can end the process.
+
+        With none, it signs in as the machine does, which can run az. It ends
+        the process on a key that is not base64, and on a sign-in through
+        Microsoft Entra ID that fails.
+        """
+        azure = _mock_azure(monkeypatch)
         io = checked_file_io({"adls.account-name": "acct", **options}, lambda *_: None)
 
-        with pytest.raises(ConfigError, match=r"'adls\.account-key', 'adls\.sas-token'"):
+        with pytest.raises(ConfigError, match=re.escape(refusal)) as refused:
             io.new_input(location)
 
+        assert refused.value.__cause__ is None
         azure.assert_not_called()
+
+    @pytest.mark.skipif(
+        find_spec("pyarrow._azurefs") is None,
+        reason="This PyArrow build has no Azure file system, as its Windows wheel for 3.14 lacks.",
+    )
+    def test_it_gives_pyarrow_only_an_account_key_it_can_decode(self, tmp_path: Path) -> None:
+        """Ensure each key the FileIO passes on leaves the process running when PyArrow signs with it.
+
+        PyArrow decodes the key only as it signs a request, and ends the
+        process on one it cannot decode, so a child process signs one request
+        with each key to a local server that answers 404.
+        """
+        keys = ["a2V5", "a2U=", "aw==", "a2V=", "+/+/", "a2V5Zg=="]
+        script = tmp_path / "sign.py"
+        script.write_text(_SIGN_WITH_EACH_KEY, encoding="utf-8")
+
+        signed = subprocess.run(
+            [sys.executable, str(script), json.dumps(keys)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+        assert signed.returncode == 0, signed.stderr
+        assert signed.stdout.split() == ["refused", *keys]
 
 
 class TestCheckedDeltaScan:

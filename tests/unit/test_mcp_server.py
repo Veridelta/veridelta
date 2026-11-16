@@ -2483,21 +2483,22 @@ _AZURE_HOSTS = ("lake", "acct", "acct.dfs.core.windows.net")
 """The hosts a tool must allow to read that table: its container, its account, and the account's host."""
 
 
-def _spark_azure_iceberg(lake: Path, store: Path, mocker: MockerFixture) -> str:
+def _spark_azure_iceberg(lake: Path, store: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """Write an Iceberg table that holds `_ROW` in Azure, its files named as Spark names them.
 
     Each file is named `abfss://lake@acct.dfs.core.windows.net/...`. PyArrow's
     Azure file system is mocked with `store`, whose first level is the
-    container, for the write and for every read after it. PyIceberg writes such
+    container, for the write and for every read after it. The mock goes into
+    the module's namespace without reading the name, which raises ImportError
+    on a PyArrow build with no Azure file system. PyIceberg writes such
     a location in a folder named for its whole authority, so that folder is
     renamed to the container.
 
     Returns:
         str: The `table_uri` that reads it, as `abfs://lake/...`.
     """
-    mocker.patch(
-        "pyarrow.fs.AzureFileSystem", return_value=SubTreeFileSystem(str(store), LocalFileSystem())
-    )
+    azure = MagicMock(return_value=SubTreeFileSystem(str(store), LocalFileSystem()))
+    monkeypatch.setitem(arrow_fs.__dict__, "AzureFileSystem", azure)
     authority = "lake@acct.dfs.core.windows.net"
     for folder in ("metadata", "data"):
         (store / authority / "wh" / "lake" / "events" / folder).mkdir(parents=True)
@@ -3281,11 +3282,14 @@ class TestLakehouseFiles:
         )
 
     def test_it_reads_an_azure_table_whose_files_name_their_account(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Ensure a table Spark wrote in Azure is listed and read, each file in its container."""
         store = tmp_path_factory.mktemp("store")
-        self._azure_configuration(tmp_path, _spark_azure_iceberg(tmp_path, store, mocker))
+        self._azure_configuration(tmp_path, _spark_azure_iceberg(tmp_path, store, monkeypatch))
 
         report = read_rows(
             Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
@@ -3296,9 +3300,13 @@ class TestLakehouseFiles:
         assert report["total"] == 0
 
     @pytest.mark.parametrize(
-        "authority",
-        ["other@acct.dfs.core.windows.net", "lake@acct.blob.core.windows.net"],
-        ids=["container", "host"],
+        ("authority", "refusal"),
+        [
+            ("other@acct.dfs.core.windows.net", "names a host this server may not"),
+            ("lake@acct.blob.core.windows.net", "names a host this server may not"),
+            ("lake:443@acct.dfs.core.windows.net", "does not name its host in the one shape"),
+        ],
+        ids=["container", "host", "container-port"],
     )
     @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
     def test_it_holds_the_container_and_the_host_of_an_azure_file_to_the_allowed_hosts(
@@ -3306,18 +3314,22 @@ class TestLakehouseFiles:
         tmp_path: Path,
         tmp_path_factory: pytest.TempPathFactory,
         mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
         authority: str,
+        refusal: str,
         listed: bool,
     ) -> None:
         """Ensure a file named `container@host` needs both its container and its host allowed.
 
         The metadata names its manifest list in another container, or at the
-        account's other host, which the server does not allow. The listing
+        account's other host, which the server does not allow, or in a
+        container with a port, which the FileIO would open as part of the
+        container's name, so the server checks it whole. The listing
         refuses it, and so does the scan, though the listing found nothing.
         The metadata names the host, so the refusal leaves it out.
         """
         store = tmp_path_factory.mktemp("store")
-        table_uri = _spark_azure_iceberg(tmp_path, store, mocker)
+        table_uri = _spark_azure_iceberg(tmp_path, store, monkeypatch)
         written = store / table_uri.removeprefix("abfs://")
         document = json.loads(written.read_text(encoding="utf-8"))
         for snapshot in document["snapshots"]:
@@ -3330,7 +3342,7 @@ class TestLakehouseFiles:
             mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
         self._azure_configuration(tmp_path, table_uri)
 
-        with pytest.raises(VerideltaError, match="names a host this server may not") as refused:
+        with pytest.raises(VerideltaError, match=refusal) as refused:
             read_rows(
                 Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
                 "veridelta.yaml",

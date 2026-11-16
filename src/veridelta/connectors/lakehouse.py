@@ -81,13 +81,14 @@ _AZURE_SCHEMES: Final = frozenset({"abfs", "abfss", "wasb", "wasbs"})
 _AZURE_ENDPOINTS: Final = (".dfs.core.windows.net", ".blob.core.windows.net")
 """What follows the account's name in the host PyArrow's `AzureFileSystem` reaches it at."""
 
-_AZURE_CREDENTIALS: Final = ("adls.account-key", "adls.sas-token", "adls.client-secret")
-"""The storage options that give PyArrow's `AzureFileSystem` a credential of its own.
+_AZURE_SIGN_INS: Final = ("adls.client-id", "adls.client-secret", "adls.tenant-id")
+"""The storage options with which PyArrow's `AzureFileSystem` signs in through Microsoft Entra ID.
 
-A client secret counts only with `adls.client-id` and `adls.tenant-id`, and
-PyIceberg refuses it without them. With none of these, PyArrow signs in as
-the machine does, through `DefaultAzureCredential`, which can run the `az`
-command it finds on the PATH, and can end the process when it fails."""
+With them, PyArrow asks Entra ID for a token at a host no `--allow-host`
+names, and ends the process when it gets none, as for a wrong client secret.
+With no credential at all, it signs in as the machine does, through
+`DefaultAzureCredential`, which can run the `az` command it finds on the
+PATH, and can end the process too."""
 
 
 def azure_account(scheme: str, authority: str) -> tuple[str, str] | None:
@@ -106,6 +107,47 @@ def azure_account(scheme: str, authority: str) -> tuple[str, str] | None:
     """
     container, at, host = authority.partition("@")
     return (container, host) if at and scheme in _AZURE_SCHEMES else None
+
+
+_BASE64: Final = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
+"""Base64 text with its padding, the only shape of account key PyArrow's `AzureFileSystem` decodes.
+
+PyArrow ends the process on a key in any other shape, such as one with a
+newline, a URL-safe letter, or too much padding. `binascii.a2b_base64` in
+strict mode accepts extra padding on Python 3.11, so it is no check."""
+
+
+def _refuse_azure_credential(properties: dict[str, str]) -> None:
+    """Refuse Azure storage options on which PyArrow's `AzureFileSystem` can end the process.
+
+    It ends the process on an account key it cannot decode, and on a sign-in
+    through an option in `_AZURE_SIGN_INS` that fails. With no credential, it
+    signs in as the machine does.
+
+    Raises:
+        ConfigError: For an option in `_AZURE_SIGN_INS`, an account key that
+            is not base64, or neither a key nor a SAS token.
+    """
+    if any(properties.get(key) for key in _AZURE_SIGN_INS):
+        raise ConfigError(
+            "An Iceberg table in Azure cannot sign in with 'adls.client-id', "
+            "'adls.client-secret', or 'adls.tenant-id' on this server, since PyArrow ends the "
+            "server when that sign-in fails. Give 'adls.account-key' or 'adls.sas-token' instead."
+        )
+    key = properties.get("adls.account-key")
+    if key:
+        if _BASE64.fullmatch(key) is None:
+            # The key is a secret, so the message leaves it out.
+            raise ConfigError(
+                "The storage option 'adls.account-key' is not base64 text, and PyArrow ends the "
+                "server on such a key."
+            )
+    elif not properties.get("adls.sas-token", "").strip():
+        raise ConfigError(
+            "An Iceberg table in Azure needs 'adls.account-key' or 'adls.sas-token' in its "
+            "storage_options on this server. With neither, PyArrow signs in as this machine "
+            "does, which can run the az command and end the server."
+        )
 
 
 @contextmanager
@@ -167,9 +209,9 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
     Spark write it, itself: the file lies in that container, at the account
     `adls.account-name` names, and a host other than that account's is
     refused, so a table cannot send the FileIO's credential to another
-    account. An Azure file system is built only with a credential from
-    `_AZURE_CREDENTIALS`, since without one PyArrow signs in as the machine
-    does.
+    account. An Azure file system is built only with an account key in
+    base64 or a SAS token, and with no option in `_AZURE_SIGN_INS`, since
+    PyArrow ends the process when it fails to sign in or to decode the key.
 
     Args:
         properties (dict[str, str]): The validated storage options.
@@ -179,7 +221,8 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
 
     Returns:
         FileIO: The FileIO, which raises `ConnectorError` for a refused scheme
-            or account, and `ConfigError` for Azure with no credential.
+            or account, and `ConfigError` for Azure with no credential it
+            can use.
     """
     from pyiceberg.io.pyarrow import BUFFER_SIZE, ONE_MEGABYTE, PyArrowFile, PyArrowFileIO
 
@@ -221,15 +264,8 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
             )
 
         def _initialize_azure_fs(self) -> Any:
-            """Refuse to build an Azure file system with no credential of its own."""
-            if not any(self.properties.get(key) for key in _AZURE_CREDENTIALS):
-                raise ConfigError(
-                    "An Iceberg table in Azure needs a credential in its storage_options on "
-                    "this server: 'adls.account-key', 'adls.sas-token', or 'adls.client-id', "
-                    "'adls.client-secret', and 'adls.tenant-id' together. With none, PyArrow "
-                    "signs in as this machine does, which can run the az command and end the "
-                    "server."
-                )
+            """Refuse to build an Azure file system that could end the process."""
+            _refuse_azure_credential(self.properties)
             return super()._initialize_azure_fs()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType] - PyArrow ships no stubs, so its FileSystem reads as unknown.
 
     return CheckedFileIO(properties)
