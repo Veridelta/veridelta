@@ -1,11 +1,12 @@
 # Copyright 2026 The Veridelta Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hold the package's dependency floors past the advisories they were raised for.
+"""Hold the package's dependency floors past the releases they were raised for.
 
 A floor is a promise to users. Someone who already has an older driver keeps
 it, since Dependabot moves only the lockfile, so each floor stays at or above
-the first release with no known advisory, as `pyproject.toml` says beside it.
+the first release with no known advisory, or the first whose behavior the
+package's checks follow, as `pyproject.toml` says beside it.
 """
 
 import tomllib
@@ -27,6 +28,13 @@ _FIRST_WITHOUT_ADVISORY = {
     "snowflake-connector-python": Version("4.7.3"),
 }
 
+_FIRST_THE_CHECKS_FOLLOW = {
+    # The MCP server names the reader a database URI runs on from
+    # `connectorx_url`, which follows this release's scheme rewrite. 0.4.5
+    # reads `clickhouse://` as MySQL and `redshift-iam://` as Postgres.
+    "connectorx": Version("0.4.6"),
+}
+
 
 def _requirements(name: str) -> list[Requirement]:
     """Return every requirement on `name`, in the dependencies and in every extra."""
@@ -36,13 +44,15 @@ def _requirements(name: str) -> list[Requirement]:
     return [requirement for line in lines if (requirement := Requirement(line)).name == name]
 
 
-@pytest.mark.parametrize("name", sorted(_FIRST_WITHOUT_ADVISORY))
-def test_every_requirement_starts_past_the_known_advisories(name: str) -> None:
-    """Ensure no extra lets an install keep a release with a known advisory."""
+@pytest.mark.parametrize(
+    ("name", "first"), sorted({**_FIRST_WITHOUT_ADVISORY, **_FIRST_THE_CHECKS_FOLLOW}.items())
+)
+def test_every_requirement_starts_at_its_first_safe_release(name: str, first: Version) -> None:
+    """Ensure no extra lets an install keep a release older than its floor's reason allows."""
     requirements = _requirements(name)
 
     assert requirements, f"pyproject.toml no longer requires {name}."
     for requirement in requirements:
         floors = [Version(spec.version) for spec in requirement.specifier if spec.operator == ">="]
         assert floors, f"{requirement} has no floor."
-        assert max(floors) >= _FIRST_WITHOUT_ADVISORY[name], str(requirement)
+        assert max(floors) >= first, str(requirement)

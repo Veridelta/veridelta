@@ -939,6 +939,10 @@ def _delta_files(
     deltalake reads the expanded path, since it expands only `~` and `~/` and
     would read `~alice/t` as a folder of that name.
 
+    Each file comes with its setting, its location, and whether a refusal may
+    quote it on any server: the log and its entries may, and a file the log
+    names may not, since a data file's folder can hold a partition's value.
+
     Returns:
         DeltaTable: The table, at the version whose files were named.
     """
@@ -964,9 +968,9 @@ def _delta_files(
     vectors = delta_log_vectors(uri, config.storage_options, logged)
     table = DeltaTable(uri, version=config.version, storage_options=config.storage_options or None)
     for uri in table.file_uris():
-        yield "data file", uri, True
+        yield "data file", uri, False
     for location in deletion_vector_files(table, vectors):
-        yield "deletion vector", location, True
+        yield "deletion vector", location, False
     return table
 
 
@@ -978,9 +982,11 @@ def _iceberg_files(
     A table folder's version hint, the manifest list, and each manifest name
     the next files to read, so the caller checks each name before this reads
     the file. The version hint is read as `StaticTable.from_metadata` reads
-    it, so the check and the scan read the same metadata file, but its text is
-    never quoted, since it is a value from a file. The data and delete files
-    come from the manifests, as a scan plans them.
+    it, so the check and the scan read the same metadata file. The data and
+    delete files come from the manifests, as a scan plans them. Each file
+    comes with its setting, its location, and whether a refusal may quote it
+    on any server: the version hint may, and a file named by a file's text may
+    not, since that text is a value from the table.
 
     The files are read as the scan on this server reads them: through the
     FileIO `checked_file_io` builds from `storage_options` alone, whatever the
@@ -1007,7 +1013,7 @@ def _iceberg_files(
         if hint is None:
             raise
         # The error would quote the metadata file, and so the version hint's text.
-        raise OSError(f"the metadata file that '{hint}' names could not be read") from None
+        raise ConnectorError(f"the metadata file that '{hint}' names could not be read") from None
     snapshot = (
         metadata.current_snapshot()
         if config.snapshot_id is None
@@ -1017,11 +1023,11 @@ def _iceberg_files(
         # The scan reads no file: an empty table has none, and a snapshot it
         # cannot find stops it.
         return
-    yield "manifest list", snapshot.manifest_list, True
+    yield "manifest list", snapshot.manifest_list, False
     for manifest in snapshot.manifests(io):
-        yield "manifest", manifest.manifest_path, True
+        yield "manifest", manifest.manifest_path, False
         for entry in manifest.fetch_manifest_entry(io, discard_deleted=True):
-            yield "data file", entry.data_file.file_path, True
+            yield "data file", entry.data_file.file_path, False
 
 
 def _table_files(
@@ -1032,7 +1038,10 @@ def _table_files(
     A table's log or metadata names its files by full URI, so they can lie
     anywhere. A table whose files cannot be listed is refused, since the scan
     would read the same log or metadata. An Iceberg table's files are read
-    with the scan's own check, as well as the caller's.
+    with the scan's own check, as well as the caller's. The error of a table
+    that cannot be listed quotes the reader's message, which can hold a value
+    from the table's files, so it sets `quotes_data` unless Veridelta wrote
+    that message.
 
     Returns:
         DeltaTable | None: A Delta Lake table, at the version listed, or None
@@ -1070,9 +1079,12 @@ def _table_files(
         raise ConnectorError(missing_extra(extra, f"Reading a {kind}")) from exc
     except Exception as exc:
         where = shown_location(config.table_uri)
+        # deltalake, PyIceberg, and PyArrow can quote a value from the table's files, where
+        # a refusal in Veridelta's words quotes none.
         raise ConnectorError(
             f"The files of the {side} {kind} '{where}' could not be listed, so this server "
-            f"reads none of them: {without_location(str(exc), config.table_uri)}"
+            f"reads none of them: {without_location(str(exc), config.table_uri)}",
+            quotes_data=may_quote_data(exc),
         ) from exc
 
 
@@ -1240,8 +1252,11 @@ def _refuse_listed(
     A log or metadata names a file by any location, so the file is checked as
     a configuration's location is: each path on this machine a reader could
     open for it, and the host it names. The message about a host leaves the
-    location out, since a file named it.
+    location out, since a file named it. The message about a path quotes it
+    when `quoted`, or on a server that allows row values, since a path a
+    table's files name is a value from them, such as a partition's.
     """
+    quoted = quoted or settings.allow_row_values
     for local in _local_paths(location, f"{side} {setting}"):
         _refuse_outside(settings, side, setting, location, local, quoted=quoted)
     for _, host in _location_hosts(setting, location, _NAMED_FILE):
