@@ -20,11 +20,12 @@ Each session reads time in UTC, so a timestamp with a time zone, or a date cast
 in a `query`, does not depend on the machine. A file's connection reads other
 files only from the file's own folder, or inside `sandboxed`, from the folders
 that names, since a view stored in the file runs whatever its author wrote.
-DuckDB replays the write-ahead logs beside the file as it opens it, and spills
-a large query into a temporary folder, so a log or that folder that leads out
-of the file's own folder is refused. Inside `sandboxed`, a file and its logs
-open only by a path with no link in it, DuckDB must open the file the path
-named just before, and the temporary folder is one the block creates.
+DuckDB replays the write-ahead logs beside the file as it opens it, so a log
+that lies outside the file's own folder, or leads out of it, is refused. A
+large query spills into a folder this process creates in the system's
+temporary folder, never beside the file. Inside `sandboxed`, a file and its
+logs open only by a path with no link in it, and DuckDB must open the file
+the path named just before.
 
 A token never reaches a log line or an error. It goes to DuckDB as a
 connection setting, never in the connection string, and a failed read is
@@ -127,8 +128,11 @@ A read-only open replays `.wal`, and `.wal.checkpoint` after a crash during a
 checkpoint. Only a read-write open writes `.wal.recovery`, but it is held to
 the same rule."""
 
-_TEMPORARY: Final = ".tmp"
-"""The suffix of the folder DuckDB spills a large query into, beside the file."""
+_SPILL_PREFIX: Final = "veridelta-duckdb-"
+"""The start of the name of each folder a connection spills into, in the system's temporary folder."""
+
+_OPEN_WAIT: Final = 60.0
+"""Seconds a sandboxed open waits for another to finish before it is refused."""
 
 _DESCRIPTORS: Final = {"linux": "/proc/self/fd", "darwin": "/dev/fd"}.get(sys.platform)
 """The folder that lists this process's open file descriptors, or None where none is known."""
@@ -137,7 +141,9 @@ _OPENING: Final = threading.Lock()
 """Held while DuckDB opens a file inside `sandboxed`, so no other such open runs meanwhile.
 
 A descriptor that names the file must be one DuckDB opened then, so no other
-read's DuckDB connection may open one alongside it."""
+sandboxed read's DuckDB connection may open one alongside it. An open that
+waits longer than `_OPEN_WAIT` is refused, so a file that never finishes
+opening, such as a pipe swapped in for it, blocks no other read for good."""
 
 _FOLDER_FLAGS: Final = (
     getattr(os, "O_PATH", os.O_RDONLY)
@@ -174,8 +180,14 @@ _UNLISTED: Final = (
 
 _LEADS_OUT: Final = (
     "The DuckDB file's {named} '{path}' lies outside the folder that holds the file, or is "
-    "a link that leads out of it. DuckDB would {action} there, so the file was not opened. "
+    "a link that leads out of it. DuckDB would replay that log, so the file was not opened. "
     "Remove it, or put it and the file in one folder."
+)
+
+_BUSY: Final = (
+    "The DuckDB file '{path}' was not read: another DuckDB file was still opening after "
+    "{seconds:.0f} seconds. Read it again once that read ends, or restart the server if "
+    "it never does."
 )
 
 
@@ -186,7 +198,7 @@ class _Sandbox:
     folders: tuple[str, ...]
     """The folders it may read other files from."""
 
-    temporary: str | None = None
+    spill: str | None = None
     """The folder it spills into, which the block creates as it opens its first file."""
 
 
@@ -224,14 +236,14 @@ def sandboxed(directories: Iterable[Path]) -> Generator[None]:
         yield
     finally:
         _sandbox.reset(token)
-        if sandbox.temporary is not None:
-            shutil.rmtree(sandbox.temporary, ignore_errors=True)
+        if sandbox.spill is not None:
+            shutil.rmtree(sandbox.spill, ignore_errors=True)
 
 
 def beside(path: str, suffix: str) -> str:
     """Add a suffix to a database's path as DuckDB's `AddSuffixToPath` does.
 
-    DuckDB names each write-ahead log and its temporary folder this way. The
+    DuckDB names each write-ahead log and its default temporary folder this way. The
     suffix goes before the first `?` in the path rather than at the end, so
     `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
 
@@ -289,11 +301,11 @@ class DuckDBConnector(ReaderConnector):
         token = _token(self._config)
         started = time.perf_counter()
         try:
-            connection = _open(self._config, token)
+            connection, spill = _open(self._config, token)
             try:
                 frame = _read(connection, statement, self._subject)
             finally:
-                connection.close()
+                _close(connection, spill)
         except ConnectorError:
             raise
         except ImportError:
@@ -353,6 +365,7 @@ class DuckDBPushdownSession(PushdownSession):
         self._config = config
         self.compiler = SQLPushdownCompiler(SQLDialect.DUCKDB)
         self._connection: Any = None
+        self._spill: str | None = None
         self._token: str | None = None
 
     def connect(self) -> None:
@@ -366,7 +379,7 @@ class DuckDBPushdownSession(PushdownSession):
             raise ConnectorError(_DUCKDB_EXTRA)
         token = _token(self._config)
         try:
-            connection = _open(self._config, token)
+            connection, spill = _open(self._config, token)
         except Exception as exc:
             logger.warning("DuckDB connection to %s failed", self._config.database)
             raise ConnectorError(
@@ -374,7 +387,7 @@ class DuckDBPushdownSession(PushdownSession):
                 f"{mask_secrets(str(exc), token)}"
             ) from None
         logger.info("Connected to DuckDB database %s", self._config.database)
-        self._connection, self._token = connection, token
+        self._connection, self._spill, self._token = connection, spill, token
 
     def execute_pushdown(
         self, statement: str, query_type: PushdownQueryType = "mismatch"
@@ -399,9 +412,9 @@ class DuckDBPushdownSession(PushdownSession):
     def close(self) -> None:
         """Close the connection. Idempotent; `connect()` opens it again."""
         if self._connection is not None:
-            self._connection.close()
+            _close(self._connection, self._spill)
             logger.info("Closed DuckDB database %s", self._config.database)
-        self._connection = None
+        self._connection = self._spill = None
 
     def _run(self, statement: str, query_type: str) -> pl.DataFrame:
         """Run a statement on the open connection, logging and reporting without secrets."""
@@ -452,7 +465,7 @@ def _token(config: DuckDBConfig) -> str | None:
     return token
 
 
-def _open(config: DuckDBConfig, token: str | None) -> Any:
+def _open(config: DuckDBConfig, token: str | None) -> tuple[Any, str | None]:
     """Open a file read-only, or a MotherDuck database with its token, to read in UTC.
 
     A file is held to its own folder, or inside `sandboxed` to the folders
@@ -469,19 +482,26 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
     alone, which may be unset where the system still names a home folder.
 
     DuckDB would spill into `duckdb:` and the path, with `.tmp` added, from
-    the working directory, so the temporary folder is set: beside the file,
-    or inside `sandboxed`, the folder the block created.
+    the working directory, and a folder beside the file can arrive holding a
+    link under the name of a spill file. So the temporary folder is set to
+    one this process creates: for this connection alone, or inside
+    `sandboxed`, the folder the block created.
+
+    Returns:
+        tuple[Any, str | None]: The connection, and the folder to remove once
+            it closes, which `_close` does, or None for none.
 
     Raises:
         ConnectorError: If the path still starts with `~`, since the system
             names no home folder, or starts with `//`, once `~` is expanded.
             DuckDB strips no type from `duckdb://`, so it would open a file
             whose name starts with `duckdb:` instead, by its first bytes.
-            Also if a log or the temporary folder leads out of the file's
-            folder, or inside `sandboxed`, if the path holds a link or DuckDB
-            opened another file than the path named.
+            Also if a log lies outside the file's folder or leads out of it,
+            or inside `sandboxed`, if the path holds a link or DuckDB opened
+            another file than the path named.
     """
     setup = ["SET TimeZone = 'UTC'"]
+    spill: str | None = None
     if token is None:
         path = os.path.expanduser(config.database)
         if path.startswith("~"):
@@ -492,7 +512,13 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
         if sandbox is None:
             # A view in the file runs as its author wrote it, so it reads only beside the file.
             resolved = Path(path).resolve()
-            connection = _connect(path, _kept_beside(resolved))
+            _kept_beside(resolved)
+            spill = tempfile.mkdtemp(prefix=_SPILL_PREFIX)
+            try:
+                connection = _connect(path, spill)
+            except BaseException:
+                shutil.rmtree(spill, ignore_errors=True)
+                raise
             folders: tuple[str, ...] = (_folder(resolved.parent),)
         else:
             connection = _open_checked(path, sandbox)
@@ -505,49 +531,46 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
         for statement in setup:
             connection.execute(statement)
     except BaseException:
-        connection.close()
+        _close(connection, spill)
         raise
-    return connection
+    return connection, spill
 
 
-def _connect(path: str, temporary: str) -> Any:
-    """Open a file read-only as a DuckDB database, with no extension, spilling into `temporary`."""
-    settings = {**_NO_EXTENSIONS, "temp_directory": temporary}
+def _close(connection: Any, spill: str | None) -> None:
+    """Close a connection, then remove the folder it spilled into, if it has its own."""
+    try:
+        connection.close()
+    finally:
+        if spill is not None:
+            shutil.rmtree(spill, ignore_errors=True)
+
+
+def _connect(path: str, spill: str) -> Any:
+    """Open a file read-only as a DuckDB database, with no extension, spilling into `spill`."""
+    settings = {**_NO_EXTENSIONS, "temp_directory": spill}
     return duckdb.connect(f"{_DUCKDB_TYPE}{path}", read_only=True, config=settings)
 
 
-def _kept_beside(resolved: Path) -> str:
-    """Refuse a log or the temporary folder of a file that leads out of its folder.
+def _kept_beside(resolved: Path) -> None:
+    """Refuse a log of a file that lies outside its folder, or leads out of it.
 
     DuckDB replays a log as it opens the file, before any setting of the
-    sandbox applies, and writes and deletes its temporary files wherever
-    their folder leads. A link that stays in the file's folder is followed,
-    and a path that names nothing is left alone, even where a `?` in the
-    file's path makes `beside` name a log in another folder. The temporary
-    folder is the file's path with `.tmp` at its very end, so it lies in the
-    file's folder whatever the path holds.
+    sandbox applies. A link that stays in the file's folder is followed, and
+    a path that names nothing is left alone, even where a `?` in the file's
+    path makes `beside` name a log in another folder.
 
     Args:
         resolved (Path): The file, resolved as DuckDB resolves it.
 
-    Returns:
-        str: The temporary folder, the file's path with `.tmp` added.
-
     Raises:
-        ConnectorError: If a log or the temporary folder leads out of the folder.
+        ConnectorError: If a log lies outside the folder or leads out of it.
     """
-    temporary = f"{resolved}{_TEMPORARY}"
-    named = [
-        (name, beside(str(resolved), suffix), "replay that log")
-        for name, suffix in WRITE_AHEAD_LOGS
-    ]
-    named.append(("temporary folder", temporary, "write its temporary files"))
-    for name, path, action in named:
+    for name, suffix in WRITE_AHEAD_LOGS:
+        path = beside(str(resolved), suffix)
         if os.path.lexists(path) and not Path(os.path.realpath(path)).is_relative_to(
             resolved.parent
         ):
-            raise ConnectorError(_LEADS_OUT.format(named=name, path=path, action=action))
-    return temporary
+            raise ConnectorError(_LEADS_OUT.format(named=name, path=path))
 
 
 def _open_checked(path: str, sandbox: _Sandbox) -> Any:
@@ -565,19 +588,22 @@ def _open_checked(path: str, sandbox: _Sandbox) -> Any:
     Raises:
         ConnectorError: If the file or a log is reached through a link, the
             file does not exist, DuckDB opened no new descriptor of the file
-            the path named, a log changed while DuckDB opened the file, or
-            the system's list of descriptors cannot be read.
+            the path named, a log changed while DuckDB opened the file, the
+            system's list of descriptors cannot be read, or another sandboxed
+            open did not finish within `_OPEN_WAIT`.
     """
     paths = [path, *(beside(path, suffix) for _, suffix in WRITE_AHEAD_LOGS)]
     names = ["file", *(f"file's {name}" for name, _ in WRITE_AHEAD_LOGS)]
-    with _OPENING:
+    if not _OPENING.acquire(timeout=_OPEN_WAIT):
+        raise ConnectorError(_BUSY.format(path=path, seconds=_OPEN_WAIT))
+    try:
         before = [_identity(each, name) for each, name in zip(paths, names, strict=True)]
         if before[0] is None:
             raise ConnectorError(f"The DuckDB file '{path}' does not exist, so it was not opened.")
         held = _holding(before[0], path)
-        if sandbox.temporary is None:
-            sandbox.temporary = tempfile.mkdtemp(prefix="veridelta-duckdb-")
-        connection = _connect(path, sandbox.temporary)
+        if sandbox.spill is None:
+            sandbox.spill = tempfile.mkdtemp(prefix=_SPILL_PREFIX)
+        connection = _connect(path, sandbox.spill)
         try:
             after = [_identity(each, name) for each, name in zip(paths, names, strict=True)]
             opened = _holding(before[0], path)
@@ -586,6 +612,8 @@ def _open_checked(path: str, sandbox: _Sandbox) -> Any:
         except BaseException:
             connection.close()
             raise
+    finally:
+        _OPENING.release()
     return connection
 
 
