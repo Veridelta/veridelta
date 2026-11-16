@@ -27,7 +27,7 @@ from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 from urllib.parse import quote, unquote
@@ -159,8 +159,8 @@ def _on_another_machine(paths: list[str]) -> list[str]:
     return [each for each in paths if each.replace("/", "\\").startswith(("\\\\", "\\??\\"))]
 
 
-def _on_a_windows_disk(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    r"""Read paths as Windows does, with its own `realpath`, in `C:\root`, the server's root.
+def _on_a_windows_disk(monkeypatch: pytest.MonkeyPatch, *roots: str) -> Settings:
+    r"""Read paths as Windows does, with its own `realpath`, in `C:\root`, the working folder.
 
     Python defines Windows' `realpath` only where the `nt` module exists, so
     this loads `ntpath` again with a stand-in for `nt`. Only `C:\` and
@@ -168,8 +168,16 @@ def _on_a_windows_disk(monkeypatch: pytest.MonkeyPatch) -> Settings:
     does. A `file:` URI's path converts as Windows converts one that starts
     with a drive.
 
+    Each root is a Windows path from the start. Python 3.11 makes a Windows
+    path from a POSIX one by its names, so `C:/root` would read as `C:` and
+    `root`, which is `C:root`, a path relative to the drive's own folder.
+
+    Args:
+        monkeypatch (pytest.MonkeyPatch): Undoes the stand-ins after the test.
+        *roots (str): The server's roots. Defaults to `C:\root` alone.
+
     Returns:
-        Settings: A server whose root is `C:\root`.
+        Settings: A server with those roots.
     """
 
     def missing() -> OSError:
@@ -211,7 +219,8 @@ def _on_a_windows_disk(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setattr(
         mcp_server, "url2pathname", lambda path: unquote(path).removeprefix("/").replace("/", "\\")
     )
-    return Settings((Path("C:/root"),))
+    disk = tuple(WindowsPath(root) for root in roots or ("C:\\root",))
+    return Settings(cast("tuple[Path, ...]", disk))
 
 
 @pytest.fixture(autouse=True)
@@ -1460,8 +1469,7 @@ class TestCheckDataPaths:
         `D:data\events` lies in the folder `D:` was last in, which the server
         cannot know, so it never reads as `D:\data\events`, under a root.
         """
-        _on_a_windows_disk(monkeypatch)
-        settings = Settings((Path("C:/root"), Path("D:/data")))
+        settings = _on_a_windows_disk(monkeypatch, "C:\\root", "D:\\data")
 
         with pytest.raises(ConfigError, match=r"The source table_uri .* is outside the folders"):
             check_data_paths(settings, DeltaLakeConfig(table_uri=location), _snowflake())
