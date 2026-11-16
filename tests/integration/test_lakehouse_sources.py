@@ -482,12 +482,14 @@ class TestCheckedIcebergScan:
         ],
     )
     @pytest.mark.parametrize(
-        "credential",
+        ("credential", "passed"),
         [
-            {"adls.account-key": "a2V5"},
-            {"adls.sas-token": "sv=2024"},
+            ({"adls.account-key": "a2V5"}, {"account_key": "a2V5"}),
+            ({"adls.sas-token": "sv=2024"}, {"sas_token": "?sv=2024"}),
+            ({"adls.sas-token": "?sv=2024"}, {"sas_token": "?sv=2024"}),
+            ({"adls.sas-token": "lake2?sv=2024"}, {"sas_token": "?lake2?sv=2024"}),
         ],
-        ids=["account-key", "sas-token"],
+        ids=["account-key", "sas-token", "sas-token-with-mark", "sas-token-with-path"],
     )
     def test_it_opens_an_azure_file_in_its_container(
         self,
@@ -495,11 +497,14 @@ class TestCheckedIcebergScan:
         monkeypatch: pytest.MonkeyPatch,
         location: str,
         credential: dict[str, str],
+        passed: dict[str, str],
     ) -> None:
         """Ensure a file Spark names as `container@host` opens in that container, at the account named.
 
         PyIceberg reads the whole authority as the container. The account's
         file system is mocked with a folder, whose first level is the container.
+        PyArrow puts the text before a SAS token's `?` into the path of each
+        request, ahead of the container, so the token reaches it after a `?`.
         """
         (tmp_path / "lake" / "wh").mkdir(parents=True)
         (tmp_path / "lake" / "wh" / "data.parquet").write_bytes(b"rows")
@@ -513,8 +518,7 @@ class TestCheckedIcebergScan:
             assert stream.read() == b"rows"
 
         assert checked == [(location, True)]
-        azure.assert_called_once()
-        assert azure.call_args.kwargs["account_name"] == "acct"
+        azure.assert_called_once_with(account_name="acct", **passed)
 
     @pytest.mark.parametrize(
         ("account", "location"),
@@ -548,6 +552,7 @@ class TestCheckedIcebergScan:
             ({}, "needs 'adls.account-key' or 'adls.sas-token'"),
             ({"adls.account-key": ""}, "needs 'adls.account-key' or 'adls.sas-token'"),
             ({"adls.sas-token": " "}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.sas-token": "?"}, "needs 'adls.account-key' or 'adls.sas-token'"),
             ({"adls.client-id": "identity"}, "cannot sign in with"),
             ({"adls.client-id": "app", "adls.tenant-id": "t"}, "cannot sign in with"),
             (
@@ -566,6 +571,7 @@ class TestCheckedIcebergScan:
             "none",
             "empty-key",
             "blank-sas-token",
+            "empty-sas-token",
             "managed-identity",
             "no-secret",
             "client-secret",
@@ -598,6 +604,34 @@ class TestCheckedIcebergScan:
             io.new_input(location)
 
         assert refused.value.__cause__ is None
+        azure.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "account",
+        ["", "acct:99", "acct:", "[::1]", "ACCT", "ac", "acct.example", "a" * 25],
+        ids=["none", "port", "empty-port", "brackets", "uppercase", "short", "dot", "long"],
+    )
+    @pytest.mark.parametrize(
+        "credential",
+        [{"adls.account-key": "a2V5"}, {"adls.sas-token": "?sv=2024"}],
+        ids=["account-key", "sas-token"],
+    )
+    def test_it_builds_no_azure_file_system_for_a_name_that_is_no_account(
+        self, monkeypatch: pytest.MonkeyPatch, account: str, credential: dict[str, str]
+    ) -> None:
+        """Ensure PyArrow is given only an account name it can write into a host.
+
+        It writes the name into the host it reaches, and ends the process on a
+        name with a port or brackets in it.
+        """
+        azure = _mock_azure(monkeypatch)
+        io = checked_file_io({"adls.account-name": account, **credential}, lambda *_: None)
+
+        with pytest.raises(
+            ConfigError, match=re.escape("'adls.account-name' to be a storage account's")
+        ):
+            io.new_input("abfs://lake/wh/data.parquet")
+
         azure.assert_not_called()
 
     @pytest.mark.skipif(
