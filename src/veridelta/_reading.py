@@ -64,7 +64,9 @@ def _files_beside(path: str) -> str:
     if "://" in path:
         return ""
     try:
-        with os.scandir(Path(path).expanduser().parent) as entries:
+        # `os.path.expanduser` on the text as written, as the readers expand it. `Path` drops a
+        # leading `./` first, so it would list the home folder for `./~/x`.
+        with os.scandir(Path(os.path.expanduser(path)).parent) as entries:
             names = sorted(
                 entry.name
                 for entry in entries

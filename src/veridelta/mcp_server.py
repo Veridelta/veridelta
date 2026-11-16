@@ -119,6 +119,9 @@ all the same."""
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
 
+_LONG_PATH: Final = "\\\\?\\"
+r"""The start of a Windows long path, `\\?\`, where DuckDB adds `.wal` at the end."""
+
 _HOST_OPTIONS: Final = frozenset(
     {
         "account_name",
@@ -690,6 +693,21 @@ def _local_paths(location: str) -> list[str]:
     return [*dict.fromkeys(paths), location]
 
 
+def _duckdb_wal(database: str) -> str:
+    r"""Name the write-ahead log DuckDB replays as it opens a database file.
+
+    DuckDB names it from the path `_open` hands it, which has `~` expanded,
+    so `~` and `~.wal` cannot name different homes. Its `GetWALPath` puts
+    `.wal` before the first `?` in the path rather than at the end, so
+    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder. A
+    Windows long path, which starts with `\\?\`, has `.wal` added at the
+    end.
+    """
+    path = os.path.expanduser(database)
+    mark = -1 if path.startswith(_LONG_PATH) else path.find("?")
+    return f"{path}.wal" if mark < 0 else f"{path[:mark]}.wal{path[mark:]}"
+
+
 def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
     """Name each path on this machine a side could read: its setting, location, and path."""
     named: list[tuple[str, str]] = []
@@ -699,9 +717,7 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig) and not config.is_motherduck:
         # DuckDB replays the write-ahead log beside the file as it opens it, before the sandbox.
-        # Its name is the expanded path's, so `~` and `~.wal` cannot name different homes.
-        wal = f"{os.path.expanduser(config.database)}.wal"
-        named = [("database", config.database), ("database's WAL", wal)]
+        named = [("database", config.database), ("database's WAL", _duckdb_wal(config.database))]
     elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)

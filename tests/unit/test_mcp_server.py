@@ -701,6 +701,30 @@ class TestDescribeSide:
 
         assert _SECRET not in str(caught.value)
 
+    def test_it_names_no_file_in_the_home_folder_for_a_folder_named_home(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a missing `./~/x` lists the folder `~` it names, not the home folder outside.
+
+        The check reads `./~/x` under the working directory, so it passes, and
+        the error for a missing file lists the data files beside it. `Path`
+        drops the `./` and expands `~`, so it would list the home folder.
+        """
+        home = tmp_path_factory.mktemp("home")
+        (home / "payroll.csv").write_text("id\n1\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(tmp_path, "source:\n  path: a.csv\ntarget:\n  path: ./~/x.csv\nprimary_keys: [id]\n")
+
+        with pytest.raises(ConnectorError, match="does not exist") as caught:
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert "payroll" not in str(caught.value)
+
     def test_it_will_not_run_a_query_to_learn_its_columns(self, tmp_path: Path) -> None:
         """Ensure a query side is refused with the probe's own reason, and nothing connects."""
         _write(tmp_path, _QUERY)
@@ -964,6 +988,48 @@ class TestCheckDataPaths:
 
         with pytest.raises(ConfigError, match=r"The target database's WAL '.+' is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
+    def test_it_refuses_a_duckdb_write_ahead_log_that_a_question_mark_moves_outside(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure the WAL is checked where DuckDB puts it, before the first `?` of the path.
+
+        For `L?/x.duckdb`, DuckDB replays `L.wal?/x.duckdb`, in another
+        folder, which here is a link out of the root. `L?/x.duckdb.wal` is
+        under the root, so a check of that path alone would pass.
+        """
+        (tmp_path / "L?").mkdir()
+        _link_folder(tmp_path / "L.wal?", tmp_path_factory.mktemp("outside"))
+        target = DuckDBConfig(database="L?/x.duckdb", table="t")
+
+        with pytest.raises(ConfigError, match=r"The target database's WAL 'L\.wal\?/x\.duckdb' is"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
+    def test_it_names_the_write_ahead_log_duckdb_writes(self, tmp_path: Path) -> None:
+        """Ensure the server's name for the WAL is the file DuckDB writes, `?` and all."""
+        (tmp_path / "L?").mkdir()
+        (tmp_path / "L.wal?").mkdir()
+        database = str(tmp_path / "L?" / "x.duckdb")
+        connection = duckdb.connect(database)
+        try:
+            connection.execute("CREATE TABLE t (id INTEGER)")
+
+            wal = mcp_server._duckdb_wal(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
+
+            assert Path(wal) == tmp_path / "L.wal?" / "x.duckdb"
+            assert Path(wal).is_file()
+        finally:
+            connection.close()
+
+    def test_it_adds_wal_at_the_end_of_a_windows_long_path(self) -> None:
+        r"""Ensure a path that starts with `\\?\` keeps its `?`, as DuckDB keeps it."""
+        database = "\\\\?\\C:\\data?\\x.duckdb"
+
+        wal = mcp_server._duckdb_wal(database)  # pyright: ignore[reportPrivateUsage] - DuckDB names this log on Windows alone
+
+        assert wal == f"{database}.wal"
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
