@@ -83,10 +83,12 @@ excel = ["fastexcel>=0.11.0"]
 # 3.0.0 settled the `score_cutoff` behavior the fuzzy rules rely on.
 fuzzy = ["rapidfuzz>=3.0.0"]
 database = [
-    # ConnectorX ships wheels only, and 0.4.5 is the first with Python 3.14
-    # wheels. It declares no dependencies, but Polars reads its results
-    # through pyarrow, so the extra names pyarrow itself.
-    "connectorx>=0.4.5",
+    # ConnectorX ships wheels only. 0.4.6 is the first release whose scheme
+    # rewrite the MCP server's database checks follow, as `connectorx_url`
+    # says, and it has Python 3.14 wheels. It declares no dependencies, but
+    # Polars reads its results through pyarrow, so the extra names pyarrow
+    # itself.
+    "connectorx>=0.4.6",
     "pyarrow>=23.0.1",
 ]
 # 1.5.0 is the release the parity suite runs on, and DuckDB's Polars export
