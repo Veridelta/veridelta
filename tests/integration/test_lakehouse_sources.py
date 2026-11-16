@@ -25,6 +25,7 @@ import polars as pl
 import pytest
 from deltalake import DeltaTable
 from deltalake.fs import DeltaStorageHandler
+from packaging.version import Version
 from pyarrow.fs import LocalFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
 from pytest_mock import MockerFixture
@@ -416,7 +417,24 @@ class TestCheckedDeltaScan:
     and its data files through a PyArrow file system that checks each one.
     """
 
-    @pytest.mark.parametrize("table", [_versioned, _evolved, _vectored, _blanked, _emptied])
+    @pytest.mark.parametrize(
+        "table",
+        [
+            _versioned,
+            _evolved,
+            pytest.param(
+                _vectored,
+                id="_vectored",
+                marks=pytest.mark.skipif(
+                    Version(pl.__version__) < Version("1.40.0"),
+                    reason="Polars reads a table with deletion vectors from 1.40.0 on, "
+                    "so an older one gives no rows to compare with.",
+                ),
+            ),
+            _blanked,
+            _emptied,
+        ],
+    )
     def test_it_reads_the_rows_polars_reads(
         self, tmp_path: Path, table: Callable[[Path], DeltaLakeConfig]
     ) -> None:
@@ -496,7 +514,8 @@ class TestCheckedDeltaScan:
         checks each file at the path it then opens, as for a `file:` table.
         """
         config = _vectored(tmp_path / "events")
-        expected = LoaderFactory.load(config).collect()
+        with checking_table_files(lambda *_: None, _listed):
+            expected = LoaderFactory.load(config).collect()
         uri = Path(config.table_uri).as_uri().replace("file:", f"{scheme}:", 1)
         local = config.model_copy(update={"table_uri": uri})
         checked: list[tuple[str, bool]] = []
