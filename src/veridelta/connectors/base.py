@@ -65,10 +65,13 @@ def without_location(text: str, location: str) -> str:
     return text.replace(location, shown_location(location))
 
 
+_URL_END: Final = r"(?P=quote)[.,;:)\]]?(?:\s|$)"
+"""The quote that closes a quoted URL: a space or the end of the text follows it, perhaps after one mark."""
+
 _URL_QUERY: Final = re.compile(
-    r"(?P<quote>['\"])(?P<quoted>[A-Za-z][A-Za-z0-9+.-]*://[^'\"?]*)\?.*?(?P=quote)"
-    r"(?=[.,;:)\]]?(?:\s|$))"
-    r"|(?P<bare>\b[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"?]*)\?\S*",
+    rf"(?P<quoted>(?P<quote>['\"])[A-Za-z0-9+.-]{{0,32}}://(?:(?!{_URL_END})[^?])*)"
+    rf"(?:\?(?:(?!{_URL_END}).)*)?"
+    r"|(?P<bare>://[^\s?]*)(?:\?\S*)?",
     re.DOTALL,
 )
 """A URL and its query: inside quotes, up to the quote that closes them, or else up to a space."""
@@ -80,10 +83,13 @@ def without_queries(text: str) -> str:
     A reader can quote a URL it built with a credential, such as each request
     PyArrow signs with an Azure SAS token. The Azure SDK writes the token's
     parameters back sorted, and can encode them anew, so masking the token's
-    own text misses them. A URL inside quotes loses everything up to the
-    first quote of its kind that a space or the end of the text follows,
-    perhaps after one mark such as a period, so spaces and other quotes in
-    the query go too. Any other URL loses everything up to the next space.
+    own text misses them. A URL inside quotes keeps its path up to its first
+    `?`, quotes in the path included, and loses everything from there up to
+    the first quote of its kind that a space or the end of the text follows,
+    perhaps after one mark such as a period, so spaces and other quotes in the
+    query go too. With no such quote, it loses the rest of the text. Any other
+    URL loses everything from its first `?` up to the next space. Each match
+    takes the text it scans, so the time stays linear in the text's length.
 
     Args:
         text (str): The driver's message.
@@ -91,14 +97,7 @@ def without_queries(text: str) -> str:
     Returns:
         str: The message, with no URL's query in it.
     """
-    return _URL_QUERY.sub(
-        lambda found: (
-            found["bare"]
-            if found["quote"] is None
-            else found["quote"] + found["quoted"] + found["quote"]
-        ),
-        text,
-    )
+    return _URL_QUERY.sub(r"\g<quoted>\g<bare>", text)
 
 
 def names_another_machine(path: str) -> bool:

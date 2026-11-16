@@ -3360,16 +3360,27 @@ class TestLakehouseFiles:
         ],
         ids=["bare", "with-mark", "reordered"],
     )
+    @pytest.mark.parametrize("folder", ["t", "it's"], ids=["plain", "quote-in-path"])
     @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
-    @pytest.mark.parametrize("tool", ["validate_config", "run_comparison"])
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
     def test_it_returns_no_part_of_an_azure_sas_token_from_the_environment(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         mocker: MockerFixture,
         token: str,
+        folder: str,
         listed: bool,
         tool: str,
+        arguments: dict[str, object],
     ) -> None:
         """Ensure an Azure error that quotes a request's URL comes back without its query.
 
@@ -3377,7 +3388,8 @@ class TestLakehouseFiles:
         them anew, so the URL PyArrow quotes in its error does not hold the
         variable's value that the server masks. The mock fails each read with
         such a URL. The listing fails, or, with no listing, the scan, which
-        `validate_config` reports as a finding.
+        `validate_config` reports as a finding. The Azure SDK encodes a quote
+        in a file's path as written, so the URL's path can hold one.
         """
         monkeypatch.setenv("VD_AZURE_SAS", token)
 
@@ -3402,22 +3414,20 @@ class TestLakehouseFiles:
         _write(
             tmp_path,
             "source:\n  path: a.parquet\n  format: parquet\ntarget:\n  type: iceberg\n"
-            "  table_uri: abfs://lake/t/metadata/v1.metadata.json\n  storage_options:\n"
+            f"  table_uri: abfs://lake/{folder}/metadata/v1.metadata.json\n  storage_options:\n"
             "    adls.account-name: acct\n    adls.sas-token: ${VD_AZURE_SAS}\n"
             "primary_keys: [id]\n",
         )
 
         result = _call(
             Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
-            {"path": "veridelta.yaml", "schemas": True}
-            if tool == "validate_config"
-            else {"path": "veridelta.yaml"},
+            {"path": "veridelta.yaml", **arguments},
             tool=tool,
         )
 
         shown = json.dumps(result.structured_content) + _text(result)
         # The URL ends at its path, where the query would follow.
-        assert "/lake/t/metadata/v1.metadata.json'" in shown
+        assert f"/lake/{folder}/metadata/v1.metadata.json'" in shown
         for value in ("c2lnbmF0dXJl", "2024-01-01", "2030-12-31"):
             assert value not in shown
 
@@ -4972,6 +4982,30 @@ class TestEnvironmentValues:
         )
 
         assert environment_values(Settings((tmp_path,)), "veridelta.yaml") == (_SECRET,)
+
+    @pytest.mark.parametrize("mark", ["", "?"], ids=["bare", "with-mark"])
+    def test_it_returns_each_form_of_a_sas_signature(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mark: str
+    ) -> None:
+        """Ensure a SAS token's signature counts on its own, as written, decoded, and encoded.
+
+        The Azure SDK writes the token's parameters back in another order, so
+        the token's whole text may not appear where its signature does.
+        """
+        token = f"{mark}sv=2024-01-01&sig=c2ln%2bbmF0/dXJl%3D&sp=r"
+        monkeypatch.setenv("VD_AZURE_SAS", token)
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  type: iceberg\n  table_uri: abfs://lake/t\n"
+            "  storage_options:\n    adls.sas-token: ${VD_AZURE_SAS}\nprimary_keys: [id]\n",
+        )
+
+        assert environment_values(Settings((tmp_path,)), "veridelta.yaml") == (
+            token,
+            "c2ln%2bbmF0/dXJl%3D",
+            "c2ln+bmF0/dXJl=",
+            "c2ln%2BbmF0%2FdXJl%3D",
+        )
 
     def test_it_returns_none_for_a_file_it_cannot_read(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory

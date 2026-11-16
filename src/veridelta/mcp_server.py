@@ -43,7 +43,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import SplitResult, parse_qsl, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qsl, quote, unquote, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -1875,7 +1875,10 @@ def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
     A tool masks each in its answer, since a path, a name, or an error built
     from the configuration carries the values it took. A file outside the
     roots, or one that cannot be read, gives none, and so does a variable
-    that is unset or shorter than four characters.
+    that is unset or shorter than four characters. A value that holds an
+    Azure SAS token's `sig` parameter also gives that signature, as written,
+    decoded, and encoded, since the Azure SDK writes the token's parameters
+    back in another order.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -1888,8 +1891,20 @@ def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
         text = resolve_path(settings, path).read_text(encoding="utf-8")
     except (ConfigError, OSError, UnicodeDecodeError):
         return ()
-    values = (os.environ.get(name, "") for name in referenced_variables(text))
-    return tuple(value for value in values if len(value) >= _SHORTEST_MASKED)
+    values = [os.environ.get(name, "") for name in referenced_variables(text)]
+    signatures = [form for value in values for form in _sas_signatures(value)]
+    return tuple(value for value in [*values, *signatures] if len(value) >= _SHORTEST_MASKED)
+
+
+def _sas_signatures(value: str) -> tuple[str, ...]:
+    """Return each form of the `sig` parameter a SAS token holds: as written, decoded, and encoded."""
+    parameters = (part.partition("=") for part in value.removeprefix("?").split("&"))
+    return tuple(
+        form
+        for name, _, written in parameters
+        if name == "sig"
+        for form in (written, unquote(written), quote(unquote(written), safe=""))
+    )
 
 
 def _masked(value: Any, secrets: tuple[str, ...]) -> Any:
