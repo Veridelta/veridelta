@@ -1439,6 +1439,45 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
     return [*_location_hosts("database", config.database)]
 
 
+def _storage_options(config: SourceRef) -> object:
+    """Return the `storage_options` a side hands its reader, or None for a side that takes none."""
+    if isinstance(config, SourceConfig):
+        return config.options.get("storage_options")
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return config.storage_options
+    return None
+
+
+def _refuse_plain_http(side: str, config: SourceRef) -> None:
+    """Refuse a storage option that sends a reader to its endpoint over plain HTTP.
+
+    Polars and PyIceberg take the scheme from the endpoint, in any case, so an
+    `http://` one sends the credentials and the rows unencrypted, as
+    `aws_allow_http` would for deltalake, which a tool refuses as a key it does
+    not know. So a host option's value with a scheme passes only with
+    `https`. No host is excepted, this machine's included, as none is for
+    `aws_allow_http`. A value with no scheme passes: PyArrow then uses HTTPS,
+    and object_store fails before it connects. The message names the option
+    and not its value, which can hold a `${NAME}` value.
+
+    Raises:
+        ConfigError: If a host option's value names a scheme other than `https`.
+    """
+    options = _storage_options(config)
+    if not isinstance(options, Mapping):
+        return
+    for key, value in cast("Mapping[object, object]", options).items():
+        name, (scheme, separator, _) = str(key), str(value).partition("://")
+        endpoint = name.isascii() and name.lower() in _HOST_OPTIONS and separator
+        if endpoint and not (scheme.isascii() and scheme.lower() == "https"):
+            raise ConfigError(
+                f"The {side} storage option '{key}' names an endpoint by a scheme other than "
+                "https, so a reader would send its credentials and rows unencrypted. A tool "
+                "reaches an endpoint only over HTTPS, on this machine too, so write it as "
+                "https://host:port."
+            )
+
+
 def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     """Name each host a side connects to that its configuration chooses, with the setting.
 
@@ -1449,14 +1488,11 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     credentials reach their own service's hosts, so they name none.
     """
     if isinstance(config, SourceConfig):
-        return [
-            *_location_hosts("path", config.path),
-            *_option_hosts(config.options.get("storage_options")),
-        ]
+        return [*_location_hosts("path", config.path), *_option_hosts(_storage_options(config))]
     if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         return [
             *_location_hosts("table_uri", config.table_uri),
-            *_option_hosts(config.storage_options),
+            *_option_hosts(_storage_options(config)),
         ]
     if isinstance(config, DuckDBConfig):
         return _duckdb_hosts(config)
@@ -1479,14 +1515,16 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     side that could reach any host could send one there, or reach a service on
     this machine or its network. A host written in any shape but
     `_HOST_AND_PORT`'s is refused on its own, since readers split it in
-    different places. The message names the setting and not the host, which
-    can hold such a value.
+    different places. An endpoint is refused over plain HTTP, by
+    `_refuse_plain_http`. The message names the setting and not the host,
+    which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
         for setting, host in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host)
+        _refuse_plain_http(side, config)
 
 
 def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
