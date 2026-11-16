@@ -20,24 +20,36 @@ Each session reads time in UTC, so a timestamp with a time zone, or a date cast
 in a `query`, does not depend on the machine. A file's connection reads other
 files only from the file's own folder, or inside `sandboxed`, from the folders
 that names, since a view stored in the file runs whatever its author wrote.
-It reads and writes no persistent secret. On Windows, DuckDB's own check of
-the folders lets a drive-relative path with a lowercase letter out, and it
-resolves a share path, reaching that machine, before it refuses it. So a
-file from someone else is code there, and inside `sandboxed` on Windows a
-connection opens no other file at all.
+It reads and writes no persistent secret. DuckDB replays the write-ahead logs
+beside the file as it opens it, so a log that lies outside the file's own
+folder, or leads out of it, is refused. A large query spills into a folder
+this process creates in the system's temporary folder, never beside the file.
+Inside `sandboxed`, a file and its logs open only by a path with no link in
+it, and DuckDB must open the file the path named just before. On Windows,
+DuckDB's own check of the folders lets a drive-relative path with a lowercase
+letter out, and it resolves a share path, reaching that machine, before it
+refuses it. So a file from someone else is code there, and inside `sandboxed`
+on Windows a connection opens no other file at all, so a query that would
+spill fails.
 
 A token never reaches a log line or an error. It goes to DuckDB as a
 connection setting, never in the connection string, and a failed read is
 reported with the token replaced and without the driver's exception attached.
 """
 
+import errno
 import logging
 import os
+import shutil
+import stat
 import sys
+import tempfile
+import threading
 import time
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
 
@@ -110,8 +122,93 @@ _UNREADABLE_TYPES: Final = frozenset({"interval", "union"})
 _NESTED_TYPES: Final = frozenset({"struct", "list", "array", "map"})
 """DuckDB types whose members can hold an unreadable type."""
 
-_sandbox: ContextVar[tuple[str, ...] | None] = ContextVar("veridelta_duckdb_sandbox", default=None)
-"""The folders a file's connection may read other files from, or None for no limit."""
+WRITE_AHEAD_LOGS: Final = (
+    ("WAL", ".wal"),
+    ("checkpoint WAL", ".wal.checkpoint"),
+    ("recovery WAL", ".wal.recovery"),
+)
+"""Each log DuckDB names beside a database file, with the suffix `beside` adds.
+
+A read-only open replays `.wal`, and `.wal.checkpoint` after a crash during a
+checkpoint. Only a read-write open writes `.wal.recovery`, but it is held to
+the same rule."""
+
+_SPILL_PREFIX: Final = "veridelta-duckdb-"
+"""The start of the name of each folder a connection spills into, in the system's temporary folder."""
+
+_OPEN_WAIT: Final = 60.0
+"""Seconds a sandboxed open waits for another to finish before it is refused."""
+
+_DESCRIPTORS: Final = {"linux": "/proc/self/fd", "darwin": "/dev/fd"}.get(sys.platform)
+"""The folder that lists this process's open file descriptors, or None where none is known."""
+
+_OPENING: Final = threading.Lock()
+"""Held while DuckDB opens a file inside `sandboxed`, so no other such open runs meanwhile.
+
+A descriptor that names the file must be one DuckDB opened then, so no other
+sandboxed read's DuckDB connection may open one alongside it. An open that
+waits longer than `_OPEN_WAIT` is refused, so a file that never finishes
+opening, such as a pipe swapped in for it, blocks no other read for good."""
+
+_FOLDER_FLAGS: Final = (
+    getattr(os, "O_PATH", os.O_RDONLY)
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+"""Flags that open a folder, and refuse a link, without reading the folder."""
+
+_LINK_ERRORS: Final = frozenset({errno.ELOOP, errno.ENOTDIR, errno.EMLINK})
+"""Errors a system gives when asked to open a link, or a file, as a folder without following it."""
+
+_LINKED: Final = (
+    "The DuckDB {named} '{path}' is a link, lies in a folder reached through one, or is "
+    "not a file, so it was not opened. Inside the sandbox, a DuckDB file and its logs open "
+    "only by a path with no link in it, as the MCP server resolves it."
+)
+
+_UNREACHED: Final = (
+    "The DuckDB {named} '{path}' could not be looked up, so it was not opened: {reason}."
+)
+
+_CHANGED: Final = (
+    "DuckDB did not open the DuckDB file '{path}' anew, or the file or a log beside it "
+    "changed while DuckDB opened it, so it was not read. A link or a file there was "
+    "replaced after it was checked, or another read holds the file open by the same path. "
+    "Read it again once no other read holds it."
+)
+
+_UNLISTED: Final = (
+    "The DuckDB file '{path}' was not read: the server could not list the files it holds "
+    "open in {listing}, so it cannot confirm that DuckDB opened the file it checked. Run "
+    "the server where {listing} can be read, such as with /proc mounted on Linux."
+)
+
+_LEADS_OUT: Final = (
+    "The DuckDB file's {named} '{path}' lies outside the folder that holds the file, or is "
+    "a link that leads out of it. DuckDB would replay that log, so the file was not opened. "
+    "Remove it, or put it and the file in one folder."
+)
+
+_BUSY: Final = (
+    "The DuckDB file '{path}' was not read: another DuckDB file was still opening after "
+    "{seconds:.0f} seconds. Read it again once that read ends, or restart the server if "
+    "it never does."
+)
+
+
+@dataclass
+class _Sandbox:
+    """What a file's connection is held to inside `sandboxed`."""
+
+    folders: tuple[str, ...]
+    """The folders it may read other files from."""
+
+    spill: str | None = None
+    """The folder it spills into, which the block creates as it opens its first file."""
+
+
+_sandbox: ContextVar[_Sandbox | None] = ContextVar("veridelta_duckdb_sandbox", default=None)
+"""What a file's connection is held to, or None for its own folder."""
 
 _FOLDERS_HOLD: Final = os.path.sep != "\\" and sys.platform not in ("cygwin", "msys")
 r"""Whether DuckDB's `allowed_directories` holds a statement to its folders on this system.
@@ -138,18 +235,45 @@ def sandboxed(directories: Iterable[Path]) -> Generator[None]:
     this block. A MotherDuck connection is not held, since its extension
     loads and reaches MotherDuck over the network.
 
+    Inside the block, a file and the logs beside it open only by a path with
+    no link in it, so hand the path resolved. DuckDB must then hold open the
+    file that path named just before, and each log must be as it was, or the
+    connection closes and the read fails. A large query spills into a folder
+    the block creates in the system's temporary folder, as it opens its first
+    file, and removes at its end. On Windows, such a query fails instead.
+
     Args:
         directories (Iterable[Path]): The folders, resolved.
 
     Yields:
         None: Control, for the reads to run inside the block.
     """
-    folders = tuple(_folder(directory) for directory in directories)
-    token = _sandbox.set(folders)
+    sandbox = _Sandbox(tuple(_folder(directory) for directory in directories))
+    token = _sandbox.set(sandbox)
     try:
         yield
     finally:
         _sandbox.reset(token)
+        if sandbox.spill is not None:
+            shutil.rmtree(sandbox.spill, ignore_errors=True)
+
+
+def beside(path: str, suffix: str) -> str:
+    """Add a suffix to a database's path as DuckDB's `AddSuffixToPath` does.
+
+    DuckDB names each write-ahead log and its default temporary folder this way. The
+    suffix goes before the first `?` in the path rather than at the end, so
+    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
+
+    Args:
+        path (str): The database's path, as DuckDB resolves it.
+        suffix (str): Such as `.wal`.
+
+    Returns:
+        str: The path with the suffix added.
+    """
+    mark = path.find("?")
+    return f"{path}{suffix}" if mark < 0 else f"{path[:mark]}{suffix}{path[mark:]}"
 
 
 def _folder(directory: Path) -> str:
@@ -195,11 +319,11 @@ class DuckDBConnector(ReaderConnector):
         token = _token(self._config)
         started = time.perf_counter()
         try:
-            connection = _open(self._config, token)
+            connection, spill = _open(self._config, token)
             try:
                 frame = _read(connection, statement, self._subject)
             finally:
-                connection.close()
+                _close(connection, spill)
         except ConnectorError:
             raise
         except ImportError:
@@ -259,6 +383,7 @@ class DuckDBPushdownSession(PushdownSession):
         self._config = config
         self.compiler = SQLPushdownCompiler(SQLDialect.DUCKDB)
         self._connection: Any = None
+        self._spill: str | None = None
         self._token: str | None = None
 
     def connect(self) -> None:
@@ -272,7 +397,7 @@ class DuckDBPushdownSession(PushdownSession):
             raise ConnectorError(_DUCKDB_EXTRA)
         token = _token(self._config)
         try:
-            connection = _open(self._config, token)
+            connection, spill = _open(self._config, token)
         except Exception as exc:
             logger.warning("DuckDB connection to %s failed", self._config.database)
             raise ConnectorError(
@@ -280,7 +405,7 @@ class DuckDBPushdownSession(PushdownSession):
                 f"{mask_secrets(str(exc), token)}"
             ) from None
         logger.info("Connected to DuckDB database %s", self._config.database)
-        self._connection, self._token = connection, token
+        self._connection, self._spill, self._token = connection, spill, token
 
     def execute_pushdown(
         self, statement: str, query_type: PushdownQueryType = "mismatch"
@@ -305,9 +430,9 @@ class DuckDBPushdownSession(PushdownSession):
     def close(self) -> None:
         """Close the connection. Idempotent; `connect()` opens it again."""
         if self._connection is not None:
-            self._connection.close()
+            _close(self._connection, self._spill)
             logger.info("Closed DuckDB database %s", self._config.database)
-        self._connection = None
+        self._connection = self._spill = None
 
     def _run(self, statement: str, query_type: str) -> pl.DataFrame:
         """Run a statement on the open connection, logging and reporting without secrets."""
@@ -358,7 +483,7 @@ def _token(config: DuckDBConfig) -> str | None:
     return token
 
 
-def _open(config: DuckDBConfig, token: str | None) -> Any:
+def _open(config: DuckDBConfig, token: str | None) -> tuple[Any, str | None]:
     """Open a file read-only, or a MotherDuck database with its token, to read in UTC.
 
     A file is held to its own folder, or inside `sandboxed` to the folders
@@ -378,24 +503,49 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
     server's check expands, so DuckDB never does. DuckDB reads `~` as `HOME`
     alone, which may be unset where the system still names a home folder.
 
+    DuckDB would spill into `duckdb:` and the path, with `.tmp` added, from
+    the working directory, and a folder beside the file can arrive holding a
+    link under the name of a spill file. So the temporary folder is set to
+    one this process creates: for this connection alone, or inside
+    `sandboxed`, the folder the block created.
+
+    Returns:
+        tuple[Any, str | None]: The connection, and the folder to remove once
+            it closes, which `_close` does, or None for none.
+
     Raises:
         ConnectorError: If the path still starts with `~`, since the system
             names no home folder, or starts with `//`, once `~` is expanded.
             DuckDB strips no type from `duckdb://`, so it would open a file
             whose name starts with `duckdb:` instead, by its first bytes.
+            Also if a log lies outside the file's folder or leads out of it,
+            or inside `sandboxed`, if the path holds a link or DuckDB opened
+            another file than the path named.
     """
     setup = ["SET TimeZone = 'UTC'"]
+    spill: str | None = None
     if token is None:
         path = os.path.expanduser(config.database)
         if path.startswith("~"):
             raise ConnectorError(_NO_HOME)
         if path.startswith("//"):
             raise ConnectorError(_TWO_SLASHES)
-        connection = duckdb.connect(f"{_DUCKDB_TYPE}{path}", read_only=True, config=_NO_EXTENSIONS)
-        held = _sandbox.get()
-        # A view in the file runs as its author wrote it, so it reads only beside the file.
-        folders = held if held is not None else (_folder(Path(path).resolve().parent),)
-        setup += compile_duckdb_sandbox(folders, other_files=held is None or _FOLDERS_HOLD)
+        sandbox = _sandbox.get()
+        if sandbox is None:
+            # A view in the file runs as its author wrote it, so it reads only beside the file.
+            resolved = Path(path).resolve()
+            _kept_beside(resolved)
+            spill = tempfile.mkdtemp(prefix=_SPILL_PREFIX)
+            try:
+                connection = _connect(path, spill)
+            except BaseException:
+                shutil.rmtree(spill, ignore_errors=True)
+                raise
+            folders: tuple[str, ...] = (_folder(resolved.parent),)
+        else:
+            connection = _open_checked(path, sandbox)
+            folders = sandbox.folders
+        setup += compile_duckdb_sandbox(folders, other_files=sandbox is None or _FOLDERS_HOLD)
     else:
         # A read-only MotherDuck connection needs a read-scaling token, so it opens read-write.
         connection = duckdb.connect(config.database, config={"motherduck_token": token})
@@ -403,9 +553,173 @@ def _open(config: DuckDBConfig, token: str | None) -> Any:
         for statement in setup:
             connection.execute(statement)
     except BaseException:
-        connection.close()
+        _close(connection, spill)
         raise
+    return connection, spill
+
+
+def _close(connection: Any, spill: str | None) -> None:
+    """Close a connection, then remove the folder it spilled into, if it has its own."""
+    try:
+        connection.close()
+    finally:
+        if spill is not None:
+            shutil.rmtree(spill, ignore_errors=True)
+
+
+def _connect(path: str, spill: str) -> Any:
+    """Open a file read-only as a DuckDB database, with no extension, spilling into `spill`."""
+    settings = {**_NO_EXTENSIONS, "temp_directory": spill}
+    return duckdb.connect(f"{_DUCKDB_TYPE}{path}", read_only=True, config=settings)
+
+
+def _kept_beside(resolved: Path) -> None:
+    """Refuse a log of a file that lies outside its folder, or leads out of it.
+
+    DuckDB replays a log as it opens the file, before any setting of the
+    sandbox applies. A link that stays in the file's folder is followed, and
+    a path that names nothing is left alone, even where a `?` in the file's
+    path makes `beside` name a log in another folder.
+
+    Args:
+        resolved (Path): The file, resolved as DuckDB resolves it.
+
+    Raises:
+        ConnectorError: If a log lies outside the folder or leads out of it.
+    """
+    for name, suffix in WRITE_AHEAD_LOGS:
+        path = beside(str(resolved), suffix)
+        if os.path.lexists(path) and not Path(os.path.realpath(path)).is_relative_to(
+            resolved.parent
+        ):
+            raise ConnectorError(_LEADS_OUT.format(named=name, path=path))
+
+
+def _open_checked(path: str, sandbox: _Sandbox) -> Any:
+    """Open a file by a path with no link in it, and confirm DuckDB opened the file it named.
+
+    The file and each log are looked up first, through no link. DuckDB opens
+    the path again by its text, so a folder swapped for a link in between
+    would lead it to another file. Where the system lists this process's
+    open descriptors, as Linux and macOS do, a descriptor that was not open
+    before `duckdb.connect` must name the file looked up, so one that another
+    read holds does not count. `_OPENING` keeps any other read's DuckDB
+    connection from opening one meanwhile. Each log, and the file, must then
+    still be as they were.
+
+    Raises:
+        ConnectorError: If the file or a log is reached through a link, the
+            file does not exist, DuckDB opened no new descriptor of the file
+            the path named, a log changed while DuckDB opened the file, the
+            system's list of descriptors cannot be read, or another sandboxed
+            open did not finish within `_OPEN_WAIT`.
+    """
+    paths = [path, *(beside(path, suffix) for _, suffix in WRITE_AHEAD_LOGS)]
+    names = ["file", *(f"file's {name}" for name, _ in WRITE_AHEAD_LOGS)]
+    if not _OPENING.acquire(timeout=_OPEN_WAIT):
+        raise ConnectorError(_BUSY.format(path=path, seconds=_OPEN_WAIT))
+    try:
+        before = [_identity(each, name) for each, name in zip(paths, names, strict=True)]
+        if before[0] is None:
+            raise ConnectorError(f"The DuckDB file '{path}' does not exist, so it was not opened.")
+        held = _holding(before[0], path)
+        if sandbox.spill is None:
+            sandbox.spill = tempfile.mkdtemp(prefix=_SPILL_PREFIX)
+        connection = _connect(path, sandbox.spill)
+        try:
+            after = [_identity(each, name) for each, name in zip(paths, names, strict=True)]
+            opened = _holding(before[0], path)
+            if after != before or (held is not None and not cast("set[int]", opened) - held):
+                raise ConnectorError(_CHANGED.format(path=path))
+        except BaseException:
+            connection.close()
+            raise
+    finally:
+        _OPENING.release()
     return connection
+
+
+def _identity(path: str, named: str) -> tuple[int, int] | None:
+    """Return the device and inode of the file a path names through no link, or None for none.
+
+    Raises:
+        ConnectorError: If a part of the path is a link, or the path names
+            something other than a file.
+    """
+    linked = ConnectorError(_LINKED.format(named=named, path=path))
+    try:
+        status = _looked_up(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in _LINK_ERRORS:
+            raise linked from None
+        reason = exc.strerror or type(exc).__name__
+        raise ConnectorError(_UNREACHED.format(named=named, path=path, reason=reason)) from None
+    if not stat.S_ISREG(status.st_mode) or not _resolves_to_itself(path):
+        raise linked
+    return status.st_dev, status.st_ino
+
+
+def _looked_up(path: str) -> os.stat_result:
+    """Look a file up without following a link.
+
+    On a system that looks a name up in an open folder, as Linux and macOS
+    do, each folder on the path is opened in the one before it, refusing a
+    link, so no folder can change between two steps. Elsewhere, as on
+    Windows, the path's last part is looked up without following a link, and
+    `_resolves_to_itself` checks the folders before it.
+    """
+    if os.stat not in os.supports_dir_fd:
+        return os.stat(path, follow_symlinks=False)
+    head, name = os.path.split(path)
+    folder = os.open(os.sep if os.path.isabs(path) else os.curdir, _FOLDER_FLAGS)
+    try:
+        for part in head.split(os.sep):
+            if part:
+                inner = os.open(part, _FOLDER_FLAGS, dir_fd=folder)
+                os.close(folder)
+                folder = inner
+        return os.stat(name, dir_fd=folder, follow_symlinks=False)
+    finally:
+        os.close(folder)
+
+
+def _resolves_to_itself(path: str) -> bool:
+    """Whether a path holds no link, where `_looked_up` could not refuse one in a folder."""
+    if os.stat in os.supports_dir_fd:
+        return True
+    return os.path.normcase(os.path.realpath(path)) == os.path.normcase(os.path.abspath(path))
+
+
+def _holding(identity: tuple[int, int], path: str) -> set[int] | None:
+    """Return this process's descriptors that name a file, or None where the system lists none.
+
+    DuckDB holds the database file open while its connection is, so a file
+    that no new descriptor names is one DuckDB did not open. The file is
+    never opened and closed here, since closing any descriptor of a file
+    releases the lock DuckDB holds on it.
+
+    Raises:
+        ConnectorError: If the system's list of descriptors cannot be read,
+            as on Linux without /proc mounted.
+    """
+    if _DESCRIPTORS is None:
+        return None
+    try:
+        names = os.listdir(_DESCRIPTORS)
+    except OSError:
+        raise ConnectorError(_UNLISTED.format(path=path, listing=_DESCRIPTORS)) from None
+    return {int(name) for name in names if _described(name) == identity}
+
+
+def _described(name: str) -> tuple[int, int] | None:
+    """Return the device and inode of the file an open descriptor names, or None for one closed."""
+    try:
+        status = os.fstat(int(name))
+    except OSError:
+        return None
+    return status.st_dev, status.st_ino
 
 
 def _read(connection: Any, statement: str, subject: str) -> pl.DataFrame:

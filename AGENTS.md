@@ -106,5 +106,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [The MCP server reads a Delta Lake table's data files through PyArrow](decisions/mcp-delta-scan-reads-through-pyarrow.md)
 - [On Windows, the MCP server's DuckDB connection opens no other file](decisions/mcp-duckdb-opens-no-other-file-on-windows.md)
 - [A DuckDB file's connection keeps no persistent secret](decisions/duckdb-file-keeps-no-persistent-secret.md)
+- [The MCP server confirms which DuckDB file DuckDB opened](decisions/mcp-confirms-the-duckdb-file-opened.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

@@ -251,6 +251,10 @@ A file's views and macros run as their author wrote them, so a file from someone
 
 Put the files a view or a `query` reads beside the database file, or in a folder under it. The [MCP server](agents.md#mcp-server) holds a file to its roots instead, and on Windows lets it open no other file.
 
+DuckDB replays the write-ahead log beside the file as it opens it, such as `warehouse.duckdb.wal`, so rows a writer has not yet checkpointed are read. The read fails when a log lies outside the file's folder, or is a link that leads out of it, since DuckDB would replay rows from elsewhere. The check looks at the folder once, as the read starts, so it holds against a file that arrives with such a link, not against another process that changes the folder while DuckDB opens the file.
+
+A query that needs more memory than the machine gives it spills to disk, into a folder the read creates in the system's temporary folder and removes when it ends. Set `TMPDIR`, or `TEMP` on Windows, to move it. A read never spills beside the file, so a `warehouse.duckdb.tmp` folder that arrives with the file is left alone.
+
 DuckDB lets one process write to a file, or several read it, but not both at once. Close a notebook's read-write connection before a run reads the same file.
 
 ### MotherDuck
