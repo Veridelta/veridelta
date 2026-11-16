@@ -10,7 +10,11 @@ root such as `\data\x.csv`, mixed separators, a name with a trailing dot or
 space, an 8.3 short name, a directory junction, a drive that `subst` gives a
 folder, a `file:` URI with a drive letter, and a lowercase drive letter. A path
 the system reads as on another machine or as a device, such as `\\?\C:\x.csv`,
-is refused before anything resolves it, even when it leads under a root.
+is refused before anything resolves it, even when it leads under a root, and
+so is one that Python 3.11's `Path` would fold to a path on this machine, such
+as `\\\localhost\C$\x.csv`. So is a `file:` URI that names a host, one whose
+path starts with `//`, and one whose path Python cannot convert, as Windows
+before Python 3.14 cannot one with a second `:`.
 
 Each path is built from `tmp_path` with the system's own separators, never
 from POSIX text.
@@ -20,6 +24,7 @@ import ctypes
 import glob
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -48,6 +53,7 @@ from veridelta.models import (
     DatabaseConfig,
     DeltaLakeConfig,
     DuckDBConfig,
+    SnowflakeConfig,
     SourceConfig,
     SourceRef,
 )
@@ -130,12 +136,35 @@ _ELSEWHERE: list[Any] = [
     pytest.param(lambda path: f"\\\\localhost\\{_admin_share(path)}", id="localhost"),
     pytest.param(lambda path: f"\\\\127.0.0.1\\{_admin_share(path)}", id="loopback"),
     pytest.param(
+        lambda path: f"\\\\\\localhost\\{_admin_share(path)}",
+        id="localhost-after-three-backslashes",
+    ),
+    pytest.param(
+        lambda path: "///localhost/" + _admin_share(path).replace("\\", "/"),
+        id="localhost-after-three-slashes",
+    ),
+    pytest.param(
         lambda path: "\\/localhost/" + _admin_share(path).replace("\\", "/"),
         id="localhost-with-mixed-separators",
     ),
 ]
-"""Forms of a path to a file on this machine that Windows reads as on another
-machine or as a device: an extended-length path, a device path, or a share."""
+r"""Forms of a path to a file on this machine that Windows reads as on another
+machine or as a device: an extended-length path, a device path, or a share.
+
+On Python 3.11, Windows' `Path` drops the separators from the front of
+`\\\localhost\C$` and `///localhost/C$` but one, and so reads each as a folder
+`localhost` on this machine's drive. The server asks about the text before
+`Path` reads it."""
+
+_HOST_ALONE: list[Any] = [
+    pytest.param("//localhost", id="slashes"),
+    pytest.param("\\\\localhost", id="backslashes"),
+    pytest.param("\\\\\\localhost", id="three-backslashes"),
+]
+r"""A machine's name alone after two separators or more, which Python 3.11's `Path` reads as `\localhost`."""
+
+_HOSTS = ("localhost", "127.0.0.1")
+"""The names `_ELSEWHERE` and `_HOST_ALONE` give this machine."""
 
 
 _FILE_URIS: list[Any] = [
@@ -144,10 +173,40 @@ _FILE_URIS: list[Any] = [
 ]
 """Forms of a `file:` URI with a drive letter, which every reader opens as a path on that drive."""
 
+_LOCAL_URIS: list[Any] = [
+    pytest.param(
+        lambda path: f"file:///{path.as_posix().replace('.', '%2E')}", id="percent-escapes"
+    ),
+    pytest.param(lambda path: f"fs:///{path.as_posix()}", id="delta-lake-scheme"),
+    pytest.param(lambda path: f"opendal+fs:///{path.as_posix()}", id="opendal-scheme"),
+]
+"""Other forms of a URI with a drive letter whose path a reader opens on this machine."""
+
 _LOCALHOST_URI: Any = pytest.param(
     lambda path: f"file://localhost/{path.as_posix()}", id="localhost"
 )
 """A `file:` URI that names `localhost`, which PyIceberg reads with the host in front of the path."""
+
+_TWO_SLASH_URIS: list[Any] = [
+    pytest.param(
+        lambda path: "file:////localhost/" + _admin_share(path).replace("\\", "/"),
+        id="localhost-after-four-slashes",
+    ),
+    pytest.param(
+        lambda path: "file://localhost//localhost/" + _admin_share(path).replace("\\", "/"),
+        id="localhost-after-localhost",
+    ),
+    pytest.param(
+        lambda path: "file://///localhost/" + _admin_share(path).replace("\\", "/"),
+        id="localhost-after-five-slashes",
+    ),
+]
+"""Forms of a `file:` URI whose path starts with `//`, which Windows reads as a share."""
+
+
+def _second_colon(folder: Path) -> str:
+    """Write a `file:` URI of `x.csv` in a folder `a:b` in the folder, as in `file:///C:/data/a:b/x.csv`."""
+    return f"file:///{folder.as_posix()}/a:b/x.csv"
 
 
 @pytest.fixture(autouse=True)
@@ -184,7 +243,12 @@ def resolved(mocker: MockerFixture) -> Callable[[], list[str]]:
     """
     spies = [
         mocker.spy(os.path, "realpath"),
+        mocker.spy(os.path, "exists"),
+        mocker.spy(os.path, "isfile"),
+        mocker.spy(os.path, "isdir"),
         mocker.spy(os, "stat"),
+        mocker.spy(os, "lstat"),
+        mocker.spy(os, "scandir"),
         mocker.spy(glob, "glob"),
         mocker.spy(Path, "resolve"),
     ]
@@ -192,8 +256,21 @@ def resolved(mocker: MockerFixture) -> Callable[[], list[str]]:
         text
         for spy in spies
         for call in spy.call_args_list
-        if (text := str(call.args[0])).replace("/", "\\").startswith(("\\\\", "\\??\\"))
+        for text in map(str, call.args[:1])
+        if _names_a_machine_or_device(text)
     ]
+
+
+def _names_a_machine_or_device(text: str) -> bool:
+    r"""Say whether a spied call's path names another machine or a device, or this one by a name.
+
+    On Python 3.11, Windows' `Path` reads `\\\localhost\C$\x.csv` as
+    `\localhost\C$\x.csv`, so a path whose first name is one of `_HOSTS`, or
+    this machine's name, counts too.
+    """
+    path = text.replace("/", "\\")
+    first = path.lstrip("\\").split("\\")[0].lower()
+    return path.startswith(("\\\\", "\\??\\")) or first in {*_HOSTS, socket.gethostname().lower()}
 
 
 def _csv(path: Path, value: str) -> Path:
@@ -221,6 +298,19 @@ def _sqlite(path: Path) -> Path:
 def _sqlite_config(path: str) -> DatabaseConfig:
     """Name a SQLite file by a `sqlite://` URI, its path written with forward slashes."""
     return DatabaseConfig(type="database", uri=f"sqlite://{path.replace(chr(92), '/')}", table="t")
+
+
+def _key_pair(path: str) -> SnowflakeConfig:
+    """Build a Snowflake side that signs in with the key file at `path`, which the driver opens here."""
+    return SnowflakeConfig(
+        account="xy12345",
+        user="analyst",
+        warehouse="COMPUTE_WH",
+        database="ANALYTICS",
+        schema_name="PUBLIC",
+        table="ORDERS",
+        private_key_path=path,
+    )
 
 
 def _check(settings: Settings, source: SourceRef) -> SourceRef:
@@ -306,6 +396,7 @@ class TestAnotherMachine:
 
         assert resolved() == []
 
+    @pytest.mark.parametrize("name", ["x.csv", "*.csv"])
     @pytest.mark.parametrize("form", _ELSEWHERE)
     def test_it_refuses_a_data_path_before_resolving_it(
         self,
@@ -313,15 +404,68 @@ class TestAnotherMachine:
         inside: Path,
         resolved: Callable[[], list[str]],
         form: Callable[[Path], str],
+        name: str,
     ) -> None:
-        r"""Ensure a data path written this way is refused, though it leads to a file under the root.
+        r"""Ensure a data path or pattern written this way is refused, though it leads under the root.
 
         A long path such as `\\?\C:\data\x.csv` turns off the system's own
         reading of the path, and a share can name another machine, so the
-        server reads neither.
+        server reads neither, and matches no pattern there.
         """
         with pytest.raises(ConfigError, match=_OUTSIDE):
-            _check(settings, SourceConfig(path=form(inside)))
+            _check(settings, SourceConfig(path=form(inside.parent / name)))
+
+        assert resolved() == []
+
+    @pytest.mark.parametrize("form", _ELSEWHERE)
+    def test_it_refuses_a_file_a_scan_opens_before_resolving_it(
+        self,
+        settings: Settings,
+        inside: Path,
+        resolved: Callable[[], list[str]],
+        form: Callable[[Path], str],
+    ) -> None:
+        """Ensure a file a lakehouse scan is about to open, named this way, is refused unresolved."""
+        with pytest.raises(ConfigError, match="was about to open a file outside"):
+            mcp_server._refuse_opened(settings, form(inside), remote=False)  # pyright: ignore[reportPrivateUsage] - a lakehouse scan calls it with each file it opens
+
+        assert resolved() == []
+
+    @pytest.mark.parametrize("form", _ELSEWHERE)
+    def test_it_refuses_a_snowflake_key_file_before_resolving_it(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+        resolved: Callable[[], list[str]],
+        form: Callable[[Path], str],
+    ) -> None:
+        """Ensure a Snowflake key file named this way is refused before the driver could open it."""
+        key = tmp_path / "k.pem"
+        key.write_text("not a key\n", encoding="utf-8")
+
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            _check(settings, _key_pair(form(key)))
+
+        assert resolved() == []
+
+    @pytest.mark.parametrize("path", _HOST_ALONE)
+    def test_it_refuses_a_machines_name_alone_before_resolving_it(
+        self, settings: Settings, resolved: Callable[[], list[str]], path: str
+    ) -> None:
+        r"""Ensure a machine's name alone is refused in every setting, before anything resolves it.
+
+        Python 3.11's `Path` reads each of these as `\localhost`, a folder on
+        this machine's drive, so the server asks about the text first.
+        """
+        assert names_another_machine(path)
+        with pytest.raises(ConfigError, match="is outside the folders this server reads from"):
+            resolve_path(settings, path)
+        with pytest.raises(ConfigError, match=_OUTSIDE):
+            _check(settings, SourceConfig(path=path))
+        with pytest.raises(ConfigError, match="was about to open a file outside"):
+            mcp_server._refuse_opened(settings, path, remote=False)  # pyright: ignore[reportPrivateUsage] - a lakehouse scan calls it with each file it opens
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            _check(settings, _key_pair(path))
 
         assert resolved() == []
 
@@ -599,27 +743,45 @@ class TestJunctions:
 class TestSubstitutedDrives:
     """Validate a drive that `subst` gives a folder, which Windows resolves to the folder."""
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("\\x.csv", id="from-the-drives-root"),
+            pytest.param("x.csv", id="drive-relative"),
+        ],
+    )
     def test_it_reads_a_drive_given_to_a_folder_under_the_root(
-        self, settings: Settings, tmp_path: Path, inside: Path
+        self, settings: Settings, tmp_path: Path, inside: Path, name: str
     ) -> None:
-        """Ensure a path on a drive that `subst` gives the root counts as under the root."""
-        with _substituted(tmp_path) as drive:
-            _check(settings, SourceConfig(path=f"{drive}\\x.csv"))
-            assert resolve_path(settings, f"{drive}\\x.csv") == inside
+        """Ensure a path on a drive that `subst` gives the root counts as under the root.
 
+        A drive-relative path such as `Z:x.csv`, on a drive the process has
+        not used, counts from the drive's root.
+        """
+        with _substituted(tmp_path) as drive:
+            _check(settings, SourceConfig(path=f"{drive}{name}"))
+            assert resolve_path(settings, f"{drive}{name}") == inside
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("\\x.csv", id="from-the-drives-root"),
+            pytest.param("x.csv", id="drive-relative"),
+        ],
+    )
     def test_it_refuses_a_drive_given_to_a_folder_outside(
-        self, settings: Settings, outside: Path
+        self, settings: Settings, outside: Path, name: str
     ) -> None:
         """Ensure a path on a drive that `subst` gives a folder outside the root is refused."""
         with _substituted(outside.parent) as drive, pytest.raises(ConfigError, match=_OUTSIDE):
-            _check(settings, SourceConfig(path=f"{drive}\\x.csv"))
+            _check(settings, SourceConfig(path=f"{drive}{name}"))
 
 
 @_ON_WINDOWS
 class TestFileUris:
     """Validate `file:` URIs with a drive letter, which Windows converts to a path on that drive."""
 
-    @pytest.mark.parametrize("form", [*_FILE_URIS, _LOCALHOST_URI])
+    @pytest.mark.parametrize("form", [*_FILE_URIS, _LOCALHOST_URI, *_LOCAL_URIS])
     def test_it_reads_a_file_uri_under_the_root(
         self, settings: Settings, inside: Path, form: Callable[[Path], str]
     ) -> None:
@@ -631,7 +793,7 @@ class TestFileUris:
         assert Path(readings[0]) == inside
         _check(settings, SourceConfig(path=uri))
 
-    @pytest.mark.parametrize("form", [*_FILE_URIS, _LOCALHOST_URI])
+    @pytest.mark.parametrize("form", [*_FILE_URIS, _LOCALHOST_URI, *_LOCAL_URIS])
     def test_it_refuses_a_file_uri_outside_the_root(
         self, settings: Settings, outside: Path, form: Callable[[Path], str]
     ) -> None:
@@ -639,7 +801,7 @@ class TestFileUris:
         with pytest.raises(ConfigError, match=_OUTSIDE):
             _check(settings, SourceConfig(path=form(outside)))
 
-    @pytest.mark.parametrize("form", _FILE_URIS)
+    @pytest.mark.parametrize("form", [*_FILE_URIS, _LOCALHOST_URI])
     def test_it_lists_a_delta_table_at_a_file_uri_under_the_root(
         self, settings: Settings, tmp_path: Path, form: Callable[[Path], str]
     ) -> None:
@@ -648,10 +810,104 @@ class TestFileUris:
 
         _check(settings, DeltaLakeConfig(table_uri=form(tmp_path / "t")))
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            pytest.param("127.0.0.1", id="loopback"),
+            pytest.param(socket.gethostname(), id="this-machines-name"),
+        ],
+    )
+    def test_it_refuses_a_file_uri_that_names_a_host(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+        resolved: Callable[[], list[str]],
+        mocker: MockerFixture,
+        host: str,
+    ) -> None:
+        """Ensure a `file:` URI that names a host other than `localhost` is refused before it is opened.
+
+        On Windows, deltalake opens such a URI on that host, even when the host
+        is this machine.
+        """
+        pl.DataFrame({"id": [1]}).write_delta(tmp_path / "t")
+        loaded = mocker.patch("deltalake.DeltaTable")
+        uri = f"file://{host}/{(tmp_path / 't').as_posix()}"
+
+        for side in (SourceConfig(path=f"{uri}/x.csv"), DeltaLakeConfig(table_uri=uri)):
+            with pytest.raises(ConfigError, match="is a file URI that names a host") as refused:
+                _check(settings, side)
+
+            assert host not in str(refused.value)
+        loaded.assert_not_called()
+        assert resolved() == []
+
+    @pytest.mark.parametrize("form", _TWO_SLASH_URIS)
+    def test_it_refuses_a_file_uri_whose_path_starts_with_two_slashes(
+        self,
+        settings: Settings,
+        inside: Path,
+        resolved: Callable[[], list[str]],
+        mocker: MockerFixture,
+        form: Callable[[Path], str],
+    ) -> None:
+        """Ensure a `file:` URI whose path Windows reads as a share is refused before it is converted."""
+        converted = mocker.spy(mcp_server, "url2pathname")
+
+        with pytest.raises(ConfigError, match="is a URI whose path starts with '//'"):
+            _check(settings, SourceConfig(path=form(inside)))
+
+        converted.assert_not_called()
+        assert resolved() == []
+
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 14),
+        reason="Python 3.14 converts a file URI's path with a second ':' on Windows.",
+    )
+    def test_it_refuses_a_file_uri_python_cannot_convert(
+        self, settings: Settings, tmp_path: Path
+    ) -> None:
+        """Ensure a `file:` URI with a drive letter and a second `:` is refused, never quoted.
+
+        Before Python 3.14, Windows' `url2pathname` raises on such a path,
+        even one under the root.
+        """
+        uri = _second_colon(tmp_path)
+
+        with pytest.raises(ConfigError, match="whose path Python cannot read") as converted:
+            mcp_server._local_paths(uri, "source path")  # pyright: ignore[reportPrivateUsage] - it converts each path a reader opens
+        with pytest.raises(
+            ConfigError, match="The source path is a file URI whose path Python cannot read"
+        ) as checked:
+            _check(settings, SourceConfig(path=uri))
+
+        assert "a:b" not in f"{converted.value} {checked.value}"
+
+    @pytest.mark.skipif(
+        sys.version_info < (3, 14),
+        reason="Windows before Python 3.14 cannot convert a file URI's path with a second ':'.",
+    )
+    def test_it_holds_a_file_uri_with_a_second_colon_to_the_roots(
+        self, settings: Settings, tmp_path: Path, outside: Path
+    ) -> None:
+        """Ensure a `file:` URI with a drive letter and a second `:` converts, and is held to the roots.
+
+        From Python 3.14, Windows' `url2pathname` converts such a path, with
+        `a:b` as a folder's name, which `realpath` would read as a drive.
+        """
+        uri = _second_colon(outside.parent)
+
+        readings = mcp_server._local_paths(uri, "source path")  # pyright: ignore[reportPrivateUsage] - the first reading is the path a reader opens
+
+        assert readings[0] == f"{outside.parent}\\a:b\\x.csv"
+        _check(settings, SourceConfig(path=_second_colon(tmp_path)))
+        with pytest.raises(ConfigError, match=_OUTSIDE):
+            _check(settings, SourceConfig(path=uri))
+
 
 @_ON_WINDOWS
-class TestLowercaseDriveLetters:
-    """Validate a DuckDB side named with a lowercase drive letter, from the configuration to the read."""
+class TestDuckDBSides:
+    """Validate a DuckDB side on Windows, from the configuration to the read, in the server's sandbox."""
 
     def test_it_reads_a_duckdb_file_named_with_a_lowercase_drive_letter(
         self, settings: Settings, tmp_path: Path, inside: Path
@@ -664,12 +920,36 @@ class TestLowercaseDriveLetters:
 
         assert list(report["columns"]) == ["id"]
 
-    def test_it_holds_a_query_to_the_roots_through_a_lowercase_drive_letter(
-        self, tmp_path: Path, inside: Path, outside: Path
+    @pytest.mark.parametrize(
+        "form",
+        [
+            pytest.param(
+                lambda root, path: _lowercase_drive(str(path)), id="lowercase-drive-letter"
+            ),
+            pytest.param(
+                lambda root, path: f"{_from_the_drives_root(path.parent)}\\{path.name}",
+                id="from-the-drives-root",
+            ),
+            pytest.param(
+                lambda root, path: f"{path.drive}..\\{path.parent.name}\\{path.name}",
+                id="drive-relative-and-dot-dot",
+            ),
+            pytest.param(
+                lambda root, path: f"{root.as_posix()}/../{path.parent.name}/{path.name}",
+                id="root-and-dot-dot",
+            ),
+        ],
+    )
+    def test_it_holds_a_query_to_the_roots_however_windows_writes_the_path(
+        self, tmp_path: Path, inside: Path, outside: Path, form: Callable[[Path, Path], str]
     ) -> None:
-        """Ensure DuckDB's sandbox refuses a file outside the roots named with a lowercase drive letter."""
+        """Ensure DuckDB's sandbox refuses a file outside the roots, however a query writes its path.
+
+        The working directory is the root, so `C:..` is the folder above it,
+        which holds the folder outside.
+        """
         _duckdb(tmp_path / "w.duckdb")
-        query = f"SELECT id, v FROM read_csv('{_lowercase_drive(str(outside))}')"
+        query = f"SELECT id, v FROM read_csv('{form(tmp_path, outside)}')"
         _write(tmp_path, f"  type: duckdb\n  database: w.duckdb\n  query: {json.dumps(query)}\n")
 
         with pytest.raises(ConnectorError, match="Permission Error"):
