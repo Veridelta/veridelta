@@ -3396,16 +3396,15 @@ class TestLakehouseFiles:
         assert not aside.exists()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no named pipe in a folder.")
-    @pytest.mark.parametrize("name", ["notes", f"{1:020}.json"])
-    def test_it_refuses_a_named_pipe_in_a_delta_log(self, tmp_path: Path, name: str) -> None:
+    def test_it_refuses_a_named_pipe_in_a_delta_log(self, tmp_path: Path) -> None:
         """Ensure a named pipe in a table's log is refused at once, not waited on.
 
-        The copy opens each file of the log, and the open of a pipe that no
-        one writes to would wait, and hold every tool call that lists the
-        table, forever.
+        The copy opens each file of the log that deltalake reads, and the
+        open of a pipe that no one writes to would wait, and hold every tool
+        call that lists the table, forever.
         """
         _ROW.write_delta(tmp_path / "events")
-        os.mkfifo(tmp_path / "events" / "_delta_log" / name)
+        os.mkfifo(tmp_path / "events" / "_delta_log" / f"{1:020}.json")
         target = DeltaLakeConfig(table_uri="events")
 
         with pytest.raises(ConnectorError, match="is not a regular file"):
@@ -3556,16 +3555,24 @@ class TestLakehouseFiles:
         loaded.assert_not_called()
         assert list(temporary.iterdir()) == []
 
-    def test_it_copies_the_files_in_a_folder_of_a_delta_log(self, tmp_path: Path) -> None:
-        """Ensure a table whose log holds a folder is read, with the folder checked and its files copied.
+    def test_it_copies_only_the_files_of_a_delta_log_that_deltalake_reads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file of the log whose name deltalake skips is checked but never copied.
 
-        A v2 checkpoint keeps its sidecars in `_delta_log/_sidecars`, which
-        the walk of the log enters.
+        deltalake reads only a commit, a checkpoint, a checksum, and
+        `_last_checkpoint`, at the top of the log. A file of any other name,
+        or in a folder of the log such as the `_sidecars` of a v2 checkpoint,
+        then costs the copy nothing, however large it is.
         """
         _ROW.write_delta(tmp_path / "events")
-        sidecars = tmp_path / "events" / "_delta_log" / "_sidecars"
-        sidecars.mkdir()
-        _ROW.write_parquet(sidecars / "unused.parquet")
+        log = tmp_path / "events" / "_delta_log"
+        (log / "notes").write_bytes(bytes(4096))
+        (log / "_sidecars").mkdir()
+        (log / "_sidecars" / f"{1:020}.json").write_bytes(bytes(4096))
+        monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 4096)
+        copied = mocker.spy(mcp_server, "_copy_checked")
+        listed = mocker.spy(mcp_server, "_refuse_listed")
         _write(
             tmp_path,
             "source:\n  path: a.parquet\n  format: parquet\n"
@@ -3575,6 +3582,54 @@ class TestLakehouseFiles:
         report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
 
         assert "note" in report["columns"]
+        assert {Path(call.args[0]).name for call in copied.call_args_list} == {f"{0:020}.json"}
+        assert {Path(call.args[3]) for call in listed.call_args_list} >= {
+            log / "notes",
+            log / "_sidecars" / f"{1:020}.json",
+        }
+
+    def test_it_refuses_a_delta_log_larger_than_it_copies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a log whose files add up to more than the copy holds is refused, not copied whole.
+
+        Files under a root that take no room there, such as sparse files or
+        links to one file, would otherwise fill the system's temporary folder.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        (tmp_path / "events" / "_delta_log" / f"{1:020}.json").write_bytes(bytes(4096))
+        monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 4096)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="larger than the 1 GiB this server copies"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A '\\' separates a Windows path's folders."
+    )
+    @pytest.mark.parametrize("kind", ["file", "folder"])
+    def test_it_refuses_a_name_in_a_delta_log_that_holds_a_backslash(
+        self, tmp_path: Path, mocker: MockerFixture, kind: str
+    ) -> None:
+        r"""Ensure a table whose log holds a name with a `\` is refused before deltalake loads it.
+
+        Outside Windows, deltalake reads a `\` in a name it lists as `/`, and
+        resolves a `..`, so such a name leads it to a commit elsewhere, which
+        no check saw.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        name = tmp_path / "events" / "_delta_log" / f"x\\..\\..\\zz\\_delta_log\\{1:020}.json"
+        if kind == "file":
+            name.write_text("{}\n", encoding="utf-8")
+        else:
+            name.mkdir()
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match=r"a name in the table's log holds a '\\'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
 
     @pytest.mark.skipif(sys.platform == "win32", reason="Windows allows no ':' in a folder's name.")
     def test_it_refuses_a_delta_table_uri_whose_readings_each_hold_a_log(

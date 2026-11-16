@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import stat
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
@@ -134,6 +133,21 @@ all the same."""
 
 _TWICE_DECODED: Final = frozenset({"fs", "opendal+fs"})
 """URI schemes whose path deltalake decodes twice before it reads a table's log."""
+
+_DELTA_LOG_NAME: Final = re.compile(
+    r"_last_checkpoint|[0-9]{20}\.(?:json|crc|checkpoint\.parquet"
+    r"|checkpoint\.[0-9]{10}\.[0-9]{10}\.parquet"
+    r"|checkpoint\.[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\.(?:json|parquet)"
+    r"|[0-9]{20}\.compacted\.json)"
+)
+"""The names of the files at the top of a Delta Lake log that deltalake reads: `_last_checkpoint`,
+and a version's commit, checksum, checkpoint, checkpoint part, or checkpoint named by a UUID, or
+the compacted commits of a range of versions. deltalake skips any other name, and so does the
+copy of the log."""
+
+_DELTA_LOG_COPY_LIMIT: Final = 1 << 30
+"""The most bytes the copy of one table's log and vectors holds, 1 GiB, so the files under a root
+cannot fill the system's temporary folder."""
 
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
@@ -973,12 +987,13 @@ def _copy_checked(
     `target` is a name this server builds in the copy's folder, never a path
     a log names. It must lie in that folder after its links, before and after
     its folders are made, and the file is created there new, never through a
-    link, so the copy writes nothing outside its folder.
+    link, so the copy writes nothing outside its folder. The copy holds at
+    most `_DELTA_LOG_COPY_LIMIT` bytes in all, counted as they are read.
 
     Raises:
         ValueError: If the file opened is not the one at the path before the
             check, or is not a regular file, or `target` leads out of the
-            copy's folder.
+            copy's folder, or the copy would grow past its limit.
     """
     if seen is None:
         return
@@ -1002,23 +1017,38 @@ def _copy_checked(
         new = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         written = os.open(target, new | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with open(written, "wb") as copied:
-            shutil.copyfileobj(file, copied)
+            # The size is counted as the file is read, since a file can grow after its stat.
+            while chunk := file.read(1 << 20):
+                copy.size += len(chunk)
+                if copy.size > _DELTA_LOG_COPY_LIMIT:
+                    raise ValueError(
+                        "the table's log is larger than the 1 GiB this server copies for "
+                        "deltalake to read, so it reads none of the table. Read such a table "
+                        "with veridelta run"
+                    )
+                copied.write(chunk)
 
 
 def _delta_log(
     side: str, uri: str, copy: DeltaLogCopy | None
 ) -> Generator[tuple[str, str, bool], None, tuple[list[str], dict[Path, Path]]]:
-    """Name each entry of the log of a table on this machine, each before it is read.
+    r"""Name each entry of the log of a table on this machine, each before it is read.
 
-    With a `copy`, for a table deltalake reads from this machine, each file of
-    the log is copied into it just after its check, in a folder of its own
-    for each folder the table's location names. A table deltalake reads from
-    its store has its entries here checked, but none read.
+    With a `copy`, for a table deltalake reads from this machine, each file at
+    the top of the log whose name deltalake reads is copied into it just after
+    its check, in a folder of its own for each folder the table's location
+    names. deltalake skips any other name, and reads the copy, so the other
+    entries are checked but never read. A table deltalake reads from its store
+    has its entries here checked, but none read.
 
     Returns:
         tuple[list[str], dict[Path, Path]]: The copy of each file of the log,
             and the folder of the copy of each of the table's folders that
             holds a log.
+
+    Raises:
+        ValueError: If a name in the log holds a `\` outside Windows, or
+            `_copy_checked` refuses a file of the log.
     """
     logged: list[str] = []
     logs: dict[Path, Path] = {}
@@ -1030,7 +1060,17 @@ def _delta_log(
         for parent, folders, files in os.walk(log):
             for name in sorted(folders + files):
                 path = os.path.join(parent, name)
-                seen = _file_at(path) if copy is not None and name in files else None
+                if copy is not None and os.sep != "\\" and "\\" in name:
+                    # deltalake reads a `\` in a name it lists as `/`, and resolves a `..`, so
+                    # such a name leads it to a file elsewhere. The copy holds no such name, but
+                    # `veridelta run` would read that file, so neither reading is the table's.
+                    raise ValueError(
+                        "a name in the table's log holds a '\\', which deltalake reads as a "
+                        "'/' that could lead out of the log, so this server reads none of the "
+                        "table"
+                    )
+                read = Path(parent) == log and _DELTA_LOG_NAME.fullmatch(name) is not None
+                seen = _file_at(path) if copy is not None and read and name in files else None
                 yield "log file", path, True
                 if copy is not None and seen is not None:
                     logs[folder] = copy.folder / str(index)
@@ -1044,7 +1084,7 @@ def _delta_log(
 def _delta_files(
     settings: Settings, side: str, config: DeltaLakeConfig
 ) -> Generator[tuple[str, str, bool], None, CheckedDeltaTable]:
-    """Name each file a scan of a Delta Lake table reads, from the version it reads.
+    r"""Name each file a scan of a Delta Lake table reads, from the version it reads.
 
     The log of a table on this machine comes first, each entry before the log
     is read, since a commit or checkpoint can be a link out of the table's
@@ -1057,16 +1097,16 @@ def _delta_files(
 
     deltalake reads the log again as it loads the table, and a vector as a
     scan starts, in Rust, where no check runs. So for a table deltalake reads
-    from this machine, each file of the log, and each vector at a path
-    relative to the table, is copied just after its check into a private
-    folder outside every root, and the log read and the table loaded are that
-    copy. A file opened for the copy that is not the one checked is refused.
-    Each file of the copy lies at a name this server builds in the copy's
-    folder: the walk's own names for the log, and a vector's folder of
-    letters and digits and its UUID. deltalake would read a vector that the
-    log stores at its own path where the log says, which a copy could change
-    only by writing there or by rewriting the log, so such a table is
-    refused.
+    from this machine, each file of the log whose name deltalake reads, and
+    each vector at a path relative to the table, is copied just after its
+    check into a private folder outside every root, up to 1 GiB in all, and
+    the log read and the table loaded are that copy. A file opened for the
+    copy that is not the one checked is refused. Each file of the copy lies
+    at a name this server builds in the copy's folder: the walk's own names
+    for the log, and a vector's folder of letters and digits and its UUID.
+    deltalake would read a vector that the log stores at its own path where
+    the log says, which a copy could change only by writing there or by
+    rewriting the log, so such a table is refused.
 
     A path that starts with `~` is expanded as Polars expands it, and the
     walk reads the expanded path, since deltalake expands only `~` and `~/`
@@ -1079,7 +1119,8 @@ def _delta_files(
         ValueError: If the copy would lie under a root or in a folder whose
             path deltalake reads as another folder's, more than one folder
             the table's location names holds a log, or the log of a table on
-            this machine stores a vector at its own path.
+            this machine holds a name with a `\` outside Windows, outgrows the
+            copy, or stores a vector at its own path.
     """
     from deltalake import DeltaTable
 

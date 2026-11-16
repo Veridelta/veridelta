@@ -185,7 +185,12 @@ def delta_reads_here(table_uri: str) -> bool:
 
 
 class DeltaLogCopy:
-    """A private folder for a copy of a Delta Lake table's log, removed once nothing refers to it."""
+    """A private folder for a copy of a Delta Lake table's log, removed once nothing refers to it.
+
+    Attributes:
+        folder (Path): The folder.
+        size (int): The bytes copied into it so far.
+    """
 
     def __init__(self) -> None:
         """Make the folder in the system's temporary folder, with mode 0o700, as `mkdtemp` makes it.
@@ -194,6 +199,7 @@ class DeltaLogCopy:
         takes the access of the temporary folder it lies in.
         """
         self.folder = Path(tempfile.mkdtemp(prefix="veridelta-delta-log-"))
+        self.size = 0
         weakref.finalize(self, shutil.rmtree, self.folder, ignore_errors=True)
 
 
