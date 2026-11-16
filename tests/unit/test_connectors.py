@@ -4,14 +4,18 @@
 """Unit tests for warehouse and lakehouse connector scaffolding."""
 
 import logging
+import ntpath
+import posixpath
 import sys
 import traceback
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, call
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
+import connectorx
 import polars as pl
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -33,8 +37,11 @@ from veridelta.connectors import (
     SQLDialect,
     TSqlPushdownSession,
     VerideltaConnector,
+    base,
+    database,
 )
-from veridelta.connectors.base import mask_secrets, read_subject
+from veridelta.connectors.base import mask_secrets, names_another_machine, read_subject
+from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.sql import (
     SERVER_CHECK_TEXT,
     compile_postgres_columns_query,
@@ -142,6 +149,63 @@ class TestSharedHelpers:
         """Ensure a message names the table it read, and never repeats a query."""
         assert read_subject("orders") == "table 'orders'"
         assert read_subject(None) == "the configured query"
+
+    @pytest.mark.parametrize(
+        ("path", "elsewhere"),
+        [
+            pytest.param("\\\\host.example\\share\\a.csv", True, id="unc"),
+            pytest.param("//host.example/share/a.csv", True, id="unc-with-slashes"),
+            pytest.param("\\/host.example/share/a.csv", True, id="unc-with-mixed-separators"),
+            pytest.param("/\\host.example\\share\\a.csv", True, id="unc-slash-first"),
+            pytest.param("\\\\?\\UNC\\host.example\\share\\a.csv", True, id="nt-unc"),
+            pytest.param("\\\\.\\UNC\\host.example\\share\\a.csv", True, id="device-unc"),
+            pytest.param("//?/UNC/host.example/share/a.csv", True, id="nt-unc-with-slashes"),
+            pytest.param("\\\\?\\C:\\data\\a.csv", True, id="nt-drive"),
+            pytest.param("\\\\.\\PIPE\\name", True, id="device"),
+            pytest.param("\\??\\UNC\\host.example\\share\\a.csv", True, id="kernel-unc"),
+            pytest.param("/??/UNC/host.example/share/a.csv", True, id="kernel-with-slashes"),
+            pytest.param("C:\\data\\a.csv", False, id="drive"),
+            pytest.param("C:/data/a.csv", False, id="drive-with-slashes"),
+            pytest.param("C:a.csv", False, id="drive-relative"),
+            pytest.param("\\data\\a.csv", False, id="rooted"),
+            pytest.param("data\\a.csv", False, id="relative"),
+            pytest.param(".\\a.csv", False, id="dot"),
+            pytest.param("~\\a.csv", False, id="home"),
+            pytest.param("", False, id="empty"),
+        ],
+    )
+    def test_it_reads_a_path_as_windows_does(
+        self, monkeypatch: pytest.MonkeyPatch, path: str, elsewhere: bool
+    ) -> None:
+        """Ensure each form Windows reads as another machine or a device counts, and no other."""
+        monkeypatch.setattr(base, "os", SimpleNamespace(path=ntpath))
+
+        assert names_another_machine(path) is elsewhere
+
+    @pytest.mark.parametrize(
+        "path", ["//host.example/share/a.csv", "\\\\host.example\\share\\a.csv", "/??/a"]
+    )
+    def test_it_reads_every_path_as_local_where_only_a_slash_separates(
+        self, monkeypatch: pytest.MonkeyPatch, path: str
+    ) -> None:
+        """Ensure Linux, whose only separator is `/`, reads no path as another machine's."""
+        monkeypatch.setattr(base, "os", SimpleNamespace(path=posixpath))
+        monkeypatch.setattr(base, "sys", SimpleNamespace(platform="linux"))
+
+        assert names_another_machine(path) is False
+
+    @pytest.mark.parametrize("platform", ["cygwin", "msys"])
+    @pytest.mark.parametrize(
+        "path", ["//host.example/share/a.csv", "\\\\host.example\\share\\a.csv"]
+    )
+    def test_it_reads_a_path_as_windows_does_on_cygwin(
+        self, monkeypatch: pytest.MonkeyPatch, platform: str, path: str
+    ) -> None:
+        """Ensure Cygwin and MSYS, whose only separator is `/`, read a network path as Windows does."""
+        monkeypatch.setattr(base, "os", SimpleNamespace(path=posixpath))
+        monkeypatch.setattr(base, "sys", SimpleNamespace(platform=platform))
+
+        assert names_another_machine(path) is True
 
 
 class TestConnectorInterface:
@@ -845,6 +909,38 @@ class TestDatabaseConnector:
         read.assert_not_called()
         assert not missing.exists()
 
+    @pytest.mark.parametrize(
+        ("uri", "password"),
+        [
+            ("postgresql://u@db.internal/d", None),
+            ("redshift://u@db.internal:5439/d", None),
+            ("sqliteredshift://u@db.internal/d", None),
+            ("sqlite-redshift://u@db.internal/d", None),
+            ("SQLiteRedshift://u@db.internal/d", None),
+            ("SQLiteRedshift://u@db.internal/d", "p"),
+            ("trino+redshift://u@db.internal/d", None),
+            ("redshift-iam://u@db.internal/d", None),
+            ("oracle+redshift-iam-x://u@db.internal/svc", None),
+            ("sqlite:///x.db", None),
+            ("mysql://u@db.internal/d", None),
+            ("clickhouse://u@db.internal/d", None),
+            ("bigquery:///key.json", None),
+        ],
+    )
+    def test_it_reads_a_scheme_as_the_installed_connectorx_rewrites_it(
+        self, uri: str, password: str | None
+    ) -> None:
+        """Ensure the reader `connectorx_url` names follows the installed ConnectorX's rewrite.
+
+        The MCP server's checks name the reader that runs from `connectorx_url`,
+        which models the rewrite of ConnectorX's Python package. A ConnectorX
+        release that rewrites other schemes fails this test.
+        """
+        config = DatabaseConfig(uri=uri, password=password, table="t")
+        rewritten, _ = connectorx.rewrite_conn(connection_uri(config))
+
+        assert connectorx_url(config).scheme == urlsplit(rewritten).scheme.split("+")[0]
+
     def test_it_encodes_a_sqlite_path_for_connectorx(
         self, mocker: MockerFixture, tmp_path: Path
     ) -> None:
@@ -944,6 +1040,35 @@ class TestDatabaseConnector:
         DatabaseConnector(DatabaseConfig(uri=f"SQLITE://{database}", table="t")).connect()
 
         read.assert_called_once_with('SELECT * FROM "t"', "sqlite://" + quote(str(database)))
+
+    @pytest.mark.parametrize(
+        ("uri", "decoded"),
+        [
+            pytest.param(
+                "sqlite:////host.example/share/x.db", "//host.example/share/x.db", id="unc"
+            ),
+            pytest.param(
+                "sqlite://%5C%5C%3F%5CUNC%5Chost.example%5Cshare%5Cx.db",
+                "\\\\?\\UNC\\host.example\\share\\x.db",
+                id="nt-unc",
+            ),
+        ],
+    )
+    def test_it_resolves_no_sqlite_path_on_another_machine(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, uri: str, decoded: str
+    ) -> None:
+        """Ensure a SQLite path Windows reads as another machine's comes back decoded, unresolved.
+
+        Resolving it would reach the host it names, so the MCP server must see
+        it before anything does.
+        """
+        windows = SimpleNamespace(path=ntpath)
+        monkeypatch.setattr(base, "os", windows)
+        monkeypatch.setattr(database, "os", windows)
+        resolved = mocker.spy(ntpath, "realpath")
+
+        assert sqlite_path(DatabaseConfig(uri=uri, table="t")) == decoded
+        resolved.assert_not_called()
 
     def test_it_refuses_a_sqlite_path_holding_a_nul(self, mocker: MockerFixture) -> None:
         """Ensure `%00` fails as a configuration error, before any read."""
