@@ -43,7 +43,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import SplitResult, parse_qsl, urlsplit
+from urllib.parse import SplitResult, parse_qsl, unquote, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -53,8 +53,13 @@ from pydantic import Field
 from veridelta import __version__
 from veridelta._checks import error_from_exception, unset_variable_findings
 from veridelta.config import load_config, referenced_variables
-from veridelta.connectors.base import mask_secrets, shown_location, without_location
-from veridelta.connectors.database import sqlite_path
+from veridelta.connectors.base import (
+    mask_secrets,
+    names_another_machine,
+    shown_location,
+    without_location,
+)
+from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.connectors.lakehouse import checked_file_io, checking_iceberg_files
 from veridelta.engine import (
@@ -108,8 +113,9 @@ _SERVICE_SCHEMES: Final = frozenset({"hf", "md", "motherduck"})
 MotherDuck's, so a configuration chooses no host with them."""
 
 _LOCAL_SCHEMES: Final = frozenset({"file", "fs", "opendal+fs"})
-"""URI schemes whose reader opens the URI's path on this machine, whatever host
-it names: `file` for every reader, and `fs` and `opendal+fs` for Delta Lake's.
+"""URI schemes whose reader opens the URI's path on this machine: `file` for
+every reader, which `_local_paths` refuses with a host other than `localhost`,
+and `fs` and `opendal+fs` for Delta Lake's, whatever host they name.
 
 Any other scheme of two or more characters names another machine, so its host
 must be allowed, even one no reader is known to take: a reader that knows more
@@ -264,6 +270,20 @@ _OPTION_VALUE: Final = re.compile(r"[A-Za-z0-9_-]*")
 _HOST_PARAMETERS: Final = frozenset({"host", "hostaddr", "socket"})
 """Query parameters of a database URI that name the server to connect to, which a
 driver reads in place of, or beside, the URI's host."""
+
+_FILE_PARAMETERS: Final = frozenset(
+    {"sslcert", "sslkey", "sslrootcert", "ssl-ca", "trust_server_certificate_ca"}
+)
+"""Query parameters of a database URI that name a file on this machine, which
+ConnectorX opens for TLS: Postgres's certificate, key, and certificate
+authority, MySQL's certificate authority, and SQL Server's."""
+
+_ORACLE_PATH: Final = re.compile(r"(?:/[A-Za-z0-9_.$-]*(?::[A-Za-z]+)?(?:/[A-Za-z0-9_.$-]+)?)?")
+"""An Oracle URI's path a tool passes on: a service name, then at most a server
+type and an instance name, as in `/sales:dedicated/sales1`.
+
+ConnectorX writes the path, decoded, after the host in Oracle's connect string,
+where other characters can add an address or an option that names a proxy."""
 
 _HOST: Final = re.compile(r"[a-z0-9_-]+(?:\.[a-z0-9_-]+)*|\[[0-9a-f:.]+\]")
 """An allowed host: DNS labels, an IPv4 address, or an IPv6 address in brackets.
@@ -505,29 +525,27 @@ def _under_roots(settings: Settings, resolved: Path) -> bool:
 
 
 def _inside(settings: Settings, path: str) -> Path | None:
-    """Resolve a tool call's path against the first root, or return None outside every root."""
+    """Resolve a tool call's path against the first root, or return None outside every root.
+
+    A path on another machine is outside every root, and is not resolved.
+    """
+    if names_another_machine(path):
+        return None
     resolved = (settings.roots[0] / path).resolve()
     return resolved if _under_roots(settings, resolved) else None
 
 
-def _another_machine(path: str) -> bool:
-    """Whether a path starts with two separators, as a path on another machine does on Windows.
-
-    Windows reaches the host such a path names, over SMB or WebDAV, as soon as
-    anything resolves it, and can send the user's credentials there. So the
-    path is refused before it is resolved or matched, on every system alike.
-    """
-    separators = tuple(filter(None, (os.sep, os.altsep)))
-    return path[:1] in separators and path[1:2] in separators
-
-
-def _under_both_readings(settings: Settings, path: Path) -> bool:
+def _under_both_readings(settings: Settings, text: str) -> bool:
     """Whether a path lies under a root when the links are followed before a `..`, and after.
 
-    A path on another machine never does, and is not resolved.
+    A path on another machine never does, and is not resolved. The text is
+    asked about before `Path` reads it, since on Python 3.11 Windows' `Path`
+    drops a separator from a path such as `//host`, and the result reads as
+    one on this machine.
     """
-    if _another_machine(str(path)):
+    if names_another_machine(text):
         return False
+    path = Path(text)
     folded = Path(os.path.abspath(path))
     # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
     return all(_under_roots(settings, Path(os.path.realpath(each))) for each in (path, folded))
@@ -543,13 +561,16 @@ def _opened_inside(settings: Settings, location: str) -> bool:
 
     The readers disagree on a `..` after a link. The system follows the link
     first, and PyArrow drops the link and the `..` without following it. So
-    the path must lie under a root read either way.
+    the path must lie under a root read either way. The text as written is
+    held off another machine before `Path` reads it, as `_under_both_readings`
+    says.
 
     A leading `~` is expanded by `os.path.expanduser` on the text as written,
     as the readers expand it. `Path` would drop a leading `./` and fold `//`
     first, and so read `./~/x` as a file in the home folder.
     """
-    return _under_both_readings(settings, Path(os.path.expanduser(location)))
+    expanded = os.path.expanduser(location)
+    return not names_another_machine(location) and _under_both_readings(settings, expanded)
 
 
 def _opened(location: str) -> list[str]:
@@ -562,10 +583,12 @@ def _opened(location: str) -> list[str]:
     with hidden names and `**` included, and each is resolved on its own.
     Polars matches `.` and `..` as well, which the standard library never
     lists, so `_climbs` refuses each pattern that could match them first.
+    A pattern on another machine is not matched, since that would reach the
+    machine.
     """
-    if not _GLOB_CHARACTERS.intersection(location):
-        return [location]
     pattern = os.path.expanduser(location)
+    if not _GLOB_CHARACTERS.intersection(location) or names_another_machine(pattern):
+        return [location]
     return [location, *glob.glob(pattern, recursive=True, include_hidden=True)]
 
 
@@ -598,7 +621,7 @@ def _refuse_opened(settings: Settings, path: str) -> None:
     Raises:
         ConfigError: If the path lies outside every root.
     """
-    if not _under_both_readings(settings, Path(path)):
+    if not _under_both_readings(settings, path):
         raise ConfigError(
             "An Iceberg scan was about to open a file outside the folders this server reads "
             f"from: {_roots(settings)}, so it was stopped. A tool reads data on this machine "
@@ -654,7 +677,7 @@ def _split(location: str) -> SplitResult | None:
         return None
 
 
-def _local_paths(location: str) -> list[str]:
+def _local_paths(location: str, named: str) -> list[str]:
     """Return each path on this machine a reader could open for a data location.
 
     Readers disagree on a URI. Polars and DuckDB open one whose scheme they do
@@ -671,20 +694,63 @@ def _local_paths(location: str) -> list[str]:
     backslash as `/` and strips the spaces at its ends. So a local scheme's URI
     yields each of these paths too, and the caller holds every one to the
     roots.
+
+    A `file:` URI that names a host other than `localhost`, in either way of
+    parsing it, is refused: deltalake opens `file://host/x` on that host on
+    Windows, Polars refuses it, and PyIceberg reads the host as a folder.
+    Delta Lake opens `fs:` and `opendal+fs:` here whatever host they name. A
+    local scheme's URI whose path starts with `//`, in either way of parsing
+    it, is refused too: Python 3.14 converts `//localhost/x`, or `//` and this
+    machine's name, to `/x`, while DuckDB opens `/localhost/x`, and Windows
+    reads `//host/x` as a path on another machine. So is a URI whose path
+    Python cannot convert, such as one with a second `:` on Windows before
+    3.14. The message names `named`, the setting, but not the value, which a
+    table's files can hold.
+
+    Raises:
+        ConfigError: If a `file:` URI names a host, a local scheme's URI has
+            a path that starts with `//`, or Python cannot convert one of the
+            URI's paths.
     """
     parts = _split(location)
     if parts is None or parts.scheme not in _LOCAL_SCHEMES:
         return [location]
-    paths = [
-        url2pathname(parts.path),
-        parts.netloc + url2pathname(parts.path.replace("%", "%25")),
-    ]
     standard = _split(location.replace("\\", "/").strip(_URL_SPACE))
-    if standard is not None:
-        # Rooted at `/` before it is converted, since on Windows a separator added after
-        # the conversion can make a path such as `\\host\share`, which names another machine.
-        path = standard.path
-        paths.append(url2pathname(path if path.startswith("/") else f"/{path}"))
+    hosts = {parts.netloc, "" if standard is None else standard.netloc}
+    if parts.scheme == "file" and any(
+        host and not (host.isascii() and host.lower() == "localhost") for host in hosts
+    ):
+        raise ConfigError(
+            f"The {named} is a file URI that names a host, and on Windows a reader opens it on "
+            "that machine, so this server refuses it. Write it with nothing between '//' and "
+            "the path's '/', or as a path under the folders this server reads from."
+        )
+    if any(each.path.startswith("//") for each in (parts, standard) if each is not None):
+        raise ConfigError(
+            f"The {named} is a URI whose path starts with '//'. Python 3.14 reads a host there "
+            "that DuckDB reads as a folder, and Windows reads a path on another machine, so "
+            "this server refuses it. Write it with three slashes after the scheme's ':', or "
+            "as a path under the folders this server reads from."
+        )
+    try:
+        paths = [
+            url2pathname(parts.path),
+            parts.netloc + url2pathname(parts.path.replace("%", "%25")),
+        ]
+        if standard is not None:
+            # Rooted at `/` before it is converted, since on Windows a separator added after
+            # the conversion can make a path such as `\\host\share`, which names another machine.
+            path = standard.path
+            paths.append(url2pathname(path if path.startswith("/") else f"/{path}"))
+    except (OSError, ValueError, IndexError):
+        # Before 3.14, Windows raises an OSError or an IndexError for a path with a second
+        # `:`. Python 3.14 raises a URLError, an OSError, for a host after `//`, which the
+        # check above refuses first.
+        raise ConfigError(
+            f"The {named} is a file URI whose path Python cannot read as a path on this "
+            "machine, so this server refuses it. Write it as a path under the folders this "
+            "server reads from."
+        ) from None
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.
     return [*dict.fromkeys(paths), location]
@@ -737,7 +803,7 @@ def _resolved_database(side: str, database: str) -> str:
         ) from exc
 
 
-def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
+def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
     """Name each path on this machine a side could read: its setting, location, and path."""
     named: list[tuple[str, str]] = []
     if isinstance(config, SourceConfig):
@@ -751,11 +817,13 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
         path = sqlite_path(config)
         return [] if path is None else [("SQLite file", path, path)]
     return [
-        (setting, location, path) for setting, location in named for path in _local_paths(location)
+        (setting, location, path)
+        for setting, location in named
+        for path in _local_paths(location, f"{side} {setting}")
     ]
 
 
-def _delta_files(config: DeltaLakeConfig) -> Iterator[tuple[str, str, bool]]:
+def _delta_files(side: str, config: DeltaLakeConfig) -> Iterator[tuple[str, str, bool]]:
     """Name each file a scan of a Delta Lake table reads, from the version it reads.
 
     The log of a table on this machine comes first, each entry before the log
@@ -765,7 +833,7 @@ def _delta_files(config: DeltaLakeConfig) -> Iterator[tuple[str, str, bool]]:
     """
     from deltalake import DeltaTable
 
-    for local in _local_paths(config.table_uri):
+    for local in _local_paths(config.table_uri, f"{side} table_uri"):
         log = Path(os.path.expanduser(local)) / "_delta_log"
         yield "log", str(log), True
         for folder, folders, files in os.walk(log):
@@ -846,7 +914,7 @@ def _table_files(
         ConnectorError: If the extra is missing, or the table cannot be listed.
     """
     if isinstance(config, DeltaLakeConfig):
-        files, kind, extra = _delta_files(config), "Delta Lake table", "delta"
+        files, kind, extra = _delta_files(side, config), "Delta Lake table", "delta"
     else:
         check = functools.partial(_refuse_opened, settings)
         files, kind, extra = _iceberg_files(config, check), "Iceberg table", "iceberg"
@@ -896,14 +964,37 @@ def _refuse_outside(
             "points to, so this server refuses the pattern. Write the path without "
             "'..', and write out each name that starts with a dot."
         )
-    # A pattern on another machine is not expanded, since that would reach the machine.
-    opened = _opened(local) if expanded and not _another_machine(local) else [local]
+    opened = _opened(local) if expanded else [local]
     if not all(_opened_inside(settings, each) for each in opened):
         raise ConfigError(
             f"The {side} {named} is outside the folders this server "
             f"reads from: {_roots(settings)}. A tool reads data on this machine only "
             "from under them, so move the data into one, or ask the person who started "
             "the server to add its folder with --root."
+        )
+
+
+def _refuse_key_file(settings: Settings, side: str, config: SourceRef) -> None:
+    """Refuse a Snowflake key file outside the roots, before the driver opens it.
+
+    The driver opens `private_key_path` on this machine before it connects,
+    with `~` expanded and relative to the working directory, as a reader opens
+    a data path. So the key file is held to the same rules: a path on another
+    machine is refused before anything resolves it, and the path must lie
+    under a root read either way. The message names the setting and not the
+    path, which can hold a `${NAME}` value.
+
+    Raises:
+        ConfigError: If the key file lies outside every root.
+    """
+    if not isinstance(config, SnowflakeConfig) or config.private_key_path is None:
+        return
+    if not _opened_inside(settings, config.private_key_path):
+        raise ConfigError(
+            f"The {side} private_key_path is outside the folders this server reads from: "
+            f"{_roots(settings)}. The driver opens the key file on this machine, and a tool "
+            "reads files here only from under them, so move the key into one, or ask the "
+            "person who started the server to add its folder with --root."
         )
 
 
@@ -943,10 +1034,12 @@ def check_data_paths(
     the file by that resolved path, so DuckDB opens the file checked and the
     logs beside it. A Delta Lake or Iceberg table, wherever it lies, has
     every file on this machine that its scan reads checked too, since its log
-    or metadata can name a file anywhere. Data on another machine that a side names, such as an
-    object store, a database server, or a warehouse, is held to the hosts the
-    server allows by `_refuse_hosts`, which a caller runs first, since listing
-    a table's files connects to its host.
+    or metadata can name a file anywhere. Data on another machine that a side
+    names, such as an object store, a database server, or a warehouse, is held
+    to the hosts the server allows by `_refuse_hosts`, which a caller runs
+    first, since listing a table's files connects to its host. A Snowflake key
+    file is a file on this machine, which the driver opens before it
+    connects, so it must lie under a root too.
 
     Every location the configuration names is checked before any file is
     opened, of either side: the listings come last.
@@ -961,8 +1054,8 @@ def check_data_paths(
             DuckDB file named by its resolved path.
 
     Raises:
-        ConfigError: If a file or folder a side reads is outside every root,
-            or a DuckDB file's path does not resolve.
+        ConfigError: If a file or folder a side reads, or a Snowflake key file,
+            is outside every root, or a DuckDB file's path does not resolve.
         ConnectorError: If the files of a lakehouse table cannot be listed.
     """
     sides = (("source", source), ("target", target))
@@ -970,15 +1063,16 @@ def check_data_paths(
     for side, config in sides:
         # A SQLite path carries the `password` field, as the driver reads it.
         password = config.password if isinstance(config, DatabaseConfig) else None
-        for setting, location, local in _data_locations(config):
+        for setting, location, local in _data_locations(side, config):
             _refuse_outside(
                 settings, side, setting, location, local, expanded=True, password=password
             )
+        _refuse_key_file(settings, side, config)
         checked.append(_as_checked(settings, side, config))
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
             for setting, location, quoted in _table_files(settings, side, config):
-                for local in _local_paths(location):
+                for local in _local_paths(location, f"{side} {setting}"):
                     _refuse_outside(settings, side, setting, location, local, quoted=quoted)
     return checked[0], checked[1]
 
@@ -1044,23 +1138,76 @@ def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:
             yield setting, None
 
 
-def _database_hosts(uri: str) -> list[tuple[str, str]]:
+def _refuse_database_uri(side: str, config: DatabaseConfig) -> None:
+    """Refuse a database `uri` whose reader opens a file here, or signs in where no check sees.
+
+    ConnectorX's BigQuery reader opens the key file the path names, and the
+    key file names the host its sign-in goes to. Its Redshift IAM reader signs
+    in through AWS at hosts its options choose. Postgres, MySQL, and SQL
+    Server open the TLS files `_FILE_PARAMETERS` names. Oracle looks an
+    `alias` up in a file on this machine, and writes the path into its
+    connect string, so a path passes only in `_ORACLE_PATH`'s shape. A
+    parameter is matched in ASCII only, as the readers match it.
+    """
+    parts = connectorx_url(config)
+    if parts.scheme == "bigquery":
+        raise ConfigError(
+            f"The {side} uri reads BigQuery through ConnectorX, which signs in with a key file "
+            "on this machine, and the key file names the host the sign-in goes to, so a tool "
+            "does not read it. Use a source of type bigquery instead, which signs in with "
+            "the server's own credentials."
+        )
+    if parts.scheme == "redshift-iam":
+        raise ConfigError(
+            f"The {side} uri signs in to Redshift through AWS, at hosts its options choose, "
+            "so a tool does not read it. Write it as redshift:// with a user and a password."
+        )
+    names = {
+        key.lower() for key, _ in parse_qsl(parts.query, keep_blank_values=True) if key.isascii()
+    }
+    files = sorted(names & _FILE_PARAMETERS)
+    if files:
+        raise ConfigError(
+            f"The {side} uri parameter '{files[0]}' names a file on this machine, which the "
+            "driver opens and this server does not check, so a tool does not pass it on. "
+            "Leave it out."
+        )
+    if parts.scheme == "oracle" and (
+        "alias" in names or _ORACLE_PATH.fullmatch(parts.path) is None
+    ):
+        raise ConfigError(
+            f"The {side} uri has Oracle find its host in a TNS alias, or in a path other than "
+            "a service name, which ConnectorX writes into the connect string, so the server "
+            "cannot check which host it connects to. Write the host in the uri, and the path "
+            "as /service, with at most :server_type and /instance after it, in letters, "
+            "digits, '_', '.', '$', and '-'."
+        )
+
+
+def _database_hosts(config: DatabaseConfig) -> list[tuple[str, str]]:
     """Name each server a database URI connects to, from its host and its query alike.
 
     A URI that does not match `_DATABASE_URI` comes back whole, which no allowed
     host equals. A host parameter can list several servers, separated by
-    commas, as a URI's authority can.
+    commas, as a URI's authority can. ConnectorX's Trino reader decodes the
+    whole URI, with the `password` field in it, before it finds the host, so
+    such a URI is checked decoded. Only a URI ConnectorX reads as SQLite names
+    no server, since the connector then opens the file `sqlite_path` names,
+    which `check_data_paths` checks.
     """
-    parts = urlsplit(uri)
-    if parts.scheme.startswith("sqlite"):
+    reader = connectorx_url(config).scheme
+    if reader == "sqlite":
         return []
+    uri = unquote(connection_uri(config)) if reader == "trino" else config.uri
     written = _DATABASE_URI.fullmatch(uri)
     if written is None:
         return [("uri", uri)]
     hosts = [_host(part) for part in written.group(1).split(",")]
+    # The pattern allows no `#`, so the query runs from the first `?` to the end. A decoded
+    # URI can hold a bracket urlsplit raises on, so it is not split there.
     hosts += [
         host
-        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        for key, value in parse_qsl(uri.partition("?")[2], keep_blank_values=True)
         if key.lower() in _HOST_PARAMETERS
         for host in value.split(",")
     ]
@@ -1122,7 +1269,7 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     if isinstance(config, DuckDBConfig):
         return _duckdb_hosts(config)
     if isinstance(config, DatabaseConfig):
-        return [*_database_hosts(config.uri)]
+        return [*_database_hosts(config)]
     if isinstance(config, SnowflakeConfig):
         # The driver ends the host in `.cn` when the account's second label starts with `cn-`.
         labels = config.account.split(".")
@@ -1144,6 +1291,8 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
+        if isinstance(config, DatabaseConfig):
+            _refuse_database_uri(side, config)
         for setting, host in _destinations(config):
             if host is None:
                 raise ConfigError(
