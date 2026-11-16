@@ -23,10 +23,11 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
+from urllib.error import URLError
 from urllib.parse import quote
 
 import anyio
@@ -45,6 +46,7 @@ from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
 from veridelta.config import load_config
+from veridelta.connectors import base, database
 from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.lakehouse import IcebergConnector
 from veridelta.engine import DiffEngine
@@ -112,6 +114,41 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
 """The CSV files the CI jobs and the recording compare."""
 
 _T = TypeVar("_T")
+
+_ANOTHER_MACHINE = [
+    pytest.param("\\\\host.example\\share\\a.csv", id="unc"),
+    pytest.param("//host.example/share/a.csv", id="unc-with-slashes"),
+    pytest.param("\\/host.example/share/a.csv", id="unc-with-mixed-separators"),
+    pytest.param("\\\\?\\UNC\\host.example\\share\\a.csv", id="nt-unc"),
+    pytest.param("\\\\.\\UNC\\host.example\\share\\a.csv", id="device-unc"),
+    pytest.param("//?/UNC/host.example/share/a.csv", id="nt-unc-with-slashes"),
+    pytest.param("\\??\\UNC\\host.example\\share\\a.csv", id="kernel-unc"),
+    pytest.param("\\\\host.example\\share\\*.csv", id="pattern"),
+]
+"""Paths Windows reads as on another machine, where resolving one reaches the host."""
+
+
+def _as_windows(monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> Callable[[], list[str]]:
+    """Read paths by Windows' rules, on any system, and spy on what resolves, matches, or opens one.
+
+    Returns:
+        Callable[[], list[str]]: Lists each path resolved, matched, or opened so far.
+    """
+    windows = SimpleNamespace(path=ntpath, sep="\\", altsep="/")
+    for module in (base, database, mcp_server):
+        monkeypatch.setattr(module, "os", windows)
+    spies = [
+        mocker.spy(ntpath, "realpath"),
+        mocker.spy(glob, "glob"),
+        mocker.spy(os, "stat"),
+        mocker.spy(Path, "resolve"),
+    ]
+    return lambda: [str(call.args[0]) for spy in spies for call in spy.call_args_list]
+
+
+def _on_another_machine(paths: list[str]) -> list[str]:
+    """Pick out each path Windows reads as on another machine or a device."""
+    return [each for each in paths if each.replace("/", "\\").startswith(("\\\\", "\\??\\"))]
 
 
 @pytest.fixture(autouse=True)
@@ -335,6 +372,34 @@ class TestResolvePath:
 
         with pytest.raises(ConfigError, match="outside the folders"):
             resolve_path(Settings((tmp_path,)), str(outside))
+
+    @pytest.mark.parametrize("path", _ANOTHER_MACHINE)
+    def test_it_resolves_no_path_on_another_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a path Windows reads as another machine's is refused before it is resolved.
+
+        Resolving it would reach the host it names, and can send the user's
+        credentials there.
+        """
+        settings = Settings((tmp_path,))
+        reached = _as_windows(monkeypatch, mocker)
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            resolve_path(settings, path)
+
+        assert not _on_another_machine(reached())
+
+    def test_it_resolves_a_relative_path_by_windows_rules(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a relative path with a backslash still resolves under the first root."""
+        settings = Settings((tmp_path,))
+        _as_windows(monkeypatch, mocker)
+
+        resolved = resolve_path(settings, "nested\\veridelta.yaml")
+
+        assert resolved == (tmp_path / "nested\\veridelta.yaml").resolve()
 
 
 class TestCheckConfiguration:
@@ -717,6 +782,19 @@ def _snowflake() -> SnowflakeConfig:
         database="ANALYTICS",
         schema_name="PUBLIC",
         table="ORDERS",
+    )
+
+
+def _key_pair(path: str) -> SnowflakeConfig:
+    """Build a warehouse side that signs in with the key file at `path`, which the driver opens here."""
+    return SnowflakeConfig(
+        account="xy12345",
+        user="analyst",
+        warehouse="COMPUTE_WH",
+        database="ANALYTICS",
+        schema_name="PUBLIC",
+        table="ORDERS",
+        private_key_path=path,
     )
 
 
@@ -1165,7 +1243,6 @@ class TestCheckDataPaths:
         [
             pytest.param("FILE://{root}/a.csv", id="file-scheme-in-capitals"),
             pytest.param("S3://{root}/a.csv", id="remote-scheme-in-capitals"),
-            pytest.param("file://link{root}/a.csv", id="file-host"),
             pytest.param("file://{root}/x%2Fy/../../a.csv", id="escaped-slash"),
         ],
     )
@@ -1179,11 +1256,11 @@ class TestCheckDataPaths:
         """Ensure a URI the readers open in different places is held to the roots in each.
 
         Polars opens a scheme in capitals as a folder of that name, and decodes
-        `%` escapes. PyIceberg opens a host as a folder, and decodes none.
+        `%` escapes. PyIceberg decodes none.
         """
         outside = tmp_path_factory.mktemp("outside")
         monkeypatch.chdir(tmp_path)
-        for name in ("FILE:", "S3:", "link"):
+        for name in ("FILE:", "S3:"):
             (tmp_path / name).symlink_to(outside, target_is_directory=True)
         side = SourceConfig(path=uri.format(root=tmp_path))
 
@@ -1273,35 +1350,256 @@ class TestCheckDataPaths:
         monkeypatch.setattr(mcp_server, "os", windows)
         monkeypatch.setattr(mcp_server, "url2pathname", lambda url: url.replace("/", "\\"))
 
-        readings = mcp_server._local_paths(location)  # pyright: ignore[reportPrivateUsage] - the readings alone show the path that would reach the host
+        readings = mcp_server._local_paths(location, "source path")  # pyright: ignore[reportPrivateUsage] - the readings alone show the path that would reach the host
 
         assert "\\host.example\\share\\" + location.rsplit("/", 1)[1] in readings
         assert not any(reading.startswith("\\\\") for reading in readings)
 
+    @pytest.mark.parametrize("path", _ANOTHER_MACHINE)
+    def test_it_resolves_no_path_on_another_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a path Windows reads as another machine's is refused before it is resolved or matched.
+
+        On Windows, resolving, matching, or opening such a path reaches the host
+        it names, and can send the user's credentials there.
+        """
+        settings = Settings((tmp_path,))
+        reached = _as_windows(monkeypatch, mocker)
+
+        with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(settings, SourceConfig(path=path), _snowflake())
+
+        assert not _on_another_machine(reached())
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            pytest.param("sqlite:////host.example/share/x.db", id="unc"),
+            pytest.param("sqlite://%5C%5Chost.example%5Cshare%5Cx.db", id="unc-encoded"),
+            pytest.param("sqlite:///%5Chost.example/share/x.db", id="unc-with-mixed-separators"),
+            pytest.param("sqlite://%5C%5C%3F%5CUNC%5Chost.example%5Cshare%5Cx.db", id="nt-unc"),
+            pytest.param("sqlite://%5C%3F%3F%5CUNC%5Chost.example%5Cshare%5Cx.db", id="kernel-unc"),
+        ],
+    )
+    def test_it_resolves_no_sqlite_path_on_another_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, uri: str
+    ) -> None:
+        """Ensure a SQLite path Windows reads as another machine's is refused before it is resolved."""
+        settings = Settings((tmp_path,))
+        reached = _as_windows(monkeypatch, mocker)
+
+        with pytest.raises(ConfigError, match=r"The source SQLite file '.+' is outside"):
+            check_data_paths(settings, _sqlite(uri), _snowflake())
+
+        assert not _on_another_machine(reached())
+
     @pytest.mark.parametrize(
         "path",
         [
-            pytest.param("{sep}{sep}host.example{sep}share{sep}a.csv", id="path"),
-            pytest.param("{sep}{sep}host.example{sep}share{sep}*.csv", id="pattern"),
+            pytest.param("//host.example", id="host-alone"),
+            pytest.param("\\\\\\host.example\\share\\a.csv", id="three-backslashes"),
+            pytest.param("///host.example/share/a.csv", id="three-slashes"),
         ],
     )
-    def test_it_resolves_no_path_on_another_machine(
-        self, tmp_path: Path, mocker: MockerFixture, path: str
+    def test_it_asks_about_the_text_before_windows_path_folds_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
     ) -> None:
-        """Ensure a path that starts with two separators is refused before it is resolved or matched.
+        """Ensure a path on another machine is refused as written, before `Path` reads it.
 
-        On Windows, resolving or matching such a path reaches the host it names,
-        and can send the user's credentials there.
+        On Python 3.11, Windows' `Path` drops a separator from such a path,
+        and the result reads as a path on this machine. This folds it so on
+        every version, for a data path and for a file an Iceberg scan opens.
         """
-        resolved = mocker.spy(os.path, "realpath")
-        matched = mocker.spy(glob, "glob")
-        side = SourceConfig(path=path.format(sep=os.sep))
+
+        class Folded(PureWindowsPath):
+            """A Windows path as Python 3.11 reads one that starts with two separators."""
+
+            def expanduser(self) -> "Folded":
+                return self
+
+        def fold(*parts: str) -> Folded:
+            text = str(PureWindowsPath(*parts))
+            return Folded("\\" + text.lstrip("\\") if text.startswith("\\") else text)
+
+        settings = Settings((tmp_path,))
+        reached = _as_windows(monkeypatch, mocker)
+        monkeypatch.setattr(mcp_server, "Path", fold)
 
         with pytest.raises(ConfigError, match="outside the folders"):
+            check_data_paths(settings, SourceConfig(path=path), _snowflake())
+        with pytest.raises(ConfigError, match="was about to open a file outside"):
+            mcp_server._refuse_opened(settings, path)  # pyright: ignore[reportPrivateUsage] - an Iceberg scan calls it with each file it opens
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            check_data_paths(settings, _snowflake(), _key_pair(path))
+
+        assert not [each for each in reached() if "host.example" in each]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows reads a path after two separators as another machine's.",
+    )
+    def test_it_reads_a_path_after_two_slashes_as_local_where_only_a_slash_separates(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure a path that starts with `//` still reads on a system that reads it as local.
+
+        A SQLite URI written `sqlite:////` and an absolute path is one such path.
+        """
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        side = _sqlite(f"sqlite:///{tmp_path}/x.db")
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path=f"/{tmp_path}/*.csv"), side)
+
+        assert sqlite_path(side) == str(tmp_path.resolve() / "x.db")
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(URLError("file:// scheme is supported only on localhost"), id="host"),
+            pytest.param(ValueError("Invalid IPv6 URL"), id="unparsed-host"),
+            pytest.param(OSError("Bad URL: /a|b|c/x.csv"), id="second-colon-on-windows"),
+            pytest.param(IndexError("string index out of range"), id="no-drive-on-windows"),
+        ],
+    )
+    def test_it_refuses_a_file_uri_python_cannot_read_as_a_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
+    ) -> None:
+        """Ensure a file URI whose path Python cannot convert fails as a configuration error.
+
+        From Python 3.14, converting a path that starts with `//` and a host
+        raises a URLError or a ValueError. On Windows before 3.14, converting a
+        path with a second `:` raises an OSError or an IndexError. This
+        simulates each on every version.
+        """
+
+        def convert(path: str) -> str:
+            raise error
+
+        monkeypatch.setattr(mcp_server, "url2pathname", convert)
+        side = SourceConfig(path="file:///a:b:c/marker.csv")
+
+        with pytest.raises(
+            ConfigError, match="The source path is a file URI whose path Python cannot read"
+        ) as refused:
             check_data_paths(Settings((tmp_path,)), side, _snowflake())
 
-        reached = [str(call.args[0]) for call in resolved.call_args_list + matched.call_args_list]
-        assert not [each for each in reached if each[:2] in ("//", "\\\\", "/\\", "\\/")]
+        assert "marker" not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("file:////host.example/share/a.csv", id="host"),
+            pytest.param("fs:////host.example/share/a.csv", id="host-in-delta-lake-scheme"),
+            pytest.param("opendal+fs:////host.example/share/a.csv", id="host-in-opendal-scheme"),
+            pytest.param("file:////localhost/share/a.csv", id="localhost"),
+            pytest.param("file:////this-machine/share/a.csv", id="this-machine"),
+            pytest.param("file://localhost//this-machine/share/a.csv", id="after-localhost"),
+            pytest.param("file:\\\\\\\\this-machine\\share\\a.csv", id="after-backslashes"),
+            pytest.param("file://///share/a.csv", id="three-slashes"),
+        ],
+    )
+    def test_it_refuses_a_uri_whose_path_starts_with_two_slashes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a URI whose path starts with `//` fails before any path is read from it.
+
+        Python 3.14 converts `//localhost/x`, and `//` with this machine's
+        name, to `/x`, while DuckDB opens `/localhost/x`, so the check and the
+        read would name two files. Python 3.14 cannot convert one with another
+        host, and Windows reads it as a path on another machine.
+        """
+        import socket
+
+        monkeypatch.setattr(socket, "gethostname", lambda: "this-machine")
+        converted = mocker.spy(mcp_server, "url2pathname")
+        sides = (
+            SourceConfig(path=path),
+            DuckDBConfig(database=path.replace("a.csv", "a.duckdb"), table="t"),
+        )
+
+        for side in sides:
+            with pytest.raises(
+                ConfigError, match="is a URI whose path starts with '//'"
+            ) as refused:
+                check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+            assert "share" not in str(refused.value)
+        converted.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("file://host.example/share/a.csv", id="host"),
+            pytest.param("FILE://Host.Example/share/a.csv", id="host-in-capitals"),
+            pytest.param("file:\\\\host.example\\share\\a.csv", id="host-after-backslashes"),
+            pytest.param("file:/\\host.example/share/a.csv", id="host-after-mixed-separators"),
+            pytest.param("file://localhost./share/a.csv", id="localhost-with-a-dot"),
+            pytest.param("file://user@localhost/share/a.csv", id="localhost-with-a-user"),
+        ],
+    )
+    def test_it_refuses_a_file_uri_that_names_a_host(
+        self, tmp_path: Path, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a file URI that names a host fails before any reader opens it, never quoted.
+
+        On Windows, deltalake opens `file://host/x` on that host, and so does
+        a URL parser that reads a backslash as `/`.
+        """
+        import deltalake
+
+        opened = mocker.spy(deltalake, "DeltaTable")
+        sides = (SourceConfig(path=path), DeltaLakeConfig(table_uri=path.removesuffix("/a.csv")))
+
+        for side in sides:
+            with pytest.raises(ConfigError, match="is a file URI that names a host") as refused:
+                check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+            assert "host.example" not in str(refused.value).lower()
+        opened.assert_not_called()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows on Python 3.11 resolves text such as 'file:' otherwise.",
+    )
+    def test_it_reads_a_file_uri_on_localhost_as_a_path_here(self, tmp_path: Path) -> None:
+        """Ensure a file URI whose host is `localhost`, in any case, is checked as a path here."""
+        file = tmp_path / "a.csv"
+
+        for host in ("localhost", "LocalHost"):
+            uri = f"file://{host}{file.as_uri().removeprefix('file://')}"
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path=uri), _snowflake())
+
+    def test_it_refuses_a_listed_file_uri_that_names_a_host(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file a table's listing names on another host fails, never quoted."""
+        listed = [("data file", "file://host.example/share/part-0.parquet", False)]
+        mocker.patch.object(mcp_server, "_table_files", return_value=iter(listed))
+        side = DeltaLakeConfig(table_uri=str(tmp_path / "t"))
+
+        with pytest.raises(ConfigError, match="The source data file is a file URI that") as refused:
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+        assert "host.example" not in str(refused.value)
+
+    def test_it_refuses_a_listed_file_uri_python_cannot_read_as_a_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file a table's listing names fails as a configuration error, never quoted."""
+
+        def convert(path: str) -> str:
+            raise URLError("file:// scheme is supported only on localhost")
+
+        listed = [("data file", "file:///a:b:c/marker-0.parquet", False)]
+        mocker.patch.object(mcp_server, "_table_files", return_value=iter(listed))
+        monkeypatch.setattr(mcp_server, "url2pathname", convert)
+        side = DeltaLakeConfig(table_uri=str(tmp_path / "t"))
+
+        with pytest.raises(ConfigError, match="The source data file is a file URI") as refused:
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+        assert "marker" not in str(refused.value)
 
     @staticmethod
     def _link_out(root: Path, outside: Path, name: str = "link") -> None:
@@ -1469,6 +1767,84 @@ class TestCheckDataPaths:
     def test_it_leaves_remote_data_to_the_host_check(self, tmp_path: Path, side: SourceRef) -> None:
         """Ensure data on another machine is not held to the roots, but to the allowed hosts."""
         check_data_paths(Settings((tmp_path,)), side, side)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("{outside}/k.pem", id="absolute"),
+            pytest.param("../{outside_name}/k.pem", id="relative"),
+            pytest.param("~/k.pem", id="home"),
+        ],
+    )
+    def test_it_refuses_a_snowflake_key_file_outside_the_roots(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, path: str
+    ) -> None:
+        """Ensure the key file the driver opens here is held to the roots, by its setting alone.
+
+        The path can hold a `${NAME}` value, so the message leaves it out.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        (outside / "k.pem").write_text("not a real key\n", encoding="utf-8")
+        side = _key_pair(path.format(outside=outside, outside_name=outside.name))
+
+        with pytest.raises(
+            ConfigError, match=r"^The target private_key_path is outside"
+        ) as refused:
+            check_data_paths(Settings((tmp_path,)), _snowflake(), side)
+
+        assert "k.pem" not in str(refused.value)
+        assert outside.name not in str(refused.value)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "path",
+        [
+            pytest.param("link.pem", id="link"),
+            pytest.param("deeper/../../{outside_name}/k.pem", id="parent-of-a-link"),
+        ],
+    )
+    def test_it_refuses_a_snowflake_key_file_a_link_leads_out_to(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, path: str
+    ) -> None:
+        """Ensure a link cannot carry the key file out, followed before a `..` or after it."""
+        outside = tmp_path_factory.mktemp("outside")
+        (outside / "k.pem").write_text("not a real key\n", encoding="utf-8")
+        (tmp_path / "link.pem").symlink_to(outside / "k.pem")
+        (tmp_path / "deep" / "er").mkdir(parents=True)
+        (tmp_path / "deeper").symlink_to(tmp_path / "deep" / "er", target_is_directory=True)
+        side = _key_pair(path.format(outside_name=outside.name))
+
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            check_data_paths(Settings((tmp_path,)), side, _snowflake())
+
+    @pytest.mark.parametrize("path", _ANOTHER_MACHINE)
+    def test_it_resolves_no_snowflake_key_file_on_another_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
+    ) -> None:
+        """Ensure a key file Windows reads as another machine's is refused before it is resolved.
+
+        On Windows, the driver's open reaches the host such a path names.
+        """
+        reached = _as_windows(monkeypatch, mocker)
+
+        with pytest.raises(ConfigError, match="private_key_path is outside the folders"):
+            check_data_paths(Settings((tmp_path,)), _snowflake(), _key_pair(path))
+
+        assert not _on_another_machine(reached())
+
+    @pytest.mark.parametrize("path", ["k.pem", "keys/../k.pem", "{root}/k.pem", "~/k.pem"])
+    def test_it_accepts_a_snowflake_key_file_under_a_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str
+    ) -> None:
+        """Ensure a key file under a root passes, with `~` expanded as the driver expands it."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        (tmp_path / "keys").mkdir()
+        (tmp_path / "k.pem").write_text("not a real key\n", encoding="utf-8")
+
+        check_data_paths(Settings((tmp_path,)), _snowflake(), _key_pair(path.format(root=tmp_path)))
 
 
 _ROW = pl.DataFrame({"id": [1], "note": [_SECRET]})
@@ -2520,6 +2896,20 @@ class TestAllowedHosts:
 
         assert str(refused.value).startswith(f"The target {setting} names a host")
         assert "--allow-host" in str(refused.value)
+        read.assert_not_called()
+
+    def test_it_refuses_a_snowflake_key_file_outside_the_roots_before_it_connects(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure an allowed account does not let the driver open a key file outside the roots."""
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        outside = tmp_path_factory.mktemp("outside")
+        target = f"{_SNOWFLAKE}  account: xy12345\n  private_key_path: {outside / 'k.pem'}\n"
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError, match=r"^The target private_key_path is outside"):
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
         read.assert_not_called()
 
     @pytest.mark.parametrize(
