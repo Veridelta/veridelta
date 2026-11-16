@@ -2077,6 +2077,86 @@ class TestLakehouseFiles:
 
         check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
+    @pytest.mark.parametrize(
+        "table_uri",
+        [
+            pytest.param("fs{path}/%2565vents", id="fs"),
+            pytest.param("opendal+fs{path}/%2565vents", id="opendal-fs"),
+            pytest.param("FS{path}/%2565vents", id="upper"),
+            pytest.param("fs{path}/ev%65nts", id="once"),
+        ],
+    )
+    def test_it_refuses_an_fs_delta_table_uri_with_a_percent_escape(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        table_uri: str,
+    ) -> None:
+        """Ensure an `fs:` or `opendal+fs:` table URI with a `%` escape is refused before it is read.
+
+        deltalake decodes such a URI's path twice, so it would read the log of
+        `events`, whose vector lies outside the roots, where the listing
+        decodes it once and walks `%65vents`, a folder an agent can make.
+        """
+        outside = (tmp_path_factory.mktemp("outside") / "vector.bin").as_uri()
+        _with_vectors(tmp_path / "events", {"storageType": "p", "pathOrInlineDv": outside})
+        (tmp_path / "%65vents").mkdir()
+        uri = table_uri.format(path=tmp_path.as_uri().removeprefix("file"))
+        loaded = mocker.patch("deltalake.DeltaTable")
+
+        with pytest.raises(ConfigError, match=r"The target table_uri .* URI with a '%' escape"):
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri=uri)
+            )
+
+        loaded.assert_not_called()
+
+    def test_it_reads_a_file_delta_table_uri_with_a_percent_escape(self, tmp_path: Path) -> None:
+        """Ensure a `file:` table URI may hold a `%` escape, which deltalake and the listing decode once."""
+        _ROW.write_delta(tmp_path / "my events")
+        target = DeltaLakeConfig(table_uri=(tmp_path / "my events").as_uri())
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert "%20" in target.table_uri
+
+    def test_it_reads_a_delta_table_in_the_home_a_user_name_names(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure deltalake reads the table in the home `~<user>` names, the one the listing checks.
+
+        deltalake expands only `~` and `~/`, so it would read `~alice/events`
+        as a folder of that name in the working directory, whose vector lies
+        outside the roots, where the listing, as Polars does, reads the log in
+        alice's home. Her home is a folder under the root here.
+        """
+        home = tmp_path / "home"
+        _ROW.with_columns(kept=pl.lit(1)).write_delta(home / "events")
+        outside = (tmp_path_factory.mktemp("outside") / "vector.bin").as_uri()
+        named = tmp_path / "~alice" / "events"
+        _with_vectors(named, {"storageType": "p", "pathOrInlineDv": outside})
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: '~alice/events'\nprimary_keys: [id]\n",
+        )
+        expand = os.path.expanduser
+
+        def expanduser(path: str | os.PathLike[str]) -> str:
+            text = os.fspath(path)
+            return str(home) + text[6:] if text.startswith("~alice") else expand(text)
+
+        monkeypatch.setattr(os.path, "expanduser", expanduser)
+
+        report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert "kept" in report["columns"]
+
     def test_it_reads_a_delta_commit_whose_values_hold_a_line_separator(
         self, tmp_path: Path
     ) -> None:

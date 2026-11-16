@@ -122,6 +122,9 @@ must be allowed, even one no reader is known to take: a reader that knows more
 schemes than this module, such as `hdfs`, `sftp`, or `s3n`, connects to the host
 all the same."""
 
+_TWICE_DECODED: Final = frozenset({"fs", "opendal+fs"})
+"""URI schemes whose path deltalake decodes twice before it reads a table's log."""
+
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
 
@@ -726,6 +729,14 @@ def _local_paths(location: str) -> list[str]:
     return [*dict.fromkeys(paths), location]
 
 
+def _url_text(location: str) -> str:
+    """Return a URI as a URL parser reads it: with no space at its ends, and no tab or line break."""
+    text = location.strip(_URL_SPACE)
+    for character in "\t\n\r":
+        text = text.replace(character, "")
+    return text
+
+
 def _holds_dot_segment(location: str) -> bool:
     """Tell whether a URI holds a `.` or `..` segment, in any spelling a URL parser removes.
 
@@ -740,14 +751,25 @@ def _holds_dot_segment(location: str) -> bool:
     fewer. A path with no scheme is not a URI, and deltalake opens it as the
     system does.
     """
-    text = location.strip(_URL_SPACE)
-    for character in "\t\n\r":
-        text = text.replace(character, "")
+    text = _url_text(location)
     if _URI_SCHEME.match(text) is None:
         return False
     while (decoded := unquote(text)) != text:
         text = decoded
     return not {".", ".."}.isdisjoint(re.split(r"[/\\?#]", text))
+
+
+def _decoded_twice(location: str) -> bool:
+    """Tell whether a table URI holds a `%` escape that deltalake decodes twice.
+
+    deltalake decodes the path of an `fs:` or `opendal+fs:` URI twice before
+    it reads the log, so it reads `%2565` as `e`. This server and the files
+    the table lists decode it once, so the log the listing reads and the one
+    deltalake reads could differ. Any `%` in such a URI counts.
+    """
+    text = _url_text(location)
+    scheme = _URI_SCHEME.match(text)
+    return scheme is not None and scheme.group()[:-1].lower() in _TWICE_DECODED and "%" in text
 
 
 def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
@@ -780,13 +802,23 @@ def _delta_files(config: DeltaLakeConfig) -> Generator[tuple[str, str, bool], No
     loads the table, so the log is read before deltalake reads it, and a
     table whose log records a sidecar is refused.
 
+    A path that starts with `~` is expanded as Polars expands it, and
+    deltalake reads the expanded path, since it expands only `~` and `~/` and
+    would read `~alice/t` as a folder of that name.
+
     Returns:
         DeltaTable: The table, at the version whose files were named.
     """
     from deltalake import DeltaTable
 
+    uri = config.table_uri
+    if uri.startswith("~"):
+        # deltalake expands only `~` and `~/`, and reads `~alice/t` as a folder of that name,
+        # where the walk, as Polars does, reads the home of the user it names. So deltalake
+        # gets the path the walk reads.
+        uri = str(Path(uri).expanduser())
     logged: list[str] = []
-    for local in _local_paths(config.table_uri):
+    for local in _local_paths(uri):
         # Absolute, so a reading such as `s3:/b/t`, from `s3://b/t`, names no host.
         log = Path(local).expanduser().absolute() / "_delta_log"
         yield "log", str(log), True
@@ -796,10 +828,8 @@ def _delta_files(config: DeltaLakeConfig) -> Generator[tuple[str, str, bool], No
             logged += [os.path.join(folder, name) for name in sorted(files)]
     # deltalake reads each sidecar a checkpoint names as it loads the table, so the log is
     # read first, and a log that names one is refused.
-    vectors = delta_log_vectors(config.table_uri, config.storage_options, logged)
-    table = DeltaTable(
-        config.table_uri, version=config.version, storage_options=config.storage_options or None
-    )
+    vectors = delta_log_vectors(uri, config.storage_options, logged)
+    table = DeltaTable(uri, version=config.version, storage_options=config.storage_options or None)
     for uri in table.file_uris():
         yield "data file", uri, True
     for location in deletion_vector_files(table, vectors):
@@ -876,6 +906,8 @@ def _table_files(
             for an Iceberg table.
 
     Raises:
+        ConfigError: If a Delta Lake table URI could lead deltalake to another
+            log than the one this server lists.
         ConnectorError: If the extra is missing, or the table cannot be listed.
     """
     files: Generator[tuple[str, str, bool], None, DeltaTable | None]
@@ -886,6 +918,13 @@ def _table_files(
             "it reads the table, where this server reads the folder the system finds, so the "
             "two could read different tables. Write the URI without the segment, or write "
             "the table as a path."
+        )
+    if isinstance(config, DeltaLakeConfig) and _decoded_twice(config.table_uri):
+        raise ConfigError(
+            f"The {side} table_uri '{shown_location(config.table_uri)}' is an fs: or "
+            "opendal+fs: URI with a '%' escape. deltalake decodes such a URI's path twice "
+            "before it reads the table, where this server decodes it once, so the two could "
+            "read different tables. Write the table as a path, or as a file: URI."
         )
     if isinstance(config, DeltaLakeConfig):
         files, kind, extra = _delta_files(config), "Delta Lake table", "delta"
