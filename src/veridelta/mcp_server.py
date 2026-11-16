@@ -60,7 +60,7 @@ from veridelta.connectors.base import (
     without_location,
 )
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
-from veridelta.connectors.duckdb import sandboxed
+from veridelta.connectors.duckdb import WRITE_AHEAD_LOGS, beside, sandboxed
 from veridelta.connectors.lakehouse import (
     checked_file_io,
     checking_table_files,
@@ -680,7 +680,9 @@ def _refuse_opened(settings: Settings, location: str, remote: bool) -> None:
 def _reading(settings: Settings) -> Generator[None]:
     """Hold what a tool's sides read to the roots, while they read.
 
-    A DuckDB file's connection reads other files only from under the roots.
+    A DuckDB file opens only by a path with no link in it, its connection reads
+    other files only from under the roots, and it spills only into a folder the
+    block creates.
     A Delta Lake or Iceberg scan opens a file on this machine only from under
     them, and one elsewhere only on an allowed host, each checked just before
     it is opened. A Delta Lake scan lists and checks its table's files again
@@ -806,26 +808,6 @@ def _local_paths(location: str, named: str) -> list[str]:
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.
     return [*dict.fromkeys(paths), location]
-
-
-# Each log DuckDB names beside a database file, by the setting a refusal names.
-# A read-only open replays `.wal`, and `.wal.checkpoint` after a crash during a
-# checkpoint. Only a read-write open writes `.wal.recovery`, but it is checked too.
-_DUCKDB_LOGS = (
-    ("database's WAL", ".wal"),
-    ("database's checkpoint WAL", ".wal.checkpoint"),
-    ("database's recovery WAL", ".wal.recovery"),
-)
-
-
-def _wal_beside(path: str, suffix: str = ".wal") -> str:
-    """Add a log's suffix to a database's path as DuckDB's `AddSuffixToPath` does.
-
-    It goes before the first `?` in the path rather than at the end, so
-    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
-    """
-    mark = path.find("?")
-    return f"{path}{suffix}" if mark < 0 else f"{path[:mark]}{suffix}{path[mark:]}"
 
 
 def _resolved_database(side: str, database: str) -> str:
@@ -1154,15 +1136,16 @@ def _as_checked(settings: Settings, side: str, config: SourceRef) -> SourceRef:
     DuckDB replays the write-ahead logs beside the file as it opens it, before
     the sandbox applies, so each log is held to the roots as the file is. A
     resolved path that names another machine, as a Windows long path does,
-    is refused too.
+    is refused too. Inside `sandboxed`, the connector then opens the file by
+    this path only through no link, and confirms DuckDB opened that file.
     """
     if not isinstance(config, DuckDBConfig) or config.is_motherduck:
         return config
     database = _resolved_database(side, config.database)
     _refuse_outside(settings, side, "database", database, database)
-    for setting, suffix in _DUCKDB_LOGS:
-        log = _wal_beside(database, suffix)
-        _refuse_outside(settings, side, setting, log, log)
+    for name, suffix in WRITE_AHEAD_LOGS:
+        log = beside(database, suffix)
+        _refuse_outside(settings, side, f"database's {name}", log, log)
     return config.model_copy(update={"database": database})
 
 

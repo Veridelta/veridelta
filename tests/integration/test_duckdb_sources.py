@@ -10,13 +10,16 @@ the unit tests alone.
 
 import sqlite3
 import sys
+from contextlib import nullcontext
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import polars as pl
 import pytest
+from pytest_mock import MockerFixture
 
 from veridelta.connectors import DuckDBConnector, DuckDBPushdownSession
 from veridelta.connectors.duckdb import sandboxed
@@ -706,3 +709,102 @@ class TestDuckDBPushdown:
         )
         assert result.summary.is_match is True
         assert result.compared_columns == ("span",)
+
+
+_SPILL = (
+    "SELECT count(*) AS n, max(h) AS m FROM (SELECT hash(i) AS h, repeat('x', 50) AS p "
+    "FROM range(2000000) AS r(i) ORDER BY h)"
+)
+"""A sort larger than `_little_memory` allows, so DuckDB spills it to disk.
+
+Without `max(h)`, DuckDB counts the rows and sorts nothing."""
+
+
+@pytest.fixture
+def _little_memory(mocker: MockerFixture) -> None:
+    """Open each DuckDB connection with 20 MB and one thread, so `_SPILL` spills.
+
+    A connection's settings lock before any statement runs, so the limit
+    goes in with the connection's own settings.
+    """
+    connect = duckdb.connect
+
+    def opened(*args: Any, **kwargs: Any) -> Any:
+        kwargs["config"] = {**kwargs.get("config", {}), "memory_limit": "20MB", "threads": 1}
+        return connect(*args, **kwargs)
+
+    mocker.patch.object(duckdb, "connect", side_effect=opened)
+
+
+def _spilled(database: str) -> Path:
+    """Run `_SPILL` on one connection, and return the folder it spills into, still open.
+
+    DuckDB deletes each temporary file when the query ends, and a folder it
+    created when the connection closes.
+    """
+    session = DuckDBPushdownSession(DuckDBConfig(database=database, table="t", pushdown=True))
+    session.connect()
+    try:
+        counted = session.execute_pushdown(_SPILL).collect()
+        setting = "SELECT current_setting('temp_directory') AS folder"
+        folder = Path(session.execute_pushdown(setting).collect().item())
+        assert folder.is_dir()
+    finally:
+        session.close()
+    assert counted["n"].to_list() == [2_000_000]
+    return folder
+
+
+class TestDuckDBFilesBesideTheDatabase:
+    """Validate the write-ahead log DuckDB replays and the folder it spills into."""
+
+    @pytest.mark.parametrize("sandbox", [False, True], ids=["own-folder", "sandboxed"])
+    def test_it_replays_the_write_ahead_log_beside_the_file(
+        self, tmp_path: Path, sandbox: bool
+    ) -> None:
+        """Ensure rows still in the log are read, on the MCP server too."""
+        database = tmp_path / "w.duckdb"
+        with duckdb.connect(str(database)) as connection:
+            connection.execute("PRAGMA disable_checkpoint_on_shutdown")
+            connection.execute("SET checkpoint_threshold = '1TB'")
+            connection.execute("CREATE TABLE t AS SELECT 1 AS id")
+            connection.execute("CHECKPOINT")
+            connection.execute("INSERT INTO t VALUES (2)")
+        assert Path(f"{database}.wal").is_file()
+
+        with sandboxed([tmp_path]) if sandbox else nullcontext():
+            frame = LoaderFactory.load(DuckDBConfig(database=str(database), table="t")).collect()
+
+        assert sorted(frame["id"].to_list()) == [1, 2]
+
+    @pytest.mark.usefixtures("_little_memory")
+    def test_it_spills_into_a_folder_beside_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a sort larger than memory spills into the file's path with `.tmp` added.
+
+        DuckDB's own default is that path with `duckdb:` before it, from the
+        working directory, where no folder is.
+        """
+        database = _duckdb(tmp_path / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        monkeypatch.chdir(tmp_path)
+
+        folder = _spilled(database)
+
+        assert folder == Path(f"{Path(database).resolve()}.tmp")
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["w.duckdb"]
+
+    @pytest.mark.usefixtures("_little_memory")
+    def test_it_spills_into_a_folder_of_the_sandboxs_own(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the MCP server's reads spill outside the roots, into a folder it removes."""
+        database = _duckdb(tmp_path / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        monkeypatch.chdir(tmp_path)
+
+        with sandboxed([tmp_path]):
+            folder = _spilled(database)
+
+        assert not folder.is_relative_to(tmp_path)
+        assert not folder.exists()
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["w.duckdb"]

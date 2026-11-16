@@ -5,7 +5,9 @@
 
 import logging
 import os
+import sys
 import traceback
+from collections.abc import Callable, Generator
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
@@ -74,6 +76,44 @@ def _driver(
     return module
 
 
+def _settings(database: str) -> dict[str, object]:
+    """Return the settings a file opens with outside the sandbox: no extension, and its spill folder."""
+    return {
+        "autoinstall_known_extensions": False,
+        "autoload_known_extensions": False,
+        "temp_directory": f"{Path(database).resolve()}.tmp",
+    }
+
+
+_Opening = Callable[[Path], MagicMock]
+"""Replace the DuckDB module with one whose `connect` holds a new, empty file open."""
+
+
+@pytest.fixture
+def opening(mocker: MockerFixture) -> Generator[_Opening]:
+    """Return a function that replaces the DuckDB module, and close what its `connect` opened.
+
+    DuckDB holds the database file open while its connection is, and inside
+    the sandbox the connector reads that from the process's descriptors.
+    """
+    descriptors: list[int] = []
+
+    def replace(file: Path) -> MagicMock:
+        file.write_bytes(b"")
+        module = _driver(mocker)
+
+        def connect(*_: object, **__: object) -> MagicMock:
+            descriptors.append(os.open(file, os.O_RDONLY))
+            return module.connect.return_value
+
+        module.connect.side_effect = connect
+        return module
+
+    yield replace
+    for descriptor in descriptors:
+        os.close(descriptor)
+
+
 class TestDuckDBConnector:
     """Validate the connector that reads a DuckDB file or MotherDuck database into Polars."""
 
@@ -89,9 +129,7 @@ class TestDuckDBConnector:
 
         # As a DuckDB database, so neither the text nor the file's header picks an extension.
         driver.connect.assert_called_once_with(
-            "duckdb:warehouse.duckdb",
-            read_only=True,
-            config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+            "duckdb:warehouse.duckdb", read_only=True, config=_settings("warehouse.duckdb")
         )
         driver.connect.return_value.sql.assert_called_once_with('SELECT * FROM "main"."orders"')
 
@@ -113,9 +151,12 @@ class TestDuckDBConnector:
         assert connection.mock_calls[0] == call.execute("SET TimeZone = 'UTC'")
         assert call.sql('SELECT * FROM "main"."orders"') in connection.mock_calls
 
-    def test_it_holds_a_file_to_its_folders_before_reading(self, mocker: MockerFixture) -> None:
+    def test_it_holds_a_file_to_its_folders_before_reading(
+        self, opening: _Opening, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """Ensure a read inside `sandboxed` locks the connection to its folders first."""
-        connection = _driver(mocker).connect.return_value
+        connection = opening(tmp_path / "warehouse.duckdb").connect.return_value
+        monkeypatch.chdir(tmp_path)
 
         with sandboxed([Path("/data")]):
             DuckDBConnector(_FILE).connect()
@@ -522,6 +563,220 @@ class TestDuckDBConnectorLifecycle:
             connector.lazyframe()
 
 
+_LINKS = pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+)
+
+_BESIDE = [
+    pytest.param(".wal", "WAL", id="wal"),
+    pytest.param(".wal.checkpoint", "checkpoint WAL", id="checkpoint"),
+    pytest.param(".wal.recovery", "recovery WAL", id="recovery"),
+    pytest.param(".tmp", "temporary folder", id="temporary"),
+]
+"""Each path DuckDB names beside a file, with the name a refusal gives it."""
+
+_LINKED = "is a link, lies in a folder reached through one, or is not a file"
+_CHANGED = "or a log beside it changed while DuckDB opened it"
+
+
+def _file(tmp_path: Path) -> DuckDBConfig:
+    """Return a side that reads an empty file at `data/warehouse.duckdb`, by its resolved path."""
+    (tmp_path / "data").mkdir(parents=True)
+    file = tmp_path / "data" / "warehouse.duckdb"
+    file.write_bytes(b"")
+    return DuckDBConfig(database=os.path.realpath(file), table="orders")
+
+
+class TestDuckDBFilesBeside:
+    """Validate the logs and the spill folder DuckDB names beside a file, outside the sandbox."""
+
+    @_LINKS
+    @pytest.mark.parametrize(("suffix", "name"), _BESIDE)
+    def test_it_refuses_a_link_out_of_the_files_folder(
+        self,
+        mocker: MockerFixture,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        suffix: str,
+        name: str,
+    ) -> None:
+        """Ensure DuckDB replays no log, and spills into no folder, outside the file's folder.
+
+        A log replays before any setting applies, and a spill writes and
+        deletes files wherever its folder leads.
+        """
+        driver = _driver(mocker)
+        config = _file(tmp_path)
+        elsewhere = tmp_path_factory.mktemp("elsewhere")
+        Path(f"{config.database}{suffix}").symlink_to(elsewhere, target_is_directory=True)
+
+        with pytest.raises(ConnectorError, match=f"file's {name} '.+' leads out of the folder"):
+            DuckDBConnector(config).connect()
+
+        driver.connect.assert_not_called()
+
+    @_LINKS
+    def test_it_follows_a_link_that_stays_in_the_files_folder(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a log that is a link to a file beside the database still replays."""
+        driver = _driver(mocker)
+        config = _file(tmp_path)
+        (tmp_path / "data" / "old.wal").write_bytes(b"")
+        Path(f"{config.database}.wal").symlink_to(tmp_path / "data" / "old.wal")
+
+        DuckDBConnector(config).connect()
+
+        driver.connect.assert_called_once()
+
+
+class TestDuckDBSandboxedOpen:
+    """Validate that inside the sandbox, DuckDB opens the file its path named, through no link."""
+
+    def test_it_spills_into_a_folder_the_block_creates(
+        self, opening: _Opening, tmp_path: Path
+    ) -> None:
+        """Ensure a large query spills into a folder of the block's, which it removes at its end.
+
+        DuckDB would otherwise spill beside the database, where an agent can
+        put a link that leads the writes and deletes elsewhere.
+        """
+        config = _file(tmp_path)
+        driver = opening(Path(config.database))
+
+        with sandboxed([tmp_path]):
+            DuckDBConnector(config).connect()
+            temporary = Path(driver.connect.call_args.kwargs["config"]["temp_directory"])
+            assert temporary.is_dir()
+
+        assert not temporary.is_relative_to(tmp_path)
+        assert not temporary.exists()
+
+    def test_it_refuses_a_missing_file(self, mocker: MockerFixture, tmp_path: Path) -> None:
+        """Ensure a file that is gone is refused before DuckDB could create it elsewhere."""
+        driver = _driver(mocker)
+
+        with sandboxed([tmp_path]), pytest.raises(ConnectorError, match="does not exist"):
+            DuckDBConnector(DuckDBConfig(database=str(tmp_path / "x.duckdb"), table="t")).connect()
+
+        driver.connect.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "link",
+        [
+            pytest.param("folder", id="folder", marks=_LINKS),
+            pytest.param("file", id="file", marks=_LINKS),
+            pytest.param("log", id="log", marks=_LINKS),
+            pytest.param("log folder", id="log-not-a-file"),
+        ],
+    )
+    @pytest.mark.parametrize("windows", [False, True], ids=["by-folder", "by-resolving"])
+    def test_it_refuses_a_path_through_a_link(
+        self,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        link: str,
+        windows: bool,
+    ) -> None:
+        """Ensure the file and each log open only by a path with no link, and only as a file.
+
+        The server resolves the path before it checks it, so a link on it now
+        was put there since. Where the system looks no name up in an open
+        folder, as on Windows, the path must resolve to itself instead.
+        """
+        if windows:
+            monkeypatch.setattr(os, "supports_dir_fd", set())
+        driver = _driver(mocker)
+        real = _file(tmp_path / "real")
+        database = tmp_path / "data" / "warehouse.duckdb"
+        if link == "folder":
+            (tmp_path / "data").symlink_to(tmp_path / "real" / "data", target_is_directory=True)
+        else:
+            (tmp_path / "data").mkdir()
+        if link == "file":
+            database.symlink_to(real.database)
+        elif link != "folder":
+            database.write_bytes(b"")
+        if link == "log":
+            Path(f"{database}.wal").symlink_to(real.database)
+        if link == "log folder":
+            Path(f"{database}.wal").mkdir()
+
+        with sandboxed([tmp_path]), pytest.raises(ConnectorError, match=_LINKED):
+            DuckDBConnector(DuckDBConfig(database=str(database), table="t")).connect()
+
+        driver.connect.assert_not_called()
+
+    def test_it_refuses_a_file_duckdb_does_not_hold_open(
+        self, mocker: MockerFixture, tmp_path: Path
+    ) -> None:
+        """Ensure a file DuckDB opened elsewhere, through a link swapped in and out, is refused.
+
+        DuckDB opens the path by its text, after the connector looked it up,
+        so only the descriptor DuckDB holds tells which file it opened.
+        """
+        connection = _driver(mocker).connect.return_value
+
+        with sandboxed([tmp_path]), pytest.raises(ConnectorError, match=_CHANGED):
+            DuckDBConnector(_file(tmp_path)).connect()
+
+        connection.close.assert_called_once_with()
+        connection.sql.assert_not_called()
+
+    def test_it_refuses_a_log_that_appears_while_duckdb_opens_the_file(
+        self, opening: _Opening, tmp_path: Path
+    ) -> None:
+        """Ensure a log that was not there when the file was looked up is refused after it."""
+        config = _file(tmp_path)
+        driver = opening(Path(config.database))
+        open_the_file = driver.connect.side_effect
+
+        def connect(*args: object, **kwargs: object) -> MagicMock:
+            Path(f"{config.database}.wal").write_bytes(b"")
+            return open_the_file(*args, **kwargs)
+
+        driver.connect.side_effect = connect
+
+        with sandboxed([tmp_path]), pytest.raises(ConnectorError, match=_CHANGED):
+            DuckDBConnector(config).connect()
+
+        driver.connect.return_value.close.assert_called_once_with()
+
+    def test_it_looks_the_paths_up_again_where_no_descriptor_is_listed(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure a system that lists no descriptors, as Windows, still reads an unchanged file."""
+        monkeypatch.setattr("veridelta.connectors.duckdb._DESCRIPTORS", str(tmp_path / "none"))
+        connection = _driver(mocker).connect.return_value
+
+        with sandboxed([tmp_path]):
+            DuckDBConnector(_file(tmp_path)).connect()
+
+        connection.sql.assert_called_once_with('SELECT * FROM "orders"')
+
+    def test_it_skips_a_descriptor_closed_since_it_was_listed(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure a descriptor that closed between the listing and its check counts as none."""
+        config = _file(tmp_path)
+        listed = tmp_path / "descriptors"
+        listed.mkdir()
+        descriptor = os.open(config.database, os.O_RDONLY)
+        try:
+            for name in (str(descriptor), "1048575"):
+                (listed / name).write_bytes(b"")
+            monkeypatch.setattr("veridelta.connectors.duckdb._DESCRIPTORS", str(listed))
+            connection = _driver(mocker).connect.return_value
+
+            with sandboxed([tmp_path]):
+                DuckDBConnector(config).connect()
+        finally:
+            os.close(descriptor)
+
+        connection.sql.assert_called_once_with('SELECT * FROM "orders"')
+
+
 _PUSHDOWN = DuckDBConfig(database="warehouse.duckdb", table="src", pushdown=True)
 
 
@@ -542,9 +797,7 @@ class TestDuckDBPushdownSession:
         session.close()
 
         driver.connect.assert_called_once_with(
-            "duckdb:warehouse.duckdb",
-            read_only=True,
-            config={"autoinstall_known_extensions": False, "autoload_known_extensions": False},
+            "duckdb:warehouse.duckdb", read_only=True, config=_settings("warehouse.duckdb")
         )
         assert connection.mock_calls[0] == call.execute("SET TimeZone = 'UTC'")
         assert connection.sql.call_args_list == [call("SELECT 1"), call("SELECT 2")]

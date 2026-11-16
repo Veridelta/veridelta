@@ -53,6 +53,7 @@ from veridelta import __version__, mcp_server
 from veridelta.config import load_config
 from veridelta.connectors import base, database
 from veridelta.connectors.database import sqlite_path
+from veridelta.connectors.duckdb import beside
 from veridelta.connectors.lakehouse import (
     DeltaLakeConnector,
     IcebergConnector,
@@ -941,6 +942,12 @@ _SQLITE_DISGUISES = [
 """SQLite sides whose URI text sits under the root, but whose decoded path is `file`."""
 
 
+def _duckdb_table(path: Path, column: str) -> None:
+    """Create a DuckDB file whose table `t` has one column, and close it."""
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(f"CREATE TABLE t AS SELECT 1 AS {column}")
+
+
 def _link_folder(link: Path, folder: Path) -> None:
     """Make a link to a folder, or skip the test on a machine that cannot, as Windows may not."""
     try:
@@ -1332,12 +1339,99 @@ class TestCheckDataPaths:
         try:
             connection.execute("CREATE TABLE t (id INTEGER)")
 
-            wal = mcp_server._wal_beside(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
+            wal = beside(database, ".wal")
 
             assert Path(wal) == tmp_path / "L.wal?" / "x.duckdb"
             assert Path(wal).is_file()
         finally:
             connection.close()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize("back", [False, True], ids=["kept", "swapped-back"])
+    def test_it_refuses_a_duckdb_folder_swapped_for_a_link_as_duckdb_opens_the_file(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        back: bool,
+    ) -> None:
+        """Ensure DuckDB reads no file but the one checked, though a folder changes after the check.
+
+        The server checks the resolved path, and DuckDB opens it again by its
+        text. Here the file's folder becomes a link out of the root just
+        before DuckDB opens it, and with `back`, the folder returns before
+        the connector looks again, so only the descriptor DuckDB holds shows
+        which file it opened.
+        """
+        root, outside = tmp_path / "root", tmp_path_factory.mktemp("outside")
+        for folder, column in ((root / "data", "checked"), (outside, "elsewhere")):
+            folder.mkdir(parents=True, exist_ok=True)
+            _duckdb_table(folder / "x.duckdb", column)
+        _write(
+            root,
+            "source:\n  type: duckdb\n  database: data/x.duckdb\n  table: t\n"
+            "target:\n  path: a.csv\nprimary_keys: [checked]\n",
+        )
+        monkeypatch.chdir(root)
+        connect = duckdb.connect
+
+        def swapped(*args: Any, **kwargs: Any) -> Any:
+            (root / "data").rename(root / "checked")
+            (root / "data").symlink_to(outside, target_is_directory=True)
+            try:
+                return connect(*args, **kwargs)
+            finally:
+                if back:
+                    (root / "data").unlink()
+                    (root / "checked").rename(root / "data")
+
+        mocker.patch.object(duckdb, "connect", side_effect=swapped)
+        refusal = "changed while DuckDB opened it" if back else "is a link"
+
+        with pytest.raises(ConnectorError, match=refusal):
+            describe_side(Settings((root,)), "veridelta.yaml", "source")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_refuses_a_duckdb_log_put_beside_the_file_as_duckdb_opens_it(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a log that is a link put beside the file after the check is refused.
+
+        DuckDB replays the log of the path it is handed, and a log from a copy
+        of the file replays into it, columns and rows alike.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        _duckdb_table(tmp_path / "x.duckdb", "checked")
+        shutil.copy(tmp_path / "x.duckdb", outside / "x.duckdb")
+        with duckdb.connect(str(outside / "x.duckdb")) as writer:
+            writer.execute("PRAGMA disable_checkpoint_on_shutdown")
+            writer.execute("SET checkpoint_threshold = '1TB'")
+            writer.execute("ALTER TABLE t ADD COLUMN elsewhere INTEGER")
+        _write(
+            tmp_path,
+            "source:\n  type: duckdb\n  database: x.duckdb\n  table: t\n"
+            "target:\n  path: a.csv\nprimary_keys: [checked]\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        connect = duckdb.connect
+
+        def logged(*args: Any, **kwargs: Any) -> Any:
+            (tmp_path / "x.duckdb.wal").symlink_to(outside / "x.duckdb.wal")
+            return connect(*args, **kwargs)
+
+        mocker.patch.object(duckdb, "connect", side_effect=logged)
+
+        with pytest.raises(ConnectorError, match=r"The DuckDB file's WAL '.+' is a link"):
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
 
     @pytest.mark.parametrize(
         "call",
