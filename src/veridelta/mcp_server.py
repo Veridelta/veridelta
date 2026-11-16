@@ -119,9 +119,6 @@ all the same."""
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
 
-_LONG_PATH: Final = "\\\\?\\"
-r"""The start of a Windows long path, `\\?\`, where DuckDB adds `.wal` at the end."""
-
 _HOST_OPTIONS: Final = frozenset(
     {
         "account_name",
@@ -694,48 +691,39 @@ def _local_paths(location: str) -> list[str]:
 
 
 def _wal_beside(path: str) -> str:
-    r"""Add `.wal` to a database's path as DuckDB's `GetWALPath` does.
+    """Add `.wal` to a database's path as DuckDB's `GetWALPath` does.
 
     It goes before the first `?` in the path rather than at the end, so
-    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder. A
-    Windows long path, which starts with `\\?\`, has `.wal` added at the
-    end.
+    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
     """
-    mark = -1 if path.startswith(_LONG_PATH) else path.find("?")
+    mark = path.find("?")
     return f"{path}.wal" if mark < 0 else f"{path[:mark]}.wal{path[mark:]}"
 
 
-def _duckdb_wal(database: str) -> str:
-    """Name the write-ahead log DuckDB replays as it opens a database file.
+def _resolved_database(side: str, database: str) -> str:
+    """Resolve a DuckDB file's path to the text the server checks and hands DuckDB.
 
-    DuckDB names the log from the path `_open` hands it, which has `~`
-    expanded, once it has made that path absolute and resolved it. Where the
-    whole path resolves, that is the path with every link followed, as
-    `os.path.realpath` gives it: `x.duckdb/.` has its log at `x.duckdb.wal`,
-    and `lnk/../x.duckdb` has it beside `x.duckdb` in the folder above the
-    one `lnk` leads to. Where a part does not resolve, DuckDB folds the rest
-    by text, which no reading here matches, so `_refuse_unresolved` refuses
-    such a path.
-    """
-    return _wal_beside(os.path.realpath(os.path.expanduser(database)))
-
-
-def _refuse_unresolved(side: str, database: str) -> None:
-    """Refuse a DuckDB database whose path does not resolve through every folder it names.
-
-    Only for a path that resolves is the file DuckDB opens, and the log it
-    replays beside it, the one `os.path.realpath` names.
+    DuckDB makes the path absolute and resolves it with the system's
+    `realpath`. Where that fails, as past the links the system follows, it
+    folds the rest of the path by text, which no reading here matches. So
+    the server resolves the path itself, with every link followed and every
+    `..` folded, and the connector opens that text, in which DuckDB finds
+    nothing left to resolve. The system must also open the text as written,
+    so a file followed by a separator or by `..` is refused on every Python
+    version, where `os.path.realpath` before 3.13 folds it by text.
 
     Raises:
-        ConfigError: If a part of the path does not exist.
+        ConfigError: If the path does not lead to an existing file.
     """
+    expanded = os.path.expanduser(database)
     try:
-        os.path.realpath(os.path.expanduser(database), strict=True)
+        os.stat(expanded)
+        return os.path.realpath(expanded, strict=True)
     except OSError as exc:
         raise ConfigError(
-            f"The {side} database '{database}' does not lead to a file through every "
-            "folder it names, so this server cannot tell which file and write-ahead log "
-            "DuckDB would open. Write the path of an existing DuckDB file."
+            f"The {side} database '{database}' does not resolve to an existing file, so "
+            "this server cannot tell which file and write-ahead log DuckDB would open. "
+            "Write the path of an existing DuckDB file."
         ) from exc
 
 
@@ -747,8 +735,7 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
     elif isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig) and not config.is_motherduck:
-        # DuckDB replays the write-ahead log beside the file as it opens it, before the sandbox.
-        named = [("database", config.database), ("database's WAL", _duckdb_wal(config.database))]
+        named = [("database", config.database)]
     elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)
@@ -910,7 +897,25 @@ def _refuse_outside(
         )
 
 
-def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -> None:
+def _as_checked(settings: Settings, side: str, config: SourceRef) -> SourceRef:
+    """Return a side as a tool opens it, with a DuckDB file named by the path checked.
+
+    DuckDB replays the write-ahead log beside the file as it opens it, before
+    the sandbox applies, so the log is held to the roots as the file is. A
+    resolved path that names another machine, as a Windows long path does,
+    is refused too.
+    """
+    if not isinstance(config, DuckDBConfig) or config.is_motherduck:
+        return config
+    database = _resolved_database(side, config.database)
+    for setting, path in (("database", database), ("database's WAL", _wal_beside(database))):
+        _refuse_outside(settings, side, setting, path, path)
+    return config.model_copy(update={"database": database})
+
+
+def check_data_paths(
+    settings: Settings, source: SourceRef, target: SourceRef
+) -> tuple[SourceRef, SourceRef]:
     """Refuse a side whose data on this machine lies outside the roots.
 
     Every tool that opens a side calls this first, since a column name or an
@@ -922,8 +927,9 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     resolve under a root. A pattern may not reach `..`, since a match can be a
     link that `..` then leaves from its target. A `file:` URI may not hold a
     pattern at all, since Polars expands one with another matcher. A DuckDB
-    file's path must resolve, so the server names the file and the log beside
-    it that DuckDB opens. A Delta Lake or Iceberg table, wherever it lies, has
+    file's path must resolve to an existing file, and the side returned names
+    the file by that resolved path, so DuckDB opens the file checked and the
+    log beside it. A Delta Lake or Iceberg table, wherever it lies, has
     every file on this machine that its scan reads checked too, since its log
     or metadata can name a file anywhere. Data on another machine that a side names, such as an
     object store, a database server, or a warehouse, is held to the hosts the
@@ -938,11 +944,17 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
         source (SourceRef): The source configuration.
         target (SourceRef): The target configuration.
 
+    Returns:
+        tuple[SourceRef, SourceRef]: The source and the target to open, each
+            DuckDB file named by its resolved path.
+
     Raises:
-        ConfigError: If a file or folder a side reads is outside every root.
+        ConfigError: If a file or folder a side reads is outside every root,
+            or a DuckDB file's path does not resolve.
         ConnectorError: If the files of a lakehouse table cannot be listed.
     """
     sides = (("source", source), ("target", target))
+    checked: list[SourceRef] = []
     for side, config in sides:
         # A SQLite path carries the `password` field, as the driver reads it.
         password = config.password if isinstance(config, DatabaseConfig) else None
@@ -950,13 +962,13 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
             _refuse_outside(
                 settings, side, setting, location, local, expanded=True, password=password
             )
-        if isinstance(config, DuckDBConfig) and not config.is_motherduck:
-            _refuse_unresolved(side, config.database)
+        checked.append(_as_checked(settings, side, config))
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
             for setting, location, quoted in _table_files(settings, side, config):
                 for local in _local_paths(location):
                     _refuse_outside(settings, side, setting, location, local, quoted=quoted)
+    return checked[0], checked[1]
 
 
 def _host(text: str) -> str:
@@ -1183,7 +1195,7 @@ def check_configuration(
     else:
         if schemas:
             _refuse_hosts(settings, source, target)
-            check_data_paths(settings, source, target)
+            source, target = check_data_paths(settings, source, target)
         with _reading(settings):
             findings = DiffEngine.check_configs(
                 diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
@@ -1195,7 +1207,7 @@ def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceR
     """Load a configuration a tool opens, refusing data outside the roots or on a host not allowed."""
     diff, source, target = load_config(resolve_path(settings, path))
     _refuse_hosts(settings, source, target)
-    check_data_paths(settings, source, target)
+    source, target = check_data_paths(settings, source, target)
     return diff, source, target
 
 
