@@ -579,8 +579,26 @@ def _under_both_readings(settings: Settings, text: str) -> bool:
         return False
     path = Path(text)
     folded = Path(os.path.abspath(path))
+    return all(_under_roots(settings, Path(_real_path(str(each)))) for each in (path, folded))
+
+
+def _real_path(text: str) -> str:
+    r"""Resolve a path as the system does, following its links.
+
+    Windows' `realpath` adds back each name past the part it found with
+    `join`, which reads a name such as `C:` as a drive and drops the folders
+    before it. A URI read as a path holds one, as in `file:\C:\x`, so the
+    path would read as relative to the drive. Where the result has no root,
+    the path is resolved up to its last name, and the name is added with a
+    separator. A result that still has no root comes back as `realpath` gave it.
+    """
     # realpath, not Path.resolve, since Python 3.11 and 3.12 raise on a symbolic link loop.
-    return all(_under_roots(settings, Path(os.path.realpath(each))) for each in (path, folded))
+    resolved = os.path.realpath(text)
+    head, name = os.path.split(os.path.normpath(text))
+    if os.path.isabs(resolved) or not name:
+        return resolved
+    parent = _real_path(head)
+    return f"{parent.rstrip(os.sep)}{os.sep}{name}" if os.path.isabs(parent) else resolved
 
 
 def _opened_inside(settings: Settings, location: str) -> bool:

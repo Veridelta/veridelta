@@ -559,6 +559,65 @@ class TestCheckedDeltaScan:
         assert [remote for _, remote in checked] == [True]
         opened.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "path",
+            pytest.param(
+                "fs",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32",
+                    reason="deltalake's own store turns an `fs:` URI into a Windows path in a "
+                    "way this test has no means to check.",
+                ),
+            ),
+            "elsewhere",
+        ],
+    )
+    def test_it_checks_a_file_opened_on_the_calling_thread(
+        self, tmp_path: Path, mocker: MockerFixture, where: str
+    ) -> None:
+        """Ensure the scan's file system checks each file that Python's own thread opens through it.
+
+        PyArrow opens a scan's files from threads of its own, where no tracer
+        that `sys.settrace` sets runs. This opens each file through the same
+        file system from the test's thread, so the check runs where one does.
+        """
+        table = tmp_path / "events"
+        _versioned(table)
+        config = DeltaLakeConfig(table_uri=str(table))
+        if where == "fs":
+            config = DeltaLakeConfig(table_uri=table.as_uri().replace("file:", "fs:", 1))
+        if where == "elsewhere":
+            mocker.patch.object(
+                DeltaTable,
+                "table_uri",
+                new_callable=mocker.PropertyMock,
+                return_value="s3://lake/t/",
+            )
+            mocker.patch.object(DeltaStorageHandler, "__init__", return_value=None)
+            mocker.patch.object(
+                DeltaStorageHandler,
+                "open_input_file",
+                autospec=True,
+                side_effect=lambda _, path: LocalFileSystem().open_input_file(str(table / path)),
+            )
+        scanned = mocker.spy(pl, "scan_pyarrow_dataset")
+        checked: list[tuple[str, bool]] = []
+        with checking_table_files(lambda *opened: checked.append(opened), _listed):
+            LoaderFactory.load(config)
+        checked.clear()
+
+        for call in scanned.call_args_list:
+            for fragment in call.args[0].get_fragments():
+                with fragment.open() as file:
+                    assert file.read(4) == b"PAR1"
+
+        listed = DeltaTable(str(table)).file_uris()
+        assert [remote for _, remote in checked] == [where == "elsewhere"] * len(listed)
+        if where != "elsewhere":
+            assert sorted(Path(path) for path, _ in checked) == sorted(map(Path, listed))
+
 
 class TestLakehouseScanFailures:
     """Validate that a table, version, or snapshot that cannot be read fails at connect.

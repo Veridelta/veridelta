@@ -10,6 +10,7 @@ whether a call failed.
 
 import functools
 import glob
+import importlib.util
 import json
 import logging
 import ntpath
@@ -27,9 +28,9 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from typing import Any, Literal, TypeVar
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from urllib.error import URLError
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 import anyio
 import duckdb
@@ -156,6 +157,61 @@ def _as_windows(monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> Calla
 def _on_another_machine(paths: list[str]) -> list[str]:
     """Pick out each path Windows reads as on another machine or a device."""
     return [each for each in paths if each.replace("/", "\\").startswith(("\\\\", "\\??\\"))]
+
+
+def _on_a_windows_disk(monkeypatch: pytest.MonkeyPatch) -> Settings:
+    r"""Read paths as Windows does, with its own `realpath`, in `C:\root`, the server's root.
+
+    Python defines Windows' `realpath` only where the `nt` module exists, so
+    this loads `ntpath` again with a stand-in for `nt`. Only `C:\` and
+    `C:\root` exist on its disk, and any other path fails as a missing file
+    does. A `file:` URI's path converts as Windows converts one that starts
+    with a drive.
+
+    Returns:
+        Settings: A server whose root is `C:\root`.
+    """
+
+    def missing() -> OSError:
+        error = OSError("The system cannot find the file specified")
+        error.winerror = 2  # type: ignore[attr-defined]  # Only Windows' OSError declares it.
+        return error
+
+    def final(path: str) -> str:
+        if ntpath.normcase(path) not in ("c:\\", "c:\\root"):
+            raise missing()
+        return "\\\\?\\" + path
+
+    def fail(path: str) -> str:
+        raise missing()
+
+    nt = SimpleNamespace(_getfinalpathname=final, _findfirstfile=fail, readlink=fail)
+    spec = importlib.util.spec_from_file_location("windows_ntpath", ntpath.__file__)
+    assert spec is not None
+    assert spec.loader is not None
+    windows = importlib.util.module_from_spec(spec)
+    with patch.dict(sys.modules, {"nt": nt}):
+        spec.loader.exec_module(windows)
+    monkeypatch.setattr(
+        windows, "os", SimpleNamespace(**{**vars(os), "getcwd": lambda: "C:\\root"})
+    )
+    for module in (base, mcp_server):
+        monkeypatch.setattr(module, "os", SimpleNamespace(path=windows, sep="\\", altsep="/"))
+
+    class WindowsPath(PureWindowsPath):
+        """A Windows path, with no home or link to read on this disk."""
+
+        def expanduser(self) -> "WindowsPath":
+            return self
+
+        def resolve(self) -> "WindowsPath":
+            return self
+
+    monkeypatch.setattr(mcp_server, "Path", WindowsPath)
+    monkeypatch.setattr(
+        mcp_server, "url2pathname", lambda path: unquote(path).removeprefix("/").replace("/", "\\")
+    )
+    return Settings((Path("C:/root"),))
 
 
 @pytest.fixture(autouse=True)
@@ -1362,6 +1418,54 @@ class TestCheckDataPaths:
         assert "\\host.example\\share\\" + location.rsplit("/", 1)[1] in readings
         assert not any(reading.startswith("\\\\") for reading in readings)
 
+    @pytest.mark.parametrize(
+        "location",
+        [
+            pytest.param("file:///C:/root/events", id="file"),
+            pytest.param("file://localhost/C:/root/events", id="localhost"),
+            pytest.param("file:///C:/root/my%20events", id="percent-escape"),
+            pytest.param("fs:///C:/root/events", id="fs"),
+            pytest.param("opendal+fs:///C:/root/events", id="opendal-fs"),
+        ],
+    )
+    def test_it_reads_a_local_uri_under_a_root_as_windows_resolves_it(
+        self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, location: str
+    ) -> None:
+        r"""Ensure a URI under a root passes on Windows, as a table and as a file its log names.
+
+        The check also reads the URI as written as a path, such as
+        `file:\C:\root\events`, which holds `C:` as a name. Windows' own
+        `realpath` adds back the names past the folders that exist with
+        `join`, which reads that `C:` as a drive and drops the root before it.
+        """
+        settings = _on_a_windows_disk(monkeypatch)
+        listed = [("deletion vector", f"{location}/deletion_vector.bin", True)]
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(listed))
+
+        for table_uri in (location, "C:\\root\\events"):
+            check_data_paths(settings, DeltaLakeConfig(table_uri=table_uri), _snowflake())
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            pytest.param("file:///C:/elsewhere/events", id="file"),
+            pytest.param("D:data\\events", id="drive-relative"),
+        ],
+    )
+    def test_it_refuses_a_path_outside_the_roots_as_windows_resolves_it(
+        self, monkeypatch: pytest.MonkeyPatch, location: str
+    ) -> None:
+        r"""Ensure a path outside every root is refused on Windows, a path relative to a drive's own folder too.
+
+        `D:data\events` lies in the folder `D:` was last in, which the server
+        cannot know, so it never reads as `D:\data\events`, under a root.
+        """
+        _on_a_windows_disk(monkeypatch)
+        settings = Settings((Path("C:/root"), Path("D:/data")))
+
+        with pytest.raises(ConfigError, match=r"The source table_uri .* is outside the folders"):
+            check_data_paths(settings, DeltaLakeConfig(table_uri=location), _snowflake())
+
     @pytest.mark.parametrize("path", _ANOTHER_MACHINE)
     def test_it_resolves_no_path_on_another_machine(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, path: str
@@ -2440,6 +2544,40 @@ class TestLakehouseFiles:
         with pytest.raises(ConfigError, match=r"The target table_uri .* '\.' or '\.\.' segment"):
             check_data_paths(
                 Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri=uri)
+            )
+
+        loaded.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("table_uri", "refusal"),
+        [
+            pytest.param("file:///C:/root/missing/../events", "segment", id="dot-dot"),
+            pytest.param("file://localhost/C:/root/./events", "segment", id="localhost"),
+            pytest.param("fs:///C:/root/missing/%2e%2e/events", "segment", id="fs"),
+            pytest.param("opendal+fs:///C:/root/missing/../events", "segment", id="opendal-fs"),
+            pytest.param("fs:///C:/root/%2565vents", "escape", id="fs-escape"),
+            pytest.param("opendal+fs:///C:/root/ev%65nts", "escape", id="opendal-fs-escape"),
+        ],
+    )
+    def test_it_refuses_a_delta_table_uri_by_its_own_rule_on_windows(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        table_uri: str,
+        refusal: str,
+    ) -> None:
+        """Ensure a table URI with a dot segment or a `%` escape is refused by that rule on Windows.
+
+        Each path the URI names lies under the root, so the folder rule passes
+        it on Windows as on Linux, and the rule for the URI itself refuses it.
+        """
+        settings = _on_a_windows_disk(monkeypatch)
+        loaded = mocker.patch("deltalake.DeltaTable")
+        rules = {"segment": r"'\.' or '\.\.' segment", "escape": "URI with a '%' escape"}
+
+        with pytest.raises(ConfigError, match=f"The target table_uri .* {rules[refusal]}"):
+            check_data_paths(
+                settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri=table_uri)
             )
 
         loaded.assert_not_called()
