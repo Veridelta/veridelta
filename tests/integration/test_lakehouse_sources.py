@@ -12,6 +12,9 @@ need an account, so `storage_options` are covered by the unit tests alone.
 import json
 import re
 import shutil
+import struct
+import sys
+import zlib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -20,16 +23,21 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from deltalake import DeltaTable
+from deltalake.fs import DeltaStorageHandler
+from packaging.version import Version
+from pyarrow.fs import LocalFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
+from pytest_mock import MockerFixture
 
 from veridelta.connectors import DeltaLakeConnector, IcebergConnector
 from veridelta.connectors.lakehouse import (
     _static_table,  # pyright: ignore[reportPrivateUsage] - pins the table the loader builds
     checked_file_io,
-    checking_iceberg_files,
+    checking_table_files,
 )
 from veridelta.engine import DiffEngine, LoaderFactory
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DeltaLakeConfig, DiffConfig, DiffRule, IcebergConfig, SourceConfig
 
 pytestmark = [pytest.mark.integration]
@@ -124,6 +132,92 @@ def _name_a_class_in_the_metadata(metadata: str) -> None:
     for key in _CLASS_PROPERTIES:
         document["properties"][key] = f"{__name__}.{MarkerFileIO.__name__}"
     path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def _listed(config: DeltaLakeConfig) -> DeltaTable:
+    """Stand in for the MCP server's listing: return the table at the version a scan reads."""
+    return DeltaTable(config.table_uri, version=config.version)
+
+
+def _unlisted(config: DeltaLakeConfig) -> DeltaTable:
+    """Stand in for the listing where no Delta Lake table is read."""
+    raise AssertionError(f"An Iceberg scan listed the Delta Lake table {config.table_uri}.")
+
+
+def _delete_with_a_vector(table: Path, vector: Path, row: int) -> None:
+    """Delete one row of the data file the table's first commit adds, with a vector at `vector`.
+
+    deltalake rewrites a file to delete from it, so the test writes the
+    deletion vector and the commit that records it, as Spark would. The file
+    holds a version byte, then the bitmap's size, Delta's portable roaring
+    bitmap of the deleted row, and its CRC-32. The commit records the vector
+    at its own path, as a URI.
+    """
+    bitmap = struct.pack("<II", 12346, 1) + struct.pack("<HH", 0, 0)
+    bitmap = struct.pack("<iqi", 1681511377, 1, 0) + bitmap + struct.pack("<IH", 16, row)
+    vector.write_bytes(
+        b"\x01" + struct.pack(">i", len(bitmap)) + bitmap + struct.pack(">I", zlib.crc32(bitmap))
+    )
+    log = table / "_delta_log"
+    actions = [json.loads(line) for line in (log / f"{0:020}.json").read_text("utf-8").splitlines()]
+    (added,) = [action["add"] for action in actions if "add" in action]
+    descriptor = {
+        "storageType": "p",
+        "pathOrInlineDv": vector.as_uri(),
+        "offset": 1,
+        "sizeInBytes": len(bitmap),
+        "cardinality": 1,
+    }
+    removed = {"path": added["path"], "dataChange": True, "deletionTimestamp": 1}
+    commit = [{"remove": removed}, {"add": dict(added, deletionVector=descriptor)}]
+    version = len(list(log.glob("*.json")))
+    (log / f"{version:020}.json").write_text(
+        "".join(json.dumps(action) + "\n" for action in commit), encoding="utf-8"
+    )
+
+
+def _versioned(path: Path) -> DeltaLakeConfig:
+    """Write a table whose first version a scan reads, overwritten since."""
+    _EVENTS.write_delta(path)
+    _CHANGED.write_delta(path, mode="overwrite")
+    return DeltaLakeConfig(table_uri=str(path), version=0)
+
+
+def _evolved(path: Path) -> DeltaLakeConfig:
+    """Write a partitioned table that gained a column, then lost a row to a delete."""
+    _EVENTS.write_delta(path, delta_write_options={"partition_by": ["tier"]})
+    _EVENTS.with_columns(note=pl.lit("added")).write_delta(
+        path, mode="append", delta_write_options={"schema_mode": "merge"}
+    )
+    DeltaTable(str(path)).delete("id = 2")
+    return DeltaLakeConfig(table_uri=str(path))
+
+
+def _vectored(path: Path) -> DeltaLakeConfig:
+    """Write a table of two files, one of whose rows a deletion vector deletes."""
+    _EVENTS.write_delta(
+        path, delta_write_options={"configuration": {"delta.enableDeletionVectors": "true"}}
+    )
+    _CHANGED.write_delta(path, mode="append")
+    _delete_with_a_vector(path, path.parent / "vector.bin", 1)
+    return DeltaLakeConfig(table_uri=str(path))
+
+
+def _blanked(path: Path) -> DeltaLakeConfig:
+    """Write a table partitioned by a text column, one of whose values is `''` and one null.
+
+    deltalake reads `''` as null, where Polars reads the folder `tier=` as `''`.
+    """
+    pl.DataFrame({"id": [1, 2, 3, 4], "tier": ["", "gold", None, "a b"]}).write_delta(
+        path, delta_write_options={"partition_by": ["tier"]}
+    )
+    return DeltaLakeConfig(table_uri=str(path))
+
+
+def _emptied(path: Path) -> DeltaLakeConfig:
+    """Write a table with no rows."""
+    pl.DataFrame(schema=_EVENTS.schema).write_delta(path)
+    return DeltaLakeConfig(table_uri=str(path))
 
 
 @pytest.fixture(params=["delta", "iceberg"])
@@ -259,7 +353,7 @@ class TestCheckedIcebergScan:
     """Validate the Iceberg scan the MCP server runs, which checks each file before it opens it.
 
     Polars plans a scan with the `polars_iceberg` plugin, and reads the data
-    files itself. Inside `checking_iceberg_files`, PyIceberg plans and reads
+    files itself. Inside `checking_table_files`, PyIceberg plans and reads
     every file through one FileIO instead, so each one passes the check.
     """
 
@@ -274,27 +368,31 @@ class TestCheckedIcebergScan:
         """Ensure the scan checks every file it opens, never plans with the plugin, and loses no row."""
         source = _iceberg_table(tmp_path)(first)
         monkeypatch.setenv("POLARS_VERBOSE", "1")
-        checked: list[str] = []
+        checked: list[tuple[str, bool]] = []
 
-        with checking_iceberg_files(checked.append):
+        with checking_table_files(lambda *opened: checked.append(opened), _unlisted):
             frame = LoaderFactory.load(source).collect()
 
         assert frame.sort("id").equals(_EVENTS if first else _CHANGED)
+        assert not any(remote for _, remote in checked)
         # Windows writes the path checked with backslashes alone, and the table_uri with both.
-        assert Path(source.table_uri) in {Path(path) for path in checked}
-        assert any(path.endswith(".parquet") for path in checked)
-        assert all(Path(path).is_relative_to(tmp_path) for path in checked)
+        assert Path(source.table_uri) in {Path(path) for path, _ in checked}
+        assert any(path.endswith(".parquet") for path, _ in checked)
+        assert all(Path(path).is_relative_to(tmp_path) for path, _ in checked)
         assert "polars_iceberg plugin" not in capfd.readouterr().err
 
-    def test_it_checks_only_a_file_it_opens_from_this_machine(self) -> None:
-        """Ensure a file in a store is left to the store, and a local one is checked as opened."""
-        checked: list[str] = []
-        io = checked_file_io({"s3.region": "us-east-1"}, checked.append)
+    def test_it_checks_a_file_by_its_path_here_and_by_its_host_elsewhere(self) -> None:
+        """Ensure a file in a store is checked by its URI, and a local one by the path it opens."""
+        checked: list[tuple[str, bool]] = []
+        io = checked_file_io({"s3.region": "us-east-1"}, lambda *opened: checked.append(opened))
 
         io.new_input("s3://lake/events/data.parquet")
         io.new_input("FILE:///lake/events/data.parquet")
 
-        assert checked == ["/lake/events/data.parquet"]
+        assert checked == [
+            ("s3://lake/events/data.parquet", True),
+            ("/lake/events/data.parquet", False),
+        ]
 
     @pytest.mark.parametrize(
         "location",
@@ -302,13 +400,223 @@ class TestCheckedIcebergScan:
     )
     def test_it_opens_no_file_through_libhdfs(self, location: str) -> None:
         """Ensure a file in HDFS is refused, since PyArrow can load libhdfs from the working directory."""
-        checked: list[str] = []
-        io = checked_file_io({}, checked.append)
+        checked: list[tuple[str, bool]] = []
+        io = checked_file_io({}, lambda *opened: checked.append(opened))
 
         with pytest.raises(ConnectorError, match="scheme other than file: or an object store's"):
             io.new_input(location)
 
         assert checked == []
+
+
+class TestCheckedDeltaScan:
+    """Validate the Delta Lake scan the MCP server runs, which checks each data file as it opens it.
+
+    Polars and deltalake read a table's files in Rust. Inside
+    `checking_table_files`, the scan reads the version the listing returns,
+    and its data files through a PyArrow file system that checks each one.
+    """
+
+    @pytest.mark.parametrize(
+        "table",
+        [
+            _versioned,
+            _evolved,
+            pytest.param(
+                _vectored,
+                id="_vectored",
+                marks=pytest.mark.skipif(
+                    Version(pl.__version__) < Version("1.40.0"),
+                    reason="Polars reads a table with deletion vectors from 1.40.0 on, "
+                    "so an older one gives no rows to compare with.",
+                ),
+            ),
+            _blanked,
+            _emptied,
+        ],
+    )
+    def test_it_reads_the_rows_polars_reads(
+        self, tmp_path: Path, table: Callable[[Path], DeltaLakeConfig]
+    ) -> None:
+        """Ensure the checked scan reads every row, column, and type the command line reads, in order."""
+        config = table(tmp_path / "events")
+        expected = LoaderFactory.load(config).collect()
+        checked: list[tuple[str, bool]] = []
+
+        with checking_table_files(lambda *opened: checked.append(opened), _listed):
+            frame = LoaderFactory.load(config).collect()
+
+        assert frame.equals(expected)
+        assert frame.schema == expected.schema
+        assert not any(remote for _, remote in checked)
+        listed = _listed(config).file_uris()
+        assert sorted(Path(path) for path, _ in checked) == sorted(Path(uri) for uri in listed)
+
+    def test_it_drops_the_rows_a_deletion_vector_deletes(self, tmp_path: Path) -> None:
+        """Ensure a row a vector deletes is gone, from the file it was deleted from alone."""
+        config = _vectored(tmp_path / "events")
+
+        with checking_table_files(lambda *_: None, _listed):
+            frame = LoaderFactory.load(config).collect()
+
+        assert frame["id"].to_list() == [1, 3, 1, 2, 3]
+
+    def test_it_checks_each_data_file_as_it_opens_it(self, tmp_path: Path) -> None:
+        """Ensure a check that refuses a data file stops the read, though the scan had started."""
+        config = DeltaLakeConfig(table_uri=str(tmp_path / "events"))
+        _versioned(tmp_path / "events")
+        checked: list[tuple[str, bool]] = []
+        with checking_table_files(lambda *opened: checked.append(opened), _listed):
+            started = DeltaLakeConnector(config)
+            started.connect()
+        assert checked == []
+
+        def refuse(location: str, remote: bool) -> None:
+            raise ConfigError(f"refused {location} {remote}")
+
+        with checking_table_files(refuse, _listed):
+            stopped = DeltaLakeConnector(config)
+            stopped.connect()
+        started.lazyframe().collect()
+        with pytest.raises(ConfigError, match=r"refused .* False"):
+            stopped.lazyframe().collect()
+
+        assert len(checked) == 1
+
+    def test_it_reads_no_file_it_cannot_pair_with_a_fragment(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a table whose files and fragments come in another order is refused."""
+        config = _evolved(tmp_path / "events")
+        listed = DeltaTable.file_uris
+        mocker.patch.object(
+            DeltaTable, "file_uris", autospec=True, side_effect=lambda t: listed(t)[::-1]
+        )
+
+        with (
+            checking_table_files(lambda *_: None, _listed),
+            pytest.raises(ConnectorError, match="do not pair up"),
+        ):
+            DeltaLakeConnector(config).connect()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="deltalake's own store turns an `fs:` URI into a Windows path in a way "
+        "this test has no means to check, as `fs:///C:/...` names its drive after a slash.",
+    )
+    @pytest.mark.parametrize("scheme", ["fs", "opendal+fs"])
+    def test_it_checks_each_file_of_a_local_scheme_by_the_path_it_opens(
+        self, tmp_path: Path, scheme: str
+    ) -> None:
+        """Ensure a table that deltalake reads from this machine under its own scheme is checked here.
+
+        deltalake names such a table's files by URI, not by path, so the scan
+        checks each file at the path it then opens, as for a `file:` table.
+        """
+        config = _vectored(tmp_path / "events")
+        with checking_table_files(lambda *_: None, _listed):
+            expected = LoaderFactory.load(config).collect()
+        uri = Path(config.table_uri).as_uri().replace("file:", f"{scheme}:", 1)
+        local = config.model_copy(update={"table_uri": uri})
+        checked: list[tuple[str, bool]] = []
+
+        with checking_table_files(lambda *opened: checked.append(opened), _listed):
+            frame = LoaderFactory.load(local).collect()
+
+        assert frame.equals(expected)
+        assert not any(remote for _, remote in checked)
+        listed = _listed(config).file_uris()
+        assert sorted(Path(path) for path, _ in checked) == sorted(Path(uri) for uri in listed)
+
+    def test_it_opens_a_remote_file_through_deltalake(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a table in an object store has each file checked by its URI, then read through its store.
+
+        The store is mocked: the table lies under `tmp_path`, but names an
+        `s3://` URI, and its store opens each file from the folder.
+        """
+        config = DeltaLakeConfig(table_uri=str(tmp_path / "events"))
+        _versioned(tmp_path / "events")
+        mocker.patch.object(
+            DeltaTable, "table_uri", new_callable=mocker.PropertyMock, return_value="s3://lake/t/"
+        )
+        mocker.patch.object(DeltaStorageHandler, "__init__", return_value=None)
+        opened = mocker.patch.object(
+            DeltaStorageHandler,
+            "open_input_file",
+            autospec=True,
+            side_effect=lambda _, path: LocalFileSystem().open_input_file(
+                str(tmp_path / "events" / path)
+            ),
+        )
+        checked: list[tuple[str, bool]] = []
+
+        with checking_table_files(lambda *opened: checked.append(opened), _listed):
+            frame = LoaderFactory.load(config).collect()
+
+        assert frame.sort("id").equals(_CHANGED)
+        assert [remote for _, remote in checked] == [True]
+        opened.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "where",
+        [
+            "path",
+            pytest.param(
+                "fs",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32",
+                    reason="deltalake's own store turns an `fs:` URI into a Windows path in a "
+                    "way this test has no means to check.",
+                ),
+            ),
+            "elsewhere",
+        ],
+    )
+    def test_it_checks_a_file_opened_on_the_calling_thread(
+        self, tmp_path: Path, mocker: MockerFixture, where: str
+    ) -> None:
+        """Ensure the scan's file system checks each file that Python's own thread opens through it.
+
+        PyArrow opens a scan's files from threads of its own, where no tracer
+        that `sys.settrace` sets runs. This opens each file through the same
+        file system from the test's thread, so the check runs where one does.
+        """
+        table = tmp_path / "events"
+        _versioned(table)
+        config = DeltaLakeConfig(table_uri=str(table))
+        if where == "fs":
+            config = DeltaLakeConfig(table_uri=table.as_uri().replace("file:", "fs:", 1))
+        if where == "elsewhere":
+            mocker.patch.object(
+                DeltaTable,
+                "table_uri",
+                new_callable=mocker.PropertyMock,
+                return_value="s3://lake/t/",
+            )
+            mocker.patch.object(DeltaStorageHandler, "__init__", return_value=None)
+            mocker.patch.object(
+                DeltaStorageHandler,
+                "open_input_file",
+                autospec=True,
+                side_effect=lambda _, path: LocalFileSystem().open_input_file(str(table / path)),
+            )
+        scanned = mocker.spy(pl, "scan_pyarrow_dataset")
+        checked: list[tuple[str, bool]] = []
+        with checking_table_files(lambda *opened: checked.append(opened), _listed):
+            LoaderFactory.load(config)
+        checked.clear()
+
+        for call in scanned.call_args_list:
+            for fragment in call.args[0].get_fragments():
+                with fragment.open() as file:
+                    assert file.read(4) == b"PAR1"
+
+        listed = DeltaTable(str(table)).file_uris()
+        assert [remote for _, remote in checked] == [where == "elsewhere"] * len(listed)
+        if where != "elsewhere":
+            assert sorted(Path(path) for path, _ in checked) == sorted(map(Path, listed))
 
 
 class TestLakehouseScanFailures:
