@@ -104,8 +104,8 @@ def checking_table_files(
     files through one PyArrow file system that calls `check` with each one
     just before it opens it. deltalake reads the log and the deletion vectors
     in Rust: those of a table on this machine from the copy `delta_table`
-    made of the files it checked, and those of a table elsewhere, or a vector
-    a log stores at its own path, right after `delta_table` checks them.
+    made of the files it checked, and those of a table elsewhere right after
+    `delta_table` checks them.
 
     Args:
         check (Callable[[str, bool], None]): Raises to refuse a file: a path on
@@ -197,14 +197,6 @@ class DeltaLogCopy:
         weakref.finalize(self, shutil.rmtree, self.folder, ignore_errors=True)
 
 
-def file_at(path: str) -> os.stat_result | None:
-    """Return the file at a path, following its links, or None when none is there."""
-    try:
-        return os.stat(path)
-    except FileNotFoundError:
-        return None
-
-
 @dataclass(frozen=True)
 class CheckedDeltaTable:
     """A Delta Lake table at the version a listing checked, and where each file it names lies.
@@ -216,43 +208,17 @@ class CheckedDeltaTable:
     else. Such a table names a file of its own in the copy, and `located`
     names it in `folder`, the table's own folder, where a scan opens it.
 
-    deltalake opens a deletion vector that the log stores at its own path
-    where it lies, which a copy cannot change without changing the log. So
-    `placed` keeps each path on this machine it could open for one, with the
-    file there before its check, and `refuse_replaced` holds the paths to
-    those files once deltalake has read the vectors.
-
     Attributes:
         table (DeltaTable): The table, at the version checked.
         folder (Path | None): The folder of a table on this machine whose log
             `table` was loaded from a copy of, or None for a table deltalake
             loaded itself.
         copy (DeltaLogCopy | None): The copy, kept while the table is.
-        placed (tuple[tuple[str, os.stat_result | None], ...]): Each path a
-            vector at its own path could be read from, with the file there
-            before its check, or None where none was.
     """
 
     table: "DeltaTable"
     folder: Path | None = None
     copy: DeltaLogCopy | None = None
-    placed: tuple[tuple[str, os.stat_result | None], ...] = ()
-
-    def refuse_replaced(self) -> None:
-        """Refuse the table when a path in `placed` names another file than before its check.
-
-        Raises:
-            ValueError: If a path names another file, or a file where none
-                was, or none where one was.
-        """
-        for path, seen in self.placed:
-            now = file_at(path)
-            same = seen is now if seen is None or now is None else os.path.samestat(seen, now)
-            if not same:
-                raise ValueError(
-                    "a file of the table was replaced as this server checked it, so it reads "
-                    "none of the table"
-                )
 
     def located(self, name: str) -> str:
         """Name the file a scan opens for one the table names, by path or by URI.
@@ -472,9 +438,8 @@ def _checked_delta_scan(
     Polars. deltalake refuses that dataset for a table with deletion vectors,
     so this reads the rows each vector deletes once, right after the listing
     checked the vector's file, and drops them from the file's rows as Polars'
-    scan does. It then refuses the table if a vector that the log stores at
-    its own path is no longer the file the listing checked. Polars checks the
-    table's protocol first, and refuses a table it cannot read.
+    scan does. Polars checks the table's protocol first, and refuses a table
+    it cannot read.
 
     Polars reads a partition's value from the file's folder, where deltalake
     reads `''` in a text column as null. So a file in a folder such as `k=`
@@ -499,8 +464,6 @@ def _checked_delta_scan(
     Raises:
         ConnectorError: If the files the table lists and the fragments it
             builds do not pair up.
-        ValueError: If a vector at its own path is another file than the one
-            the listing checked.
     """
     from deltalake.fs import DeltaStorageHandler
 
@@ -557,7 +520,6 @@ def _checked_delta_scan(
         return pl.scan_pyarrow_dataset(dataset)  # pyright: ignore[reportUnknownMemberType] - Polars types the dataset as PyArrow's, which ships no stubs.
 
     deleted = _deleted_rows(table)
-    checked.refuse_replaced()
     texts = [
         field.name
         for field in table.schema().fields

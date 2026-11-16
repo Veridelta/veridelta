@@ -491,17 +491,13 @@ class TestCheckedDeltaScan:
         [
             _versioned,
             _evolved,
-            *(
-                pytest.param(
-                    vectored,
-                    id=vectored.__name__,
-                    marks=pytest.mark.skipif(
-                        Version(pl.__version__) < Version("1.40.0"),
-                        reason="Polars reads a table with deletion vectors from 1.40.0 on, "
-                        "so an older one gives no rows to compare with.",
-                    ),
-                )
-                for vectored in (_vectored, _relatively_vectored)
+            pytest.param(
+                _relatively_vectored,
+                marks=pytest.mark.skipif(
+                    Version(pl.__version__) < Version("1.40.0"),
+                    reason="Polars reads a table with deletion vectors from 1.40.0 on, "
+                    "so an older one gives no rows to compare with.",
+                ),
             ),
             _checkpointed,
             _blanked,
@@ -532,6 +528,35 @@ class TestCheckedDeltaScan:
         assert frame.equals(expected)
         assert frame.schema == expected.schema
         assert list(temporary.iterdir()) == []
+
+    @pytest.mark.skipif(
+        Version(pl.__version__) < Version("1.40.0"),
+        reason="Polars reads a table with deletion vectors from 1.40.0 on, so an older one "
+        "gives no rows to compare with.",
+    )
+    def test_the_server_refuses_a_table_with_a_vector_at_its_own_path(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure the server refuses a table whose vector lies at its own path, which the command line reads.
+
+        deltalake reads such a vector where the log says, so the copy of the
+        log the server loads the table from cannot hold it.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path_factory.mktemp("temporary")))
+        config = _vectored(tmp_path / "events")
+        read = LoaderFactory.load(config).collect()
+
+        with (
+            mcp_server._reading(Settings((tmp_path,))),  # pyright: ignore[reportPrivateUsage] - the block every tool reads its sides in
+            pytest.raises(ConnectorError, match=r"at a path of its own.*veridelta run"),
+        ):
+            LoaderFactory.load(config).collect()
+
+        assert read.height == _EVENTS.height + _CHANGED.height - 1
 
     def test_it_drops_the_rows_a_deletion_vector_deletes(self, tmp_path: Path) -> None:
         """Ensure a row a vector deletes is gone, from the file it was deleted from alone."""

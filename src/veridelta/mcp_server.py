@@ -31,7 +31,7 @@ import shutil
 import stat
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
 from typing import (
@@ -71,7 +71,6 @@ from veridelta.connectors.lakehouse import (
     deletion_vector_files,
     delta_log_vectors,
     delta_reads_here,
-    file_at,
 )
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -933,7 +932,32 @@ def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
     ]
 
 
-def _copy_checked(source: str, target: Path, seen: os.stat_result | None) -> None:
+def _file_at(path: str) -> os.stat_result | None:
+    """Return the file at a path, following its links, or None when none is there."""
+    try:
+        return os.stat(path)
+    except FileNotFoundError:
+        return None
+
+
+def _refuse_outside_copy(target: Path, copy: DeltaLogCopy) -> None:
+    """Refuse a path in a table's log copy that is a link, or that a link leads out of the copy's folder.
+
+    Raises:
+        ValueError: If the path is a link, or does not lie in the copy's
+            folder once its links are followed.
+    """
+    inside = Path(os.path.realpath(target)).is_relative_to(os.path.realpath(copy.folder))
+    if os.path.islink(target) or not inside:
+        raise ValueError(
+            "a file of the copy of the table's log would lie outside the copy's folder, so "
+            "this server reads none of the table"
+        )
+
+
+def _copy_checked(
+    source: str, copy: DeltaLogCopy, target: Path, seen: os.stat_result | None
+) -> None:
     """Copy a file just checked into a table's log copy, when the file opened is the one checked.
 
     `seen` is the file at `source` before the check, or None when none was
@@ -946,9 +970,15 @@ def _copy_checked(source: str, target: Path, seen: os.stat_result | None) -> Non
     file for the check and the first again by the open, pass, as
     `rules/security.md` says.
 
+    `target` is a name this server builds in the copy's folder, never a path
+    a log names. It must lie in that folder after its links, before and after
+    its folders are made, and the file is created there new, never through a
+    link, so the copy writes nothing outside its folder.
+
     Raises:
         ValueError: If the file opened is not the one at the path before the
-            check, or is not a regular file.
+            check, or is not a regular file, or `target` leads out of the
+            copy's folder.
     """
     if seen is None:
         return
@@ -965,8 +995,13 @@ def _copy_checked(source: str, target: Path, seen: os.stat_result | None) -> Non
             raise ValueError(
                 "a file of the table is not a regular file, so this server reads none of the table"
             )
+        _refuse_outside_copy(target, copy)
         target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "wb") as copied:
+        _refuse_outside_copy(target, copy)
+        # O_EXCL creates the file or fails, and fails at a link too. Only POSIX has O_NOFOLLOW.
+        new = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        written = os.open(target, new | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with open(written, "wb") as copied:
             shutil.copyfileobj(file, copied)
 
 
@@ -995,12 +1030,13 @@ def _delta_log(
         for parent, folders, files in os.walk(log):
             for name in sorted(folders + files):
                 path = os.path.join(parent, name)
-                seen = file_at(path) if copy is not None and name in files else None
+                seen = _file_at(path) if copy is not None and name in files else None
                 yield "log file", path, True
                 if copy is not None and seen is not None:
                     logs[folder] = copy.folder / str(index)
+                    # The walk's own names, each one entry of a folder, under the copy's folder.
                     copied = logs[folder] / os.path.relpath(path, folder)
-                    _copy_checked(path, copied, seen)
+                    _copy_checked(path, copy, copied, seen)
                     logged.append(str(copied))
     return logged, logs
 
@@ -1025,10 +1061,12 @@ def _delta_files(
     relative to the table, is copied just after its check into a private
     folder outside every root, and the log read and the table loaded are that
     copy. A file opened for the copy that is not the one checked is refused.
-    deltalake reads a vector that the log stores at its own path where it
-    lies, so the table returned keeps each path it could read one from, with
-    the file there before the check, and the scan refuses the table if a path
-    names another file once deltalake has read the vectors.
+    Each file of the copy lies at a name this server builds in the copy's
+    folder: the walk's own names for the log, and a vector's folder of
+    letters and digits and its UUID. deltalake would read a vector that the
+    log stores at its own path where the log says, which a copy could change
+    only by writing there or by rewriting the log, so such a table is
+    refused.
 
     A path that starts with `~` is expanded as Polars expands it, and the
     walk reads the expanded path, since deltalake expands only `~` and `~/`
@@ -1038,8 +1076,9 @@ def _delta_files(
         CheckedDeltaTable: The table, at the version whose files were named.
 
     Raises:
-        ValueError: If the copy would lie under a root, or more than one
-            folder the table's location names holds a log.
+        ValueError: If the copy would lie under a root, more than one folder
+            the table's location names holds a log, or the log of a table on
+            this machine stores a vector at its own path.
     """
     from deltalake import DeltaTable
 
@@ -1072,33 +1111,72 @@ def _delta_files(
     # deltalake reads each sidecar a checkpoint names as it loads the table, so the log is
     # read first, and a log that names one is refused.
     vectors = delta_log_vectors(uri, config.storage_options, logged)
-    options = config.storage_options or None
     if copy is None:
+        options = config.storage_options or None
         checked = CheckedDeltaTable(
             DeltaTable(uri, version=config.version, storage_options=options)
         )
-    else:
-        # A copy that holds no log, as of a table that does not exist, fails as the table would.
-        found = next(iter(logs), None)
-        root = copy.folder if found is None else logs[found]
-        table = DeltaTable(str(root), version=config.version, storage_options=options)
-        checked = CheckedDeltaTable(table, found, copy)
+        for name in checked.table.file_uris():
+            yield "data file", name, True
+        for location in deletion_vector_files(checked.table, vectors):
+            yield "deletion vector", location, True
+        return checked
+    return (yield from _copied_delta_files(config, copy, logs, vectors))
+
+
+def _copied_delta_files(
+    config: DeltaLakeConfig,
+    copy: DeltaLogCopy,
+    logs: dict[Path, Path],
+    vectors: list[dict[str, Any]],
+) -> Generator[tuple[str, str, bool], None, CheckedDeltaTable]:
+    """Load a table on this machine from the copy of its log, and name each file a scan reads.
+
+    Each vector, at a path relative to the table, is copied into the copy just
+    after its check, at a name built from its folder of letters and digits
+    and its UUID.
+
+    Args:
+        config (DeltaLakeConfig): The table.
+        copy (DeltaLogCopy): The copy, which holds the checked log.
+        logs (dict[Path, Path]): The folder of the copy of the table's folder
+            that holds a log, or nothing for a table with no log.
+        vectors (list[dict[str, Any]]): Each vector the log records.
+
+    Returns:
+        CheckedDeltaTable: The table, at the version whose files were named.
+
+    Raises:
+        ValueError: If the log stores a vector at its own path.
+    """
+    from deltalake import DeltaTable
+
+    if any(vector.get("storageType") == "p" for vector in vectors):
+        # deltalake opens such a vector where the log says, so a copy could hold it only in
+        # a folder the log names, or with the log rewritten.
+        raise ValueError(
+            "the log stores a deletion vector at a path of its own, which deltalake reads "
+            "where the log says, apart from this server's check, so this server reads none "
+            "of the table. Read such a table with veridelta run"
+        )
+    # A copy that holds no log, as of a table that does not exist, fails as the table would.
+    found = next(iter(logs), None)
+    root = copy.folder if found is None else logs[found]
+    options = config.storage_options or None
+    table = DeltaTable(str(root), version=config.version, storage_options=options)
+    checked = CheckedDeltaTable(table, found, copy)
     for name in checked.table.file_uris():
         yield "data file", checked.located(name), True
-    placed: list[tuple[str, os.stat_result | None]] = []
+    copied: set[str] = set()
     for location in deletion_vector_files(checked.table, vectors):
+        # A vector at a relative path, in a folder of letters and digits under the table's,
+        # named by the UUID the log encodes. One file can hold many, and a log name one twice.
         local = checked.located(location)
-        if local == location:
-            # A vector the log stores at its own path, which deltalake reads where it lies, so
-            # the scan holds each path to the file there before the check.
-            paths = _local_paths(location, f"{side} deletion vector")
-            placed += [(path, file_at(path)) for path in paths]
-            yield "deletion vector", location, True
-            continue
-        seen = file_at(local)
+        seen = None if local in copied else _file_at(local)
         yield "deletion vector", local, True
-        _copy_checked(local, Path(url2pathname(urlsplit(location).path)), seen)
-    return replace(checked, placed=tuple(placed))
+        _copy_checked(local, copy, root / os.path.relpath(local, found), seen)
+        copied.add(local)
+    return checked
 
 
 def _iceberg_files(
