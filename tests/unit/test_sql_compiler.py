@@ -1846,6 +1846,7 @@ class TestDuckDBSelect:
             "SET autoload_known_extensions = false",
             "SET allowed_directories = ['/data/', '/it''s/']",
             "SET enable_external_access = false",
+            "SET allow_persistent_secrets = false",
             "SET lock_configuration = true",
         )
 
@@ -1862,6 +1863,7 @@ class TestDuckDBSelect:
             "SET autoload_known_extensions = false",
             "SET allowed_directories = ['/data/']",
             "SET enable_external_access = false",
+            "SET allow_persistent_secrets = false",
             "SET disabled_filesystems = 'LocalFileSystem'",
             "SET lock_configuration = true",
         )

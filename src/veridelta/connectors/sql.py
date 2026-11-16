@@ -827,6 +827,9 @@ def compile_duckdb_sandbox(
     loading an extension on its own, allow files only under `directories`,
     and lock the configuration, so no later statement, a `query` included,
     can undo them. The database the connection already opened stays readable.
+    They also turn off DuckDB's persistent secrets, which DuckDB 1.5.0 to
+    1.5.2 read and write in the home folder, outside `directories`, whatever
+    the other statements say. A secret held in memory still works.
 
     Without `other_files`, they also disable DuckDB's file system on this
     machine, so the connection opens no other file, even under `directories`.
@@ -851,6 +854,7 @@ def compile_duckdb_sandbox(
         "SET autoload_known_extensions = false",
         f"SET allowed_directories = [{allowed}]",
         "SET enable_external_access = false",
+        "SET allow_persistent_secrets = false",
         *no_files,
         "SET lock_configuration = true",
     )

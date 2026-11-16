@@ -739,6 +739,61 @@ class TestDuckDBPushdown:
         assert joined["id"].to_list() == [1]
         assert beside["id"].to_list() == [1]
 
+    @pytest.mark.parametrize(
+        ("held", "folders_hold"),
+        [(False, True), (True, True), (True, False)],
+        ids=["beside-the-file", "sandboxed", "sandboxed-where-folders-do-not-hold"],
+    )
+    def test_it_reads_and_writes_no_persistent_secret(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool, folders_hold: bool
+    ) -> None:
+        """Ensure a file's connection lists, stores, and drops no secret in the home folder.
+
+        DuckDB 1.5.0 to 1.5.2 keep persistent secrets in the home folder,
+        whatever the folders or the disabled file system say. So without this,
+        a `query` or a view could read the user's secret, delete it, or store
+        one that each later DuckDB session loads. A secret in memory still works.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", folders_hold)
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        with duckdb.connect() as user:
+            user.execute("CREATE PERSISTENT SECRET mine (TYPE http, BEARER_TOKEN 'marker')")
+        stored = sorted(home.rglob("*"))
+        root = tmp_path / "root"
+        root.mkdir()
+        database = _duckdb(
+            root / "warehouse.duckdb",
+            "CREATE TABLE t AS SELECT 1 AS id",
+            "CREATE VIEW listed AS SELECT count(*) AS id FROM duckdb_secrets()",
+        )
+
+        def read(table: str | None = None, query: str | None = None) -> pl.DataFrame:
+            connector = DuckDBConnector(DuckDBConfig(database=database, table=table, query=query))
+            if held:
+                with sandboxed([root]):
+                    connector.connect()
+            else:
+                connector.connect()
+            return connector.lazyframe().collect()
+
+        listed = read(table="listed")
+        with pytest.raises(ConnectorError, match="Persistent secrets are disabled"):
+            read(query="CREATE PERSISTENT SECRET planted (TYPE http, BEARER_TOKEN 'p'); SELECT 1")
+        with pytest.raises(ConnectorError, match="non-existent secret"):
+            read(query="DROP PERSISTENT SECRET mine; SELECT 1 AS id")
+        in_memory = read(
+            query="CREATE SECRET kept (TYPE http, BEARER_TOKEN 'm'); "
+            "SELECT count(*) AS id FROM duckdb_secrets()"
+        )
+
+        assert [path.name for path in stored] == [".duckdb", "stored_secrets", "mine.duckdb_secret"]
+        assert listed["id"].to_list() == [0]
+        assert in_memory["id"].to_list() == [1]
+        assert sorted(home.rglob("*")) == stored
+
     def test_it_compares_a_view_that_casts_what_polars_cannot_read(self, tmp_path: Path) -> None:
         """Ensure an INTERVAL column fails the probe by name, and a casting view compares."""
         database = _duckdb(

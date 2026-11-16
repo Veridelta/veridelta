@@ -681,10 +681,11 @@ def _reading(settings: Settings) -> Generator[None]:
     """Hold what a tool's sides read to the roots, while they read.
 
     A DuckDB file's connection reads other files only from under the roots,
-    and on Windows none at all. A Delta Lake or Iceberg scan opens a file on this machine only from under
-    them, and one elsewhere only on an allowed host, each checked just before
-    it is opened. A Delta Lake scan lists and checks its table's files again
-    as it starts, and reads the version it checked.
+    and on Windows none at all. A Delta Lake or Iceberg scan opens a file on
+    this machine only from under them, and one elsewhere only on an allowed
+    host, each checked just before it is opened. A Delta Lake scan lists and
+    checks its table's files again as it starts, and reads the version it
+    checked.
     """
     with (
         sandboxed(settings.roots),
