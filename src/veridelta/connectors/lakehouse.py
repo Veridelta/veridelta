@@ -37,7 +37,13 @@ from urllib.request import url2pathname
 import polars as pl
 
 from veridelta.connectors.base import ReaderConnector, shown_location, without_location
-from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
+from veridelta.exceptions import (
+    ConfigError,
+    ConnectorError,
+    VerideltaError,
+    may_quote_data,
+    missing_extra,
+)
 from veridelta.models import DeltaLakeConfig, IcebergConfig, names_a_pyiceberg_class
 
 if TYPE_CHECKING:
@@ -337,8 +343,8 @@ def _vector_location(table_uri: str, vector: dict[str, Any]) -> str | None:
     and lies in the table's folder as `<folder>/deletion_vector_<uuid>.bin`.
 
     Raises:
-        ValueError: If the vector is of an unknown kind, or its relative path
-            names a folder of other characters than letters and digits.
+        ConnectorError: If the vector is of an unknown kind, or its relative
+            path names a folder of other characters than letters and digits.
     """
     kind, text = vector.get("storageType"), str(vector.get("pathOrInlineDv"))
     if kind == "i":
@@ -346,10 +352,10 @@ def _vector_location(table_uri: str, vector: dict[str, Any]) -> str | None:
     if kind == "p":
         return text
     if kind != "u":
-        raise ValueError("the log records a deletion vector of an unknown kind")
+        raise ConnectorError("the log records a deletion vector of an unknown kind")
     folder, name = text[:-20], f"deletion_vector_{_vector_uuid(text[-20:])}.bin"
     if _VECTOR_PREFIX.fullmatch(folder) is None:
-        raise ValueError(
+        raise ConnectorError(
             "the log records a deletion vector in a folder named with other characters "
             "than letters and digits"
         )
@@ -434,7 +440,7 @@ def delta_log_vectors(
         list[dict[str, Any]]: Each vector an `add` action records.
 
     Raises:
-        ValueError: If the log records a sidecar.
+        ConnectorError: If the log records a sidecar.
     """
     from deltalake.fs import DeltaStorageHandler
 
@@ -451,7 +457,7 @@ def delta_log_vectors(
     for store, path in found:
         added, sidecars = _log_actions(store, path)
         if any(sidecar is not None for sidecar in sidecars):
-            raise ValueError(
+            raise ConnectorError(
                 "the log records a checkpoint sidecar, a file this server does not check, "
                 "so it reads none of the table"
             )
@@ -472,7 +478,7 @@ def deletion_vector_files(table: "DeltaTable", vectors: list[dict[str, Any]]) ->
         str: Each vector's file, as a URI, or as a path on this machine.
 
     Raises:
-        ValueError: If the log records a vector this cannot place.
+        ConnectorError: If the log records a vector this cannot place.
     """
     if "deletionVectors" not in (table.protocol().reader_features or []):
         return
@@ -667,9 +673,11 @@ class DeltaLakeConnector(ReaderConnector):
         except Exception as exc:
             where = shown_location(self._config.table_uri)
             logger.warning("Delta Lake scan of %s failed", where)
+            # deltalake and Polars can quote a value from the table's files.
             raise ConnectorError(
                 f"Delta Lake scan of '{where}' failed: "
-                f"{without_location(str(exc), self._config.table_uri)}"
+                f"{without_location(str(exc), self._config.table_uri)}",
+                quotes_data=True,
             ) from exc
         self._frame = frame
         logger.info(
@@ -794,9 +802,12 @@ class IcebergConnector(ReaderConnector):
         except Exception as exc:
             where = shown_location(self._config.table_uri)
             logger.warning("Iceberg scan of %s failed", where)
+            # PyIceberg and Polars can quote a value from the table's files, where a
+            # refusal of a file in Veridelta's words quotes none.
             raise ConnectorError(
                 f"Iceberg scan of '{where}' failed: "
-                f"{without_location(str(exc), self._config.table_uri)}"
+                f"{without_location(str(exc), self._config.table_uri)}",
+                quotes_data=may_quote_data(exc),
             ) from exc
         self._frame = frame
         logger.info(

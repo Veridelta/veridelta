@@ -53,6 +53,7 @@ from veridelta import __version__, mcp_server
 from veridelta.config import load_config
 from veridelta.connectors import base, database
 from veridelta.connectors.database import sqlite_path
+from veridelta.connectors.duckdb import DuckDBPushdownSession, beside, sandboxed
 from veridelta.connectors.lakehouse import (
     DeltaLakeConnector,
     IcebergConnector,
@@ -941,6 +942,12 @@ _SQLITE_DISGUISES = [
 """SQLite sides whose URI text sits under the root, but whose decoded path is `file`."""
 
 
+def _duckdb_table(path: Path, column: str) -> None:
+    """Create a DuckDB file whose table `t` has one column, and close it."""
+    with duckdb.connect(str(path)) as connection:
+        connection.execute(f"CREATE TABLE t AS SELECT 1 AS {column}")
+
+
 def _link_folder(link: Path, folder: Path) -> None:
     """Make a link to a folder, or skip the test on a machine that cannot, as Windows may not."""
     try:
@@ -1332,12 +1339,152 @@ class TestCheckDataPaths:
         try:
             connection.execute("CREATE TABLE t (id INTEGER)")
 
-            wal = mcp_server._wal_beside(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
+            wal = beside(database, ".wal")
 
             assert Path(wal) == tmp_path / "L.wal?" / "x.duckdb"
             assert Path(wal).is_file()
         finally:
             connection.close()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize("back", [False, True], ids=["kept", "swapped-back"])
+    def test_it_refuses_a_duckdb_folder_swapped_for_a_link_as_duckdb_opens_the_file(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        back: bool,
+    ) -> None:
+        """Ensure DuckDB reads no file but the one checked, though a folder changes after the check.
+
+        The server checks the resolved path, and DuckDB opens it again by its
+        text. Here the file's folder becomes a link out of the root just
+        before DuckDB opens it, and with `back`, the folder returns before
+        the connector looks again, so only the descriptor DuckDB holds shows
+        which file it opened.
+        """
+        root, outside = tmp_path / "root", tmp_path_factory.mktemp("outside")
+        for folder, column in ((root / "data", "checked"), (outside, "elsewhere")):
+            folder.mkdir(parents=True, exist_ok=True)
+            _duckdb_table(folder / "x.duckdb", column)
+        _write(
+            root,
+            "source:\n  type: duckdb\n  database: data/x.duckdb\n  table: t\n"
+            "target:\n  path: a.csv\nprimary_keys: [checked]\n",
+        )
+        monkeypatch.chdir(root)
+        connect = duckdb.connect
+
+        def swapped(*args: Any, **kwargs: Any) -> Any:
+            (root / "data").rename(root / "checked")
+            (root / "data").symlink_to(outside, target_is_directory=True)
+            try:
+                return connect(*args, **kwargs)
+            finally:
+                if back:
+                    (root / "data").unlink()
+                    (root / "checked").rename(root / "data")
+
+        mocker.patch.object(duckdb, "connect", side_effect=swapped)
+        refusal = "changed while DuckDB opened it" if back else "is a link"
+
+        with pytest.raises(ConnectorError, match=refusal):
+            describe_side(Settings((root,)), "veridelta.yaml", "source")
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows creates a symbolic link only with a privilege, and lists no descriptors.",
+    )
+    def test_it_refuses_a_duckdb_folder_swapped_while_another_call_holds_the_file(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a descriptor another tool call holds does not confirm what DuckDB opened.
+
+        One call holds the file open through a hard link in the root, as a
+        long pushdown does. Another call's folder becomes a link out of the
+        root while DuckDB opens the file, and returns before the connector
+        looks again, so only a descriptor DuckDB opened then may count.
+        """
+        root, outside = tmp_path / "root", tmp_path_factory.mktemp("outside")
+        for folder, column in ((root / "data", "checked"), (outside, "elsewhere")):
+            folder.mkdir(parents=True, exist_ok=True)
+            _duckdb_table(folder / "x.duckdb", column)
+        (root / "other").mkdir()
+        os.link(root / "data" / "x.duckdb", root / "other" / "y.duckdb")
+        _write(
+            root,
+            "source:\n  type: duckdb\n  database: data/x.duckdb\n  table: t\n"
+            "target:\n  path: a.csv\nprimary_keys: [checked]\n",
+        )
+        monkeypatch.chdir(root)
+        held = DuckDBPushdownSession(
+            DuckDBConfig(database=str(root / "other" / "y.duckdb"), table="t", pushdown=True)
+        )
+        connect = duckdb.connect
+
+        def swapped(*args: Any, **kwargs: Any) -> Any:
+            (root / "data").rename(root / "checked")
+            (root / "data").symlink_to(outside, target_is_directory=True)
+            try:
+                return connect(*args, **kwargs)
+            finally:
+                (root / "data").unlink()
+                (root / "checked").rename(root / "data")
+
+        with sandboxed([root]):
+            held.connect()
+            try:
+                mocker.patch.object(duckdb, "connect", side_effect=swapped)
+                with pytest.raises(ConnectorError, match="DuckDB did not open the DuckDB file"):
+                    describe_side(Settings((root,)), "veridelta.yaml", "source")
+            finally:
+                held.close()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_refuses_a_duckdb_log_put_beside_the_file_as_duckdb_opens_it(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a log that is a link put beside the file after the check is refused.
+
+        DuckDB replays the log of the path it is handed, and a log from a copy
+        of the file replays into it, columns and rows alike.
+        """
+        outside = tmp_path_factory.mktemp("outside")
+        _duckdb_table(tmp_path / "x.duckdb", "checked")
+        shutil.copy(tmp_path / "x.duckdb", outside / "x.duckdb")
+        with duckdb.connect(str(outside / "x.duckdb")) as writer:
+            writer.execute("PRAGMA disable_checkpoint_on_shutdown")
+            writer.execute("SET checkpoint_threshold = '1TB'")
+            writer.execute("ALTER TABLE t ADD COLUMN elsewhere INTEGER")
+        _write(
+            tmp_path,
+            "source:\n  type: duckdb\n  database: x.duckdb\n  table: t\n"
+            "target:\n  path: a.csv\nprimary_keys: [checked]\n",
+        )
+        monkeypatch.chdir(tmp_path)
+        connect = duckdb.connect
+
+        def logged(*args: Any, **kwargs: Any) -> Any:
+            (tmp_path / "x.duckdb.wal").symlink_to(outside / "x.duckdb.wal")
+            return connect(*args, **kwargs)
+
+        mocker.patch.object(duckdb, "connect", side_effect=logged)
+
+        with pytest.raises(ConnectorError, match=r"The DuckDB file's WAL '.+' is a link"):
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "source")
 
     @pytest.mark.parametrize(
         "call",
@@ -2419,11 +2566,14 @@ _STORE_HOSTS = ("bucket", "127.0.0.1")
 
 
 @contextmanager
-def _object_store(folder: Path) -> Iterator[dict[str, str]]:
+def _object_store(folder: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]:
     """Serve `folder` as an S3 store on a free local port until the block ends.
 
     It stands in for an object store such as one moto runs: PyArrow reads each
-    object over S3 from it, the bucket being the folder's first level.
+    object over S3 from it, the bucket being the folder's first level. A tool
+    reaches an endpoint only over HTTPS, so the options name it with
+    `https://`. The store has no certificate, so PyArrow's S3 file system,
+    patched until the test ends, reaches it over HTTP.
 
     Yields:
         dict[str, str]: The `storage_options` that reach it.
@@ -2431,9 +2581,16 @@ def _object_store(folder: Path) -> Iterator[dict[str, str]]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Store, directory=str(folder)))
     thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
     thread.start()
+    endpoint, s3 = f"127.0.0.1:{server.server_port}", arrow_fs.S3FileSystem
+    # PyIceberg imports S3FileSystem when it opens a store, and passes keywords only.
+    monkeypatch.setattr(
+        arrow_fs,
+        "S3FileSystem",
+        lambda **options: s3(**{**options, "endpoint_override": f"http://{endpoint}"}),
+    )
     try:
         yield {
-            "s3.endpoint": f"http://127.0.0.1:{server.server_port}",
+            "s3.endpoint": f"https://{endpoint}",
             "s3.access-key-id": "veridelta",
             "s3.secret-access-key": "veridelta",
             "s3.region": "us-east-1",
@@ -2677,7 +2834,7 @@ class TestLakehouseFiles:
         check_data_paths(
             settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events", version=0)
         )
-        with pytest.raises(ConfigError, match=r"The target data file .* is outside the folders"):
+        with pytest.raises(ConfigError, match=r"The target data file is outside the folders"):
             check_data_paths(
                 settings, SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
             )
@@ -2801,7 +2958,7 @@ class TestLakehouseFiles:
         _with_vectors(tmp_path / "events", {"storageType": "p", "pathOrInlineDv": outside})
         target = DeltaLakeConfig(table_uri="events")
 
-        with pytest.raises(ConfigError, match=r"The target deletion vector '.*' is outside"):
+        with pytest.raises(ConfigError, match=r"The target deletion vector is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.skipif(
@@ -2819,7 +2976,7 @@ class TestLakehouseFiles:
         (table / f"deletion_vector_{name}.bin").symlink_to(secret)
         target = DeltaLakeConfig(table_uri="events")
 
-        with pytest.raises(ConfigError, match=r"The target deletion vector '.*' is outside"):
+        with pytest.raises(ConfigError, match=r"The target deletion vector is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     @pytest.mark.parametrize(
@@ -3229,7 +3386,7 @@ class TestLakehouseFiles:
         """
         store = tmp_path_factory.mktemp("store")
         _ROW.with_columns(note=pl.lit("source")).write_parquet(tmp_path / "a.parquet")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             metadata = _remote_iceberg(tmp_path, store, options, monkeypatch)
             written = store / metadata.removeprefix("s3://")
             document = json.loads(written.read_text(encoding="utf-8"))
@@ -3263,7 +3420,7 @@ class TestLakehouseFiles:
     ) -> None:
         """Ensure a table whose files all lie in an object store passes."""
         store = tmp_path_factory.mktemp("store")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             metadata = _remote_iceberg(tmp_path, store, options, monkeypatch)
             target = IcebergConfig(table_uri=metadata, storage_options=options)
             settings = Settings((tmp_path,), allowed_hosts=_STORE_HOSTS)
@@ -3552,7 +3709,7 @@ class TestLakehouseFiles:
         """
         store, outside = tmp_path_factory.mktemp("store"), tmp_path_factory.mktemp("outside")
         _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             # PyIceberg writes the data file from `/`, where Polars reads it.
             monkeypatch.chdir(tmp_path.anchor)
             metadata = _remote_iceberg(
@@ -3650,21 +3807,31 @@ class TestLakehouseFiles:
     def test_it_refuses_an_iceberg_file_outside_the_roots(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, layer: str
     ) -> None:
-        """Ensure each file the scan reads is held to the roots, before it is opened."""
+        """Ensure each file the scan reads is held to the roots, before it is opened.
+
+        A file the metadata names is a value from the table, as a partition's
+        folder is, so the message quotes it only on a server that allows row
+        values.
+        """
         outside = tmp_path_factory.mktemp("outside")
         target = IcebergConfig(table_uri=_one_layer_outside(tmp_path, outside, layer))
+        refusals: list[str] = []
 
-        with pytest.raises(
-            ConfigError, match="outside the folders this server reads from"
-        ) as refused:
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+        for allowed in (False, True):
+            with pytest.raises(
+                ConfigError, match="outside the folders this server reads from"
+            ) as refused:
+                check_data_paths(
+                    Settings((tmp_path,), allow_row_values=allowed),
+                    SourceConfig(path="a.csv"),
+                    target,
+                )
+            refusals.append(str(refused.value))
 
-        if layer == "metadata file":
-            # The version hint's text is a value from a file, so the message leaves it out.
-            assert str(refused.value).startswith("The target metadata file that '")
-            assert str(outside) not in str(refused.value)
-        else:
-            assert str(refused.value).startswith(f"The target {layer} '{outside}")
+        setting = "metadata file that '" if layer == "metadata file" else f"{layer} "
+        assert refusals[0].startswith(f"The target {setting}")
+        assert str(outside) not in refusals[0]
+        assert str(outside) in refusals[1]
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
@@ -3709,7 +3876,7 @@ class TestLakehouseFiles:
             assert first is not None
             table.add_files([str(secret)])
             metadata = catalog.load_table("lake.events").metadata_location
-        settings = Settings((tmp_path,))
+        settings = Settings((tmp_path,), allow_row_values=True)
 
         pinned = IcebergConfig(table_uri=metadata, snapshot_id=first.snapshot_id)
         check_data_paths(settings, SourceConfig(path="a.csv"), pinned)
@@ -3938,7 +4105,7 @@ class TestLakehouseFiles:
         monkeypatch.chdir(tmp_path)
         properties = {"write.data.path": "s3:link"}
         _ROW.with_columns(note=pl.lit("public")).write_parquet(tmp_path / "a.parquet")
-        with _object_store(store) as options:
+        with _object_store(store, monkeypatch) as options:
             if remote:
                 metadata = _remote_iceberg(tmp_path, store, options, monkeypatch, properties)
             else:
@@ -3988,7 +4155,9 @@ class TestLakehouseFiles:
 
         with pytest.raises(ConfigError, match=r"The target data file '.*/link/\.\./\.\./"):
             check_data_paths(
-                Settings((tmp_path,)), SourceConfig(path="a.csv"), IcebergConfig(table_uri=metadata)
+                Settings((tmp_path,), allow_row_values=True),
+                SourceConfig(path="a.csv"),
+                IcebergConfig(table_uri=metadata),
             )
 
     @pytest.mark.skipif(sys.platform == "win32", reason="The locations name POSIX paths.")
@@ -4111,6 +4280,9 @@ _ALLOWED = (
     "adb-1.azuredatabricks.net",
 )
 """The hosts the host tests' server allows."""
+
+_FILE_OPTIONS = "  format: parquet\n  options:\n    storage_options: "
+"""The settings of a file target up to its `storage_options`, which a flow mapping follows."""
 
 _DATABRICKS = "  type: databricks\n  http_path: /sql/1.0/warehouses/1\n  table: orders\n"
 _SNOWFLAKE = (
@@ -4262,6 +4434,124 @@ class TestAllowedHosts:
         assert str(refused.value).startswith(f"The target {setting} names a host")
         assert "--allow-host" in str(refused.value)
         read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("target", "key", "endpoint"),
+        [
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "aws_endpoint",
+                "http://[::1]:9000",
+                id="file-on-this-machine",
+            ),
+            pytest.param(
+                "  path: s3://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "AWS_ENDPOINT_URL",
+                "HTTP://db.internal:9000",
+                id="file-in-upper-case",
+            ),
+            pytest.param(
+                "  path: az://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "azure_endpoint",
+                "Http://db.internal:10000",
+                id="file-in-azure",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: ",
+                "s3.endpoint",
+                "http://db.internal:9000",
+                id="iceberg",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
+                "endpoint",
+                "http://db.internal:9000/",
+                id="delta",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n  storage_options: ",
+                "azure_storage_endpoint",
+                "ws://db.internal:10000",
+                id="other-scheme",
+            ),
+            pytest.param(
+                "  path: az://bucket/a.parquet\n" + _FILE_OPTIONS,
+                "azure_storage_endpoint",
+                "http:2130706433",
+                id="http-without-slashes",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n  storage_options: ",
+                "azure_storage_endpoint",
+                "HTTPS://db.internal:10000",
+                id="https-in-upper-case",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
+                "  storage_options: ",
+                "s3.endpoint",
+                "Https:443",
+                id="https-without-slashes",
+            ),
+        ],
+    )
+    def test_it_refuses_an_endpoint_over_plain_http(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, key: str, endpoint: str
+    ) -> None:
+        """Ensure a reader is never sent to an endpoint but over HTTPS, not even on this machine.
+
+        Polars and PyIceberg take the scheme from the endpoint, in any case,
+        so plain HTTP would carry the credentials and the rows unencrypted.
+        The URL parser behind Polars reads `http:2130706433` as plain HTTP to
+        127.0.0.1, where the host check reads a host named `http`, and the AWS
+        SDK in PyArrow reads `HTTPS://` as part of a host name, so only
+        `https://` in lowercase passes. Every host is allowed, `http` and
+        `https` too, and the refusal names the option, not its value.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, f"{target}{{{key}: '{endpoint}'}}\n")
+        settings = Settings((tmp_path,), allowed_hosts=(*_ALLOWED, "http", "https"))
+
+        with pytest.raises(
+            ConfigError, match="names a host by a scheme other than https"
+        ) as refused:
+            describe_side(settings, "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target storage option '{key}' names")
+        assert endpoint not in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param(
+                "  path: s3://file/a.parquet\n" + _FILE_OPTIONS + "{aws_bucket: file}\n",
+                id="file-in-a-bucket-named-file",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://https/events\n"
+                "  storage_options: {azure_container_name: https, account_name: bucket}\n",
+                id="delta-in-a-container-named-https",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://WSS/events\n  storage_options: {bucket: WSS}\n",
+                id="delta-in-a-bucket-named-wss",
+            ),
+        ],
+    )
+    def test_it_reads_from_a_bucket_named_like_a_scheme(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure a bucket or a container named like a scheme, with no `:`, is not an endpoint."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, target)
+        settings = Settings((tmp_path,), allowed_hosts=(*_ALLOWED, "file", "https", "wss"))
+
+        report = describe_side(settings, "veridelta.yaml", "target")
+
+        assert report["columns"] == {"id": "Int64"}
 
     def test_it_refuses_a_snowflake_key_file_outside_the_roots_before_it_connects(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
@@ -4522,8 +4812,13 @@ class TestAllowedHosts:
             pytest.param("  path: https://EXAMPLE.com:8443/a.csv\n", id="https"),
             pytest.param(
                 "  path: s3://bucket/a.parquet\n  format: parquet\n  options:\n"
-                "    storage_options: {aws_endpoint_url: 'http://[::1]:9000', aws_region: x}\n",
+                "    storage_options: {aws_endpoint_url: 'https://[::1]:9000', aws_region: x}\n",
                 id="object-store-endpoint",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: az://bucket/events\n"
+                "  storage_options: {azure_storage_endpoint: 'https://db.internal:10000'}\n",
+                id="endpoint-over-https-in-azure",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: s3://bucket/events\n"
@@ -5973,6 +6268,75 @@ class TestServer:
         assert _CANARY not in _text(default)
         assert _text(allowed).endswith(f"ConnectorError: Warehouse statement failed: {_CANARY}")
         assert _text(own).endswith("ConnectorError: Pushdown needs SQL Server 2022.")
+
+    @pytest.mark.parametrize("kind", ["iceberg", "delta"])
+    def test_it_leaves_out_a_lakehouse_reader_message_unless_rows_are_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    ) -> None:
+        """Ensure a reader's message about a lakehouse table's files stays out by default.
+
+        PyIceberg quotes a file named as the table's metadata as it refuses
+        it, and deltalake quotes a value in the log it cannot parse, so either
+        message can hold a cell of a file named in the table's place.
+        """
+        monkeypatch.chdir(tmp_path)
+        if kind == "iceberg":
+            (tmp_path / "rows.metadata.json").write_text(
+                json.dumps([{"id": 1, "ssn": _CANARY}]), encoding="utf-8"
+            )
+            table_uri = "./rows.metadata.json"
+        else:
+            log = tmp_path / "events" / "_delta_log"
+            log.mkdir(parents=True)
+            (log / "00000000000000000000.json").write_text(
+                json.dumps({"protocol": {"minReaderVersion": _CANARY, "minWriterVersion": 2}})
+                + "\n",
+                encoding="utf-8",
+            )
+            table_uri = "events"
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: {kind}\n  table_uri: '{table_uri}'\nprimary_keys: [id]\n",
+        )
+
+        default = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+        allowed = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml"},
+            tool="run_comparison",
+        )
+
+        checked = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", "schemas": True})
+
+        assert default.is_error is True
+        assert "ConnectorError: its message is left out" in _text(default)
+        assert _CANARY not in _text(default)
+        assert allowed.is_error is True
+        assert "could not be listed" in _text(allowed)
+        assert _CANARY in _text(allowed)
+        assert "ConnectorError: its message is left out" in _text(checked)
+        assert _CANARY not in _text(checked)
+
+    def test_it_returns_a_lakehouse_refusal_in_its_own_words_on_any_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a table refused for what its log records, in Veridelta's words, keeps the message."""
+        monkeypatch.chdir(tmp_path)
+        _with_a_sidecar(tmp_path / "events", "sidecar.parquet", "classic")
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert result.is_error is True
+        assert "could not be listed" in _text(result)
+        assert "checkpoint sidecar" in _text(result)
 
     def test_it_never_returns_a_secret_from_the_configuration(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
