@@ -62,6 +62,7 @@ from veridelta.connectors.base import (
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.connectors.lakehouse import (
+    azure_account,
     checked_file_io,
     checking_table_files,
     deletion_vector_files,
@@ -1298,12 +1299,22 @@ def _location_hosts(
     for a file a table's log or metadata names. A location with no host,
     such as `hdfs:///t`, names the empty host, which is never allowed, since its
     reader would pick the host from elsewhere.
+
+    A file a table names in Azure as `container@host`, as Java Iceberg and
+    Spark write it, names two hosts: its container, as `abfs://container/x`
+    does, and the account's host, such as `acct.dfs.core.windows.net`.
+    PyIceberg's checked FileIO opens such a file in that container, and only
+    at the account its storage options name.
     """
     parts = _split(location)
-    if parts is not None and (
-        len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES
-    ):
+    if parts is None:
+        return [(setting, _url_host(location, shape))]
+    if len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES:
         return []
+    named = shape.fullmatch(location) if shape is _NAMED_FILE else None
+    account = None if named is None else azure_account(parts.scheme, named.group(1) or "")
+    if account is not None:
+        return [(setting, _host(part)) for part in account]
     return [(setting, _url_host(location, shape))]
 
 

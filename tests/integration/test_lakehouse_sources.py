@@ -26,7 +26,7 @@ import pytest
 from deltalake import DeltaTable
 from deltalake.fs import DeltaStorageHandler
 from packaging.version import Version
-from pyarrow.fs import LocalFileSystem
+from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
 from pytest_mock import MockerFixture
 
@@ -407,6 +407,102 @@ class TestCheckedIcebergScan:
             io.new_input(location)
 
         assert checked == []
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            "abfss://lake@acct.dfs.core.windows.net/wh/data.parquet",
+            "abfs://lake@ACCT.dfs.core.windows.net/wh/data.parquet",
+            "wasbs://lake@acct.blob.core.windows.net/wh/data.parquet",
+            "abfs://lake/wh/data.parquet",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "credential",
+        [
+            {"adls.account-key": "a2V5"},
+            {"adls.sas-token": "sv=2024"},
+            {"adls.client-id": "app", "adls.client-secret": "marker", "adls.tenant-id": "t"},
+        ],
+        ids=["account-key", "sas-token", "client-secret"],
+    )
+    def test_it_opens_an_azure_file_in_its_container(
+        self, tmp_path: Path, mocker: MockerFixture, location: str, credential: dict[str, str]
+    ) -> None:
+        """Ensure a file Spark names as `container@host` opens in that container, at the account named.
+
+        PyIceberg reads the whole authority as the container. The account's
+        file system is mocked with a folder, whose first level is the container.
+        """
+        (tmp_path / "lake" / "wh").mkdir(parents=True)
+        (tmp_path / "lake" / "wh" / "data.parquet").write_bytes(b"rows")
+        azure = mocker.patch(
+            "pyarrow.fs.AzureFileSystem",
+            return_value=SubTreeFileSystem(str(tmp_path), LocalFileSystem()),
+        )
+        checked: list[tuple[str, bool]] = []
+        io = checked_file_io(
+            {"adls.account-name": "acct", **credential}, lambda *opened: checked.append(opened)
+        )
+
+        with io.new_input(location).open() as stream:
+            assert stream.read() == b"rows"
+
+        assert checked == [(location, True)]
+        azure.assert_called_once()
+        assert azure.call_args.kwargs["account_name"] == "acct"
+
+    @pytest.mark.parametrize(
+        ("account", "location"),
+        [
+            ("acct", "abfss://lake@other.dfs.core.windows.net/wh/data.parquet"),
+            ("acct", "abfss://lake@acct.dfs.core.windows.net.example/wh/data.parquet"),
+            ("acct", "abfss://lake@acct.example/wh/data.parquet"),
+            ("acct", "abfss://lake@acct.dfs.core.windows.net:443/wh/data.parquet"),
+            ("acct", "abfss://lake@\u212acct.dfs.core.windows.net/wh/data.parquet"),
+            ("", "abfss://lake@.dfs.core.windows.net/wh/data.parquet"),
+        ],
+        ids=["other-account", "longer-host", "other-host", "port", "kelvin", "no-account"],
+    )
+    def test_it_opens_no_azure_file_in_another_account(
+        self, mocker: MockerFixture, account: str, location: str
+    ) -> None:
+        """Ensure a table cannot send the FileIO's credential to an account its options do not name."""
+        azure = mocker.patch("pyarrow.fs.AzureFileSystem")
+        options = {"adls.account-key": "a2V5"} | ({"adls.account-name": account} if account else {})
+        io = checked_file_io(options, lambda *_: None)
+
+        with pytest.raises(ConnectorError, match="another Azure storage account") as refused:
+            io.new_input(location)
+
+        assert "windows.net" not in str(refused.value)
+        azure.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "options",
+        [
+            {},
+            {"adls.account-key": ""},
+            {"adls.client-id": "identity"},
+            {"adls.client-id": "app", "adls.tenant-id": "t"},
+        ],
+        ids=["none", "empty-key", "managed-identity", "no-secret"],
+    )
+    @pytest.mark.parametrize(
+        "location",
+        ["abfs://lake/wh/data.parquet", "abfss://lake@acct.dfs.core.windows.net/wh/data.parquet"],
+    )
+    def test_it_builds_no_azure_file_system_without_a_credential(
+        self, mocker: MockerFixture, options: dict[str, str], location: str
+    ) -> None:
+        """Ensure PyArrow never signs in as the machine does, which can run az and end the process."""
+        azure = mocker.patch("pyarrow.fs.AzureFileSystem")
+        io = checked_file_io({"adls.account-name": "acct", **options}, lambda *_: None)
+
+        with pytest.raises(ConfigError, match=r"'adls\.account-key', 'adls\.sas-token'"):
+            io.new_input(location)
+
+        azure.assert_not_called()
 
 
 class TestCheckedDeltaScan:

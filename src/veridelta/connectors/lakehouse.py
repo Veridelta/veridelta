@@ -37,7 +37,7 @@ from urllib.request import url2pathname
 import polars as pl
 
 from veridelta.connectors.base import ReaderConnector, shown_location, without_location
-from veridelta.exceptions import ConnectorError, VerideltaError, missing_extra
+from veridelta.exceptions import ConfigError, ConnectorError, VerideltaError, missing_extra
 from veridelta.models import DeltaLakeConfig, IcebergConfig, names_a_pyiceberg_class
 
 if TYPE_CHECKING:
@@ -74,6 +74,38 @@ checks, and the object stores', whose host it checks. The endpoint comes from
 PyArrow opens `hdfs` and `viewfs` through libhdfs, which it can load from the
 working directory, the server's first root. A table whose files name either
 would then run a library that anyone who can write to that root put there."""
+
+_AZURE_SCHEMES: Final = frozenset({"abfs", "abfss", "wasb", "wasbs"})
+"""The schemes PyIceberg opens through PyArrow's `AzureFileSystem`."""
+
+_AZURE_ENDPOINTS: Final = (".dfs.core.windows.net", ".blob.core.windows.net")
+"""What follows the account's name in the host PyArrow's `AzureFileSystem` reaches it at."""
+
+_AZURE_CREDENTIALS: Final = ("adls.account-key", "adls.sas-token", "adls.client-secret")
+"""The storage options that give PyArrow's `AzureFileSystem` a credential of its own.
+
+A client secret counts only with `adls.client-id` and `adls.tenant-id`, and
+PyIceberg refuses it without them. With none of these, PyArrow signs in as
+the machine does, through `DefaultAzureCredential`, which can run the `az`
+command it finds on the PATH, and can end the process when it fails."""
+
+
+def azure_account(scheme: str, authority: str) -> tuple[str, str] | None:
+    """Split an Azure location's authority written as `container@host`, as Java Iceberg and Spark write it.
+
+    `abfss://lake@acct.dfs.core.windows.net/t` names the container `lake` in
+    the account at the host `acct.dfs.core.windows.net`.
+
+    Args:
+        scheme (str): The location's scheme, in lowercase.
+        authority (str): The location's authority, up to the first `/`.
+
+    Returns:
+        tuple[str, str] | None: The container and the account's host, or None
+            for another scheme than Azure's, or an authority with no `@`.
+    """
+    container, at, host = authority.partition("@")
+    return (container, host) if at and scheme in _AZURE_SCHEMES else None
 
 
 @contextmanager
@@ -130,6 +162,15 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
     URI, with that host. A scheme outside `_CHECKED_SCHEMES` is refused before
     PyArrow builds a file system for it.
 
+    PyIceberg reads an Azure location's whole authority as the container, so
+    this FileIO opens one written as `container@host`, as Java Iceberg and
+    Spark write it, itself: the file lies in that container, at the account
+    `adls.account-name` names, and a host other than that account's is
+    refused, so a table cannot send the FileIO's credential to another
+    account. An Azure file system is built only with a credential from
+    `_AZURE_CREDENTIALS`, since without one PyArrow signs in as the machine
+    does.
+
     Args:
         properties (dict[str, str]): The validated storage options.
         check (Callable[[str, bool], None]): Raises to refuse a file: a path
@@ -137,16 +178,17 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
             with False, or a URI, with True.
 
     Returns:
-        FileIO: The FileIO, which raises `ConnectorError` for a refused scheme.
+        FileIO: The FileIO, which raises `ConnectorError` for a refused scheme
+            or account, and `ConfigError` for Azure with no credential.
     """
-    from pyiceberg.io.pyarrow import PyArrowFile, PyArrowFileIO
+    from pyiceberg.io.pyarrow import BUFFER_SIZE, ONE_MEGABYTE, PyArrowFile, PyArrowFileIO
 
     class CheckedFileIO(PyArrowFileIO):  # type: ignore[misc]  # mypy skips PyIceberg, so its classes read as Any.
         """A PyArrow FileIO that checks each file before it opens it."""
 
         def new_input(self, location: str) -> PyArrowFile:
             """Check the path or the host PyArrow opens for a location, then open it."""
-            scheme, _, path = self.parse_location(location, self.properties)
+            scheme, netloc, path = self.parse_location(location, self.properties)
             if scheme not in _CHECKED_SCHEMES:
                 # The scheme is a value from a file, so the message leaves it out.
                 raise ConnectorError(
@@ -155,10 +197,40 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
                 )
             if scheme == "file":
                 check(path, False)
-            else:
-                # An object store's path starts with the host PyArrow reads it from.
-                check(f"{scheme}://{path}", True)
-            return super().new_input(location)
+                return super().new_input(location)
+            # An object store's path starts with the host PyArrow reads it from.
+            check(f"{scheme}://{path}", True)
+            account = azure_account(scheme, netloc)
+            if account is None:
+                return super().new_input(location)
+            container, host = account
+            name = self.properties.get("adls.account-name", "").lower()
+            hosts = {name + suffix for suffix in _AZURE_ENDPOINTS}
+            if not name or not host.isascii() or host.lower() not in hosts:
+                # The host is a value from a file, so the message leaves it out.
+                raise ConnectorError(
+                    "An Iceberg scan was about to open a file in another Azure storage account "
+                    "than the storage option 'adls.account-name' names, so it was stopped."
+                )
+            # PyArrow's Azure file system starts at the account, with the container first.
+            return PyArrowFile(
+                fs=self.fs_by_scheme(scheme, netloc),  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType] - PyArrow ships no stubs, so its FileSystem reads as unknown.
+                location=location,
+                path=container + path.removeprefix(netloc),
+                buffer_size=int(self.properties.get(BUFFER_SIZE, ONE_MEGABYTE)),
+            )
+
+        def _initialize_azure_fs(self) -> Any:
+            """Refuse to build an Azure file system with no credential of its own."""
+            if not any(self.properties.get(key) for key in _AZURE_CREDENTIALS):
+                raise ConfigError(
+                    "An Iceberg table in Azure needs a credential in its storage_options on "
+                    "this server: 'adls.account-key', 'adls.sas-token', or 'adls.client-id', "
+                    "'adls.client-secret', and 'adls.tenant-id' together. With none, PyArrow "
+                    "signs in as this machine does, which can run the az command and end the "
+                    "server."
+                )
+            return super()._initialize_azure_fs()  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType] - PyArrow ships no stubs, so its FileSystem reads as unknown.
 
     return CheckedFileIO(properties)
 

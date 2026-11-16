@@ -2476,6 +2476,40 @@ def _remote_iceberg(
             return str(catalog.load_table("lake.events").metadata_location)
 
 
+_AZURE_OPTIONS = {"adls.account-name": "acct", "adls.account-key": "a2V5"}
+"""The storage options of the table `_spark_azure_iceberg` writes."""
+
+_AZURE_HOSTS = ("lake", "acct", "acct.dfs.core.windows.net")
+"""The hosts a tool must allow to read that table: its container, its account, and the account's host."""
+
+
+def _spark_azure_iceberg(lake: Path, store: Path, mocker: MockerFixture) -> str:
+    """Write an Iceberg table that holds `_ROW` in Azure, its files named as Spark names them.
+
+    Each file is named `abfss://lake@acct.dfs.core.windows.net/...`. PyArrow's
+    Azure file system is mocked with `store`, whose first level is the
+    container, for the write and for every read after it. PyIceberg writes such
+    a location in a folder named for its whole authority, so that folder is
+    renamed to the container.
+
+    Returns:
+        str: The `table_uri` that reads it, as `abfs://lake/...`.
+    """
+    mocker.patch(
+        "pyarrow.fs.AzureFileSystem", return_value=SubTreeFileSystem(str(store), LocalFileSystem())
+    )
+    authority = "lake@acct.dfs.core.windows.net"
+    for folder in ("metadata", "data"):
+        (store / authority / "wh" / "lake" / "events" / folder).mkdir(parents=True)
+    options = {**_AZURE_OPTIONS, "py-io-impl": "pyiceberg.io.pyarrow.PyArrowFileIO"}
+    with _catalog(lake, f"abfss://{authority}/wh", **options) as catalog:
+        table = catalog.create_table("lake.events", schema=_ROW.to_arrow().schema)
+        table.append(_ROW.to_arrow())
+        metadata = str(catalog.load_table("lake.events").metadata_location)
+    (store / authority).rename(store / "lake")
+    return metadata.replace(f"abfss://{authority}/", "abfs://lake/")
+
+
 def _read_two_ways(root: Path, outside: Path, layer: str) -> str:
     """Write an Iceberg table under `root` that names one file PyIceberg and Polars open apart.
 
@@ -3234,6 +3268,76 @@ class TestLakehouseFiles:
             settings = Settings((tmp_path,), allowed_hosts=_STORE_HOSTS)
 
             check_data_paths(settings, SourceConfig(path="a.csv"), target)
+
+    def _azure_configuration(self, root: Path, table_uri: str) -> None:
+        """Write a configuration that compares `_ROW` with the Azure table at `table_uri`."""
+        _ROW.write_parquet(root / "a.parquet")
+        _write(
+            root,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{table_uri}'\n  storage_options:\n"
+            + "".join(f"    {key}: '{value}'\n" for key, value in _AZURE_OPTIONS.items())
+            + "primary_keys: [id]\n",
+        )
+
+    def test_it_reads_an_azure_table_whose_files_name_their_account(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure a table Spark wrote in Azure is listed and read, each file in its container."""
+        store = tmp_path_factory.mktemp("store")
+        self._azure_configuration(tmp_path, _spark_azure_iceberg(tmp_path, store, mocker))
+
+        report = read_rows(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+            "veridelta.yaml",
+            "changed",
+        )
+
+        assert report["total"] == 0
+
+    @pytest.mark.parametrize(
+        "authority",
+        ["other@acct.dfs.core.windows.net", "lake@acct.blob.core.windows.net"],
+        ids=["container", "host"],
+    )
+    @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
+    def test_it_holds_the_container_and_the_host_of_an_azure_file_to_the_allowed_hosts(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        authority: str,
+        listed: bool,
+    ) -> None:
+        """Ensure a file named `container@host` needs both its container and its host allowed.
+
+        The metadata names its manifest list in another container, or at the
+        account's other host, which the server does not allow. The listing
+        refuses it, and so does the scan, though the listing found nothing.
+        The metadata names the host, so the refusal leaves it out.
+        """
+        store = tmp_path_factory.mktemp("store")
+        table_uri = _spark_azure_iceberg(tmp_path, store, mocker)
+        written = store / table_uri.removeprefix("abfs://")
+        document = json.loads(written.read_text(encoding="utf-8"))
+        for snapshot in document["snapshots"]:
+            listed_at = snapshot["manifest-list"]
+            snapshot["manifest-list"] = listed_at.replace(
+                "lake@acct.dfs.core.windows.net", authority
+            )
+        written.write_text(json.dumps(document), encoding="utf-8")
+        if not listed:
+            mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
+        self._azure_configuration(tmp_path, table_uri)
+
+        with pytest.raises(VerideltaError, match="names a host this server may not") as refused:
+            read_rows(
+                Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+                "veridelta.yaml",
+                "changed",
+            )
+
+        assert authority not in str(refused.value)
 
     @pytest.mark.parametrize(
         "uri",
