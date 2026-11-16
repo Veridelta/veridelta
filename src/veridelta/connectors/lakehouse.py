@@ -134,8 +134,8 @@ def _refuse_azure_options(properties: dict[str, str]) -> None:
 
     Raises:
         ConfigError: For an account name outside `_AZURE_ACCOUNT`, an option
-            in `_AZURE_SIGN_INS`, an account key that is not base64, or
-            neither a key nor a SAS token.
+            in `_AZURE_SIGN_INS`, an account key that is not base64, neither a
+            key nor a SAS token, or a SAS token with a `#` in it.
     """
     if _AZURE_ACCOUNT.fullmatch(properties.get("adls.account-name", "")) is None:
         # The name is a value from a file, so the message leaves it out.
@@ -163,6 +163,12 @@ def _refuse_azure_options(properties: dict[str, str]) -> None:
             "An Iceberg table in Azure needs 'adls.account-key' or 'adls.sas-token' in its "
             "storage_options on this server. With neither, PyArrow signs in as this machine "
             "does, which can run the az command and end the server."
+        )
+    if "#" in properties.get("adls.sas-token", ""):
+        # The token is a secret, so the message leaves it out.
+        raise ConfigError(
+            "The storage option 'adls.sas-token' holds a '#', and PyArrow drops the text "
+            "after one, which can leave each request unsigned."
         )
 
 
@@ -231,7 +237,9 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
     name holds a port, or when it fails to sign in or to decode the key. A SAS
     token reaches PyArrow with one `?` before it, since PyArrow puts the text
     before a token's `?` into the path of each request, ahead of the
-    container, where it would name another container than the one checked.
+    container, where it would name another container than the one checked. A
+    SAS token with a `#` in it is refused, since PyArrow drops the text after
+    one.
 
     Args:
         properties (dict[str, str]): The validated storage options.
@@ -267,7 +275,7 @@ def checked_file_io(properties: dict[str, str], check: Callable[[str, bool], Non
             if account is None:
                 return super().new_input(location)
             container, host = account
-            name = self.properties.get("adls.account-name", "").lower()
+            name = self.properties.get("adls.account-name", "")
             hosts = {name + suffix for suffix in _AZURE_ENDPOINTS}
             if not name or not host.isascii() or host.lower() not in hosts:
                 # The host is a value from a file, so the message leaves it out.

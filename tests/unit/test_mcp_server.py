@@ -32,7 +32,7 @@ from types import SimpleNamespace
 from typing import Any, Literal, TypeVar, cast
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qsl, quote, unquote, urlencode
 
 import anyio
 import duckdb
@@ -3350,6 +3350,76 @@ class TestLakehouseFiles:
             )
 
         assert authority not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "sv=2024-01-01&sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D",
+            "?sv=2024-01-01&sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D",
+            "sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D&sv=2024-01-01&se=2030-12-31",
+        ],
+        ids=["bare", "with-mark", "reordered"],
+    )
+    @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
+    @pytest.mark.parametrize("tool", ["validate_config", "run_comparison"])
+    def test_it_returns_no_part_of_an_azure_sas_token_from_the_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        token: str,
+        listed: bool,
+        tool: str,
+    ) -> None:
+        """Ensure an Azure error that quotes a request's URL comes back without its query.
+
+        The Azure SDK writes a SAS token's parameters back sorted, and encodes
+        them anew, so the URL PyArrow quotes in its error does not hold the
+        variable's value that the server masks. The mock fails each read with
+        such a URL. The listing fails, or, with no listing, the scan, which
+        `validate_config` reports as a finding.
+        """
+        monkeypatch.setenv("VD_AZURE_SAS", token)
+
+        def refusing(**options: str) -> MagicMock:
+            query = urlencode(sorted(parse_qsl(options["sas_token"].removeprefix("?"))))
+
+            def refuse(path: str, *_: object) -> None:
+                raise OSError(
+                    f"GetProperties failed for 'https://acct.blob.core.windows.net/{path}?{query}'"
+                    ". Azure Error: [AuthenticationFailed] 403 Forbidden"
+                )
+
+            return MagicMock(
+                open_input_file=MagicMock(side_effect=refuse),
+                open_input_stream=MagicMock(side_effect=refuse),
+            )
+
+        monkeypatch.setitem(arrow_fs.__dict__, "AzureFileSystem", refusing)
+        if not listed:
+            mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\ntarget:\n  type: iceberg\n"
+            "  table_uri: abfs://lake/t/metadata/v1.metadata.json\n  storage_options:\n"
+            "    adls.account-name: acct\n    adls.sas-token: ${VD_AZURE_SAS}\n"
+            "primary_keys: [id]\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+            {"path": "veridelta.yaml", "schemas": True}
+            if tool == "validate_config"
+            else {"path": "veridelta.yaml"},
+            tool=tool,
+        )
+
+        shown = json.dumps(result.structured_content) + _text(result)
+        # The URL ends at its path, where the query would follow.
+        assert "/lake/t/metadata/v1.metadata.json'" in shown
+        for value in ("c2lnbmF0dXJl", "2024-01-01", "2030-12-31"):
+            assert value not in shown
 
     @pytest.mark.parametrize(
         "uri",

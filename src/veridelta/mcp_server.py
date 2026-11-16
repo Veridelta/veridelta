@@ -58,6 +58,7 @@ from veridelta.connectors.base import (
     names_another_machine,
     shown_location,
     without_location,
+    without_queries,
 )
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import sandboxed
@@ -1537,7 +1538,8 @@ def check_configuration(
     """Check a configuration file for what would stop a run, as `validate --json` does.
 
     Unless the server allows row values, a finding leaves out what Polars, a
-    reader, or a driver said about a schema read that failed.
+    reader, or a driver said about a schema read that failed. Each URL in a
+    finding loses its query, which can hold a credential the reader signed with.
 
     Args:
         settings (Settings): The roots and the row values the server was started with.
@@ -1573,6 +1575,10 @@ def check_configuration(
             findings = DiffEngine.check_configs(
                 diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
             )
+    findings = [
+        finding.model_copy(update={"message": without_queries(finding.message)})
+        for finding in findings
+    ]
     return validation_report(str(resolved), [*unset_variable_findings(unset or []), *findings])
 
 
@@ -1855,11 +1861,12 @@ def _failure(exc: BaseException, *, row_values: bool) -> str:
     Polars, a reader, or a driver can quote cells in its message, so unless the
     server allows row values, such a message gives way to a fixed hint. A
     Veridelta error keeps its own, which names columns and counts, unless it
-    quotes a reader's or a driver's text.
+    quotes a reader's or a driver's text. Each URL in the message loses its
+    query, which can hold a credential the reader signed with.
     """
     if may_quote_data(exc) and not row_values:
         return f"{type(exc).__name__}: {_WITHHELD}"
-    return f"{type(exc).__name__}: {str(exc).strip()}"
+    return f"{type(exc).__name__}: {without_queries(str(exc).strip())}"
 
 
 def environment_values(settings: Settings, path: str) -> tuple[str, ...]:

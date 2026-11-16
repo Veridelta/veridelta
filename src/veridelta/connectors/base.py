@@ -6,6 +6,7 @@
 import importlib
 import logging
 import os
+import re
 import sys
 from abc import ABC, abstractmethod
 from types import ModuleType, TracebackType
@@ -62,6 +63,42 @@ def without_location(text: str, location: str) -> str:
         str: The message, with the location's secrets left out.
     """
     return text.replace(location, shown_location(location))
+
+
+_URL_QUERY: Final = re.compile(
+    r"(?P<quote>['\"])(?P<quoted>[A-Za-z][A-Za-z0-9+.-]*://[^'\"?]*)\?.*?(?P=quote)"
+    r"(?=[.,;:)\]]?(?:\s|$))"
+    r"|(?P<bare>\b[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"?]*)\?\S*",
+    re.DOTALL,
+)
+"""A URL and its query: inside quotes, up to the quote that closes them, or else up to a space."""
+
+
+def without_queries(text: str) -> str:
+    """Leave the query out of each URL that driver text quotes.
+
+    A reader can quote a URL it built with a credential, such as each request
+    PyArrow signs with an Azure SAS token. The Azure SDK writes the token's
+    parameters back sorted, and can encode them anew, so masking the token's
+    own text misses them. A URL inside quotes loses everything up to the
+    first quote of its kind that a space or the end of the text follows,
+    perhaps after one mark such as a period, so spaces and other quotes in
+    the query go too. Any other URL loses everything up to the next space.
+
+    Args:
+        text (str): The driver's message.
+
+    Returns:
+        str: The message, with no URL's query in it.
+    """
+    return _URL_QUERY.sub(
+        lambda found: (
+            found["bare"]
+            if found["quote"] is None
+            else found["quote"] + found["quoted"] + found["quote"]
+        ),
+        text,
+    )
 
 
 def names_another_machine(path: str) -> bool:

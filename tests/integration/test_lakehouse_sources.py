@@ -606,6 +606,22 @@ class TestCheckedIcebergScan:
         assert refused.value.__cause__ is None
         azure.assert_not_called()
 
+    @pytest.mark.parametrize("token", ["#?sv=2024", "sv=2024#x", "?sv=2024&sig=a#b"])
+    def test_it_builds_no_azure_file_system_for_a_sas_token_with_a_hash(
+        self, monkeypatch: pytest.MonkeyPatch, token: str
+    ) -> None:
+        """Ensure a SAS token with a `#` is refused, since PyArrow drops the text after one."""
+        azure = _mock_azure(monkeypatch)
+        io = checked_file_io(
+            {"adls.account-name": "acct", "adls.sas-token": token}, lambda *_: None
+        )
+
+        with pytest.raises(ConfigError, match=re.escape("'adls.sas-token' holds a '#'")) as refused:
+            io.new_input("abfs://lake/wh/data.parquet")
+
+        assert "sv=2024" not in str(refused.value)
+        azure.assert_not_called()
+
     @pytest.mark.parametrize(
         "account",
         ["", "acct:99", "acct:", "[::1]", "ACCT", "ac", "acct.example", "a" * 25],
