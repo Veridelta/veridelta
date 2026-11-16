@@ -2853,6 +2853,24 @@ class TestAllowedHosts:
                 "uri",
                 id="database-empty-host-parameter",
             ),
+            pytest.param(
+                "  type: database\n  uri: sqliteredshift://u@elsewhere.example:5439/d\n"
+                "  query: SELECT 1\n",
+                "uri",
+                id="sqlite-scheme-connectorx-reads-as-postgres",
+            ),
+            pytest.param(
+                "  type: database\n  uri: sqlite-redshift://u@elsewhere.example/d\n"
+                "  query: SELECT 1\n",
+                "uri",
+                id="sqlite-scheme-with-redshift-after-a-dash",
+            ),
+            pytest.param(
+                "  type: database\n  uri: SQLiteRedshift://u@elsewhere.example/d\n"
+                "  password: p\n  query: SELECT 1\n",
+                "uri",
+                id="upper-case-redshift-lowered-by-the-password",
+            ),
             pytest.param(f"{_SNOWFLAKE}  account: elsewhere\n", "account", id="snowflake"),
             pytest.param(
                 f"{_SNOWFLAKE}  account: xy12345.cn-north-1\n", "account", id="snowflake-in-china"
@@ -3065,6 +3083,23 @@ class TestAllowedHosts:
                 id="database-host-percent-encoded",
             ),
             pytest.param(
+                "  type: database\n  uri: trino://127.0.0.1:9%2F@db.internal:8080/cat\n"
+                "  table: t\n",
+                "uri",
+                id="trino-login-that-ends-the-host-once-decoded",
+            ),
+            pytest.param(
+                "  type: database\n  uri: trino://127.0.0.1@db.internal:8080/cat\n"
+                "  password: 9/\n  table: t\n",
+                "uri",
+                id="trino-password-that-ends-the-host-once-decoded",
+            ),
+            pytest.param(
+                "  type: database\n  uri: trino://u@db.internal%5D:8080/cat\n  table: t\n",
+                "uri",
+                id="trino-bracket-once-decoded",
+            ),
+            pytest.param(
                 "  type: database\n  uri: 'postgresql://u@db.internal\\x/db'\n  table: t\n",
                 "uri",
                 id="database-backslash",
@@ -3143,6 +3178,35 @@ class TestAllowedHosts:
             ),
             pytest.param(
                 "  type: delta\n  table_uri: hdfs://db.internal:8020/t\n", id="delta-hdfs"
+            ),
+            pytest.param(
+                "  type: database\n  uri: trino://u@db.internal:8080/cat\n  password: 'p:ss'\n"
+                "  table: t\n",
+                id="trino-with-a-password",
+            ),
+            pytest.param(
+                "  type: database\n  uri: trino://u@db.internal:8080/cat\n  password: 'p[ss'\n"
+                "  table: t\n",
+                id="trino-with-a-bracket-in-the-password",
+            ),
+            pytest.param(
+                "  type: database\n  uri: trino+redshift://u:p%2F@db.internal:5439/d\n"
+                "  query: SELECT 1\n",
+                id="trino-scheme-connectorx-reads-as-postgres",
+            ),
+            pytest.param(
+                "  type: database\n  uri: oracle://u:p@db.internal:1521/svc?schema=s\n  table: t\n",
+                id="oracle",
+            ),
+            pytest.param(
+                "  type: database\n  uri: oracle://u:p@db.internal/S_1.x$-:dedicated/i1\n"
+                "  table: t\n",
+                id="oracle-server-type-and-instance",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal/db?sslmode=require&%C3%A9=1\n"
+                "  table: t\n",
+                id="database-parameter-outside-ascii",
             ),
             pytest.param("  type: database\n  uri: sqlite://x.db\n  table: t\n", id="sqlite"),
             pytest.param("  type: duckdb\n  database: x.duckdb\n  table: t\n", id="duckdb-file"),
@@ -3320,6 +3384,78 @@ class TestAllowedHosts:
             describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
 
         assert str(refused.value).startswith(f"The target {setting} is not one")
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("uri", "refusal"),
+        [
+            pytest.param("bigquery:///keys/sa.json", "reads BigQuery", id="bigquery"),
+            pytest.param("BigQuery+x://db.internal/keys/sa.json", "reads BigQuery", id="bq-plus"),
+            pytest.param("' bigquery://db.internal/keys/sa.json'", "reads BigQuery", id="bq-space"),
+            pytest.param("redshift-iam://u@db.internal:5439/d", "through AWS", id="redshift-iam"),
+            pytest.param("Redshift-IAM+x://u@db.internal/d", "through AWS", id="iam-plus"),
+            pytest.param(
+                "postgresql://u@db.internal/d?sslrootcert=/keys/ca.pem",
+                "parameter 'sslrootcert' names a file",
+                id="postgres-certificate-authority",
+            ),
+            pytest.param(
+                "postgresql://u@db.internal/d?sslmode=require&SSLCert=c.pem&ssl%6Bey=k.pem",
+                "parameter 'sslcert' names a file",
+                id="postgres-client-certificate",
+            ),
+            pytest.param(
+                "postgresql://u@db.internal/d?sslkey", "parameter 'sslkey'", id="parameter-blank"
+            ),
+            pytest.param(
+                "mysql://u@db.internal/d?ssl-mode=VERIFY_CA&SSL-CA=/keys/ca.pem",
+                "parameter 'ssl-ca' names a file",
+                id="mysql-certificate-authority",
+            ),
+            pytest.param(
+                "mssql://u@db.internal/d?trust_server_certificate_ca=/keys/ca.pem",
+                "parameter 'trust_server_certificate_ca' names a file",
+                id="mssql-certificate-authority",
+            ),
+            pytest.param("oracle://u:p@db.internal/svc?alias=true", "TNS alias", id="oracle-alias"),
+            pytest.param(
+                "oracle://u:p@db.internal/svc%3Fhttps_proxy%3Dexample.com",
+                "TNS alias",
+                id="oracle-escape-in-the-path",
+            ),
+            pytest.param(
+                "oracle://u:p@db.internal/svc,example.com:1521/x",
+                "path other than a service name",
+                id="oracle-second-address-in-the-path",
+            ),
+            pytest.param(
+                "oracle://u:p@db.internal/svc(ADDRESS=(HOST=example.com))",
+                "path other than a service name",
+                id="oracle-address-in-the-path",
+            ),
+            pytest.param(
+                "Oracle+redshift-iam-x://u:p@db.internal/svc?alias=true",
+                "TNS alias",
+                id="oracle-with-iam-not-rewritten",
+            ),
+        ],
+    )
+    def test_it_refuses_a_database_uri_that_opens_a_file_or_signs_in_unchecked(
+        self, tmp_path: Path, mocker: MockerFixture, uri: str, refusal: str
+    ) -> None:
+        """Ensure a URI whose reader opens a file here, or signs in where no check sees, is refused.
+
+        Each URI's host, where it has one, is allowed, and the message
+        repeats no path the URI names.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, f"  type: database\n  uri: {uri}\n  query: SELECT 1\n")
+
+        with pytest.raises(ConfigError, match=refusal) as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith("The target uri ")
+        assert "/keys" not in str(refused.value)
         read.assert_not_called()
 
     @pytest.mark.parametrize(

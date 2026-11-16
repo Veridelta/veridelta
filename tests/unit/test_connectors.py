@@ -13,8 +13,9 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import DEFAULT, MagicMock, call
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
+import connectorx
 import polars as pl
 import pytest
 from pydantic import BaseModel, ValidationError
@@ -40,7 +41,7 @@ from veridelta.connectors import (
     database,
 )
 from veridelta.connectors.base import mask_secrets, names_another_machine, read_subject
-from veridelta.connectors.database import sqlite_path
+from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.sql import (
     SERVER_CHECK_TEXT,
     compile_postgres_columns_query,
@@ -907,6 +908,38 @@ class TestDatabaseConnector:
         assert str(missing) in str(info.value)
         read.assert_not_called()
         assert not missing.exists()
+
+    @pytest.mark.parametrize(
+        ("uri", "password"),
+        [
+            ("postgresql://u@db.internal/d", None),
+            ("redshift://u@db.internal:5439/d", None),
+            ("sqliteredshift://u@db.internal/d", None),
+            ("sqlite-redshift://u@db.internal/d", None),
+            ("SQLiteRedshift://u@db.internal/d", None),
+            ("SQLiteRedshift://u@db.internal/d", "p"),
+            ("trino+redshift://u@db.internal/d", None),
+            ("redshift-iam://u@db.internal/d", None),
+            ("oracle+redshift-iam-x://u@db.internal/svc", None),
+            ("sqlite:///x.db", None),
+            ("mysql://u@db.internal/d", None),
+            ("clickhouse://u@db.internal/d", None),
+            ("bigquery:///key.json", None),
+        ],
+    )
+    def test_it_reads_a_scheme_as_the_installed_connectorx_rewrites_it(
+        self, uri: str, password: str | None
+    ) -> None:
+        """Ensure the reader `connectorx_url` names follows the installed ConnectorX's rewrite.
+
+        The MCP server's checks name the reader that runs from `connectorx_url`,
+        which models the rewrite of ConnectorX's Python package. A ConnectorX
+        release that rewrites other schemes fails this test.
+        """
+        config = DatabaseConfig(uri=uri, password=password, table="t")
+        rewritten, _ = connectorx.rewrite_conn(connection_uri(config))
+
+        assert connectorx_url(config).scheme == urlsplit(rewritten).scheme.split("+")[0]
 
     def test_it_encodes_a_sqlite_path_for_connectorx(
         self, mocker: MockerFixture, tmp_path: Path
