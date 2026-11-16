@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform == 'win32'",
@@ -5146,7 +5146,7 @@ evals = [
 
 [package.metadata]
 requires-dist = [
-    { name = "connectorx", marker = "extra == 'database'", specifier = ">=0.4.5" },
+    { name = "connectorx", marker = "extra == 'database'", specifier = ">=0.4.6" },
     { name = "databricks-sql-connector", marker = "extra == 'databricks'", specifier = ">=3.0.0" },
     { name = "deltalake", marker = "extra == 'delta'", specifier = ">=0.15.0" },
     { name = "duckdb", marker = "extra == 'duckdb'", specifier = ">=1.5.0,<2" },

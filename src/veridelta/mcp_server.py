@@ -61,7 +61,7 @@ from veridelta.connectors.base import (
     without_location,
 )
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
-from veridelta.connectors.duckdb import sandboxed
+from veridelta.connectors.duckdb import WRITE_AHEAD_LOGS, beside, sandboxed
 from veridelta.connectors.lakehouse import (
     CheckedDeltaTable,
     DeltaLogCopy,
@@ -154,6 +154,9 @@ _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 
 _URI_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 """The start of a URI: a scheme of two or more characters, since one letter is a Windows drive."""
+
+_SPECIAL_SCHEMES: Final = frozenset({"file", "ftp", "http", "https", "ws", "wss"})
+"""The schemes a URL parser reads without their slashes, as in `http:host`."""
 
 _HOST_OPTIONS: Final = frozenset(
     {
@@ -698,7 +701,9 @@ def _refuse_opened(settings: Settings, location: str, remote: bool) -> None:
 def _reading(settings: Settings) -> Generator[None]:
     """Hold what a tool's sides read to the roots, while they read.
 
-    A DuckDB file's connection reads other files only from under the roots.
+    A DuckDB file opens only by a path with no link in it, its connection reads
+    other files only from under the roots, and it spills only into a folder the
+    block creates.
     A Delta Lake or Iceberg scan opens a file on this machine only from under
     them, and one elsewhere only on an allowed host, each checked just before
     it is opened. A Delta Lake scan lists and checks its table's files again
@@ -834,26 +839,6 @@ def _local_paths(location: str, named: str) -> list[str]:
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.
     return [*dict.fromkeys(paths), location]
-
-
-# Each log DuckDB names beside a database file, by the setting a refusal names.
-# A read-only open replays `.wal`, and `.wal.checkpoint` after a crash during a
-# checkpoint. Only a read-write open writes `.wal.recovery`, but it is checked too.
-_DUCKDB_LOGS = (
-    ("database's WAL", ".wal"),
-    ("database's checkpoint WAL", ".wal.checkpoint"),
-    ("database's recovery WAL", ".wal.recovery"),
-)
-
-
-def _wal_beside(path: str, suffix: str = ".wal") -> str:
-    """Add a log's suffix to a database's path as DuckDB's `AddSuffixToPath` does.
-
-    It goes before the first `?` in the path rather than at the end, so
-    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
-    """
-    mark = path.find("?")
-    return f"{path}{suffix}" if mark < 0 else f"{path[:mark]}{suffix}{path[mark:]}"
 
 
 def _resolved_database(side: str, database: str) -> str:
@@ -1112,6 +1097,10 @@ def _delta_files(
     walk reads the expanded path, since deltalake expands only `~` and `~/`
     and would read `~alice/t` as a folder of that name.
 
+    Each file comes with its setting, its location, and whether a refusal may
+    quote it on any server: the log and its entries may, and a file the log
+    names may not, since a data file's folder can hold a partition's value.
+
     Returns:
         CheckedDeltaTable: The table, at the version whose files were named.
 
@@ -1162,9 +1151,9 @@ def _delta_files(
             DeltaTable(uri, version=config.version, storage_options=options)
         )
         for name in checked.table.file_uris():
-            yield "data file", name, True
+            yield "data file", name, False
         for location in deletion_vector_files(checked.table, vectors):
-            yield "deletion vector", location, True
+            yield "deletion vector", location, False
         return checked
     return (yield from _copied_delta_files(config, copy, logs, vectors))
 
@@ -1211,14 +1200,14 @@ def _copied_delta_files(
     table = DeltaTable(str(root), version=config.version, storage_options=options)
     checked = CheckedDeltaTable(table, found, copy)
     for name in checked.table.file_uris():
-        yield "data file", checked.located(name), True
+        yield "data file", checked.located(name), False
     copied: set[str] = set()
     for location in deletion_vector_files(checked.table, vectors):
         # A vector at a relative path, in a folder of letters and digits under the table's,
         # named by the UUID the log encodes. One file can hold many, and a log name one twice.
         local = checked.located(location)
         seen = None if local in copied else _file_at(local)
-        yield "deletion vector", local, True
+        yield "deletion vector", local, False
         _copy_checked(local, copy, root / os.path.relpath(local, found), seen)
         copied.add(local)
     return checked
@@ -1232,9 +1221,11 @@ def _iceberg_files(
     A table folder's version hint, the manifest list, and each manifest name
     the next files to read, so the caller checks each name before this reads
     the file. The version hint is read as `StaticTable.from_metadata` reads
-    it, so the check and the scan read the same metadata file, but its text is
-    never quoted, since it is a value from a file. The data and delete files
-    come from the manifests, as a scan plans them.
+    it, so the check and the scan read the same metadata file. The data and
+    delete files come from the manifests, as a scan plans them. Each file
+    comes with its setting, its location, and whether a refusal may quote it
+    on any server: the version hint may, and a file named by a file's text may
+    not, since that text is a value from the table.
 
     The files are read as the scan on this server reads them: through the
     FileIO `checked_file_io` builds from `storage_options` alone, whatever the
@@ -1261,7 +1252,7 @@ def _iceberg_files(
         if hint is None:
             raise
         # The error would quote the metadata file, and so the version hint's text.
-        raise OSError(f"the metadata file that '{hint}' names could not be read") from None
+        raise ConnectorError(f"the metadata file that '{hint}' names could not be read") from None
     snapshot = (
         metadata.current_snapshot()
         if config.snapshot_id is None
@@ -1271,11 +1262,11 @@ def _iceberg_files(
         # The scan reads no file: an empty table has none, and a snapshot it
         # cannot find stops it.
         return
-    yield "manifest list", snapshot.manifest_list, True
+    yield "manifest list", snapshot.manifest_list, False
     for manifest in snapshot.manifests(io):
-        yield "manifest", manifest.manifest_path, True
+        yield "manifest", manifest.manifest_path, False
         for entry in manifest.fetch_manifest_entry(io, discard_deleted=True):
-            yield "data file", entry.data_file.file_path, True
+            yield "data file", entry.data_file.file_path, False
 
 
 def _table_files(
@@ -1286,7 +1277,10 @@ def _table_files(
     A table's log or metadata names its files by full URI, so they can lie
     anywhere. A table whose files cannot be listed is refused, since the scan
     would read the same log or metadata. An Iceberg table's files are read
-    with the scan's own check, as well as the caller's.
+    with the scan's own check, as well as the caller's. The error of a table
+    that cannot be listed quotes the reader's message, which can hold a value
+    from the table's files, so it sets `quotes_data` unless Veridelta wrote
+    that message.
 
     Returns:
         CheckedDeltaTable | None: A Delta Lake table, at the version listed, or None
@@ -1324,9 +1318,12 @@ def _table_files(
         raise ConnectorError(missing_extra(extra, f"Reading a {kind}")) from exc
     except Exception as exc:
         where = shown_location(config.table_uri)
+        # deltalake, PyIceberg, and PyArrow can quote a value from the table's files, where
+        # a refusal in Veridelta's words quotes none.
         raise ConnectorError(
             f"The files of the {side} {kind} '{where}' could not be listed, so this server "
-            f"reads none of them: {without_location(str(exc), config.table_uri)}"
+            f"reads none of them: {without_location(str(exc), config.table_uri)}",
+            quotes_data=may_quote_data(exc),
         ) from exc
 
 
@@ -1411,15 +1408,16 @@ def _as_checked(settings: Settings, side: str, config: SourceRef) -> SourceRef:
     DuckDB replays the write-ahead logs beside the file as it opens it, before
     the sandbox applies, so each log is held to the roots as the file is. A
     resolved path that names another machine, as a Windows long path does,
-    is refused too.
+    is refused too. Inside `sandboxed`, the connector then opens the file by
+    this path only through no link, and confirms DuckDB opened that file.
     """
     if not isinstance(config, DuckDBConfig) or config.is_motherduck:
         return config
     database = _resolved_database(side, config.database)
     _refuse_outside(settings, side, "database", database, database)
-    for setting, suffix in _DUCKDB_LOGS:
-        log = _wal_beside(database, suffix)
-        _refuse_outside(settings, side, setting, log, log)
+    for name, suffix in WRITE_AHEAD_LOGS:
+        log = beside(database, suffix)
+        _refuse_outside(settings, side, f"database's {name}", log, log)
     return config.model_copy(update={"database": database})
 
 
@@ -1494,8 +1492,11 @@ def _refuse_listed(
     A log or metadata names a file by any location, so the file is checked as
     a configuration's location is: each path on this machine a reader could
     open for it, and the host it names. The message about a host leaves the
-    location out, since a file named it.
+    location out, since a file named it. The message about a path quotes it
+    when `quoted`, or on a server that allows row values, since a path a
+    table's files name is a value from them, such as a partition's.
     """
+    quoted = quoted or settings.allow_row_values
     for local in _local_paths(location, f"{side} {setting}"):
         _refuse_outside(settings, side, setting, location, local, quoted=quoted)
     for _, host in _location_hosts(setting, location, _NAMED_FILE):
@@ -1696,6 +1697,54 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
     return [*_location_hosts("database", config.database)]
 
 
+def _storage_options(config: SourceRef) -> object:
+    """Return the `storage_options` a side hands its reader, or None for a side that takes none."""
+    if isinstance(config, SourceConfig):
+        return config.options.get("storage_options")
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return config.storage_options
+    return None
+
+
+def _refuse_plain_http(side: str, config: SourceRef) -> None:
+    """Refuse a storage option that sends a reader to its endpoint over anything but HTTPS.
+
+    Polars and PyIceberg take the scheme from the endpoint, so an `http` one
+    sends the credentials and the rows unencrypted, as `aws_allow_http` would
+    for deltalake, which a tool refuses as a key it does not know. So a host
+    option's value with a scheme passes only when it starts with `https://`,
+    in lowercase, the one form every reader takes as HTTPS: the AWS SDK in
+    PyArrow takes any other as a host name. A value has a scheme when it holds
+    `://`, or when it holds a `:` and the text before the first one is one of
+    `_SPECIAL_SCHEMES`, in ASCII and any case, since the URL parser behind Polars reads such a
+    value as a URL without its slashes, and a number after it as an IPv4
+    address. No host is excepted, this machine's included, as none is for
+    `aws_allow_http`. Other text, such as `minio.internal:9000`, or a bucket
+    named `https` with no `:`, passes:
+    PyArrow then uses HTTPS, and object_store fails before it connects. The
+    message names the option and not its value, which can hold a `${NAME}`
+    value.
+
+    Raises:
+        ConfigError: If a host option's value has a scheme and does not start with `https://`.
+    """
+    options = _storage_options(config)
+    if not isinstance(options, Mapping):
+        return
+    for key, value in cast("Mapping[object, object]", options).items():
+        name, text = str(key), str(value)
+        if not (name.isascii() and name.lower() in _HOST_OPTIONS) or text.startswith("https://"):
+            continue
+        scheme, colon, _ = text.partition(":")
+        if "://" in text or (colon and scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES):
+            raise ConfigError(
+                f"The {side} storage option '{key}' names a host by a scheme other than "
+                "https, so a reader could send its credentials and rows unencrypted. A tool "
+                "reaches an endpoint only over HTTPS, on this machine too, so write it as "
+                "https://host:port, in lowercase."
+            )
+
+
 def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     """Name each host a side connects to that its configuration chooses, with the setting.
 
@@ -1706,14 +1755,11 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     credentials reach their own service's hosts, so they name none.
     """
     if isinstance(config, SourceConfig):
-        return [
-            *_location_hosts("path", config.path),
-            *_option_hosts(config.options.get("storage_options")),
-        ]
+        return [*_location_hosts("path", config.path), *_option_hosts(_storage_options(config))]
     if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         return [
             *_location_hosts("table_uri", config.table_uri),
-            *_option_hosts(config.storage_options),
+            *_option_hosts(_storage_options(config)),
         ]
     if isinstance(config, DuckDBConfig):
         return _duckdb_hosts(config)
@@ -1736,14 +1782,16 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     side that could reach any host could send one there, or reach a service on
     this machine or its network. A host written in any shape but
     `_HOST_AND_PORT`'s is refused on its own, since readers split it in
-    different places. The message names the setting and not the host, which
-    can hold such a value.
+    different places. An endpoint is refused over plain HTTP, by
+    `_refuse_plain_http`. The message names the setting and not the host,
+    which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
         for setting, host in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host)
+        _refuse_plain_http(side, config)
 
 
 def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
