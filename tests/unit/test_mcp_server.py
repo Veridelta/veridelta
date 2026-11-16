@@ -3527,6 +3527,35 @@ class TestLakehouseFiles:
         loaded.assert_not_called()
         assert list(temporary.iterdir()) == []
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A '\\' separates a Windows path's folders."
+    )
+    def test_it_copies_no_log_into_a_folder_whose_path_holds_a_backslash(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        r"""Ensure a table on this machine is refused when the temporary folder's path holds a `\`.
+
+        Outside Windows, deltalake reads a `\` in a path as `/`, so it would
+        read the log of another folder, one this server never wrote or
+        checked, while its `table_uri` still names the copy.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        temporary = tmp_path_factory.mktemp("outside") / "a\\b"
+        temporary.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match=r"temporary folder holds a '%', or a '\\'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+        assert list(temporary.iterdir()) == []
+
     def test_it_copies_the_files_in_a_folder_of_a_delta_log(self, tmp_path: Path) -> None:
         """Ensure a table whose log holds a folder is read, with the folder checked and its files copied.
 

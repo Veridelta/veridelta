@@ -1076,7 +1076,8 @@ def _delta_files(
         CheckedDeltaTable: The table, at the version whose files were named.
 
     Raises:
-        ValueError: If the copy would lie under a root, more than one folder
+        ValueError: If the copy would lie under a root or in a folder whose
+            path deltalake reads as another folder's, more than one folder
             the table's location names holds a log, or the log of a table on
             this machine stores a vector at its own path.
     """
@@ -1095,12 +1096,15 @@ def _delta_files(
             "this server would copy the table's log for deltalake to read. Start the server "
             "with TMPDIR set to a folder outside them"
         )
-    if copy is not None and "%" in str(copy.folder):
-        # deltalake decodes a `%` escape in the copy's path, and would read another folder.
+    # deltalake decodes a `%` escape in the copy's path, and outside Windows reads a `\` there
+    # as `/`, so it would read the log of another folder, which no check saw. Its `table_uri`
+    # still names the copy, so only the path itself can show it.
+    rewritten = "%" if os.sep == "\\" else "%\\"
+    if copy is not None and any(character in rewritten for character in str(copy.folder)):
         raise ValueError(
-            "the path of the system's temporary folder holds a '%', which deltalake would "
-            "decode as it reads the copy of the table's log there. Start the server with "
-            "TMPDIR set to a folder whose path holds none"
+            "the path of the system's temporary folder holds a '%', or a '\\' outside Windows, "
+            "which deltalake reads as other text as it reads the copy of the table's log there. "
+            "Start the server with TMPDIR set to a folder whose path holds neither"
         )
     logged, logs = yield from _delta_log(side, uri, copy)
     if len(logs) > 1:
