@@ -705,20 +705,38 @@ def _wal_beside(path: str) -> str:
     return f"{path}.wal" if mark < 0 else f"{path[:mark]}.wal{path[mark:]}"
 
 
-def _duckdb_wals(database: str) -> list[str]:
-    """Name each write-ahead log DuckDB may replay as it opens a database file.
+def _duckdb_wal(database: str) -> str:
+    """Name the write-ahead log DuckDB replays as it opens a database file.
 
     DuckDB names the log from the path `_open` hands it, which has `~`
-    expanded, once it has made that path absolute and folded it: a link is
-    followed, and `.`, `..`, `//`, and a trailing separator are dropped. So
-    `x.duckdb/.` has its log at `x.duckdb.wal` in the working directory, a
-    link named `x.duckdb` has it beside the file the link leads to, and a `?`
-    in the working directory moves it. DuckDB folds a part it cannot resolve
-    without following links, so the log is named from the path folded either
-    way, as the file is checked either way.
+    expanded, once it has made that path absolute and resolved it. Where the
+    whole path resolves, that is the path with every link followed, as
+    `os.path.realpath` gives it: `x.duckdb/.` has its log at `x.duckdb.wal`,
+    and `lnk/../x.duckdb` has it beside `x.duckdb` in the folder above the
+    one `lnk` leads to. Where a part does not resolve, DuckDB folds the rest
+    by text, which no reading here matches, so `_refuse_unresolved` refuses
+    such a path.
     """
-    path = os.path.abspath(os.path.expanduser(database))
-    return list(dict.fromkeys(_wal_beside(each) for each in (path, os.path.realpath(path))))
+    return _wal_beside(os.path.realpath(os.path.expanduser(database)))
+
+
+def _refuse_unresolved(side: str, database: str) -> None:
+    """Refuse a DuckDB database whose path does not resolve through every folder it names.
+
+    Only for a path that resolves is the file DuckDB opens, and the log it
+    replays beside it, the one `os.path.realpath` names.
+
+    Raises:
+        ConfigError: If a part of the path does not exist.
+    """
+    try:
+        os.path.realpath(os.path.expanduser(database), strict=True)
+    except OSError as exc:
+        raise ConfigError(
+            f"The {side} database '{database}' does not lead to a file through every "
+            "folder it names, so this server cannot tell which file and write-ahead log "
+            "DuckDB would open. Write the path of an existing DuckDB file."
+        ) from exc
 
 
 def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
@@ -730,8 +748,7 @@ def _data_locations(config: SourceRef) -> list[tuple[str, str, str]]:
         named = [("table_uri", config.table_uri)]
     elif isinstance(config, DuckDBConfig) and not config.is_motherduck:
         # DuckDB replays the write-ahead log beside the file as it opens it, before the sandbox.
-        wals = _duckdb_wals(config.database)
-        named = [("database", config.database), *(("database's WAL", wal) for wal in wals)]
+        named = [("database", config.database), ("database's WAL", _duckdb_wal(config.database))]
     elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)
@@ -904,10 +921,11 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
     holds a glob character is a pattern, and every file it matches must
     resolve under a root. A pattern may not reach `..`, since a match can be a
     link that `..` then leaves from its target. A `file:` URI may not hold a
-    pattern at all, since Polars expands one with another matcher. A Delta
-    Lake or Iceberg table, wherever it lies, has every file on this machine
-    that its scan reads checked too, since its log or metadata can name a
-    file anywhere. Data on another machine that a side names, such as an
+    pattern at all, since Polars expands one with another matcher. A DuckDB
+    file's path must resolve, so the server names the file and the log beside
+    it that DuckDB opens. A Delta Lake or Iceberg table, wherever it lies, has
+    every file on this machine that its scan reads checked too, since its log
+    or metadata can name a file anywhere. Data on another machine that a side names, such as an
     object store, a database server, or a warehouse, is held to the hosts the
     server allows by `_refuse_hosts`, which a caller runs first, since listing
     a table's files connects to its host.
@@ -932,6 +950,8 @@ def check_data_paths(settings: Settings, source: SourceRef, target: SourceRef) -
             _refuse_outside(
                 settings, side, setting, location, local, expanded=True, password=password
             )
+        if isinstance(config, DuckDBConfig) and not config.is_motherduck:
+            _refuse_unresolved(side, config.database)
     for side, config in sides:
         if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
             for setting, location, quoted in _table_files(settings, side, config):

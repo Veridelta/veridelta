@@ -798,6 +798,7 @@ class TestCheckDataPaths:
     def test_it_accepts_data_under_a_root(self, tmp_path: Path) -> None:
         """Ensure a relative file, a file in full, and a DuckDB file under a root pass."""
         settings = Settings((tmp_path,))
+        (tmp_path / "x.duckdb").write_bytes(b"")
 
         check_data_paths(
             settings,
@@ -1062,6 +1063,61 @@ class TestCheckDataPaths:
         with pytest.raises(ConfigError, match=f"The target database's WAL '{named}' is outside"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    def test_it_refuses_the_write_ahead_log_beside_the_file_a_link_and_dots_lead_to(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    ) -> None:
+        """Ensure `lnk/../x.duckdb` has its WAL checked in the folder above the link's target.
+
+        DuckDB follows `lnk` to `real/deep` before the `..`, so it opens
+        `real/x.duckdb` and replays `real/x.duckdb.wal`, here a link out of the
+        root. Folded by text alone, the path names `x.duckdb` in the root.
+        """
+        wal = tmp_path_factory.mktemp("outside") / "other.duckdb.wal"
+        wal.write_bytes(b"")
+        (tmp_path / "real" / "deep").mkdir(parents=True)
+        (tmp_path / "lnk").symlink_to(tmp_path / "real" / "deep", target_is_directory=True)
+        for database in (tmp_path / "x.duckdb", tmp_path / "real" / "x.duckdb"):
+            database.write_bytes(b"")
+        (tmp_path / "real" / "x.duckdb.wal").symlink_to(wal)
+        target = DuckDBConfig(database="lnk/../x.duckdb", table="t")
+
+        named = re.escape(str(tmp_path / "real" / "x.duckdb.wal"))
+        with pytest.raises(ConfigError, match=f"The target database's WAL '{named}' is outside"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows creates a symbolic link only with a privilege."
+    )
+    @pytest.mark.parametrize(
+        "database", ["missing.duckdb", "missing/../x.duckdb", "lnk/../missing/../lnk2/../x.duckdb"]
+    )
+    def test_it_refuses_a_duckdb_path_that_does_not_resolve(
+        self, tmp_path: Path, database: str
+    ) -> None:
+        """Ensure a DuckDB path with a part that does not exist is refused, before DuckDB opens it.
+
+        DuckDB follows the links up to the first part it cannot resolve, and
+        folds the rest by text. So for `lnk/../missing/../lnk2/../x.duckdb` it
+        opens `real/x.duckdb` and replays the log beside it. `os.path.realpath`
+        follows `lnk2` too and names `other/x.duckdb`, and `os.path.abspath`
+        follows no link and names `x.duckdb` in the root.
+        """
+        for folder in ("real/deep", "other/deep"):
+            (tmp_path / folder).mkdir(parents=True)
+        (tmp_path / "lnk").symlink_to(tmp_path / "real" / "deep", target_is_directory=True)
+        (tmp_path / "real" / "lnk2").symlink_to(
+            tmp_path / "other" / "deep", target_is_directory=True
+        )
+        for each in ("x.duckdb", "real/x.duckdb", "other/x.duckdb"):
+            (tmp_path / each).write_bytes(b"")
+        target = DuckDBConfig(database=database, table="t")
+
+        with pytest.raises(ConfigError, match=re.escape(f"The target database '{database}' does")):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
     @pytest.mark.skipif(sys.platform == "win32", reason="A Windows file name may not hold a `?`.")
     @pytest.mark.parametrize("database", ["L?/x.duckdb", "L?/x.duckdb/."])
     def test_it_names_the_write_ahead_log_duckdb_writes(
@@ -1074,10 +1130,10 @@ class TestCheckDataPaths:
         try:
             connection.execute("CREATE TABLE t (id INTEGER)")
 
-            wals = mcp_server._duckdb_wals(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
+            wal = mcp_server._duckdb_wal(database)  # pyright: ignore[reportPrivateUsage] - the name alone is what DuckDB must agree with
 
-            assert [Path(wal) for wal in wals] == [tmp_path / "L.wal?" / "x.duckdb"]
-            assert Path(wals[0]).is_file()
+            assert Path(wal) == tmp_path / "L.wal?" / "x.duckdb"
+            assert Path(wal).is_file()
         finally:
             connection.close()
 
@@ -2990,6 +3046,7 @@ class TestAllowedHosts:
         mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
         mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
         _remote(tmp_path, target)
+        (tmp_path / "x.duckdb").write_bytes(b"")
 
         report = describe_side(
             Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target"
