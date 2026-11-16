@@ -32,6 +32,7 @@ from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from pathlib import Path, PureWindowsPath
 from typing import Any, cast
+from urllib.parse import quote
 
 import duckdb
 import polars as pl
@@ -43,6 +44,7 @@ from veridelta.connectors.base import names_another_machine
 from veridelta.connectors.database import sqlite_path
 from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.mcp_server import (
+    RunReport,
     Settings,
     check_data_paths,
     describe_side,
@@ -133,6 +135,10 @@ _ELSEWHERE: list[Any] = [
     pytest.param(lambda path: f"\\??\\{path}", id="kernel"),
     pytest.param(lambda path: f"\\\\?\\UNC\\localhost\\{_admin_share(path)}", id="unc-device"),
     pytest.param(lambda path: f"\\\\.\\UNC\\localhost\\{_admin_share(path)}", id="unc-dot-device"),
+    pytest.param(
+        lambda path: "//?/UNC/localhost/" + _admin_share(path).replace("\\", "/"),
+        id="unc-device-with-slashes",
+    ),
     pytest.param(lambda path: f"\\\\localhost\\{_admin_share(path)}", id="localhost"),
     pytest.param(lambda path: f"\\\\127.0.0.1\\{_admin_share(path)}", id="loopback"),
     pytest.param(
@@ -200,8 +206,14 @@ _TWO_SLASH_URIS: list[Any] = [
         lambda path: "file://///localhost/" + _admin_share(path).replace("\\", "/"),
         id="localhost-after-five-slashes",
     ),
+    pytest.param(
+        lambda path: "file:" + "\\" * 4 + "localhost\\" + _admin_share(path),
+        id="localhost-after-four-backslashes",
+    ),
 ]
-"""Forms of a `file:` URI whose path starts with `//`, which Windows reads as a share."""
+"""Forms of a `file:` URI whose path starts with `//`, which Windows reads as a share.
+
+The URL standard reads a backslash as `/`, so four after `file:` count too."""
 
 
 def _second_colon(folder: Path) -> str:
@@ -325,6 +337,18 @@ def _write(root: Path, source: str) -> None:
     )
 
 
+def _query(root: Path, path: str) -> RunReport:
+    """Run a DuckDB query of the CSV file at `path` through a server with queries allowed, and return its report.
+
+    The configuration compares the query with `x.csv` under the root.
+    """
+    if not (root / "w.duckdb").exists():
+        _duckdb(root / "w.duckdb")
+    query = f"SELECT id, v FROM read_csv('{path}')"
+    _write(root, f"  type: duckdb\n  database: w.duckdb\n  query: {json.dumps(query)}\n")
+    return run_configuration(Settings((root,), allow_queries=True), "veridelta.yaml")
+
+
 def _short(path: Path) -> str:
     r"""Return the 8.3 form Windows gives a path, such as `C:\PROGRA~1`, or skip.
 
@@ -357,11 +381,16 @@ def _junction(link: Path, target: Path) -> Iterator[Path]:
 @contextmanager
 def _substituted(folder: Path) -> Iterator[str]:
     """Give a folder a drive of its own with `subst`, which needs no privilege, for the block."""
-    free = [letter for letter in "ZYXWVUTSRQPONMLKJIHG" if not os.path.exists(f"{letter}:\\")]
-    if not free:
+    for letter in "ZYXWVUTSRQPONMLKJIHG":
+        drive = f"{letter}:"
+        if os.path.exists(f"{drive}\\"):
+            continue
+        # A letter a disconnected network drive holds reads as free, and subst refuses it.
+        given = subprocess.run(["subst", drive, str(folder)], check=False, capture_output=True)
+        if given.returncode == 0:
+            break
+    else:
         pytest.skip("Every drive letter is taken, so subst has none to give.")
-    drive = f"{free[0]}:"
-    subprocess.run(["subst", drive, str(folder)], check=True, capture_output=True)
     try:
         yield drive
     finally:
@@ -496,6 +525,27 @@ class TestAnotherMachine:
         """Ensure a SQLite path written this way comes back unresolved, and is refused."""
         path = form(_sqlite(tmp_path / "x.db")).replace("\\", "/")
         config = _sqlite_config(path)
+
+        assert sqlite_path(config) == path
+        with pytest.raises(ConfigError, match=_OUTSIDE):
+            _check(settings, config)
+        assert resolved() == []
+
+    @pytest.mark.parametrize("form", _ELSEWHERE)
+    def test_it_refuses_a_percent_encoded_sqlite_file_before_resolving_it(
+        self,
+        settings: Settings,
+        tmp_path: Path,
+        resolved: Callable[[], list[str]],
+        form: Callable[[Path], str],
+    ) -> None:
+        r"""Ensure a SQLite path written this way with every character encoded, as in `%5C%5C`, is refused.
+
+        ConnectorX decodes the whole path, so `sqlite_path` decodes it before
+        it asks whether the path names another machine.
+        """
+        path = form(_sqlite(tmp_path / "x.db"))
+        config = DatabaseConfig(type="database", uri=f"sqlite://{quote(path, safe='')}", table="t")
 
         assert sqlite_path(config) == path
         with pytest.raises(ConfigError, match=_OUTSIDE):
@@ -838,7 +888,8 @@ class TestFileUris:
             with pytest.raises(ConfigError, match="is a file URI that names a host") as refused:
                 _check(settings, side)
 
-            assert host not in str(refused.value)
+            # The URI's own `//host`, since the fixed text could hold a short machine name.
+            assert f"//{host}" not in str(refused.value)
         loaded.assert_not_called()
         assert resolved() == []
 
@@ -862,17 +913,25 @@ class TestFileUris:
 
     @pytest.mark.skipif(
         sys.version_info >= (3, 14),
-        reason="Python 3.14 converts a file URI's path with a second ':' on Windows.",
+        reason="Python 3.14 converts a file URI's path with a second ':', or a ':' alone, on Windows.",
+    )
+    @pytest.mark.parametrize(
+        "form",
+        [
+            pytest.param(_second_colon, id="second-colon"),
+            pytest.param(lambda folder: "file::/x.csv", id="colon-with-no-drive"),
+        ],
     )
     def test_it_refuses_a_file_uri_python_cannot_convert(
-        self, settings: Settings, tmp_path: Path
+        self, settings: Settings, tmp_path: Path, form: Callable[[Path], str]
     ) -> None:
-        """Ensure a `file:` URI with a drive letter and a second `:` is refused, never quoted.
+        """Ensure a `file:` URI whose path has a `:` other than a drive letter's is refused, never quoted.
 
-        Before Python 3.14, Windows' `url2pathname` raises on such a path,
-        even one under the root.
+        Before Python 3.14, Windows' `url2pathname` raises an `OSError` on a
+        path with a second `:`, even one under the root, and an `IndexError`
+        on one with nothing before its `:`.
         """
-        uri = _second_colon(tmp_path)
+        uri = form(tmp_path)
 
         with pytest.raises(ConfigError, match="whose path Python cannot read") as converted:
             mcp_server._local_paths(uri, "source path")  # pyright: ignore[reportPrivateUsage] - it converts each path a reader opens
@@ -881,7 +940,7 @@ class TestFileUris:
         ) as checked:
             _check(settings, SourceConfig(path=uri))
 
-        assert "a:b" not in f"{converted.value} {checked.value}"
+        assert "x.csv" not in f"{converted.value} {checked.value}"
 
     @pytest.mark.skipif(
         sys.version_info < (3, 14),
@@ -948,9 +1007,52 @@ class TestDuckDBSides:
         The working directory is the root, so `C:..` is the folder above it,
         which holds the folder outside.
         """
-        _duckdb(tmp_path / "w.duckdb")
-        query = f"SELECT id, v FROM read_csv('{form(tmp_path, outside)}')"
-        _write(tmp_path, f"  type: duckdb\n  database: w.duckdb\n  query: {json.dumps(query)}\n")
-
         with pytest.raises(ConnectorError, match="Permission Error"):
-            run_configuration(Settings((tmp_path,), allow_queries=True), "veridelta.yaml")
+            _query(tmp_path, form(tmp_path, outside))
+
+    @pytest.mark.parametrize(
+        "form",
+        [
+            pytest.param(lambda root, path: str(path), id="as-written"),
+            pytest.param(
+                lambda root, path: f"{root.as_posix()}/../{path.parent.name}/{path.name}",
+                id="root-and-dot-dot",
+            ),
+        ],
+    )
+    def test_it_reads_a_query_under_the_roots(
+        self, tmp_path: Path, inside: Path, form: Callable[[Path, Path], str]
+    ) -> None:
+        """Ensure DuckDB's sandbox reads a file under the root, so each refusal here is the sandbox's own."""
+        assert _query(tmp_path, form(tmp_path, inside))["verdict"] == "match"
+
+    @pytest.mark.parametrize("name", ["x.csv", "*.csv"])
+    def test_it_holds_a_query_through_a_junction_to_the_folder_it_leads_to(
+        self, tmp_path: Path, inside: Path, outside: Path, name: str
+    ) -> None:
+        """Ensure DuckDB's sandbox follows a junction before it matches the roots.
+
+        It reads a file, or a pattern, through a junction to a folder under
+        the root, and refuses one through a junction to a folder outside.
+        """
+        _csv(tmp_path / "sub" / "x.csv", "inside")
+
+        with (
+            _junction(tmp_path / "k", tmp_path / "sub") as here,
+            _junction(tmp_path / "j", outside.parent) as there,
+        ):
+            assert _query(tmp_path, f"{here}\\{name}")["verdict"] == "match"
+            with pytest.raises(ConnectorError, match="Permission Error"):
+                _query(tmp_path, f"{there}\\{name}")
+
+    @pytest.mark.parametrize("form", _ELSEWHERE)
+    def test_it_reads_no_query_on_another_machine_or_a_device(
+        self, tmp_path: Path, inside: Path, outside: Path, form: Callable[[Path], str]
+    ) -> None:
+        r"""Ensure a query fails on a file outside the roots written as a share or a device path.
+
+        The server never sees a query's paths, so this holds DuckDB to it. The
+        test cannot tell whether DuckDB reached the machine before it failed.
+        """
+        with pytest.raises(ConnectorError):
+            _query(tmp_path, form(outside))
