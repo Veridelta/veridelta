@@ -28,9 +28,10 @@ import logging
 import os
 import re
 import shutil
+import stat
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, time
 from pathlib import Path
 from typing import (
@@ -70,6 +71,7 @@ from veridelta.connectors.lakehouse import (
     deletion_vector_files,
     delta_log_vectors,
     delta_reads_here,
+    file_at,
 )
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -932,39 +934,40 @@ def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
 
 
 def _copy_checked(source: str, target: Path, seen: os.stat_result | None) -> None:
-    """Copy a file just checked into a table's log copy, when the path still names the file checked.
+    """Copy a file just checked into a table's log copy, when the file opened is the one checked.
 
     `seen` is the file at `source` before the check, or None when none was
-    there, which leaves the copy without it, as the table was. Once the file
-    is open, the path must name the same file, by its device and number, as
-    before the check. Otherwise another file was swapped in, whether before
-    the file was opened or after, so it is refused before it is read: a file
-    opened after such a swap could lie anywhere. Two swaps that bracket the
-    check or the open leave the path naming the same file at both stats, so
-    they pass, as `rules/security.md` says.
+    there, which leaves the copy without it, as the table was. The file
+    opened must be that same file, by its device and number, and a regular
+    file. Otherwise another file was swapped in, before the check or after
+    it, so it is refused before it is read: a file swapped in could lie
+    anywhere. The file is opened without waiting for a writer, so a named
+    pipe is refused, not waited on. Two swaps that bracket the check, one
+    file for the check and the first again by the open, pass, as
+    `rules/security.md` says.
 
     Raises:
-        ValueError: If the path names another file than before the check.
+        ValueError: If the file opened is not the one at the path before the
+            check, or is not a regular file.
     """
     if seen is None:
         return
-    with open(source, "rb") as file:
-        if not os.path.samestat(seen, os.stat(source)):
+    # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe without waiting for a writer.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    with open(os.open(source, flags), "rb") as file:
+        opened = os.fstat(file.fileno())
+        if not os.path.samestat(seen, opened):
             raise ValueError(
                 "a file of the table was replaced as this server checked it, so it reads none "
                 "of the table"
             )
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(
+                "a file of the table is not a regular file, so this server reads none of the table"
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         with open(target, "wb") as copied:
             shutil.copyfileobj(file, copied)
-
-
-def _seen(path: str) -> os.stat_result | None:
-    """Return the file at a path, following its links, or None when none is there."""
-    try:
-        return os.stat(path)
-    except FileNotFoundError:
-        return None
 
 
 def _delta_log(
@@ -992,7 +995,7 @@ def _delta_log(
         for parent, folders, files in os.walk(log):
             for name in sorted(folders + files):
                 path = os.path.join(parent, name)
-                seen = _seen(path) if copy is not None and name in files else None
+                seen = file_at(path) if copy is not None and name in files else None
                 yield "log file", path, True
                 if copy is not None and seen is not None:
                     logs[folder] = copy.folder / str(index)
@@ -1022,6 +1025,10 @@ def _delta_files(
     relative to the table, is copied just after its check into a private
     folder outside every root, and the log read and the table loaded are that
     copy. A file opened for the copy that is not the one checked is refused.
+    deltalake reads a vector that the log stores at its own path where it
+    lies, so the table returned keeps each path it could read one from, with
+    the file there before the check, and the scan refuses the table if a path
+    names another file once deltalake has read the vectors.
 
     A path that starts with `~` is expanded as Polars expands it, and the
     walk reads the expanded path, since deltalake expands only `~` and `~/`
@@ -1078,16 +1085,20 @@ def _delta_files(
         checked = CheckedDeltaTable(table, found, copy)
     for name in checked.table.file_uris():
         yield "data file", checked.located(name), True
+    placed: list[tuple[str, os.stat_result | None]] = []
     for location in deletion_vector_files(checked.table, vectors):
         local = checked.located(location)
         if local == location:
-            # A vector the log stores at its own path, which deltalake reads where it lies.
+            # A vector the log stores at its own path, which deltalake reads where it lies, so
+            # the scan holds each path to the file there before the check.
+            paths = _local_paths(location, f"{side} deletion vector")
+            placed += [(path, file_at(path)) for path in paths]
             yield "deletion vector", location, True
             continue
-        seen = _seen(local)
+        seen = file_at(local)
         yield "deletion vector", local, True
         _copy_checked(local, Path(url2pathname(urlsplit(location).path)), seen)
-    return checked
+    return replace(checked, placed=tuple(placed))
 
 
 def _iceberg_files(

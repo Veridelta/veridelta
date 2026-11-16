@@ -55,7 +55,7 @@ from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
 from veridelta.config import load_config
-from veridelta.connectors import base, database
+from veridelta.connectors import base, database, lakehouse
 from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.lakehouse import (
     DeltaLakeConnector,
@@ -3314,6 +3314,98 @@ class TestLakehouseFiles:
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
         assert not swapped.exists()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows cannot move a file over one a handle holds open."
+    )
+    @pytest.mark.parametrize("replaced", ["log file", "deletion vector"])
+    def test_it_refuses_a_file_swapped_in_for_its_open_alone(
+        self, tmp_path: Path, mocker: MockerFixture, replaced: str
+    ) -> None:
+        """Ensure a file swapped in just for the copy's open, and swapped out right after, is never copied.
+
+        The path names the file checked both before the open and after it, so
+        only the file opened shows the swap.
+        """
+        table, name = tmp_path / "events", uuid.uuid4()
+        _with_vectors(table, {"storageType": "u", "pathOrInlineDv": _relative_vector("", name)})
+        files = {
+            "log file": table / "_delta_log" / f"{1:020}.json",
+            "deletion vector": table / f"deletion_vector_{name}.bin",
+        }
+        files["deletion vector"].write_bytes(_vector_deleting(0))
+        swapped, aside = tmp_path / "swapped", tmp_path / "aside"
+        shutil.copyfile(files[replaced], swapped)
+        opened = os.open
+
+        def swap_for_the_open(path: str | bytes, flags: int, *args: Any, **named: Any) -> int:
+            if Path(os.fsdecode(path)) != files[replaced]:
+                return opened(path, flags, *args, **named)
+            os.replace(path, aside)
+            os.replace(swapped, path)
+            try:
+                return opened(path, flags, *args, **named)
+            finally:
+                os.replace(aside, path)
+
+        mocker.patch.object(os, "open", side_effect=swap_for_the_open)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="was replaced as this server checked it"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert not aside.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no named pipe in a folder.")
+    @pytest.mark.parametrize("name", ["notes", f"{1:020}.json"])
+    def test_it_refuses_a_named_pipe_in_a_delta_log(self, tmp_path: Path, name: str) -> None:
+        """Ensure a named pipe in a table's log is refused at once, not waited on.
+
+        The copy opens each file of the log, and the open of a pipe that no
+        one writes to would wait, and hold every tool call that lists the
+        table, forever.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        os.mkfifo(tmp_path / "events" / "_delta_log" / name)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="is not a regular file"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        Version(pl.__version__) < Version("1.40.0"),
+        reason="Polars reads a table with deletion vectors from 1.40.0 on, so an older one "
+        "refuses the table before any vector is read.",
+    )
+    def test_it_refuses_a_vector_at_its_own_path_replaced_before_deltalake_reads_it(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a scan refuses a table whose vector at its own path is another file once deltalake read it.
+
+        deltalake reads such a vector where the log stores it, as the scan
+        starts, so a file renamed over it after its check would choose which
+        rows the scan drops, from a file no check saw.
+        """
+        vector, swapped = tmp_path / "vector.bin", tmp_path / "swapped"
+        for each in (vector, swapped):
+            each.write_bytes(_vector_deleting(0))
+        stored = {"storageType": "p", "pathOrInlineDv": vector.as_uri()}
+        _with_vectors(tmp_path / "events", {**stored, "sizeInBytes": vector.stat().st_size - 9})
+        read = lakehouse._deleted_rows  # pyright: ignore[reportPrivateUsage] - the hook replaces the vector just before deltalake reads it
+
+        def replace_then_read(table: DeltaTable) -> dict[str, list[int]]:
+            os.replace(swapped, vector)
+            return read(table)
+
+        mocker.patch.object(lakehouse, "_deleted_rows", side_effect=replace_then_read)
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        with pytest.raises(ConnectorError, match="was replaced as this server checked it"):
+            describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
 
     def test_it_copies_no_log_under_a_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
