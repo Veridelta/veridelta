@@ -1,0 +1,18 @@
+---
+type: Decision
+title: The MCP server masks the credentials its readers take from its environment
+description: Why veridelta mcp records a listed set of credential variables in their slot's shape, reads token files at each call, and blanks S3's echo elements, chosen over masking by prefix, scrubbing the environment, a flag, or withholding messages.
+status: stable
+decided: 2026-11-17
+generated: { by: claude-code, at: 2026-11-17T19:30:00Z }
+---
+
+**Claim:** On `veridelta mcp`, the server records, as it starts, each credential variable in `_ENVIRONMENT_SLOTS` that a reader takes from its environment with no `${NAME}`, in the shape a `${NAME}` in the same setting needs, and refuses to start when one lacks it. It records the token in each file a token file variable names at every call, since such a file rotates. `_mask` first blanks each element of an S3 error that repeats a credential, since a reader can sign with one the server never sees.
+
+**Evidence:** Through the MCP client on origin/main, real Polars and real deltalake read a side from a loopback store that refuses each request as S3 does. Its error repeated `AWS_SESSION_TOKEN`, `AWS_TOKEN`, and `AWS_ACCESS_KEY_ID` in `<Token-0>`, `<AWSAccessKeyId>`, and `<CanonicalRequest>`, unmasked, with `--allow-row-values`. With only `AWS_SHARED_CREDENTIALS_FILE` set, Polars sent the profile's token and key id, which came back in the same elements. Polars at `az://`, with `AZURE_CLIENT_SECRET` and `AZURE_AUTHORITY_HOST` at the store, sent its token request's form body, which came back with `AZURE_CLIENT_ID`, and the secret with `~` written as `%7E`, a form the mask did not match. `tests/integration/test_mcp_environment_echo.py` holds each probe, with a control that turns the record and the blanking off and shows each echo. `TestEnvironmentCredentials` in `tests/unit/test_mcp_server.py` echoes every listed variable raw, upper-cased, percent-encoded, form-encoded, as bytes in hex, and inside `<Token-0>`, through three tools. It also covers the refusals, a rotated token file, a Google key's fields, and the blanking. ConnectorX reads none of `PGPASSWORD`, `MYSQL_PWD`, `MSSQL_PASSWORD`, and `SQLCMDPASSWORD`, as its binary and a probe show, and Veridelta passes Snowflake and Databricks every setting as an argument, so those are left out.
+
+**Alternative considered:** Record every variable whose name looks secret, or every variable under a prefix such as `AWS_` or `AZURE_`. A second alternative scrubs the server's environment of credentials as it starts. A third refuses to start with any credential in the environment unless a flag allows it. A fourth withholds every reader message once a credential sits in the environment.
+
+**Why rejected:** A prefix records settings that are no secret, such as `AWS_ALLOW_HTTP=true` or a region, so the mask hides `true` in every answer, widens the guess oracle, and holds no value to a shape an echo keeps. Scrubbing breaks MotherDuck, Hugging Face, and CI jobs that sign in through the environment, and still leaves a profile, SSO, and the instance role open. A flag moves the risk to the operator and leaves the echo unmasked once it is given. Withholding makes the server unable to say why any credentialed read failed, even with `--allow-row-values`.
+
+**How to reverse:** In `src/veridelta/mcp_server.py`, drop the seed from `_environment_values` and `_token_file_values` in `build_server`, the `_token_file_values` call in `_answer`, and the `_without_echoed_credentials` call in `_mask`. Then delete `TestEnvironmentCredentials`, `tests/integration/test_mcp_environment_echo.py`, and the bullets in `docs/agents.md` that describe the mask over the environment.
