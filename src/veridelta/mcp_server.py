@@ -186,20 +186,23 @@ _ENDPOINT_OPTIONS: Final = frozenset(
 )
 """Storage option keys, in lowercase, whose value names an endpoint, with or without a scheme."""
 
-_NAME_OPTIONS: Final = frozenset(
+_BUCKET_OPTIONS: Final = frozenset(
     {
-        "account_name",
-        "adls.account-name",
         "aws_bucket",
         "aws_bucket_name",
         "azure_container_name",
-        "azure_storage_account_name",
         "bucket",
         "bucket_name",
         "container_name",
         "google_bucket",
         "google_bucket_name",
     }
+)
+"""Storage option keys, in lowercase, whose value names a bucket or a container,
+which a tool passes on only in lowercase, as `_refuse_capital_bucket` says."""
+
+_NAME_OPTIONS: Final = _BUCKET_OPTIONS | frozenset(
+    {"account_name", "adls.account-name", "azure_storage_account_name"}
 )
 """Storage option keys, in lowercase, whose value names a bucket, a container, or an
 account, which a reader writes into the request's host or path."""
@@ -421,6 +424,9 @@ A destination counts as allowed only when it equals one of them, so a host
 written any other way, such as with a percent sign, is refused rather than read
 as a driver might read it."""
 
+_CAPITAL: Final = re.compile(r"[A-Z]")
+"""A capital letter in ASCII, which a bucket or a container may not hold on the server."""
+
 _GLOB_CHARACTERS: Final = frozenset("*?[")
 """Characters that make Polars read a local path as a pattern, which it expands
 into the files it opens."""
@@ -494,8 +500,8 @@ class Settings:
             runs as written with the configuration's credentials. A DuckDB file
             still reads other files only from under the roots, and on Windows
             none at all. Defaults to False.
-        allowed_hosts (tuple[str, ...]): The hosts a side may connect to, in
-            lowercase on creation. A side that names any other host, such as a
+        allowed_hosts (tuple[str, ...]): The hosts a side may connect to, each
+            in lowercase, as `allowed_host` checks on creation. A side that names any other host, such as a
             database server, an object store's bucket, or a URL's host, is
             refused before it connects. Defaults to none, so every tool reads
             only data on this machine, MotherDuck, Hugging Face, or BigQuery with
@@ -513,7 +519,7 @@ class Settings:
 
         Raises:
             ConfigError: If no root is given, `max_rows` is below 1, or an
-                allowed host is not a host.
+                allowed host is not a host in lowercase.
         """
         if not self.roots:
             raise ConfigError("The MCP server needs at least one folder to read from.")
@@ -526,25 +532,37 @@ class Settings:
 
 
 def allowed_host(text: str) -> str:
-    """Check a host the person who starts the server allows, and write it in lowercase.
+    """Check a host the person who starts the server allows, which is in lowercase.
+
+    `_refuse_host` compares a side's host in lowercase, as DNS does. A reader
+    keeps a bucket's case, though, as `_refuse_capital_bucket` says, and the
+    server cannot tell a bucket from a DNS name here. So it takes a host only
+    in lowercase: writing `LAKE` in lowercase would allow bucket `lake`,
+    another bucket, which nobody named.
 
     Args:
         text (str): A host name, an IPv4 address, or an IPv6 address in
-            brackets, with no scheme, login, or port.
+            brackets, with no scheme, login, or port, in lowercase.
 
     Returns:
-        str: The host in lowercase.
+        str: The host, as given.
 
     Raises:
         ConfigError: If the text is not a host written that way.
     """
-    host = text.lower()
-    if not text.isascii() or _HOST.fullmatch(host) is None:
+    if not text.isascii() or _HOST.fullmatch(text.lower()) is None:
         raise ConfigError(
             f"--allow-host takes a host name, an IPv4 address, or an IPv6 address in "
             f"brackets, with no scheme or port, got {text!r}."
         )
-    return host
+    if _CAPITAL.search(text):
+        raise ConfigError(
+            f"--allow-host takes a host in lowercase, got {text!r}. A bucket named in "
+            "another case is another bucket, so the server does not lowercase it. Write a "
+            "DNS name in lowercase. A bucket with a capital letter does not open on this "
+            "server, so read it with veridelta run."
+        )
+    return text
 
 
 class RunReport(TypedDict):
@@ -764,18 +782,21 @@ def _refuse_opened(settings: Settings, location: str, remote: bool) -> None:
     directory, and with no `~` expanded. PyArrow drops a folder and the `..`
     after it before it follows a link, so the path must lie under a root read
     either way. A file on another machine is held to the allowed hosts, and
-    may hold no `.` or `..` segment, as a configuration's location is. The
-    message leaves the file out, since the table's files named it.
+    may hold no `.` or `..` segment, nor a capital letter in its bucket or
+    container, as a configuration's location is. The message leaves the file
+    out, since the table's files named it.
 
     Raises:
         ConfigError: If the path lies outside every root, or the file on a host
-            the server does not allow, or with a `.` or `..` segment.
+            the server does not allow, with a `.` or `..` segment, or with a
+            capital letter in its bucket or container.
     """
     if remote:
         named = "A file that a lakehouse scan was about to open"
         _refuse_dot_segment(named, location, _NAMED_FILE)
         for _, host in _location_hosts("file", location, _NAMED_FILE):
             _refuse_host(settings, named, host)
+        _refuse_capital_bucket(named, location, _NAMED_FILE)
     elif not _under_both_readings(settings, location):
         raise ConfigError(
             "A Delta Lake or Iceberg scan was about to open a file outside the folders this "
@@ -1615,7 +1636,8 @@ def _refuse_listed(
     location out, since a file named it. The message about a path quotes it
     when `quoted`, or on a server that allows row values, since a path a
     table's files name is a value from them, such as a partition's. A file
-    on another machine may hold no `.` or `..` segment, as `_refuse_dot_segment` says.
+    on another machine may hold no `.` or `..` segment, as `_refuse_dot_segment` says,
+    and its bucket or container no capital letter, as `_refuse_capital_bucket` says.
     """
     quoted = quoted or settings.allow_row_values
     for local in _local_paths(location, f"{side} {setting}"):
@@ -1623,6 +1645,7 @@ def _refuse_listed(
     _refuse_dot_segment(f"The {side} {setting}", location, _NAMED_FILE)
     for _, host in _location_hosts(setting, location, _NAMED_FILE):
         _refuse_host(settings, f"The {side} {setting}", host)
+    _refuse_capital_bucket(f"The {side} {setting}", location, _NAMED_FILE)
 
 
 def _checked_delta_table(settings: Settings, config: DeltaLakeConfig) -> CheckedDeltaTable:
@@ -1995,8 +2018,9 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     different places. An endpoint is refused with a path, by
     `_refuse_endpoint_path`, and over plain HTTP, by `_refuse_plain_http`.
     A location on another machine may hold no `.` or `..` segment, as
-    `_refuse_dot_segment` says. The message names the setting and not the
-    host, which can hold such a value.
+    `_refuse_dot_segment` says, and a bucket or a container no capital
+    letter, as `_refuse_capital_bucket` says. The message names the setting
+    and not the host, which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
@@ -2007,6 +2031,9 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
         for setting, host, form in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host, form)
         _refuse_plain_http(side, config)
+        for setting, location in _named_locations(config):
+            _refuse_capital_bucket(f"The {side} {setting}", location)
+        _refuse_capital_option(side, config)
 
 
 def _refuse_dot_segment(named: str, location: str, shape: re.Pattern[str] = _URL) -> None:
@@ -2037,6 +2064,61 @@ def _refuse_dot_segment(named: str, location: str, shape: re.Pattern[str] = _URL
             "before it, and so read one this server did not check, so a tool does not pass "
             "it on. Write the location without the segment."
         )
+
+
+def _refuse_capital_bucket(named: str, location: str, shape: re.Pattern[str] = _URL) -> None:
+    """Refuse a location on another machine whose bucket or container holds a capital letter.
+
+    `_refuse_host` compares a host with the allowed ones in lowercase, as DNS
+    does. A URL parser lowercases the host of `http`, `https`, and the other
+    special schemes, but keeps the case of any other scheme's authority. So
+    do object_store, behind Polars and deltalake, and PyIceberg's
+    `parse_location`, and each writes it into the request as the bucket or
+    the container: `s3://LAKE/x` reads bucket `LAKE`, and not `lake`. A legacy
+    S3 bucket in `us-east-1` may hold capital letters, so that is another
+    bucket. The server cannot tell which scheme's reader takes its authority
+    as a DNS name, as `hdfs` does, so it refuses a capital letter after any
+    of them. In an Azure `container@host`, only the container counts, since
+    the host is the account's DNS name. A caller runs this after
+    `_refuse_host`, which checks the host's shape first. The message names
+    the setting or the file in `named`, and not the location, which can hold
+    a value from a table's files.
+
+    Raises:
+        ConfigError: If the first host `_location_hosts` names for a scheme
+            other than a special one holds a capital letter in ASCII.
+    """
+    parts = _split(location)
+    hosts = _location_hosts("", location, shape)
+    special = parts is not None and parts.scheme in _SPECIAL_SCHEMES
+    if hosts and not special and _CAPITAL.search(hosts[0][1]):
+        raise ConfigError(
+            f"{named} names its bucket, container, or host with a capital letter. A reader "
+            "keeps the case of that name for any scheme whose host a URL parser does not "
+            "lowercase, such as s3, and a bucket named in another case is another bucket, "
+            "which this server did not check. Write the name in lowercase."
+        )
+
+
+def _refuse_capital_option(side: str, config: SourceRef) -> None:
+    """Refuse a storage option that names a bucket or a container with a capital letter.
+
+    A reader keeps the case of a bucket or a container, as
+    `_refuse_capital_bucket` says, while `_refuse_host` compares it in
+    lowercase. The message names the option and not its value, which can
+    hold a `${NAME}` value.
+
+    Raises:
+        ConfigError: If an option in `_BUCKET_OPTIONS` holds a capital letter in ASCII.
+    """
+    for key, text in _host_option_values(config):
+        if str(key).lower() in _BUCKET_OPTIONS and _CAPITAL.search(text):
+            raise ConfigError(
+                f"The {side} storage option '{key}' names a bucket or a container with a "
+                "capital letter. A reader keeps its case, and a bucket named in another case "
+                "is another bucket, which this server did not check. Write the name in "
+                "lowercase."
+            )
 
 
 def _refuse_host(

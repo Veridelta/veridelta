@@ -1287,14 +1287,24 @@ class TestMCPCommand:
         assert build_parser().parse_args(["mcp"]).allow_queries is False
         assert build_parser().parse_args(["mcp", "--allow-queries"]).allow_queries is True
 
-    def test_it_takes_each_allowed_host_in_lowercase(self) -> None:
+    def test_it_takes_each_allowed_host(self) -> None:
         """Ensure `--allow-host` repeats, and no host is allowed unless it is given."""
         args = build_parser().parse_args(
-            ["mcp", "--allow-host", "DB.Example.com", "--allow-host", "10.0.0.5"]
+            ["mcp", "--allow-host", "db.example.com", "--allow-host", "10.0.0.5"]
         )
 
         assert args.allow_host == ["db.example.com", "10.0.0.5"]
         assert build_parser().parse_args(["mcp"]).allow_host is None
+
+    def test_it_refuses_an_allowed_host_with_a_capital_letter(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Ensure `--allow-host LAKE` is an argument error, and does not allow bucket `lake`."""
+        with pytest.raises(SystemExit) as stopped:
+            build_parser().parse_args(["mcp", "--allow-host", "LAKE"])
+
+        assert stopped.value.code == 2
+        assert "--allow-host takes a host in lowercase" in capsys.readouterr().err
 
     def test_it_refuses_an_allowed_host_with_a_scheme(
         self, capsys: pytest.CaptureFixture[str]
