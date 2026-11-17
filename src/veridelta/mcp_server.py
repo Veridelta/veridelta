@@ -2008,6 +2008,16 @@ trims, and none changes with the text's encoding."""
 _UNRESERVED: Final = re.compile(r"[A-Za-z0-9._~-]+")
 """A uri's user or password whose raw, encoded, and decoded forms are the same text."""
 
+_LONGEST_URI_USER: Final = 32
+"""The most characters a uri user from the environment may hold.
+
+A database can cut a user name before it repeats the name in an error, and
+the mask matches only a whole value. No supported database cuts a name of 32
+characters or fewer: MySQL keeps 32 characters, PostgreSQL 63 bytes, Redshift
+127 bytes, and SQL Server and Oracle 128. MySQL before 5.7.8 kept 16, and is
+out of support. A uri user is in `_UNRESERVED`'s shape, ASCII, so its
+characters are its bytes."""
+
 _SAS_NAMES: Final = frozenset(
     {
         "sv", "ss", "srt", "sp", "se", "st", "sip", "spr", "sig", "sr", "si", "sdd", "ses",
@@ -2099,6 +2109,27 @@ def _slot(reference: Reference, match: re.Match[str]) -> _Slot | None:
     return next((slot for keys, slot in _OPTION_SLOTS if key in keys), None)
 
 
+def _uri_part_needed(slot: _Slot, value: str) -> str | None:
+    """Say what shape a uri's user or password needs, or None when it has it."""
+    if _UNRESERVED.fullmatch(value) is None:
+        unreserved = (
+            "letters, digits, '.', '_', '~', and '-' only, so the uri reads the same encoded or "
+            "decoded"
+        )
+        if slot == "uri user":
+            return unreserved
+        return (
+            f"{unreserved}. Put a password with other characters in the side's 'password' setting"
+        )
+    if slot == "uri user" and len(value) > _LONGEST_URI_USER:
+        return (
+            f"at most {_LONGEST_URI_USER} characters, since a database can cut a longer user "
+            "name in its error, where the mask cannot match it. Write a longer user in the "
+            "file, or put a token in the side's 'password' setting"
+        )
+    return None
+
+
 def _shape_needed(slot: _Slot, value: str) -> str | None:
     """Say what shape a slot's value needs, or None when it has it.
 
@@ -2109,7 +2140,10 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
     try:
         value.encode()
     except UnicodeEncodeError:
-        return "text in UTF-8, since the server cannot mask bytes outside it"
+        return (
+            "text in UTF-8, since a driver cannot send other bytes as text, and a reader can "
+            "repeat them in forms no mask matches"
+        )
     if slot in ("secret", "token", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
         return f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
     if slot == "token" and _TOKEN.fullmatch(value) is None:
@@ -2124,16 +2158,8 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
             "a login name of letters, digits, '.', '_', '@', and '-' that starts with a letter "
             "or a digit, since a service can repeat it in other forms"
         )
-    if slot in ("uri user", "uri password") and _UNRESERVED.fullmatch(value) is None:
-        unreserved = (
-            "letters, digits, '.', '_', '~', and '-' only, so the uri reads the same encoded or "
-            "decoded"
-        )
-        if slot == "uri user":
-            return unreserved
-        return (
-            f"{unreserved}. Put a password with other characters in the side's 'password' setting"
-        )
+    if slot in ("uri user", "uri password"):
+        return _uri_part_needed(slot, value)
     if slot == "sas" and not _is_sas_token(value):
         return (
             "an Azure SAS token: name=value parameters joined by '&', such as sv=...&sig=..., "
@@ -2250,10 +2276,11 @@ def check_configuration(
 
     A `${NAME}` outside a credential setting is an error, as the server loads
     every file. Unless the server allows row values, a finding leaves out what
-    Polars, a reader, or a driver said about a schema read that failed. Each
-    finding has the values the server expanded masked, and then each URL in it
-    loses its query, which can hold a credential the reader signed with. The
-    masking comes first, so a value that holds a `?` is masked whole.
+    Polars, a reader, or a driver said about a schema read that failed. In a
+    tool call, each finding has the values the server expanded masked, and
+    then each URL in it loses its query, which can hold a credential the
+    reader signed with. The masking comes first, so a value that holds a `?`
+    is masked whole. A direct call records no value, so it masks nothing.
 
     Args:
         settings (Settings): The roots and the row values the server was started with.
@@ -2603,47 +2630,19 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
     )
 
 
-_SHORTEST_CUT: Final = 16
-"""The fewest characters or bytes of a value whose head the mask matches.
-
-A database cuts a user name before it repeats the name in an error, each to
-a length of its own: MySQL keeps 16 characters before 5.7.8 and 32 after,
-PostgreSQL 63 bytes, Redshift 127, and SQL Server 128 characters. So no list
-of lengths holds every cut, and the mask matches every head from this one up.
-"""
-
-
-def _shortest_head(value: str) -> str:
-    """Return the shortest head of a value the mask matches: its first 16 characters or bytes.
-
-    A cut in bytes that ends inside a character drops that character, so the
-    head of 16 bytes is the shorter of the two.
-    """
-    return value.encode(errors="surrogateescape")[:_SHORTEST_CUT].decode(errors="ignore")
-
-
-def _head_end(text: str, start: int, value: str) -> int:
-    """Return where the longest head of a value that the text holds at `start` ends, in any case.
-
-    A head shorter than `_shortest_head` ends where it starts, so it masks nothing.
-    """
-    held = 0
-    for ours, theirs in zip(text[start : start + len(value)], value, strict=False):
-        if ours.casefold() != theirs.casefold():
-            break
-        held += 1
-    return start + held if held >= len(_shortest_head(value)) else start
-
-
 @functools.lru_cache(maxsize=8)
 def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     """Join every form of the recorded values into one pattern, longest first, in any case.
 
     A value's forms are its text, its percent-encoding, its bytes in hex
     with a space between each, as S3 writes a request it could not verify,
-    the `sig` of a SAS token, and its shortest head that `_mask` extends,
-    since a database can cut a user name at any length. A byte outside UTF-8
-    is encoded as it was read, so no value stops the pattern from being built.
+    and the `sig` of a SAS token. A byte outside UTF-8 is encoded as it was
+    read, so no value stops the pattern from being built.
+
+    No head of a value is a form. A head would let an agent learn a value one
+    character per call, by naming guesses as columns and seeing which come
+    back masked, and tokens of one kind share their opening, such as a JWT's
+    header, so a head would mask other data for as long as the server runs.
     """
     forms = {
         form
@@ -2653,7 +2652,6 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
             quote(value, safe="", errors="surrogateescape"),
             value.encode(errors="surrogateescape").hex(" "),
             *_sas_signatures(value),
-            _shortest_head(value),
         )
         if len(form) >= _SHORTEST_MASKED
     }
@@ -2670,21 +2668,12 @@ def _mask(text: str) -> str:
 
     It reads the recorded values when the answer is built, so a value a
     reader echoes in a later call, such as from Polars' cache of object
-    stores, is masked there too. A match that starts a value's head runs on
-    over each character that continues the value, so a name a database cut
-    at any length of 16 characters or bytes or more is masked whole.
+    stores, is masked there too.
     """
     with _RECORDING:
         values = frozenset(_RECORDED.get() or ())
     pattern = _mask_pattern(values)
-    if pattern is None:
-        return text
-    kept: list[str] = []
-    end = 0
-    while (match := pattern.search(text, end)) is not None:
-        kept += (text[end : match.start()], "***")
-        end = max(match.end(), *(_head_end(text, match.start(), value) for value in values))
-    return "".join((*kept, text[end:]))
+    return text if pattern is None else pattern.sub("***", text)
 
 
 def _masked(value: Any) -> Any:

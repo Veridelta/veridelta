@@ -6200,6 +6200,13 @@ class TestEnvironmentReferences:
                 id="password-outside-utf-8",
             ),
             pytest.param(
+                '  type: database\n  uri: "postgresql://${KEY}:wrongpw1@db.internal/sales"\n'
+                "  table: orders\n",
+                {"KEY": "LedgerReaderForTheSalesTeamQ2026x"},
+                "the value of ${KEY} in source -> uri must be at most 32 characters",
+                id="uri-user-a-database-can-cut",
+            ),
+            pytest.param(
                 "  path: a.csv\n  options: {row_index_name: '${KEY}'}\n",
                 {},
                 "source -> options -> row_index_name cannot take ${KEY}",
@@ -6392,78 +6399,115 @@ class TestEnvironmentReferences:
         for value in ("Ledger_Reader", "Hunter2-SECRET_pass"):
             assert not _holds_a_form(_shown(read), value)
 
-    def test_it_masks_the_head_of_a_user_name_a_database_cuts(
+    def test_it_takes_a_uri_user_of_32_characters_and_masks_it(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
-        """Ensure the head of a long uri user that a database repeats in its error is masked.
+        """Ensure a uri user of 32 characters loads, and is masked where a driver repeats it.
 
-        PostgreSQL cuts a user name to 63 bytes and MySQL to 32 characters
-        before each writes it into its error, so the whole value never appears.
+        No supported database cuts a user name this short before it writes the
+        name into its error, so the error holds the whole value.
         """
-        token = "ya29.a0AfB_byC1234567890SECRETabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        monkeypatch.setenv("KEY", token)
+        user = "LedgerReaderForTheSalesTeamQ2026"
+        monkeypatch.setenv("VDUSER", user)
         mocker.patch(
             "veridelta.connectors.database.pl.read_database_uri",
-            side_effect=RuntimeError(
-                f'FATAL: password authentication failed for user "{token[:63]}"; '
-                f"Access denied for user '{token[:32]}'@'10.0.0.5'"
-            ),
+            side_effect=RuntimeError(f'FATAL: password authentication failed for user "{user}"'),
         )
         _with_source(
             tmp_path,
-            '  type: database\n  uri: "postgresql://${KEY}@db.internal/sales"\n  table: orders\n',
+            '  type: database\n  uri: "postgresql://${VDUSER}:wrongpw1@db.internal/sales"\n'
+            "  table: orders\n",
         )
+        settings = Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True)
 
-        read = _call(
-            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
-            {"path": "veridelta.yaml", "schemas": True},
-        )
+        checked = _call(settings, {"path": "veridelta.yaml"})
+        read = _call(settings, {"path": "veridelta.yaml", "schemas": True})
 
-        assert "failed for user \\\"***\\\"; Access denied for user '***'@" in _shown(read)
-        assert token[:16] not in _shown(read)
-
-    @pytest.mark.parametrize("cut", [17, 48, 80, 127, 150])
-    def test_it_masks_a_user_name_cut_at_any_length(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, cut: int
-    ) -> None:
-        """Ensure a uri user a database cuts at a length of its own comes back masked whole.
-
-        Redshift cuts a user name to 127 bytes, and MySQL's messages to 48
-        characters, so no list of lengths holds every cut.
-        """
-        token = "Tok" + "".join(chr(ord("a") + index % 26) for index in range(190)) + "END"
-        monkeypatch.setenv("VDUSER", token)
-        mocker.patch(
-            "veridelta.connectors.database.pl.read_database_uri",
-            side_effect=RuntimeError(
-                f'FATAL: password authentication failed for user "{token[:cut].upper()}"'
-            ),
-        )
-        _with_source(
-            tmp_path,
-            '  type: database\n  uri: "redshift://${VDUSER}:wrongpw1@db.internal/dev"\n'
-            "  table: t\n",
-        )
-
-        read = _call(
-            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
-            {"path": "veridelta.yaml", "schemas": True},
-        )
-
+        assert len(user) == 32
+        assert checked.structured_content is not None
+        assert checked.structured_content["valid"] is True
         assert 'failed for user \\"***\\"' in _shown(read)
+        assert not _holds_a_form(_shown(read), user)
 
-    def test_it_masks_a_head_only_as_far_as_the_value_goes(self) -> None:
-        """Ensure a head is masked up to where the text leaves the value, and no further."""
-        values = {"Ledger_Reader_for_sales_2026", "Ledger_Reader_for_sales_2027_q4"}
-        token = mcp_server._RECORDED.set(values)  # pyright: ignore[reportPrivateUsage]  # the recorded values are private to the server
-        try:
-            masked = mcp_server._mask(  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
-                "user LEDGER_READER_FOR_SALES_2027_x, user Ledger_Reader_for_sal, user Ledger_Reader"
-            )
-        finally:
-            mcp_server._RECORDED.reset(token)  # pyright: ignore[reportPrivateUsage]  # the recorded values are private to the server
+    def test_it_leaves_a_token_that_shares_an_opening_with_a_recorded_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a recorded JWT leaves another JWT with the same header as it is.
 
-        assert masked == "user ***x, user ***, user Ledger_Reader"
+        Every JWT signed the same way opens with the same header, so a mask of
+        a value's head would garble other data for as long as the server runs.
+        """
+        header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        recorded = header + "eyJzdWIiOiJsZWRnZXIifQ.c2lnbmF0dXJlTGVkZ2Vy"
+        other = header + "eyJzdWIiOiJvdGhlciJ9.b3RoZXJTaWduYXR1cmU"
+        monkeypatch.setenv("VD_TOKEN", recorded)
+        _with_source(tmp_path, "  path: a.csv\n")
+        (tmp_path / "a.csv").write_text(f"id,{other}\n1,2\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  type: duckdb\n  database: 'md:sales'\n  table: t\n"
+            "  motherduck_token: ${VD_TOKEN}\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            "one.yaml",
+        )
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool("validate_config", {"path": "one.yaml"}),
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+            ]
+
+        loaded, later = _with_client(Settings((tmp_path,)), work)
+
+        assert loaded.structured_content is not None
+        assert loaded.structured_content["valid"] is True
+        assert later.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", other: "Int64"},
+        }
+
+    def test_it_masks_no_prefix_of_a_recorded_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a guess at a value's head, named as a column, comes back as written.
+
+        An agent could otherwise name guessed heads as columns of another
+        configuration and see which come back masked, learning a value one
+        character per call. Only a guess of the whole value is masked.
+        """
+        token = "dapiQ7f3e9a1b2c4d6e8f0a1b2c3d4e5f6"
+        heads = [token[:16], token[:24].upper(), token[:-1]]
+        monkeypatch.setenv("VD_TOKEN", token)
+        _with_source(tmp_path, "  path: a.csv\n")
+        (tmp_path / "a.csv").write_text(
+            ",".join(["id", *heads, token]) + "\n1,2,3,4,5\n", encoding="utf-8"
+        )
+        _write(
+            tmp_path,
+            "source:\n  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+            "  table: orders\n  password: ${VD_TOKEN}\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            "one.yaml",
+        )
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool("validate_config", {"path": "one.yaml"}),
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+            ]
+
+        loaded, later = _with_client(Settings((tmp_path,)), work)
+
+        assert loaded.structured_content is not None
+        assert loaded.structured_content["valid"] is True
+        assert later.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", **dict.fromkeys(heads, "Int64"), "***": "Int64"},
+        }
 
     def test_it_builds_a_mask_for_a_value_outside_utf_8(self) -> None:
         """Ensure a recorded value with a byte outside UTF-8 still gives a mask, as its bytes read."""
@@ -6772,13 +6816,19 @@ class TestEnvironmentReferences:
         assert f"source -> {field} cannot take ${{VD_X}}" in report["errors"][0]
 
     def test_it_loads_a_file_only_through_its_own_check(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
-        """Ensure the server never loads a file through `load_config`, which takes no hook."""
+        """Ensure the server loads a file only with its hook, never through `load_config`.
+
+        Every module that binds `load_config` gets one that fails, and the hook
+        must see the file's reference, so a load without it fails the test.
+        """
         monkeypatch.setenv("PW", _SECRET)
-        monkeypatch.setattr(
-            "veridelta.config.load_config", MagicMock(side_effect=AssertionError("loaded"))
-        )
+        for module in ("veridelta", "veridelta.config", "veridelta.engine", "veridelta.cli"):
+            monkeypatch.setattr(
+                f"{module}.load_config", MagicMock(side_effect=AssertionError("loaded"))
+            )
+        hook = mocker.spy(mcp_server, "_record_and_check")
         _with_source(tmp_path, "  path: b.csv\n" + _STORE_PASSWORD)
         settings = Settings((tmp_path,))
 
@@ -6788,6 +6838,7 @@ class TestEnvironmentReferences:
         assert checked.structured_content is not None
         assert checked.structured_content["valid"] is True
         assert ran.is_error is False
+        assert [call.args[0].name for call in hook.call_args_list] == ["PW", "PW"]
 
     @pytest.mark.parametrize("row_values", [False, True], ids=["no-rows", "rows"])
     @pytest.mark.parametrize(
