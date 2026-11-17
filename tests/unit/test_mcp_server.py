@@ -6429,6 +6429,42 @@ class TestEnvironmentReferences:
         assert 'failed for user \\"***\\"' in _shown(read)
         assert not _holds_a_form(_shown(read), user)
 
+    @pytest.mark.parametrize(
+        "side",
+        [
+            pytest.param(
+                '  uri: "postgresql://${VDUSER}:e@db.internal/sales"\n', id="uri-password"
+            ),
+            pytest.param(
+                '  uri: "postgresql://${VDUSER}@db.internal/sales"\n  password: e\n',
+                id="password-setting",
+            ),
+        ],
+    )
+    def test_it_masks_a_value_whole_before_the_reader_masks_a_shorter_secret(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, side: str
+    ) -> None:
+        """Ensure a password written in the file cannot split a recorded value before the mask.
+
+        The reader masks its own password in a driver's message. A password of
+        one letter, masked first, would cut the user from `${VDUSER}` into
+        pieces the mask no longer finds whole, and a call for each letter
+        would give the rest of it.
+        """
+        user = "LedgerReaderForTheSalesTeamQ2026"
+        monkeypatch.setenv("VDUSER", user)
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(f'FATAL: password authentication failed for user "{user}"'),
+        )
+        _with_source(tmp_path, f"  type: database\n{side}  table: orders\n")
+        settings = Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True)
+
+        read = _call(settings, {"path": "veridelta.yaml", "schemas": True})
+
+        assert 'fail***d for us***r \\"***\\"' in _shown(read)
+        assert "q2026" not in _shown(read).casefold()
+
     def test_it_leaves_a_token_that_shares_an_opening_with_a_recorded_one(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -59,6 +59,7 @@ from veridelta._checks import error_from_exception, unset_variable_findings
 from veridelta.config import Reference, load_config_with_hook
 from veridelta.connectors.base import (
     mask_secrets,
+    masking_first,
     names_another_machine,
     shown_location,
     without_location,
@@ -2709,7 +2710,10 @@ def _answer(
     token = _RECORDED.set(recorded)
     try:
         try:
-            result = work()
+            # A reader masks its own secrets in a driver's message, and one written
+            # in the file can be a single letter, so each value is masked whole first.
+            with masking_first(_mask):
+                result = work()
         except (Exception, PanicException) as exc:
             # A panic in Polars is no `Exception`, and would stop the server instead.
             failure = _failure(exc, row_values=row_values)
