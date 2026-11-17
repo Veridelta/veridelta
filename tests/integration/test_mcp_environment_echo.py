@@ -284,9 +284,6 @@ def _answers(name: str, folder: str, endpoint: str, control: bool) -> list[str]:
     bucket = f"bkt-{name}"
     if case.delta:
         source = f"  type: delta\n  table_uri: {case.scheme}://{bucket}/t\n"
-        # deltalake's storage handler lists nothing from a store on this machine and never
-        # returns, so the walk of the log is skipped. The table's own load still runs.
-        setattr(mcp_server, "delta_log_vectors", lambda *_: [])  # noqa: B010 - as above
     else:
         source = f"  path: {case.scheme}://{bucket}/a.parquet\n"
     (root / "b.csv").write_text("id\n1\n", encoding="utf-8")
@@ -315,6 +312,11 @@ def _in_a_child(name: str, folder: Path, endpoint: str, *, control: bool = False
     the environment for as long as the process runs. A later test that changes
     the environment at the same moment would crash the suite's process, so
     each case reads in a process of its own.
+
+    The store must answer from another process than the reader's, too.
+    deltalake's storage handler, which walks a remote table's log, holds
+    Python's lock while it waits on the store, so a store in the reader's
+    process would never answer.
     """
     with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
         return pool.submit(_answers, name, str(folder), endpoint, control).result()
