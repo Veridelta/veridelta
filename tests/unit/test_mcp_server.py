@@ -6468,8 +6468,8 @@ class TestServer:
     ) -> None:
         """Ensure a finding that quotes a value from `${NAME}` with a query comes back masked whole.
 
-        A finding loses each URL's query before the answer is masked, so the
-        value counts without its query too.
+        The value is masked where the finding quotes it, before the URL's
+        query is left out, so the rest of the URL matches it too.
         """
         value = f"postgresql://analyst:{_SECRET}@db.internal/sales?sslmode=require"
         monkeypatch.setenv("VD_MCP_URL", value)
@@ -6491,7 +6491,7 @@ class TestServer:
         assert result.structured_content["errors"] == ["cannot open '***'"]
 
     def test_it_masks_the_longer_of_two_values_that_overlap(self) -> None:
-        """Ensure the longer of two overlapping values is masked whole, and a short form is not one.
+        """Ensure all that two overlapping values cover is masked, and a short form is not one.
 
         A value that is all query has a form without it too short to mask, so
         ordinary text such as `://` stays.
@@ -6504,7 +6504,129 @@ class TestServer:
             ["analystVeryLongSecretPassword", "s3://b/x", "://?abcd"], secrets
         )
 
-        assert masked == ["anal***", "s3://b/x", "***"]
+        assert masked == ["***", "s3://b/x", "***"]
+
+    @pytest.mark.parametrize(
+        ("value", "column", "hidden"),
+        [
+            pytest.param(f"{_SECRET}?9x", "x://${VD_MCP_URL}", "x://***", id="query-in-value"),
+            pytest.param(
+                "correct horse battery staple",
+                "zz x://?${VD_MCP_URL}",
+                "zz x://***",
+                id="value-in-query",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
+    def test_it_masks_a_value_that_a_url_query_holds_part_of(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str,
+        column: str,
+        hidden: str,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a value from `${NAME}` that a URL's query starts or ends inside comes back masked.
+
+        Left out first, the query would take part of the value and leave the
+        rest, which no mask matches. A column read is not a failure, so its
+        query stays.
+        """
+        monkeypatch.setenv("VD_MCP_URL", value)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: a.csv\n"
+            f"  options:\n    new_columns: ['{column}']\nprimary_keys: [id]\n",
+        )
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", **arguments}, tool=tool)
+
+        shown = json.dumps(result.structured_content) + _text(result)
+        if tool == "describe_schema":
+            assert result.structured_content == {
+                "side": "target",
+                "columns": {column.replace("${VD_MCP_URL}", "***"): "Int64"},
+            }
+        else:
+            assert f"The columns read are: '{hidden}'." in shown
+        for part in (_SECRET, "horse", "battery"):
+            assert part not in shown
+
+    @pytest.mark.parametrize(
+        ("block", "hosts", "value", "shown"),
+        [
+            pytest.param(
+                '  path: "${VD_MCP_CASE}://lake/a.csv"\n',
+                ("lake",),
+                "AKIAIOSFODNN7EXAMPLE",
+                "The csv file '***://lake/a.csv' does not exist.",
+                id="scheme",
+            ),
+            pytest.param(
+                "  path: a.csv\n  options:\n    new_columns: ['${VD_MCP_CASE}']\n"
+                "normalize_column_names: true\n",
+                (),
+                "Hunter2SecretPass",
+                "The columns read are: '***'.",
+                id="normalized-column",
+            ),
+            pytest.param(
+                "  path: a.csv\n  options:\n    new_columns: ['${VD_MCP_CASE}']\n"
+                "normalize_column_names: true\n",
+                (),
+                " Hunter2SecretPass ",
+                "The columns read are: '***'.",
+                id="normalized-column-with-spaces",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [("validate_config", {"schemas": True}), ("run_comparison", {})],
+        ids=["validate_config", "run_comparison"],
+    )
+    def test_it_masks_a_value_a_reader_changes_the_case_of(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        block: str,
+        hosts: tuple[str, ...],
+        value: str,
+        shown: str,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a value from `${NAME}` is masked in any case, and without the spaces at its ends.
+
+        A URL parser lowercases a scheme, and `normalize_column_names`
+        lowercases a column's name and strips it.
+        """
+        monkeypatch.setenv("VD_MCP_CASE", value)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(tmp_path, f"source:\n  path: a.csv\ntarget:\n{block}primary_keys: [id]\n")
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=hosts),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        text = json.dumps(result.structured_content) + _text(result)
+        assert shown in text
+        assert value.strip().lower() not in text.lower()
 
     @pytest.mark.parametrize(
         "written",
@@ -6548,11 +6670,47 @@ class TestServer:
         for result in (failed, described):
             assert _SECRET not in json.dumps(result.structured_content) + _text(result)
 
-    @pytest.mark.parametrize("value", [f"{_SECRET}#x", f"{_SECRET}?x"], ids=["hash", "question"])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            f"{_SECRET}#x",
+            f"{_SECRET}?x",
+            f"{_SECRET}\r",
+            f"{_SECRET}\tx",
+            f"{_SECRET}\nx",
+            f" {_SECRET}",
+            f"{_SECRET} ",
+        ],
+        ids=[
+            "hash",
+            "question",
+            "carriage-return",
+            "tab",
+            "line-break",
+            "space-at-start",
+            "space-at-end",
+        ],
+    )
     @pytest.mark.parametrize(
         ("side", "setting"),
         [
             ("  path: b-${VD_MCP_CUT}.csv\n", "path"),
+            ('  path: "file:///elsewhere/b-${VD_MCP_CUT}.csv"\n', "path"),
+            (
+                '  type: delta\n  table_uri: "file:///elsewhere/t-${VD_MCP_CUT}"\n',
+                "table_uri",
+            ),
+            ('  type: database\n  uri: "sqlite://d/m-${VD_MCP_CUT}.db"\n  table: t\n', "uri"),
+            (
+                '  type: database\n  uri: "sqlite://u:pw@/d/m-${VD_MCP_CUT}.db?mode=ro"\n'
+                "  table: t\n",
+                "uri",
+            ),
+            (
+                '  type: database\n  uri: "postgresql://user@127.0.0.1:9/db${VD_MCP_CUT}"\n'
+                "  table: t\n",
+                "uri",
+            ),
             (
                 "  type: iceberg\n  table_uri: abfs://lake/x${VD_MCP_CUT}/metadata/v1.metadata.json\n"
                 "  storage_options:\n    adls.account-name: acct\n    adls.account-key: a2V5\n",
@@ -6569,7 +6727,17 @@ class TestServer:
                 "storage option 'endpoint_url'",
             ),
         ],
-        ids=["path", "table_uri", "storage-option", "file-storage-option"],
+        ids=[
+            "path",
+            "file-uri-path",
+            "file-uri-table_uri",
+            "sqlite-uri",
+            "sqlite-uri-with-password-and-query",
+            "server-uri",
+            "table_uri",
+            "storage-option",
+            "file-storage-option",
+        ],
     )
     @pytest.mark.parametrize(
         ("tool", "arguments"),
@@ -6591,10 +6759,13 @@ class TestServer:
         tool: str,
         arguments: dict[str, object],
     ) -> None:
-        """Ensure a `${NAME}` value that puts a `#` or a `?` into a location is refused, unread.
+        """Ensure a `${NAME}` value that a reader can cut or change in a location is refused, unread.
 
-        A reader such as PyIceberg ends the location there and quotes the part
-        before it, which holds the start of the value and so matches no mask.
+        A reader such as PyIceberg ends the location at a `#` or a `?` and
+        quotes the part before it, which holds the start of the value and so
+        matches no mask. A URL parser, such as the server's own reading of a
+        `file:` URI, drops a tab or a line break, and a space at either end,
+        as with a value from a `.env` file with Windows line ends.
         """
         monkeypatch.setenv("VD_MCP_CUT", value)
         hosts = mocker.spy(mcp_server, "_refuse_hosts")

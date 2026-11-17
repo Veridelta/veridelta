@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from types import ModuleType, TracebackType
 from typing import ClassVar, Final, Literal, Self
 
@@ -98,6 +99,22 @@ def without_queries(text: str) -> str:
         str: The message, with no URL's query in it.
     """
     return _URL_QUERY.sub(r"\g<quoted>\g<bare>", text)
+
+
+def query_spans(text: str) -> Iterator[tuple[int, int]]:
+    """Yield where each query that `without_queries` leaves out starts and ends in a text.
+
+    Args:
+        text (str): The driver's message.
+
+    Yields:
+        tuple[int, int]: The index of the query's `?`, and the index just after its end.
+    """
+    for match in _URL_QUERY.finditer(text):
+        # The branch that did not match ends at -1.
+        start = max(match.end("quoted"), match.end("bare"))
+        if start < match.end():
+            yield start, match.end()
 
 
 def names_another_machine(path: str) -> bool:

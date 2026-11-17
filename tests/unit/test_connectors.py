@@ -44,6 +44,7 @@ from veridelta.connectors import (
 from veridelta.connectors.base import (
     mask_secrets,
     names_another_machine,
+    query_spans,
     read_subject,
     without_queries,
 )
@@ -185,8 +186,16 @@ class TestSharedHelpers:
         ],
     )
     def test_it_leaves_the_query_out_of_each_url(self, text: str, shown: str) -> None:
-        """Ensure no part of a URL's query is left, however the reader quoted the URL."""
+        """Ensure no part of a URL's query is left, however the reader quoted the URL.
+
+        The spans of the queries leave out the same text.
+        """
+        spans = list(query_spans(text))
+        ends = [0, *(end for _, end in spans)]
+        starts = [*(start for start, _ in spans), len(text)]
+
         assert without_queries(text) == shown
+        assert "".join(text[end:start] for end, start in zip(ends, starts, strict=True)) == shown
 
     @pytest.mark.parametrize("text", ["a." * 40_000, "'http://a?x " * 8_000, "'a://" * 20_000])
     def test_it_takes_linear_time_to_leave_out_queries(self, text: str) -> None:

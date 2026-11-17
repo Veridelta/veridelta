@@ -23,6 +23,7 @@ import functools
 import glob
 import importlib
 import inspect
+import itertools
 import json
 import logging
 import os
@@ -56,6 +57,7 @@ from veridelta._checks import error_from_exception, unset_variable_findings
 from veridelta.config import load_config, recording_expansions, referenced_variables
 from veridelta.connectors.base import (
     names_another_machine,
+    query_spans,
     shown_location,
     without_location,
     without_queries,
@@ -339,8 +341,14 @@ _SHORTEST_MASKED: Final = 4
 A shorter value, such as a flag or a small number, would mask ordinary text
 throughout the answer, and holds no secret worth the loss."""
 
-_CUT_CHARACTERS: Final = frozenset("#?")
-"""The characters at which a reader that parses a location as a URL ends its path."""
+_CUT_VALUE: Final = re.compile(r"[#?\x00-\x1f]|^ | $")
+"""What a reader that parses a location as a URL can end a path at or drop from it.
+
+That is a `#` or a `?`, a C0 control, such as a tab or a line break, and a
+space at either end."""
+
+_LOCATIONS: Final = ("path", "table_uri", "uri")
+"""The settings of a side that name where it reads."""
 
 _SCHEME_AND_SLASHES: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:(?://)?")
 """A URI's scheme and the `//` after it, which no reader folds into one slash."""
@@ -1596,8 +1604,10 @@ def _refuse_cut_locations(
     A reader that parses a location as a URL, such as PyIceberg's, ends its
     path at a `#` or a `?` and can quote the part before it in an error, which
     holds the start of the value but not all of it, so no mask matches it. A
-    location is a side's `path` or `table_uri`, or a storage option that
-    names a host, such as an endpoint. A reader can also decode a path's `%`
+    URL parser also drops a tab or a line break anywhere, and a C0 control or
+    a space at either end, as the server's own reading of a `file:` URI does.
+    A location is a side's `path`, `table_uri`, or `uri`, or a storage option
+    that names a host, such as an endpoint. A reader can also decode a path's `%`
     escapes, or fold its `.` and `..` segments and repeated slashes, as
     PyIceberg folds a path on this machine, and then quote a value changed or
     cut short. So a side's `path` or `table_uri` is refused unless each value
@@ -1611,16 +1621,17 @@ def _refuse_cut_locations(
         target (SourceRef): The target configuration the loader returned.
 
     Raises:
-        ConfigError: If such a value holds a `#` or a `?`, or a reader would
-            quote it changed or in part.
+        ConfigError: If such a value holds a `#`, a `?`, or a C0 control,
+            starts or ends with a space, or a reader would quote it changed or in part.
     """
     sides: dict[str | int, SourceRef] = {"source": source, "target": target}
     for location, value in expanded:
         side, key = location[0], location[-1]
         written = None
-        if len(location) == 2 and key in ("path", "table_uri"):
+        if len(location) == 2 and key in _LOCATIONS:
             setting = str(key)
-            written = getattr(sides[side], setting, None)
+            # A message quotes a `uri`, never the path a driver folds from it, so no fold check.
+            written = None if key == "uri" else getattr(sides[side], setting, None)
         elif (
             len(location) > 2
             and location[-2] == "storage_options"
@@ -1629,12 +1640,13 @@ def _refuse_cut_locations(
             setting = f"storage option '{key}'"
         else:
             continue
-        if not _CUT_CHARACTERS.isdisjoint(value):
+        if _CUT_VALUE.search(value):
             raise ConfigError(
-                f"The {side} {setting} takes a ${{NAME}} value that holds a '#' or a '?'. A "
-                "reader can end a location there and quote the part before it, which no mask "
-                "matches, so a tool refuses it. Rename what the value names, or run the "
-                "configuration with veridelta run."
+                f"The {side} {setting} takes a ${{NAME}} value that holds a '#', a '?', or a "
+                "control character such as a tab or a line break, or that starts or ends with "
+                "a space. A reader can end a location at a '#' or a '?', or drop the others, "
+                "and quote what is left, which no mask matches, so a tool refuses it. Rename "
+                "what the value names, or run the configuration with veridelta run."
             )
         if isinstance(written, str) and _folds_away(written, value):
             raise ConfigError(
@@ -1676,7 +1688,9 @@ def check_configuration(
 
     Unless the server allows row values, a finding leaves out what Polars, a
     reader, or a driver said about a schema read that failed. Each URL in a
-    finding loses its query, which can hold a credential the reader signed with.
+    finding loses its query, which can hold a credential the reader signed
+    with, and each value the loader took from the environment is masked, both
+    found in the finding as written, so neither hides the other.
 
     Args:
         settings (Settings): The roots and the row values the server was started with.
@@ -1701,22 +1715,23 @@ def check_configuration(
     unset: list[str] | None = [] if allow_missing_env else None
     # The file is loaded once, and the checks connect with what was checked, so a
     # file swapped between the two cannot reach a host the server does not allow.
-    try:
-        with recording_expansions() as expanded:
+    with recording_expansions() as expanded:
+        try:
             diff, source, target = load_config(resolved, unset_env=unset)
-    except ConfigError as exc:
-        findings = [error_from_exception(exc)]
-    else:
-        if schemas:
-            _refuse_cut_locations(expanded, source, target)
-            _refuse_hosts(settings, source, target)
-            source, target = check_data_paths(settings, source, target)
-        with _reading(settings):
-            findings = DiffEngine.check_configs(
-                diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
-            )
+        except ConfigError as exc:
+            findings = [error_from_exception(exc)]
+        else:
+            if schemas:
+                _refuse_cut_locations(expanded, source, target)
+                _refuse_hosts(settings, source, target)
+                source, target = check_data_paths(settings, source, target)
+            with _reading(settings):
+                findings = DiffEngine.check_configs(
+                    diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
+                )
+    secrets = _expanded_patterns((), expanded)
     findings = [
-        finding.model_copy(update={"message": without_queries(finding.message)})
+        finding.model_copy(update={"message": _shown(finding.message, secrets, queries=True)})
         for finding in findings
     ]
     return validation_report(str(resolved), [*unset_variable_findings(unset or []), *findings])
@@ -2042,11 +2057,15 @@ def _to_mask(values: list[str]) -> tuple[str, ...]:
     """Return the environment values to mask, with each SAS signature they hold, leaving out short ones.
 
     A value that ends in a slash counts without it too, since a reader that
-    folds a path drops it.
+    folds a path drops it, and so does a value without the spaces at its
+    ends, since `normalize_column_names` strips a column's name.
     """
+    values = list(dict.fromkeys(values))
     signatures = [form for value in values for form in _sas_signatures(value)]
     kept = [value.rstrip("/\\") for value in values if value.endswith(("/", "\\"))]
-    return tuple(value for value in [*values, *kept, *signatures] if len(value) >= _SHORTEST_MASKED)
+    stripped = [value.strip() for value in values if value != value.strip()]
+    forms = dict.fromkeys([*values, *kept, *stripped, *signatures])
+    return tuple(value for value in forms if len(value) >= _SHORTEST_MASKED)
 
 
 def _sas_signatures(value: str) -> tuple[str, ...]:
@@ -2106,24 +2125,52 @@ def _written_or_encoded(secret: str) -> str:
 
 
 def _secret_patterns(secrets: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
-    """Match each secret, as written or percent-encoded, longest first.
+    """Match each secret, as written or percent-encoded, in any case.
 
-    A secret that is a URL with a query also counts without its query, as
-    `without_queries` leaves it in a message. Each is masked in turn, so where
-    two overlap, the longer is masked whole.
+    A reader can change a value's case, as a URL parser lowercases a scheme
+    and `normalize_column_names` lowercases a column's name. A secret that is
+    a URL with a query also counts without its query, as `without_queries`
+    leaves it in a message, and so does the part of a secret before its first
+    `#` or `?`, where a reader that parses a URL can cut it.
     """
-    written = (form for secret in secrets for form in (secret, without_queries(secret)))
+    written = (
+        form
+        for secret in secrets
+        for form in (secret, without_queries(secret), re.split("[#?]", secret, maxsplit=1)[0])
+    )
     forms = {form for form in written if len(form) >= _SHORTEST_MASKED}
     ordered = sorted(forms, key=lambda form: (-len(form), form))
-    return tuple(re.compile(_written_or_encoded(form)) for form in ordered)
+    return tuple(re.compile(_written_or_encoded(form), re.IGNORECASE) for form in ordered)
+
+
+def _shown(text: str, secrets: tuple[re.Pattern[str], ...], *, queries: bool = False) -> str:
+    """Mask each secret in a text, and with `queries`, leave out each URL's query.
+
+    Both are found in the text as given, so a secret that covers a URL's `://`
+    leaves its query found, and a query left out leaves no part of a secret
+    in it unmasked. Where two secrets overlap, all that either covers is
+    masked.
+    """
+    kinds = bytearray(len(text))  # 0 keeps a character, 1 leaves it out, 2 masks it.
+    spans = [(start, end, 1) for start, end in (query_spans(text) if queries else ())]
+    spans += [(*match.span(), 2) for secret in secrets for match in secret.finditer(text)]
+    if not spans:
+        return text
+    for start, end, kind in sorted(spans, key=lambda span: span[2]):
+        kinds[start:end] = bytes([kind]) * (end - start)
+    pieces: list[str] = []
+    for kind, group in itertools.groupby(zip(kinds, text, strict=True), key=lambda pair: pair[0]):
+        if kind == 0:
+            pieces.append("".join(char for _, char in group))
+        elif kind == 2:
+            pieces.append("***")
+    return "".join(pieces)
 
 
 def _masked(value: Any, secrets: tuple[re.Pattern[str], ...]) -> Any:
     """Mask each secret in every string of an answer, the keys of a mapping included."""
     if isinstance(value, str):
-        for secret in secrets:
-            value = secret.sub("***", value)
-        return value
+        return _shown(value, secrets)
     if isinstance(value, dict):
         mapping = cast("dict[str, Any]", value)
         return {_masked(key, secrets): _masked(item, secrets) for key, item in mapping.items()}
@@ -2144,20 +2191,21 @@ def _answer(
     The SDK passes only a `ToolError`'s message on to the agent, so every
     failure becomes one, named as `run --json` names it, with each URL's
     query left out, since a query can hold a credential a reader signed
-    with, and then the secrets masked there too. Each value the work's loads take
-    from the environment is masked too, however the file spells its
-    reference, such as with a YAML escape that the text `secrets` come from
-    does not show. A secret is masked as written, or with any of its
-    characters percent-encoded. Unless `row_values` is set, a message that
-    can quote the data is left out.
+    with, and the secrets masked there too, both as `_shown` finds them.
+    Each value the work's loads take from the environment is masked too,
+    however the file spells its reference, such as with a YAML escape that
+    the text `secrets` come from does not show. A secret is masked as
+    written, in any case, or with any of its characters percent-encoded.
+    Unless `row_values` is set, a message that can quote the data is left out.
     """
     with recording_expansions() as expanded:
         try:
             result = work()
         except (Exception, PanicException) as exc:
             # A panic in Polars is no `Exception`, and would stop the server instead.
-            failure = without_queries(_failure(exc, row_values=row_values))
-            raise tool_error(_masked(failure, _expanded_patterns(secrets, expanded))) from exc
+            failure = _failure(exc, row_values=row_values)
+            shown = _shown(failure, _expanded_patterns(secrets, expanded), queries=True)
+            raise tool_error(shown) from exc
     return cast("_R", _masked(result, _expanded_patterns(secrets, expanded)))
 
 
