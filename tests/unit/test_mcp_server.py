@@ -35,7 +35,7 @@ from types import SimpleNamespace
 from typing import Any, Literal, TypeVar, cast
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
-from urllib.parse import quote, unquote
+from urllib.parse import parse_qsl, quote, unquote, urlencode
 
 import anyio
 import duckdb
@@ -2704,6 +2704,41 @@ def _remote_iceberg(
             return str(catalog.load_table("lake.events").metadata_location)
 
 
+_AZURE_OPTIONS = {"adls.account-name": "acct", "adls.account-key": "a2V5"}
+"""The storage options of the table `_spark_azure_iceberg` writes."""
+
+_AZURE_HOSTS = ("lake", "acct", "acct.dfs.core.windows.net")
+"""The hosts a tool must allow to read that table: its container, its account, and the account's host."""
+
+
+def _spark_azure_iceberg(lake: Path, store: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Write an Iceberg table that holds `_ROW` in Azure, its files named as Spark names them.
+
+    Each file is named `abfss://lake@acct.dfs.core.windows.net/...`. PyArrow's
+    Azure file system is mocked with `store`, whose first level is the
+    container, for the write and for every read after it. The mock goes into
+    the module's namespace without reading the name, which raises ImportError
+    on a PyArrow build with no Azure file system. PyIceberg writes such
+    a location in a folder named for its whole authority, so that folder is
+    renamed to the container.
+
+    Returns:
+        str: The `table_uri` that reads it, as `abfs://lake/...`.
+    """
+    azure = MagicMock(return_value=SubTreeFileSystem(str(store), LocalFileSystem()))
+    monkeypatch.setitem(arrow_fs.__dict__, "AzureFileSystem", azure)
+    authority = "lake@acct.dfs.core.windows.net"
+    for folder in ("metadata", "data"):
+        (store / authority / "wh" / "lake" / "events" / folder).mkdir(parents=True)
+    options = {**_AZURE_OPTIONS, "py-io-impl": "pyiceberg.io.pyarrow.PyArrowFileIO"}
+    with _catalog(lake, f"abfss://{authority}/wh", **options) as catalog:
+        table = catalog.create_table("lake.events", schema=_ROW.to_arrow().schema)
+        table.append(_ROW.to_arrow())
+        metadata = str(catalog.load_table("lake.events").metadata_location)
+    (store / authority).rename(store / "lake")
+    return metadata.replace(f"abfss://{authority}/", "abfs://lake/")
+
+
 def _read_two_ways(root: Path, outside: Path, layer: str) -> str:
     """Write an Iceberg table under `root` that names one file PyIceberg and Polars open apart.
 
@@ -3991,6 +4026,166 @@ class TestLakehouseFiles:
             settings = Settings((tmp_path,), allowed_hosts=_STORE_HOSTS)
 
             check_data_paths(settings, SourceConfig(path="a.csv"), target)
+
+    def _azure_configuration(self, root: Path, table_uri: str) -> None:
+        """Write a configuration that compares `_ROW` with the Azure table at `table_uri`."""
+        _ROW.write_parquet(root / "a.parquet")
+        _write(
+            root,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            f"target:\n  type: iceberg\n  table_uri: '{table_uri}'\n  storage_options:\n"
+            + "".join(f"    {key}: '{value}'\n" for key, value in _AZURE_OPTIONS.items())
+            + "primary_keys: [id]\n",
+        )
+
+    def test_it_reads_an_azure_table_whose_files_name_their_account(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ensure a table Spark wrote in Azure is listed and read, each file in its container."""
+        store = tmp_path_factory.mktemp("store")
+        self._azure_configuration(tmp_path, _spark_azure_iceberg(tmp_path, store, monkeypatch))
+
+        report = read_rows(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+            "veridelta.yaml",
+            "changed",
+        )
+
+        assert report["total"] == 0
+
+    @pytest.mark.parametrize(
+        ("authority", "refusal"),
+        [
+            ("other@acct.dfs.core.windows.net", "names a host this server may not"),
+            ("lake@acct.blob.core.windows.net", "names a host this server may not"),
+            ("lake:443@acct.dfs.core.windows.net", "does not name its host in the one shape"),
+        ],
+        ids=["container", "host", "container-port"],
+    )
+    @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
+    def test_it_holds_the_container_and_the_host_of_an_azure_file_to_the_allowed_hosts(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        mocker: MockerFixture,
+        monkeypatch: pytest.MonkeyPatch,
+        authority: str,
+        refusal: str,
+        listed: bool,
+    ) -> None:
+        """Ensure a file named `container@host` needs both its container and its host allowed.
+
+        The metadata names its manifest list in another container, or at the
+        account's other host, which the server does not allow, or in a
+        container with a port, which the FileIO would open as part of the
+        container's name, so the server checks it whole. The listing
+        refuses it, and so does the scan, though the listing found nothing.
+        The metadata names the host, so the refusal leaves it out.
+        """
+        store = tmp_path_factory.mktemp("store")
+        table_uri = _spark_azure_iceberg(tmp_path, store, monkeypatch)
+        written = store / table_uri.removeprefix("abfs://")
+        document = json.loads(written.read_text(encoding="utf-8"))
+        for snapshot in document["snapshots"]:
+            listed_at = snapshot["manifest-list"]
+            snapshot["manifest-list"] = listed_at.replace(
+                "lake@acct.dfs.core.windows.net", authority
+            )
+        written.write_text(json.dumps(document), encoding="utf-8")
+        if not listed:
+            mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
+        self._azure_configuration(tmp_path, table_uri)
+
+        with pytest.raises(VerideltaError, match=refusal) as refused:
+            read_rows(
+                Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+                "veridelta.yaml",
+                "changed",
+            )
+
+        assert authority not in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "token",
+        [
+            "sv=2024-01-01&sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D",
+            "?sv=2024-01-01&sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D",
+            "sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D&sv=2024-01-01&se=2030-12-31",
+        ],
+        ids=["bare", "with-mark", "reordered"],
+    )
+    @pytest.mark.parametrize("folder", ["t", "it's"], ids=["plain", "quote-in-path"])
+    @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
+    def test_it_returns_no_part_of_an_azure_sas_token_from_the_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        token: str,
+        folder: str,
+        listed: bool,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure an Azure error that quotes a request's URL comes back without its query.
+
+        The Azure SDK writes a SAS token's parameters back sorted, so the URL
+        PyArrow quotes in its error does not hold the variable's value that
+        the server masks. The mock fails each read with such a URL. The listing fails, or, with no listing, the scan, which
+        `validate_config` reports as a finding. The Azure SDK encodes a quote
+        in a file's path as written, so the URL's path can hold one.
+        """
+        monkeypatch.setenv("VD_AZURE_SAS", token)
+
+        def refusing(**options: str) -> MagicMock:
+            query = urlencode(sorted(parse_qsl(options["sas_token"].removeprefix("?"))))
+
+            def refuse(path: str, *_: object) -> None:
+                raise OSError(
+                    f"GetProperties failed for 'https://acct.blob.core.windows.net/{path}?{query}'"
+                    ". Azure Error: [AuthenticationFailed] 403 Forbidden"
+                )
+
+            return MagicMock(
+                open_input_file=MagicMock(side_effect=refuse),
+                open_input_stream=MagicMock(side_effect=refuse),
+            )
+
+        monkeypatch.setitem(arrow_fs.__dict__, "AzureFileSystem", refusing)
+        if not listed:
+            mocker.patch.object(mcp_server, "_table_files", return_value=iter(()))
+        _ROW.write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\ntarget:\n  type: iceberg\n"
+            f"  table_uri: abfs://lake/{folder}/metadata/v1.metadata.json\n  storage_options:\n"
+            "    adls.account-name: acct\n    adls.sas-token: ${VD_AZURE_SAS}\n"
+            "primary_keys: [id]\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        shown = json.dumps(result.structured_content) + _text(result)
+        # The URL ends at its path, where the query would follow.
+        assert f"/lake/{folder}/metadata/v1.metadata.json'" in shown
+        for value in ("c2lnbmF0dXJl", "2024-01-01", "2030-12-31"):
+            assert value not in shown
 
     @pytest.mark.parametrize(
         "uri",
@@ -5682,6 +5877,30 @@ class TestEnvironmentValues:
 
         assert environment_values(Settings((tmp_path,)), "veridelta.yaml") == (_SECRET,)
 
+    @pytest.mark.parametrize("mark", ["", "?"], ids=["bare", "with-mark"])
+    def test_it_returns_each_form_of_a_sas_signature(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mark: str
+    ) -> None:
+        """Ensure a SAS token's signature counts on its own, as written, decoded, and encoded.
+
+        The Azure SDK writes the token's parameters back in another order, so
+        the token's whole text may not appear where its signature does.
+        """
+        token = f"{mark}sv=2024-01-01&sig=c2ln%2bbmF0/dXJl%3D&sp=r"
+        monkeypatch.setenv("VD_AZURE_SAS", token)
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  type: iceberg\n  table_uri: abfs://lake/t\n"
+            "  storage_options:\n    adls.sas-token: ${VD_AZURE_SAS}\nprimary_keys: [id]\n",
+        )
+
+        assert environment_values(Settings((tmp_path,)), "veridelta.yaml") == (
+            token,
+            "c2ln%2bbmF0/dXJl%3D",
+            "c2ln+bmF0/dXJl=",
+            "c2ln%2BbmF0%2FdXJl%3D",
+        )
+
     def test_it_returns_none_for_a_file_it_cannot_read(
         self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
     ) -> None:
@@ -6666,6 +6885,49 @@ class TestServer:
         assert result.structured_content["valid"] is False
         assert "***" in shown
         assert _SECRET not in shown
+
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [("validate_config", {"schemas": True}), ("run_comparison", {})],
+        ids=["finding", "failure"],
+    )
+    def test_it_masks_a_value_with_a_query_before_it_leaves_out_the_query(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a whole URL from `${NAME}`, query and all, comes back as `***`.
+
+        The driver's message quotes the URL. Leaving out its query first would
+        leave the text before the `?`, which is no longer the whole value, so
+        the masking comes first. Veridelta's own words name the URI without
+        its query, which no masking of the value covers.
+        """
+        uri = "postgresql://db.internal/sales-ledger?application_name=orders"
+        monkeypatch.setenv("VD_MCP_URI", uri)
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(f"could not connect to '{uri}'"),
+        )
+        (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  type: database\n  uri: ${VD_MCP_URI}\n  table: orders\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        shown = json.dumps(result.structured_content) + _text(result)
+        assert "could not connect to '***'" in shown
+        assert "application_name" not in shown
 
     def test_it_masks_each_value_the_configuration_took_from_the_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

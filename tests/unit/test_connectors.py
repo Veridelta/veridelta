@@ -7,6 +7,7 @@ import logging
 import ntpath
 import posixpath
 import sys
+import time
 import traceback
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -40,7 +41,12 @@ from veridelta.connectors import (
     base,
     database,
 )
-from veridelta.connectors.base import mask_secrets, names_another_machine, read_subject
+from veridelta.connectors.base import (
+    mask_secrets,
+    names_another_machine,
+    read_subject,
+    without_queries,
+)
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.sql import (
     SERVER_CHECK_TEXT,
@@ -144,6 +150,52 @@ class TestSharedHelpers:
 
         assert masked == "key=*** pass=*** token="
         assert mask_secrets("nothing set", None) == "nothing set"
+
+    @pytest.mark.parametrize(
+        ("text", "shown"),
+        [
+            (
+                "GetProperties failed for 'https://acct.blob.core.windows.net/lake/x?sig=a%2Bb&sv=1'."
+                " Azure Error: 403",
+                "GetProperties failed for 'https://acct.blob.core.windows.net/lake/x'."
+                " Azure Error: 403",
+            ),
+            ("from 'http://h/my file?sig=a b&sv=1' at 0", "from 'http://h/my file' at 0"),
+            ('in "s3://b/k?X-Amz-Signature=a"b" here', 'in "s3://b/k" here'),
+            ("for http://h/x?sig=a&sv=1 and https://h/y?t=2.", "for http://h/x and https://h/y"),
+            (
+                "for 'https://acct.blob.core.windows.net/lake/it's/x'/m.json?sig=a&sv=1'. Azure",
+                "for 'https://acct.blob.core.windows.net/lake/it's/x'/m.json'. Azure",
+            ),
+            ("for 'http://h/x' and 'http://h/y?sig=a', 0", "for 'http://h/x' and 'http://h/y', 0"),
+            ("an open 'http://h/x?sig=a and more", "an open 'http://h/x"),
+            ("at x_https://h/x?sig=a and 1s3://b/k?sig=a", "at x_https://h/x and 1s3://b/k"),
+            ("no query in 'http://h/x' or ?sig=a", "no query in 'http://h/x' or ?sig=a"),
+        ],
+        ids=[
+            "quoted",
+            "quoted-with-space",
+            "double-quoted",
+            "bare",
+            "quotes-in-path",
+            "two-quoted",
+            "unclosed",
+            "glued",
+            "none",
+        ],
+    )
+    def test_it_leaves_the_query_out_of_each_url(self, text: str, shown: str) -> None:
+        """Ensure no part of a URL's query is left, however the reader quoted the URL."""
+        assert without_queries(text) == shown
+
+    @pytest.mark.parametrize("text", ["a." * 40_000, "'http://a?x " * 8_000, "'a://" * 20_000])
+    def test_it_takes_linear_time_to_leave_out_queries(self, text: str) -> None:
+        """Ensure a long reader message, with or without URLs, cannot hold the server up."""
+        started = time.perf_counter()
+
+        without_queries(text)
+
+        assert time.perf_counter() - started < 1
 
     def test_it_names_a_table_or_the_query(self) -> None:
         """Ensure a message names the table it read, and never repeats a query."""

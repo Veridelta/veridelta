@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -21,14 +22,17 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal
+from importlib.util import find_spec
 from pathlib import Path
+from unittest.mock import Mock
 
 import polars as pl
+import pyarrow.fs
 import pytest
 from deltalake import DeltaTable
 from deltalake.fs import DeltaStorageHandler
 from packaging.version import Version
-from pyarrow.fs import LocalFileSystem
+from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
 from pyiceberg.catalog.sql import SqlCatalog
 from pytest_mock import MockerFixture
 
@@ -383,6 +387,66 @@ class TestIcebergMetadataProperties:
         assert MarkerFileIO.loads == 0
 
 
+def _mock_azure(monkeypatch: pytest.MonkeyPatch, file_system: object = None) -> Mock:
+    """Stand in for PyArrow's Azure file system, which returns `file_system`.
+
+    The mock goes into the module's namespace, without reading the name first:
+    PyArrow's Windows wheel for 3.14 ships no Azure file system, and reading
+    the name there raises ImportError.
+    """
+    azure = Mock(return_value=file_system)
+    monkeypatch.setitem(pyarrow.fs.__dict__, "AzureFileSystem", azure)
+    return azure
+
+
+_SIGN_WITH_EACH_KEY = """
+import json
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from veridelta.connectors.lakehouse import checked_file_io
+from veridelta.exceptions import ConfigError
+
+
+class NotFound(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    do_GET = do_HEAD
+
+    def log_message(self, *args):
+        pass
+
+
+server = ThreadingHTTPServer(("127.0.0.1", 0), NotFound)
+threading.Thread(target=server.serve_forever, daemon=True).start()
+at = f"127.0.0.1:{server.server_address[1]}"
+local = {
+    "adls.account-name": "acct",
+    "adls.blob-storage-authority": at,
+    "adls.dfs-storage-authority": at,
+    "adls.blob-storage-scheme": "http",
+    "adls.dfs-storage-scheme": "http",
+}
+try:
+    checked_file_io({**local, "adls.account-key": "not-base64!"}, lambda *_: None).new_input(
+        "abfs://lake/x"
+    )
+except ConfigError:
+    print("refused", flush=True)
+for key in json.loads(sys.argv[1]):
+    io = checked_file_io({**local, "adls.account-key": key}, lambda *_: None)
+    try:
+        io.new_input("abfs://lake/x").open()
+    except OSError:
+        print(key, flush=True)
+"""
+"""A script that signs a request with each key it is given, through the FileIO, at a local server."""
+
+
 class TestCheckedIcebergScan:
     """Validate the Iceberg scan the MCP server runs, which checks each file before it opens it.
 
@@ -441,6 +505,210 @@ class TestCheckedIcebergScan:
             io.new_input(location)
 
         assert checked == []
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            "abfss://lake@acct.dfs.core.windows.net/wh/data.parquet",
+            "abfs://lake@ACCT.dfs.core.windows.net/wh/data.parquet",
+            "wasbs://lake@acct.blob.core.windows.net/wh/data.parquet",
+            "abfs://lake/wh/data.parquet",
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("credential", "passed"),
+        [
+            ({"adls.account-key": "a2V5"}, {"account_key": "a2V5"}),
+            ({"adls.sas-token": "sv=2024"}, {"sas_token": "?sv=2024"}),
+            ({"adls.sas-token": "?sv=2024"}, {"sas_token": "?sv=2024"}),
+            ({"adls.sas-token": "lake2?sv=2024"}, {"sas_token": "?lake2?sv=2024"}),
+        ],
+        ids=["account-key", "sas-token", "sas-token-with-mark", "sas-token-with-path"],
+    )
+    def test_it_opens_an_azure_file_in_its_container(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        location: str,
+        credential: dict[str, str],
+        passed: dict[str, str],
+    ) -> None:
+        """Ensure a file Spark names as `container@host` opens in that container, at the account named.
+
+        PyIceberg reads the whole authority as the container. The account's
+        file system is mocked with a folder, whose first level is the container.
+        PyArrow puts the text before a SAS token's `?` into the path of each
+        request, ahead of the container, so the token reaches it after a `?`.
+        """
+        (tmp_path / "lake" / "wh").mkdir(parents=True)
+        (tmp_path / "lake" / "wh" / "data.parquet").write_bytes(b"rows")
+        azure = _mock_azure(monkeypatch, SubTreeFileSystem(str(tmp_path), LocalFileSystem()))
+        checked: list[tuple[str, bool]] = []
+        io = checked_file_io(
+            {"adls.account-name": "acct", **credential}, lambda *opened: checked.append(opened)
+        )
+
+        with io.new_input(location).open() as stream:
+            assert stream.read() == b"rows"
+
+        assert checked == [(location, True)]
+        azure.assert_called_once_with(account_name="acct", **passed)
+
+    @pytest.mark.parametrize(
+        ("account", "location"),
+        [
+            ("acct", "abfss://lake@other.dfs.core.windows.net/wh/data.parquet"),
+            ("acct", "abfss://lake@acct.dfs.core.windows.net.example/wh/data.parquet"),
+            ("acct", "abfss://lake@acct.example/wh/data.parquet"),
+            ("acct", "abfss://lake@acct.dfs.core.windows.net:443/wh/data.parquet"),
+            ("acct", "abfss://lake@\u212acct.dfs.core.windows.net/wh/data.parquet"),
+            ("", "abfss://lake@.dfs.core.windows.net/wh/data.parquet"),
+        ],
+        ids=["other-account", "longer-host", "other-host", "port", "kelvin", "no-account"],
+    )
+    def test_it_opens_no_azure_file_in_another_account(
+        self, monkeypatch: pytest.MonkeyPatch, account: str, location: str
+    ) -> None:
+        """Ensure a table cannot send the FileIO's credential to an account its options do not name."""
+        azure = _mock_azure(monkeypatch)
+        options = {"adls.account-key": "a2V5"} | ({"adls.account-name": account} if account else {})
+        io = checked_file_io(options, lambda *_: None)
+
+        with pytest.raises(ConnectorError, match="another Azure storage account") as refused:
+            io.new_input(location)
+
+        assert "windows.net" not in str(refused.value)
+        azure.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("options", "refusal"),
+        [
+            ({}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.account-key": ""}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.sas-token": " "}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.sas-token": "?"}, "needs 'adls.account-key' or 'adls.sas-token'"),
+            ({"adls.client-id": "identity"}, "cannot sign in with"),
+            ({"adls.client-id": "app", "adls.tenant-id": "t"}, "cannot sign in with"),
+            (
+                {"adls.client-id": "app", "adls.client-secret": "marker", "adls.tenant-id": "t"},
+                "cannot sign in with",
+            ),
+            ({"adls.account-key": "a2V5", "adls.tenant-id": "t"}, "cannot sign in with"),
+            ({"adls.account-key": "not-base64!"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V5\n"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V5===="}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V5Zg==a2V5"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "-_-_"}, "'adls.account-key' is not base64"),
+            ({"adls.account-key": "a2V\u00e9"}, "'adls.account-key' is not base64"),
+        ],
+        ids=[
+            "none",
+            "empty-key",
+            "blank-sas-token",
+            "empty-sas-token",
+            "managed-identity",
+            "no-secret",
+            "client-secret",
+            "key-and-tenant",
+            "not-base64",
+            "newline",
+            "excess-padding",
+            "data-after-padding",
+            "url-safe",
+            "not-ascii",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "location",
+        ["abfs://lake/wh/data.parquet", "abfss://lake@acct.dfs.core.windows.net/wh/data.parquet"],
+    )
+    def test_it_builds_no_azure_file_system_that_can_end_the_process(
+        self, monkeypatch: pytest.MonkeyPatch, options: dict[str, str], refusal: str, location: str
+    ) -> None:
+        """Ensure PyArrow is given no credential on which it can end the process.
+
+        With none, it signs in as the machine does, which can run az. It ends
+        the process on a key that is not base64, and on a sign-in through
+        Microsoft Entra ID that fails.
+        """
+        azure = _mock_azure(monkeypatch)
+        io = checked_file_io({"adls.account-name": "acct", **options}, lambda *_: None)
+
+        with pytest.raises(ConfigError, match=re.escape(refusal)) as refused:
+            io.new_input(location)
+
+        assert refused.value.__cause__ is None
+        azure.assert_not_called()
+
+    @pytest.mark.parametrize("token", ["#?sv=2024", "sv=2024#x", "?sv=2024&sig=a#b"])
+    def test_it_builds_no_azure_file_system_for_a_sas_token_with_a_hash(
+        self, monkeypatch: pytest.MonkeyPatch, token: str
+    ) -> None:
+        """Ensure a SAS token with a `#` is refused, since PyArrow drops the text after one."""
+        azure = _mock_azure(monkeypatch)
+        io = checked_file_io(
+            {"adls.account-name": "acct", "adls.sas-token": token}, lambda *_: None
+        )
+
+        with pytest.raises(ConfigError, match=re.escape("'adls.sas-token' holds a '#'")) as refused:
+            io.new_input("abfs://lake/wh/data.parquet")
+
+        assert "sv=2024" not in str(refused.value)
+        azure.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "account",
+        ["", "acct:99", "acct:", "[::1]", "ACCT", "ac", "acct.example", "a" * 25],
+        ids=["none", "port", "empty-port", "brackets", "uppercase", "short", "dot", "long"],
+    )
+    @pytest.mark.parametrize(
+        "credential",
+        [{"adls.account-key": "a2V5"}, {"adls.sas-token": "?sv=2024"}],
+        ids=["account-key", "sas-token"],
+    )
+    def test_it_builds_no_azure_file_system_for_a_name_that_is_no_account(
+        self, monkeypatch: pytest.MonkeyPatch, account: str, credential: dict[str, str]
+    ) -> None:
+        """Ensure PyArrow is given only an account name it can write into a host.
+
+        It writes the name into the host it reaches, and ends the process on a
+        name with a port or brackets in it.
+        """
+        azure = _mock_azure(monkeypatch)
+        io = checked_file_io({"adls.account-name": account, **credential}, lambda *_: None)
+
+        with pytest.raises(
+            ConfigError, match=re.escape("'adls.account-name' to be a storage account's")
+        ):
+            io.new_input("abfs://lake/wh/data.parquet")
+
+        azure.assert_not_called()
+
+    @pytest.mark.skipif(
+        find_spec("pyarrow._azurefs") is None,
+        reason="This PyArrow build has no Azure file system, as its Windows wheel for 3.14 lacks.",
+    )
+    def test_it_gives_pyarrow_only_an_account_key_it_can_decode(self, tmp_path: Path) -> None:
+        """Ensure each key the FileIO passes on leaves the process running when PyArrow signs with it.
+
+        PyArrow decodes the key only as it signs a request, and ends the
+        process on one it cannot decode, so a child process signs one request
+        with each key to a local server that answers 404.
+        """
+        keys = ["a2V5", "a2U=", "aw==", "a2V=", "+/+/", "a2V5Zg=="]
+        script = tmp_path / "sign.py"
+        script.write_text(_SIGN_WITH_EACH_KEY, encoding="utf-8")
+
+        signed = subprocess.run(
+            [sys.executable, str(script), json.dumps(keys)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+        assert signed.returncode == 0, signed.stderr
+        assert signed.stdout.split() == ["refused", *keys]
 
 
 class TestCheckedDeltaScan:

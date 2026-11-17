@@ -44,7 +44,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import SplitResult, parse_qsl, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qsl, quote, unquote, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -59,12 +59,14 @@ from veridelta.connectors.base import (
     names_another_machine,
     shown_location,
     without_location,
+    without_queries,
 )
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import WRITE_AHEAD_LOGS, beside, sandboxed
 from veridelta.connectors.lakehouse import (
     CheckedDeltaTable,
     DeltaLogCopy,
+    azure_account,
     checked_file_io,
     checking_table_files,
     deletion_vector_files,
@@ -1591,12 +1593,24 @@ def _location_hosts(
     for a file a table's log or metadata names. A location with no host,
     such as `hdfs:///t`, names the empty host, which is never allowed, since its
     reader would pick the host from elsewhere.
+
+    A file a table names in Azure as `container@host`, as Java Iceberg and
+    Spark write it, names two hosts: its container, as `abfs://container/x`
+    does, and the account's host, such as `acct.dfs.core.windows.net`.
+    PyIceberg's checked FileIO opens such a file in that container, and only
+    at the account its storage options name.
     """
     parts = _split(location)
-    if parts is not None and (
-        len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES
-    ):
+    if parts is None:
+        return [(setting, _url_host(location, shape))]
+    if len(parts.scheme) < 2 or parts.scheme in _LOCAL_SCHEMES | _SERVICE_SCHEMES:
         return []
+    named = shape.fullmatch(location) if shape is _NAMED_FILE else None
+    account = None if named is None else azure_account(parts.scheme, named.group(1) or "")
+    if account is not None:
+        # The FileIO opens the container as written, port and all, so it is checked whole.
+        container, host = account
+        return [(setting, container), (setting, _host(host))]
     return [(setting, _url_host(location, shape))]
 
 
@@ -1859,12 +1873,20 @@ def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
 
 
 def check_configuration(
-    settings: Settings, path: str, *, schemas: bool = False, allow_missing_env: bool = False
+    settings: Settings,
+    path: str,
+    *,
+    schemas: bool = False,
+    allow_missing_env: bool = False,
+    secrets: tuple[str, ...] = (),
 ) -> ValidationReport:
     """Check a configuration file for what would stop a run, as `validate --json` does.
 
     Unless the server allows row values, a finding leaves out what Polars, a
-    reader, or a driver said about a schema read that failed.
+    reader, or a driver said about a schema read that failed. Each finding has
+    `secrets` masked, and then each URL in it loses its query, which can hold
+    a credential the reader signed with. The masking comes first, so a secret
+    that holds a `?` is masked whole.
 
     Args:
         settings (Settings): The roots and the row values the server was started with.
@@ -1873,6 +1895,7 @@ def check_configuration(
             side's columns, which reads no rows.
         allow_missing_env (bool): Whether an unset `${NAME}` is a warning rather
             than an error, so a file can be checked without its secrets.
+        secrets (tuple[str, ...]): The values to mask in each finding.
 
     Returns:
         ValidationReport: The errors and warnings, with the resolved path.
@@ -1900,6 +1923,12 @@ def check_configuration(
             findings = DiffEngine.check_configs(
                 diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
             )
+    findings = [
+        finding.model_copy(
+            update={"message": without_queries(mask_secrets(finding.message, *secrets))}
+        )
+        for finding in findings
+    ]
     return validation_report(str(resolved), [*unset_variable_findings(unset or []), *findings])
 
 
@@ -2195,7 +2224,10 @@ def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
     A tool masks each in its answer, since a path, a name, or an error built
     from the configuration carries the values it took. A file outside the
     roots, or one that cannot be read, gives none, and so does a variable
-    that is unset or shorter than four characters.
+    that is unset or shorter than four characters. A value that holds an
+    Azure SAS token's `sig` parameter also gives that signature, as written,
+    decoded, and encoded, since the Azure SDK writes the token's parameters
+    back in another order.
 
     Args:
         settings (Settings): The roots the server was started with.
@@ -2208,8 +2240,20 @@ def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
         text = resolve_path(settings, path).read_text(encoding="utf-8")
     except (ConfigError, OSError, UnicodeDecodeError):
         return ()
-    values = (os.environ.get(name, "") for name in referenced_variables(text))
-    return tuple(value for value in values if len(value) >= _SHORTEST_MASKED)
+    values = [os.environ.get(name, "") for name in referenced_variables(text)]
+    signatures = [form for value in values for form in _sas_signatures(value)]
+    return tuple(value for value in [*values, *signatures] if len(value) >= _SHORTEST_MASKED)
+
+
+def _sas_signatures(value: str) -> tuple[str, ...]:
+    """Return each form of the `sig` parameter a SAS token holds: as written, decoded, and encoded."""
+    parameters = (part.partition("=") for part in value.removeprefix("?").split("&"))
+    return tuple(
+        form
+        for name, _, written in parameters
+        if name == "sig"
+        for form in (written, unquote(written), quote(unquote(written), safe=""))
+    )
 
 
 def _masked(value: Any, secrets: tuple[str, ...]) -> Any:
@@ -2236,14 +2280,16 @@ def _answer(
     The SDK passes only a `ToolError`'s message on to the agent, so every
     failure becomes one, named as `run --json` names it, with the secrets
     masked there too. Unless `row_values` is set, a message that can quote
-    the data is left out.
+    the data is left out. Each URL in a failure's message then loses its
+    query, which can hold a credential the reader signed with. The masking
+    comes first, so a secret that holds a `?` is masked whole.
     """
     try:
         result = work()
     except (Exception, PanicException) as exc:
         # A panic in Polars is no `Exception`, and would stop the server instead.
         failure = _failure(exc, row_values=row_values)
-        raise tool_error(mask_secrets(failure, *secrets)) from exc
+        raise tool_error(without_queries(mask_secrets(failure, *secrets))) from exc
     return cast("_R", _masked(result, secrets))
 
 
@@ -2286,12 +2332,17 @@ def build_server(settings: Settings) -> "MCPServer":
         Reads no rows. Returns what `veridelta validate --json` prints: its errors and
         warnings, each placed in the file where the check can.
         """
+        secrets = environment_values(settings, path)
         return _answer(
             loaded.tool_error,
             lambda: check_configuration(
-                settings, path, schemas=schemas, allow_missing_env=allow_missing_env
+                settings,
+                path,
+                schemas=schemas,
+                allow_missing_env=allow_missing_env,
+                secrets=secrets,
             ),
-            environment_values(settings, path),
+            secrets,
             row_values=settings.allow_row_values,
         )
 
