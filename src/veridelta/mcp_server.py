@@ -2603,22 +2603,36 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
     )
 
 
-_CUT_LENGTHS: Final = (16, 32, 63, 64, 128)
-"""The lengths a database cuts a user name to before it repeats the name in an error.
+_SHORTEST_CUT: Final = 16
+"""The fewest characters or bytes of a value whose head the mask matches.
 
-MySQL keeps 32 characters, and 16 before 5.7.8; PostgreSQL keeps 63 bytes;
-SQL Server keeps 128 characters.
+A database cuts a user name before it repeats the name in an error, each to
+a length of its own: MySQL keeps 16 characters before 5.7.8 and 32 after,
+PostgreSQL 63 bytes, Redshift 127, and SQL Server 128 characters. So no list
+of lengths holds every cut, and the mask matches every head from this one up.
 """
 
 
-def _cuts(value: str) -> tuple[str, ...]:
-    """Return the heads of a value that a database keeps when it cuts a name, in characters and bytes."""
-    encoded = value.encode(errors="surrogateescape")
-    return tuple(
-        head
-        for length in _CUT_LENGTHS
-        for head in (value[:length], encoded[:length].decode(errors="ignore"))
-    )
+def _shortest_head(value: str) -> str:
+    """Return the shortest head of a value the mask matches: its first 16 characters or bytes.
+
+    A cut in bytes that ends inside a character drops that character, so the
+    head of 16 bytes is the shorter of the two.
+    """
+    return value.encode(errors="surrogateescape")[:_SHORTEST_CUT].decode(errors="ignore")
+
+
+def _head_end(text: str, start: int, value: str) -> int:
+    """Return where the longest head of a value that the text holds at `start` ends, in any case.
+
+    A head shorter than `_shortest_head` ends where it starts, so it masks nothing.
+    """
+    held = 0
+    for ours, theirs in zip(text[start : start + len(value)], value, strict=False):
+        if ours.casefold() != theirs.casefold():
+            break
+        held += 1
+    return start + held if held >= len(_shortest_head(value)) else start
 
 
 @functools.lru_cache(maxsize=8)
@@ -2627,9 +2641,9 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
 
     A value's forms are its text, its percent-encoding, its bytes in hex
     with a space between each, as S3 writes a request it could not verify,
-    the `sig` of a SAS token, and each head a database keeps when it cuts a
-    user name. A byte outside UTF-8 is encoded as it was read, so no value
-    stops the pattern from being built.
+    the `sig` of a SAS token, and its shortest head that `_mask` extends,
+    since a database can cut a user name at any length. A byte outside UTF-8
+    is encoded as it was read, so no value stops the pattern from being built.
     """
     forms = {
         form
@@ -2639,7 +2653,7 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
             quote(value, safe="", errors="surrogateescape"),
             value.encode(errors="surrogateescape").hex(" "),
             *_sas_signatures(value),
-            *_cuts(value),
+            _shortest_head(value),
         )
         if len(form) >= _SHORTEST_MASKED
     }
@@ -2656,12 +2670,21 @@ def _mask(text: str) -> str:
 
     It reads the recorded values when the answer is built, so a value a
     reader echoes in a later call, such as from Polars' cache of object
-    stores, is masked there too.
+    stores, is masked there too. A match that starts a value's head runs on
+    over each character that continues the value, so a name a database cut
+    at any length of 16 characters or bytes or more is masked whole.
     """
     with _RECORDING:
         values = frozenset(_RECORDED.get() or ())
     pattern = _mask_pattern(values)
-    return text if pattern is None else pattern.sub("***", text)
+    if pattern is None:
+        return text
+    kept: list[str] = []
+    end = 0
+    while (match := pattern.search(text, end)) is not None:
+        kept += (text[end : match.start()], "***")
+        end = max(match.end(), *(_head_end(text, match.start(), value) for value in values))
+    return "".join((*kept, text[end:]))
 
 
 def _masked(value: Any) -> Any:

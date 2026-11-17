@@ -6422,6 +6422,49 @@ class TestEnvironmentReferences:
         assert "failed for user \\\"***\\\"; Access denied for user '***'@" in _shown(read)
         assert token[:16] not in _shown(read)
 
+    @pytest.mark.parametrize("cut", [17, 48, 80, 127, 150])
+    def test_it_masks_a_user_name_cut_at_any_length(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, cut: int
+    ) -> None:
+        """Ensure a uri user a database cuts at a length of its own comes back masked whole.
+
+        Redshift cuts a user name to 127 bytes, and MySQL's messages to 48
+        characters, so no list of lengths holds every cut.
+        """
+        token = "Tok" + "".join(chr(ord("a") + index % 26) for index in range(190)) + "END"
+        monkeypatch.setenv("VDUSER", token)
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(
+                f'FATAL: password authentication failed for user "{token[:cut].upper()}"'
+            ),
+        )
+        _with_source(
+            tmp_path,
+            '  type: database\n  uri: "redshift://${VDUSER}:wrongpw1@db.internal/dev"\n'
+            "  table: t\n",
+        )
+
+        read = _call(
+            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
+            {"path": "veridelta.yaml", "schemas": True},
+        )
+
+        assert 'failed for user \\"***\\"' in _shown(read)
+
+    def test_it_masks_a_head_only_as_far_as_the_value_goes(self) -> None:
+        """Ensure a head is masked up to where the text leaves the value, and no further."""
+        values = {"Ledger_Reader_for_sales_2026", "Ledger_Reader_for_sales_2027_q4"}
+        token = mcp_server._RECORDED.set(values)  # pyright: ignore[reportPrivateUsage]  # the recorded values are private to the server
+        try:
+            masked = mcp_server._mask(  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+                "user LEDGER_READER_FOR_SALES_2027_x, user Ledger_Reader_for_sal, user Ledger_Reader"
+            )
+        finally:
+            mcp_server._RECORDED.reset(token)  # pyright: ignore[reportPrivateUsage]  # the recorded values are private to the server
+
+        assert masked == "user ***x, user ***, user Ledger_Reader"
+
     def test_it_builds_a_mask_for_a_value_outside_utf_8(self) -> None:
         """Ensure a recorded value with a byte outside UTF-8 still gives a mask, as its bytes read."""
         pattern = mcp_server._mask_pattern(frozenset({"Hunter2\udcffSecretPass"}))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
