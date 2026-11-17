@@ -5921,7 +5921,8 @@ def _forms(value: str) -> set[str]:
     return cut from the rest. Each form is casefolded.
     """
     pieces = [piece for piece in re.split(r"[^A-Za-z0-9]", value) if len(piece) >= 8]
-    return {form.casefold() for form in (value, quote(value, safe=""), *pieces)}
+    encoded = quote(value, safe="", errors="surrogateescape")
+    return {form.casefold() for form in (value, encoded, *pieces)}
 
 
 def _holds_a_form(shown: str, value: str) -> bool:
@@ -6038,6 +6039,13 @@ class TestEnvironmentReferences:
                 {"KEY": "q7Z"},
                 "the value of ${KEY} in source -> password must be at least 4 characters",
                 id="short-password",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+                "  table: orders\n  password: ${KEY}\n",
+                {"KEY": "Hunter2\udcffSecretPass"},
+                "the value of ${KEY} in source -> password must be text in UTF-8",
+                id="password-outside-utf-8",
             ),
             pytest.param(
                 "  path: a.csv\n  options: {row_index_name: '${KEY}'}\n",
@@ -6231,6 +6239,43 @@ class TestEnvironmentReferences:
         assert "could not connect to postgresql://***:***@db.internal/sales" in _shown(read)
         for value in ("Ledger_Reader", "Hunter2-SECRET_pass"):
             assert not _holds_a_form(_shown(read), value)
+
+    def test_it_masks_the_head_of_a_user_name_a_database_cuts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the head of a long uri user that a database repeats in its error is masked.
+
+        PostgreSQL cuts a user name to 63 bytes and MySQL to 32 characters
+        before each writes it into its error, so the whole value never appears.
+        """
+        token = "ya29.a0AfB_byC1234567890SECRETabcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        monkeypatch.setenv("KEY", token)
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(
+                f'FATAL: password authentication failed for user "{token[:63]}"; '
+                f"Access denied for user '{token[:32]}'@'10.0.0.5'"
+            ),
+        )
+        _with_source(
+            tmp_path,
+            '  type: database\n  uri: "postgresql://${KEY}@db.internal/sales"\n  table: orders\n',
+        )
+
+        read = _call(
+            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
+            {"path": "veridelta.yaml", "schemas": True},
+        )
+
+        assert "failed for user \\\"***\\\"; Access denied for user '***'@" in _shown(read)
+        assert token[:16] not in _shown(read)
+
+    def test_it_builds_a_mask_for_a_value_outside_utf_8(self) -> None:
+        """Ensure a recorded value with a byte outside UTF-8 still gives a mask, as its bytes read."""
+        pattern = mcp_server._mask_pattern(frozenset({"Hunter2\udcffSecretPass"}))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+
+        assert pattern is not None
+        assert pattern.sub("***", "Hunter2%FFSecretPass") == "***"
 
     def test_it_takes_an_empty_credential(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

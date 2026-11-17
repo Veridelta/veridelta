@@ -2065,6 +2065,10 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
     """
     if not value:
         return None
+    try:
+        value.encode()
+    except UnicodeEncodeError:
+        return "text in UTF-8, since the server cannot mask bytes outside it"
     if slot in ("secret", "token", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
         return f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
     if slot == "token" and _TOKEN.fullmatch(value) is None:
@@ -2558,18 +2562,44 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
     )
 
 
+_CUT_LENGTHS: Final = (16, 32, 63, 64, 128)
+"""The lengths a database cuts a user name to before it repeats the name in an error.
+
+MySQL keeps 32 characters, and 16 before 5.7.8; PostgreSQL keeps 63 bytes;
+SQL Server keeps 128 characters.
+"""
+
+
+def _cuts(value: str) -> tuple[str, ...]:
+    """Return the heads of a value that a database keeps when it cuts a name, in characters and bytes."""
+    encoded = value.encode(errors="surrogateescape")
+    return tuple(
+        head
+        for length in _CUT_LENGTHS
+        for head in (value[:length], encoded[:length].decode(errors="ignore"))
+    )
+
+
 @functools.lru_cache(maxsize=8)
 def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     """Join every form of the recorded values into one pattern, longest first, in any case.
 
     A value's forms are its text, its percent-encoding, its bytes in hex
     with a space between each, as S3 writes a request it could not verify,
-    and the `sig` of a SAS token.
+    the `sig` of a SAS token, and each head a database keeps when it cuts a
+    user name. A byte outside UTF-8 is encoded as it was read, so no value
+    stops the pattern from being built.
     """
     forms = {
         form
         for value in values
-        for form in (value, quote(value, safe=""), value.encode().hex(" "), *_sas_signatures(value))
+        for form in (
+            value,
+            quote(value, safe="", errors="surrogateescape"),
+            value.encode(errors="surrogateescape").hex(" "),
+            *_sas_signatures(value),
+            *_cuts(value),
+        )
         if len(form) >= _SHORTEST_MASKED
     }
     if not forms:
