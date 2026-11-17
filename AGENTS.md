@@ -104,6 +104,7 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [An Iceberg table loads from its path, never from a catalog](decisions/iceberg-tables-load-from-a-path.md)
 - [The MCP server connects only to the hosts its operator allows](decisions/mcp-server-connects-only-to-allowed-hosts.md)
 - [The MCP server reads a Delta Lake table's data files through PyArrow](decisions/mcp-delta-scan-reads-through-pyarrow.md)
+- [The MCP server loads a Delta Lake table on this machine from a copy of its log](decisions/mcp-delta-log-loads-from-a-copy.md)
 - [On Windows, the MCP server's DuckDB connection opens no other file](decisions/mcp-duckdb-opens-no-other-file-on-windows.md)
 - [A DuckDB file's connection keeps no persistent secret](decisions/duckdb-file-keeps-no-persistent-secret.md)
 - [The MCP server confirms which DuckDB file DuckDB opened](decisions/mcp-confirms-the-duckdb-file-opened.md)

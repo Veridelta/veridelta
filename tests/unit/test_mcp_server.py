@@ -19,9 +19,12 @@ import os
 import re
 import shutil
 import sqlite3
+import struct
 import sys
+import tempfile
 import threading
 import uuid
+import zlib
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, time, timedelta
@@ -41,6 +44,7 @@ import pytest
 from deltalake import DeltaTable
 from mcp import Client
 from mcp.types import CallToolResult, Tool
+from packaging.version import Version
 from polars.exceptions import PanicException
 from pyarrow import fs as arrow_fs
 from pyarrow.fs import LocalFileSystem, SubTreeFileSystem
@@ -56,6 +60,7 @@ from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.database import sqlite_path
 from veridelta.connectors.duckdb import DuckDBPushdownSession, beside, sandboxed
 from veridelta.connectors.lakehouse import (
+    CheckedDeltaTable,
     DeltaLakeConnector,
     IcebergConnector,
     deletion_vector_files,
@@ -2250,6 +2255,41 @@ class TestCheckDataPaths:
 
         assert "host.example" not in str(refused.value)
 
+    @pytest.mark.parametrize("scheme", ["dbfs", "DBFS"])
+    def test_it_refuses_a_dbfs_uri_whatever_host_it_names(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        scheme: str,
+    ) -> None:
+        """Ensure a `dbfs:` table, or a file a table names that way, fails before deltalake opens it.
+
+        Once the server's environment allows it, deltalake opens a `dbfs:`
+        URI's path on this machine and ignores its host, so an allowed host
+        would lead to a table outside every root.
+        """
+        import deltalake
+
+        outside = tmp_path_factory.mktemp("outside") / "events"
+        _ROW.write_delta(outside)
+        monkeypatch.setenv("MOUNT_ALLOW_UNSAFE_RENAME", "true")
+        opened = mocker.spy(deltalake, "DeltaTable")
+        settings = Settings((tmp_path,), allowed_hosts=("bucket.example.com",))
+        uri = f"{scheme}://bucket.example.com{outside.as_uri().removeprefix('file://')}"
+
+        with pytest.raises(ConfigError, match="The source table_uri is a dbfs: URI"):
+            check_data_paths(settings, DeltaLakeConfig(table_uri=uri), _snowflake())
+
+        opened.assert_not_called()
+        listed = [("deletion vector", f"{uri}/vector.bin", True)]
+        mocker.patch.object(mcp_server, "_table_files", return_value=iter(listed))
+        side = DeltaLakeConfig(table_uri=str(tmp_path / "t"))
+
+        with pytest.raises(ConfigError, match="The source deletion vector is a dbfs: URI"):
+            check_data_paths(settings, side, _snowflake())
+
     def test_it_refuses_a_listed_file_uri_python_cannot_read_as_a_path(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
@@ -2766,6 +2806,17 @@ def _with_vectors(table: Path, *vectors: Mapping[str, object]) -> None:
         )
 
 
+def _vector_deleting(row: int) -> bytes:
+    """Write the file of a deletion vector that deletes one row.
+
+    It holds a version byte, then the bitmap's size, Delta's portable roaring
+    bitmap of the row, and its CRC-32.
+    """
+    bitmap = struct.pack("<II", 12346, 1) + struct.pack("<HH", 0, 0)
+    bitmap = struct.pack("<iqi", 1681511377, 1, 0) + bitmap + struct.pack("<IH", 16, row)
+    return b"\x01" + struct.pack(">i", len(bitmap)) + bitmap + struct.pack(">I", zlib.crc32(bitmap))
+
+
 def _store_at(mocker: MockerFixture, folder: Path) -> None:
     """Stand in for deltalake's storage of a table in an object store with `folder`, which holds its log."""
     mocker.patch("deltalake.fs.DeltaStorageHandler")
@@ -2911,7 +2962,8 @@ class TestLakehouseFiles:
 
         A checkpoint records the vectors as well, which the listing reads
         alone once the commits before it are gone. A file in the log with no
-        `add` action, which deltalake never reads, is passed over.
+        `add` action, which deltalake never reads, is passed over, and the
+        server then refuses the table for its vector at its own path.
         """
         table, own = tmp_path / "events", (tmp_path / "vectors" / "own.bin").as_uri()
         first, second = uuid.uuid4(), uuid.uuid4()
@@ -2930,9 +2982,12 @@ class TestLakehouseFiles:
         loaded = DeltaTable(str(table))
         logged = [str(path) for path in (table / "_delta_log").iterdir()]
         named = set(deletion_vector_files(loaded, delta_log_vectors(str(table), {}, logged)))
-        check_data_paths(
-            Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri="events")
-        )
+        with pytest.raises(ConnectorError, match="vector at a path of its own"):
+            check_data_paths(
+                Settings((tmp_path,)),
+                SourceConfig(path="a.csv"),
+                DeltaLakeConfig(table_uri="events"),
+            )
 
         # Delta Lake joins a relative vector to the table's URI, as deltalake writes it.
         folder = loaded.table_uri.rstrip("/")
@@ -2942,20 +2997,47 @@ class TestLakehouseFiles:
             f"{folder}/deletion_vector_{second}.bin",
         }
 
-    def test_it_refuses_a_deletion_vector_outside_the_roots(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+    @pytest.mark.parametrize("where", ["root", "outside", "copy"])
+    def test_it_refuses_a_delta_table_on_this_machine_with_a_vector_at_its_own_path(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        where: str,
     ) -> None:
-        """Ensure a vector a log stores at its own path, outside every root, is refused.
+        """Ensure a table whose log stores a vector at its own path is refused before deltalake loads it.
 
-        A vector's file chooses which rows a scan drops, so one outside the
-        roots would tell an agent about a file it may not read.
+        deltalake reads such a vector where the log says, apart from the
+        check, so the copy could hold it only by writing where the log says.
+        A vector that names the copy's folder and climbs out of it would then
+        have the copy write a file of the root outside every root.
         """
-        outside = (tmp_path_factory.mktemp("outside") / "vector.bin").as_uri()
-        _with_vectors(tmp_path / "events", {"storageType": "p", "pathOrInlineDv": outside})
-        target = DeltaLakeConfig(table_uri="events")
+        outside = tmp_path_factory.mktemp("outside")
+        copy, table = outside / "copy", tmp_path / "a" / "b" / "c" / "events"
 
-        with pytest.raises(ConfigError, match=r"The target deletion vector is outside"):
+        def make_copy(**_: object) -> str:
+            copy.mkdir()
+            return str(copy)
+
+        monkeypatch.setattr(tempfile, "mkdtemp", make_copy)
+        named = {
+            "root": (tmp_path / "vector.bin").as_uri(),
+            "outside": (outside / "vector.bin").as_uri(),
+            "copy": f"{(copy / '0').as_uri()}/../../vector.bin",
+        }
+        (tmp_path / "a" / "b").mkdir(parents=True)
+        for planted in (tmp_path / "vector.bin", tmp_path / "a" / "b" / "vector.bin"):
+            planted.write_bytes(_vector_deleting(0))
+        _with_vectors(table, {"storageType": "p", "pathOrInlineDv": named[where]})
+        loaded = mocker.spy(DeltaTable, "__init__")
+        target = DeltaLakeConfig(table_uri="a/b/c/events")
+
+        with pytest.raises(ConnectorError, match=r"vector at a path of its own.*veridelta run"):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+        assert not (outside / "vector.bin").exists()
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
@@ -3004,19 +3086,26 @@ class TestLakehouseFiles:
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
     def test_it_holds_a_deletion_vector_elsewhere_to_the_allowed_hosts(
-        self, tmp_path: Path
+        self, tmp_path: Path, mocker: MockerFixture
     ) -> None:
         """Ensure a vector in another bucket is refused unless its host is allowed.
 
-        The log names the host, so the refusal leaves it out.
+        The table lies in an object store, whose storage is mocked. The log
+        names the host, so the refusal leaves it out.
         """
         vector = {"storageType": "p", "pathOrInlineDv": "s3://other-bucket/vector.bin"}
         _with_vectors(tmp_path / "events", vector)
-        target = DeltaLakeConfig(table_uri="events")
-        allowed = Settings((tmp_path,), allowed_hosts=("other-bucket",))
+        _store_at(mocker, tmp_path / "events")
+        table = mocker.patch("deltalake.DeltaTable")
+        table.return_value.file_uris.return_value = []
+        table.return_value.protocol.return_value.reader_features = ["deletionVectors"]
+        target = DeltaLakeConfig(table_uri="s3://lake/events")
+        allowed = Settings((tmp_path,), allowed_hosts=("lake", "other-bucket"))
 
         with pytest.raises(ConfigError, match="The target deletion vector names a host") as refused:
-            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+            check_data_paths(
+                Settings((tmp_path,), allowed_hosts=("lake",)), SourceConfig(path="a.csv"), target
+            )
         check_data_paths(allowed, SourceConfig(path="a.csv"), target)
 
         assert "other-bucket" not in str(refused.value)
@@ -3363,6 +3452,486 @@ class TestLakehouseFiles:
             read_rows(Settings((tmp_path,), allow_row_values=True), "veridelta.yaml", "changed")
 
         assert str(secret) not in str(stopped.value)
+
+    @pytest.mark.skipif(
+        Version(pl.__version__) < Version("1.40.0"),
+        reason="Polars reads a table with deletion vectors from 1.40.0 on, so an older one "
+        "refuses the table before any vector is read.",
+    )
+    def test_it_loads_a_delta_table_from_the_log_it_checked(
+        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, mocker: MockerFixture
+    ) -> None:
+        """Ensure a commit written after the scan read the log is never read, nor the vector it names.
+
+        deltalake reads the log again as it loads a table. A commit a writer
+        adds in that moment, naming a vector outside the roots, would choose
+        which rows the scan drops, from a file no check saw. The scan loads
+        the table from the copy of the log it read instead.
+        """
+        table = tmp_path / "events"
+        pl.DataFrame({"id": [1, 2]}).write_delta(
+            table, delta_write_options={"configuration": {"delta.enableDeletionVectors": "true"}}
+        )
+        vector = tmp_path_factory.mktemp("outside") / "vector.bin"
+        vector.write_bytes(_vector_deleting(0))
+        log = table / "_delta_log"
+        first = (log / f"{0:020}.json").read_text(encoding="utf-8").splitlines()
+        (added,) = [json.loads(line)["add"] for line in first if '"add"' in line]
+        stored: dict[str, object] = {"storageType": "p", "pathOrInlineDv": vector.as_uri()}
+        stored |= {"offset": 1, "sizeInBytes": len(vector.read_bytes()) - 9, "cardinality": 1}
+        removed = {"path": added["path"], "dataChange": True, "deletionTimestamp": 1}
+        commit = [{"remove": removed}, {"add": dict(added, deletionVector=stored)}]
+        read = delta_log_vectors
+
+        def read_then_commit(*args: Any) -> list[dict[str, Any]]:
+            vectors = read(*args)
+            (log / f"{1:020}.json").write_text(
+                "".join(json.dumps(action) + "\n" for action in commit), encoding="utf-8"
+            )
+            return vectors
+
+        mocker.patch.object(
+            mcp_server, "check_data_paths", side_effect=lambda _, source, target: (source, target)
+        )
+        mocker.patch.object(mcp_server, "delta_log_vectors", side_effect=read_then_commit)
+        pl.DataFrame({"id": [1, 2]}).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert report["verdict"] == "match"
+        assert (log / f"{1:020}.json").exists()
+
+    @pytest.mark.parametrize("replaced", ["log file", "deletion vector"])
+    def test_it_refuses_a_file_replaced_as_it_is_checked(
+        self, tmp_path: Path, mocker: MockerFixture, replaced: str
+    ) -> None:
+        """Ensure a commit or a vector that another file replaces just after its check is never copied.
+
+        deltalake reads the copy of the log, and of each vector at a relative
+        path, that the scan makes just after each check. A file renamed over
+        one in that moment is another file, though its text is the same.
+        """
+        table, name = tmp_path / "events", uuid.uuid4()
+        _with_vectors(table, {"storageType": "u", "pathOrInlineDv": _relative_vector("", name)})
+        files = {
+            "log file": table / "_delta_log" / f"{1:020}.json",
+            "deletion vector": table / f"deletion_vector_{name}.bin",
+        }
+        files["deletion vector"].write_bytes(_vector_deleting(0))
+        swapped = tmp_path / "swapped"
+        shutil.copyfile(files[replaced], swapped)
+        check = mcp_server._refuse_listed  # pyright: ignore[reportPrivateUsage] - the hook runs it, then replaces the file
+
+        def check_then_replace(
+            settings: Settings, side: str, setting: str, location: str, *, quoted: bool
+        ) -> None:
+            check(settings, side, setting, location, quoted=quoted)
+            if setting == replaced and Path(location) == files[replaced]:
+                os.replace(swapped, files[replaced])
+
+        mocker.patch.object(mcp_server, "_refuse_listed", side_effect=check_then_replace)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="was replaced as this server checked it"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert not swapped.exists()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="Windows cannot move a file over one a handle holds open."
+    )
+    @pytest.mark.parametrize("replaced", ["log file", "deletion vector"])
+    def test_it_refuses_a_file_swapped_in_for_its_open_alone(
+        self, tmp_path: Path, mocker: MockerFixture, replaced: str
+    ) -> None:
+        """Ensure a file swapped in just for the copy's open, and swapped out right after, is never copied.
+
+        The path names the file checked both before the open and after it, so
+        only the file opened shows the swap.
+        """
+        table, name = tmp_path / "events", uuid.uuid4()
+        _with_vectors(table, {"storageType": "u", "pathOrInlineDv": _relative_vector("", name)})
+        files = {
+            "log file": table / "_delta_log" / f"{1:020}.json",
+            "deletion vector": table / f"deletion_vector_{name}.bin",
+        }
+        files["deletion vector"].write_bytes(_vector_deleting(0))
+        swapped, aside = tmp_path / "swapped", tmp_path / "aside"
+        shutil.copyfile(files[replaced], swapped)
+        opened = os.open
+
+        def swap_for_the_open(path: str | bytes, flags: int, *args: Any, **named: Any) -> int:
+            if Path(os.fsdecode(path)) != files[replaced]:
+                return opened(path, flags, *args, **named)
+            os.replace(path, aside)
+            os.replace(swapped, path)
+            try:
+                return opened(path, flags, *args, **named)
+            finally:
+                os.replace(aside, path)
+
+        mocker.patch.object(os, "open", side_effect=swap_for_the_open)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="was replaced as this server checked it"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert not aside.exists()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no named pipe in a folder.")
+    def test_it_refuses_a_named_pipe_in_a_delta_log(self, tmp_path: Path) -> None:
+        """Ensure a named pipe in a table's log is refused at once, not waited on.
+
+        The copy opens each file of the log that deltalake reads, and the
+        open of a pipe that no one writes to would wait, and hold every tool
+        call that lists the table, forever.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        os.mkfifo(tmp_path / "events" / "_delta_log" / f"{1:020}.json")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="is not a regular file"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A link on Windows needs a privilege a runner may lack."
+    )
+    @pytest.mark.parametrize("linked", ["folder", "file"])
+    def test_it_writes_no_copy_through_a_link_in_its_folder(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        linked: str,
+    ) -> None:
+        """Ensure the copy refuses a link in its own folder, to a folder or a file outside it.
+
+        Only the server's own user can write in the copy's folder, but the
+        copy writes nothing there that leads elsewhere all the same.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        outside = tmp_path_factory.mktemp("outside")
+        copy, elsewhere = outside / "copy", outside / "elsewhere"
+        elsewhere.mkdir()
+        commit = elsewhere / "commit.json"
+        commit.write_text("kept", encoding="utf-8")
+
+        def make_copy(**_: object) -> str:
+            copy.mkdir()
+            if linked == "folder":
+                (copy / "0").symlink_to(elsewhere, target_is_directory=True)
+            else:
+                (copy / "0" / "_delta_log").mkdir(parents=True)
+                (copy / "0" / "_delta_log" / f"{0:020}.json").symlink_to(commit)
+            return str(copy)
+
+        monkeypatch.setattr(tempfile, "mkdtemp", make_copy)
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="would lie outside the copy's folder"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert sorted(each.name for each in elsewhere.iterdir()) == ["commit.json"]
+        assert commit.read_text(encoding="utf-8") == "kept"
+
+    def test_it_opens_a_file_of_a_copied_table_in_its_own_folder(self, tmp_path: Path) -> None:
+        """Ensure a file a table loaded from a copy names is opened in the table's folder, and one elsewhere keeps its name.
+
+        The check then holds a file elsewhere to the roots, as it would hold
+        the table's own.
+        """
+        _ROW.write_delta(tmp_path / "copy")
+        checked = CheckedDeltaTable(DeltaTable(str(tmp_path / "copy")), tmp_path / "events")
+        elsewhere = (tmp_path / "elsewhere" / "part-0.parquet").as_uri()
+
+        own = checked.located(f"{checked.table.table_uri.rstrip('/')}/part-0.parquet")
+
+        assert Path(own) == tmp_path / "events" / "part-0.parquet"
+        assert checked.located(elsewhere) == elsewhere
+
+    def test_it_copies_a_vector_the_log_names_twice_once(self, tmp_path: Path) -> None:
+        """Ensure a vector that two actions name is copied once, since the copy never writes a file twice.
+
+        A checkpoint names each vector its commits name, and one file can
+        hold the vectors of many data files.
+        """
+        table, name = tmp_path / "events", uuid.uuid4()
+        vector = {"storageType": "u", "pathOrInlineDv": _relative_vector("ab", name)}
+        _with_vectors(table, vector, vector)
+        (table / "ab").mkdir()
+        (table / "ab" / f"deletion_vector_{name}.bin").write_bytes(_vector_deleting(0))
+        target = DeltaLakeConfig(table_uri="events")
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+    def test_it_copies_no_log_under_a_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a table on this machine is refused when the system's temporary folder lies under a root.
+
+        Whoever writes under the roots could change the copy of the log there
+        before deltalake reads it.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        (tmp_path / "temporary").mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "temporary"))
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="temporary folder lies under a folder"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+        assert list((tmp_path / "temporary").iterdir()) == []
+
+    def test_it_copies_no_log_into_a_folder_whose_path_holds_a_percent(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        """Ensure a table on this machine is refused, naming the temporary folder, when its path holds a `%`.
+
+        deltalake decodes a `%` escape in the copy's path, so it would read
+        another folder, and fail with a message that names neither.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        temporary = tmp_path_factory.mktemp("outside") / "a%20b"
+        temporary.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match="temporary folder holds a '%'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+        assert list(temporary.iterdir()) == []
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A '\\' separates a Windows path's folders."
+    )
+    def test_it_copies_no_log_into_a_folder_whose_path_holds_a_backslash(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+    ) -> None:
+        r"""Ensure a table on this machine is refused when the temporary folder's path holds a `\`.
+
+        Outside Windows, deltalake reads a `\` in a path as `/`, so it would
+        read the log of another folder, one this server never wrote or
+        checked, while its `table_uri` still names the copy.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        temporary = tmp_path_factory.mktemp("outside") / "a\\b"
+        temporary.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temporary))
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match=r"temporary folder holds a '%', or a '\\'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+        assert list(temporary.iterdir()) == []
+
+    def test_it_copies_only_the_files_of_a_delta_log_that_deltalake_reads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file of the log whose name deltalake skips is checked but never copied.
+
+        deltalake reads only a commit, a checkpoint, a checksum, and
+        `_last_checkpoint`, at the top of the log. A file of any other name,
+        or in a folder of the log such as the `_sidecars` of a v2 checkpoint,
+        then costs the copy nothing, however large it is.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        log = tmp_path / "events" / "_delta_log"
+        (log / "notes").write_bytes(bytes(2 << 20))
+        (log / "_sidecars").mkdir()
+        (log / "_sidecars" / f"{1:020}.json").write_bytes(bytes(2 << 20))
+        monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 1 << 20)
+        copied = mocker.spy(mcp_server, "_copy_checked")
+        listed = mocker.spy(mcp_server, "_refuse_listed")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        report = describe_side(Settings((tmp_path,)), "veridelta.yaml", "target")
+
+        assert "note" in report["columns"]
+        assert {Path(call.args[0]).name for call in copied.call_args_list} == {f"{0:020}.json"}
+        assert {Path(call.args[3]) for call in listed.call_args_list} >= {
+            log / "notes",
+            log / "_sidecars" / f"{1:020}.json",
+        }
+
+    @pytest.mark.parametrize("version", [None, 4, 2, 0], ids=["latest", "last", "middle", "first"])
+    def test_it_copies_a_delta_log_up_to_the_version_deltalake_loads(
+        self, tmp_path: Path, mocker: MockerFixture, version: int | None
+    ) -> None:
+        """Ensure the copy holds each file of the log from version 0 to the version loaded, and no later one.
+
+        deltalake loads a version from files at or before it, so a later
+        commit or checkpoint costs the copy nothing, while every earlier one
+        is there should deltalake pass over a checkpoint. The table loads from
+        the copy, though `_last_checkpoint` names a checkpoint it lacks.
+        """
+        table = tmp_path / "events"
+        for at in range(6):
+            _ROW.write_delta(table, mode="append")
+            if at in (1, 3):
+                DeltaTable(str(table)).create_checkpoint()
+        copied = mocker.spy(mcp_server, "_copy_checked")
+        target = DeltaLakeConfig(table_uri="events", version=version)
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        names = sorted(Path(call.args[0]).name for call in copied.call_args_list)
+        last = 5 if version is None else version
+        expected = [
+            name
+            for name in sorted(each.name for each in (table / "_delta_log").iterdir())
+            if name == "_last_checkpoint" or int(name[:20]) <= last
+        ]
+        assert names == expected
+        assert f"{last:020}.json" in names
+        assert f"{last + 1:020}.json" not in names
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            f"{2:020}.checkpoint.json",
+            f"{2:020}.checkpoint.{1:010}.{1:010}.json",
+            f"{2:020}.checkpoint.{1:010}.{1:010}.{uuid.UUID(int=2)}.parquet",
+            f"{2:020}.checkpoint.{uuid.UUID(int=2)}.json",
+        ],
+        ids=["json", "part-json", "part-uuid", "uuid-json"],
+    )
+    def test_it_reads_the_rows_of_a_delta_table_beside_a_checkpoint_deltalake_passes_over(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """Ensure an empty file named as a checkpoint leaves the rows the server reads as `veridelta run` reads them.
+
+        deltalake reads no such file as a checkpoint, or passes over one it
+        cannot read, to the commits before it. A copy that started at the
+        checkpoint would lack those commits, and read only the rows of the
+        commits after it, since a later commit that writes the protocol and
+        the metadata again, as a change of a table property does, loads alone.
+        """
+        table = tmp_path / "events"
+        pl.DataFrame({"id": [1, 2, 3]}).write_delta(table)
+        pl.DataFrame({"id": [4]}).write_delta(table, mode="append")
+        DeltaTable(str(table)).alter.set_table_properties({"delta.enableChangeDataFeed": "true"})
+        pl.DataFrame({"id": [6]}).write_delta(table, mode="append")
+        (table / "_delta_log" / name).write_bytes(b"")
+        pl.DataFrame({"id": [1, 2, 3, 4, 6]}).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
+
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert sorted(pl.read_delta(str(table))["id"].to_list()) == [1, 2, 3, 4, 6]
+        assert report["verdict"] == "match"
+        assert report["total_rows_target"] == 5
+
+    @pytest.mark.parametrize("limit", ["bytes", "files", "room"])
+    def test_it_refuses_a_delta_log_larger_than_it_copies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, limit: str
+    ) -> None:
+        """Ensure a log that would take more files or room than the copy holds is refused, not copied whole.
+
+        Files under a root that take no room there, such as sparse files or
+        hard links named as commits to one empty file, would otherwise fill
+        the system's temporary folder: each copy is a file of its own, and
+        takes a block even when empty. So each file counts a block and its
+        bytes, and the files are counted too.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        log = tmp_path / "events" / "_delta_log"
+        if limit == "bytes":
+            (log / f"{1:020}.json").write_bytes(bytes(2 << 20))
+            monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 1 << 20)
+        else:
+            (tmp_path / "empty").touch()
+            for version in range(1, 61):
+                os.link(tmp_path / "empty", log / f"{version:020}.json")
+            if limit == "files":
+                monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_FILES", 40)
+            else:
+                # The bytes of all 61 files come to less than one block.
+                monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 40 * 4096)
+        copied = mocker.spy(mcp_server, "_copy_checked")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(
+            ConnectorError, match=r"pass the 10,000 files and folders, or the 1 GiB"
+        ):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert copied.call_count <= 41
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="A '\\' separates a Windows path's folders."
+    )
+    @pytest.mark.parametrize("kind", ["file", "folder"])
+    def test_it_refuses_a_name_in_a_delta_log_that_holds_a_backslash(
+        self, tmp_path: Path, mocker: MockerFixture, kind: str
+    ) -> None:
+        r"""Ensure a table whose log holds a name with a `\` is refused before deltalake loads it.
+
+        Outside Windows, deltalake reads a `\` in a name it lists as `/`, and
+        resolves a `..`, so such a name leads it to a commit elsewhere, which
+        no check saw.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        name = tmp_path / "events" / "_delta_log" / f"x\\..\\..\\zz\\_delta_log\\{1:020}.json"
+        if kind == "file":
+            name.write_text("{}\n", encoding="utf-8")
+        else:
+            name.mkdir()
+        loaded = mocker.patch("deltalake.DeltaTable")
+        target = DeltaLakeConfig(table_uri="events")
+
+        with pytest.raises(ConnectorError, match=r"a name in the table's log holds a '\\'"):
+            check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        loaded.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows allows no ':' in a folder's name.")
+    def test_it_refuses_a_delta_table_uri_whose_readings_each_hold_a_log(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a URI that readers read as two folders, each holding a log, is refused.
+
+        deltalake reads `file:///…/events` as the folder it names, and a
+        reader that knows no scheme as a folder named `file:` in the working
+        directory. The copy holds one log, so the server reads neither.
+        """
+        _ROW.write_delta(tmp_path / "events")
+        uri = (tmp_path / "events").as_uri()
+        shutil.copytree(tmp_path / "events", Path(uri).absolute())
+        loaded = mocker.patch("deltalake.DeltaTable")
+
+        with pytest.raises(ConnectorError, match="more than one holds a Delta Lake log"):
+            check_data_paths(
+                Settings((tmp_path,)), SourceConfig(path="a.csv"), DeltaLakeConfig(table_uri=uri)
+            )
+
+        loaded.assert_not_called()
 
     @pytest.mark.parametrize("listed", [True, False], ids=["listing", "scan"])
     def test_it_holds_a_file_iceberg_metadata_names_elsewhere_to_the_allowed_hosts(
