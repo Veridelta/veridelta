@@ -63,17 +63,19 @@ def recorded_run(mocker: MockerFixture) -> MagicMock:
 
 @pytest.fixture(autouse=True)
 def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset each credential variable a reader takes from `veridelta mcp`'s environment.
+    """Unset each credential variable a reader takes from `veridelta mcp`'s environment, in any spelling.
 
     The server refuses to start on a value it cannot mask, so a value from the
     machine the suite runs on would change what a test sees.
     """
-    for name in (
+    left_out = {
         *mcp_server._ENVIRONMENT_SLOTS,
         *mcp_server._TOKEN_FILE_VARIABLES,
         mcp_server._KEY_JSON_VARIABLE,
-    ):
-        monkeypatch.delenv(name, raising=False)
+    }
+    for name in list(os.environ):
+        if mcp_server._name_as_read(name) in left_out:
+            monkeypatch.delenv(name)
 
 
 def _acted_on(text: str) -> list[str]:

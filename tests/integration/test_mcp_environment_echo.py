@@ -98,6 +98,7 @@ _PROFILE_TOKEN = "IQoJb3JpZ2luProfileSessionTokenQ7"
 _CLIENT_ID = "0e2f7c1a-3b9d-4e58-9a0c-7d6e5f4a3b2c"
 _TENANT_ID = "6f1c2a9e-3b7d-4e58-9a0c-1b2c3d4e5f6a"
 _CLIENT_SECRET = "Mk18Q~ab.cd_ef-gh+ij/kl=Zq9x7Pw"
+_FEDERATED_TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJsZWRnZXIifQ.c2lnbmF0dXJlTGVkZ2VyUTc"
 
 
 def _s3(endpoint: str) -> dict[str, str]:
@@ -139,17 +140,36 @@ def _profile(folder: Path, endpoint: str) -> dict[str, str]:
     }
 
 
-def _azure(_: Path, endpoint: str) -> dict[str, str]:
-    """Give Polars an Entra client secret, with Azure's authority and the store at the echo store."""
+def _authority(endpoint: str) -> dict[str, str]:
+    """Send every Azure request, and the token request, to the echo store, over HTTP."""
     return {
         "AZURE_CLIENT_ID": _CLIENT_ID,
         "AZURE_TENANT_ID": _TENANT_ID,
-        "AZURE_CLIENT_SECRET": _CLIENT_SECRET,
         "AZURE_AUTHORITY_HOST": endpoint,
         "AZURE_STORAGE_ACCOUNT_NAME": "acct",
         "AZURE_ENDPOINT": endpoint,
         "AZURE_ALLOW_HTTP": "true",
     }
+
+
+def _azure(secret_name: str) -> Callable[[Path, str], dict[str, str]]:
+    """Give the readers an Entra client secret under `secret_name`."""
+
+    def environment(_: Path, endpoint: str) -> dict[str, str]:
+        return {**_authority(endpoint), secret_name: _CLIENT_SECRET}
+
+    return environment
+
+
+def _federated(file_name: str) -> Callable[[Path, str], dict[str, str]]:
+    """Give the readers a federated token in a file that `file_name` names."""
+
+    def environment(folder: Path, endpoint: str) -> dict[str, str]:
+        token = folder / "token"
+        token.write_text(_FEDERATED_TOKEN + "\n", encoding="utf-8")
+        return {**_authority(endpoint), file_name: str(token)}
+
+    return environment
 
 
 _CASES: dict[str, _Case] = {
@@ -159,7 +179,17 @@ _CASES: dict[str, _Case] = {
     "deltalake-aws-token": _Case("s3", True, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
     # deltalake reads no credentials file: it asks for an instance role instead.
     "polars-profile": _Case("s3", False, _profile, (_PROFILE_KEY_ID, _PROFILE_TOKEN)),
-    "polars-azure": _Case("az", False, _azure, (_CLIENT_ID, _TENANT_ID, _CLIENT_SECRET)),
+    "polars-azure": _Case(
+        "az", False, _azure("AZURE_CLIENT_SECRET"), (_CLIENT_ID, _TENANT_ID, _CLIENT_SECRET)
+    ),
+    # object_store reads any case after the prefix, so it sends this name's value too.
+    "polars-azure-mixed-case": _Case("az", False, _azure("AZURE_Client_Secret"), (_CLIENT_SECRET,)),
+    "deltalake-azure-mixed-case": _Case(
+        "az", True, _azure("AZURE_Client_Secret"), (_CLIENT_SECRET,)
+    ),
+    "polars-federated-mixed-case": _Case(
+        "az", False, _federated("AZURE_Federated_Token_File"), (_FEDERATED_TOKEN,)
+    ),
 }
 """Each reader and the credentials it takes from the environment, by name."""
 
@@ -201,7 +231,8 @@ def _answers(name: str, folder: str, endpoint: str, control: bool) -> list[str]:
 
     This runs in a child process. It leaves each reader only the credentials
     the case gives, and reaches the store with no proxy. With `control`, the
-    server neither records its environment nor blanks S3's elements.
+    server neither records its environment or token files nor blanks S3's
+    elements.
     """
     case, root = _CASES[name], Path(folder)
     os.chdir(root)
@@ -214,6 +245,7 @@ def _answers(name: str, folder: str, endpoint: str, control: bool) -> list[str]:
     )
     if control:
         setattr(mcp_server, "_environment_values", lambda _: set())  # noqa: B010 - the child patches as monkeypatch would
+        setattr(mcp_server, "_token_file_values", lambda _: set())  # noqa: B010 - as above
         setattr(mcp_server, "_without_echoed_credentials", lambda text: text)  # noqa: B010 - as above
     bucket = f"bkt-{name}"
     if case.delta:

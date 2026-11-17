@@ -264,18 +264,20 @@ def _in_the_first_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset each credential variable a reader takes from the server's environment.
+    """Unset each credential variable a reader takes from the server's environment, in any spelling.
 
     The server masks each such value in every answer, and refuses one it
     cannot mask, so a value from the machine the suite runs on would change
     what a test sees.
     """
-    for name in (
+    left_out = {
         *mcp_server._ENVIRONMENT_SLOTS,
         *mcp_server._TOKEN_FILE_VARIABLES,
         mcp_server._KEY_JSON_VARIABLE,
-    ):
-        monkeypatch.delenv(name, raising=False)
+    }
+    for name in list(os.environ):
+        if mcp_server._name_as_read(name) in left_out:
+            monkeypatch.delenv(name)
 
 
 def _write(folder: Path, text: str, name: str = "veridelta.yaml") -> Path:
@@ -7481,6 +7483,87 @@ class TestEnvironmentCredentials:
         result = _describe(tmp_path)
 
         assert "ConnectorError: region us-east-1-zz" in _text(result)
+
+    @pytest.mark.parametrize(
+        ("name", "slot"),
+        [
+            pytest.param("AZURE_Client_Secret", "token", id="azure-client-secret"),
+            pytest.param("AZURE_STORAGE_client_secret", "token", id="azure-storage-alias"),
+            pytest.param("AWS_Session_Token", "token", id="aws-session-token"),
+            pytest.param("GOOGLE_bearer_token", "token", id="google-bearer-token"),
+            pytest.param("AZURE_Storage_Account_Key", "account key", id="azure-account-key"),
+        ],
+    )
+    def test_it_masks_a_variable_in_any_case_after_its_prefix(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        slot: str,
+    ) -> None:
+        """Ensure a name in mixed case after `AWS_`, `AZURE_`, or `GOOGLE_` is masked.
+
+        object_store matches the prefix as written and reads the rest of the
+        name in any case, so it sends the value of `AZURE_Client_Secret`.
+        """
+        value = _SLOT_VALUES[slot]
+        monkeypatch.setenv(name, value)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"echo: {_echoes(value)}", quotes_data=True),
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert "echo: ***" in _shown(result)
+        assert not _holds_a_form(_shown(result), value)
+
+    def test_it_will_not_start_on_a_mixed_case_variable_it_cannot_mask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a malformed value under a mixed-case name stops the server, naming it as set."""
+        monkeypatch.setenv("AZURE_Client_Secret", "ab cd")
+
+        with pytest.raises(ConfigError, match="the environment variable AZURE_Client_Secret must"):
+            build_server(Settings((tmp_path,)))
+
+    def test_it_reads_a_mixed_case_key_and_token_file(self, tmp_path: Path) -> None:
+        """Ensure a Google key and a token file are read under a mixed-case name too."""
+        token_file = tmp_path / "token"
+        token = "eyJhbGciOiJSUzI1NiJ9.ZmVkZXJhdGVk.c2lnbmF0dXJl"
+        token_file.write_text(token + "\n", encoding="utf-8")
+        environ = {
+            "GOOGLE_Service_Account_Key": "not json at all",
+            "AZURE_Federated_Token_File": str(token_file),
+        }
+
+        assert mcp_server._environment_values(environ) == {"not json at all"}
+        assert mcp_server._token_file_values(environ) == {token}
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("azure_client_secret", id="lower-case-prefix"),
+            pytest.param("Aws_Session_Token", id="mixed-case-prefix"),
+            pytest.param("CLIENT_SECRET", id="no-prefix"),
+            pytest.param("hf_token", id="exact-name-in-another-case"),
+        ],
+    )
+    def test_it_ignores_a_name_no_reader_takes(self, tmp_path: Path, name: str) -> None:
+        """Ensure a name whose prefix is not as object_store matches it is neither checked nor kept.
+
+        object_store matches the prefix as written, and every other reader
+        reads its names as written, so none of these reaches a reader.
+        """
+        token_file = tmp_path / "token"
+        token_file.write_text("eyJhbGciOiJSUzI1NiJ9.ZmVkZXJhdGVk.c2lnbmF0dXJl", encoding="utf-8")
+        environ = {name: "ab cd", "azure_federated_token_file": str(token_file)}
+
+        assert mcp_server._environment_values(environ) == set()
+        assert mcp_server._token_file_values(environ) == set()
 
     def test_it_masks_the_fields_of_a_service_account_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture

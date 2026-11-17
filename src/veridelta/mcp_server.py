@@ -2176,10 +2176,17 @@ _ENVIRONMENT_SLOTS: Final[Mapping[str, _Slot]] = {
 """The environment variables whose value `veridelta mcp` masks, each with its slot.
 
 object_store's `from_env` reads `AWS_X` as the option `aws_x`, so the part
-taken from the option table cannot drift from it. A variable joins only with
-evidence that a reader sends its value to a service, and with the slot
-whose shape makes an echo the text the mask matches. Never record a prefix,
-since `AWS_ALLOW_HTTP=true` would then mask `true` in every answer."""
+taken from the option table cannot drift from it. `_name_as_read` gives the
+name a variable is looked up by here. A variable joins only with evidence
+that a reader sends its value to a service, and with the slot whose shape
+makes an echo the text the mask matches. Never record a prefix, since
+`AWS_ALLOW_HTTP=true` would then mask `true` in every answer."""
+
+_CASELESS_PREFIXES: Final = ("AWS_", "AZURE_", "GOOGLE_")
+"""The prefixes after which object_store's `from_env` ignores a name's case.
+
+It matches the prefix as written, then reads the whole name in lower case,
+so it reads `AZURE_Client_Secret` as the option `azure_client_secret`."""
 
 _KEY_JSON_VARIABLE: Final = "GOOGLE_SERVICE_ACCOUNT_KEY"
 """The environment variable object_store reads a Google service account key from, as JSON."""
@@ -2431,22 +2438,40 @@ def _record_and_check(reference: Reference, match: re.Match[str]) -> None:
             recorded.add(reference.value)
 
 
+def _name_as_read(name: str) -> str:
+    """Return the name a reader takes an environment variable as.
+
+    A name that starts with one of `_CASELESS_PREFIXES`, as written, is read
+    in any case after it, so it is returned in upper case. Any other name is
+    read as written, and returned as it is. On Windows, `os.environ` ignores
+    case already.
+    """
+    return name.upper() if name.startswith(_CASELESS_PREFIXES) else name
+
+
 def _environment_values(environ: Mapping[str, str]) -> set[str]:
     """Return each credential a reader takes from the server's environment, to be masked.
 
-    Each name is looked up as written. On Windows, `os.environ` ignores case
-    already. A Google key is recorded whole, and each field of it that a
-    service can echo on its own too. Its JSON is never refused, since
-    object_store's errors for it quote none of its text.
+    Each variable is looked up by `_name_as_read`, so a name such as
+    `AZURE_Client_Secret` is masked and checked as object_store reads it. A
+    Google key is recorded whole, and each field of it that a service can echo
+    on its own too. Its JSON is never refused, since object_store's errors for
+    it quote none of its text.
 
     Raises:
         ConfigError: If a variable's value lacks its slot's shape. The message
-            names the variable, never the value.
+            names the variable as it is set, never the value.
     """
     values: set[str] = set()
-    for name, slot in _ENVIRONMENT_SLOTS.items():
-        value = environ.get(name)
+    for name, value in environ.items():
         if not value:
+            continue
+        read_as = _name_as_read(name)
+        if read_as == _KEY_JSON_VARIABLE:
+            values.update(_key_json_values(value))
+            continue
+        slot = _ENVIRONMENT_SLOTS.get(read_as)
+        if slot is None:
             continue
         needed = _shape_needed(slot, value)
         if needed is not None:
@@ -2457,20 +2482,23 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
                 "host starts the server with."
             )
         values.add(value)
-    key = environ.get(_KEY_JSON_VARIABLE)
-    if key:
-        values.add(key)
-        try:
-            fields = json.loads(key)
-        except ValueError:
-            fields = None
-        if isinstance(fields, dict):
-            found = cast("dict[str, object]", fields)
-            values.update(
-                text
-                for field in _KEY_JSON_FIELDS
-                if isinstance(text := found.get(field), str) and len(text) >= _SHORTEST_MASKED
-            )
+    return values
+
+
+def _key_json_values(key: str) -> set[str]:
+    """Return a Google key, whole, and each field of it a service can echo on its own."""
+    values = {key}
+    try:
+        fields = json.loads(key)
+    except ValueError:
+        fields = None
+    if isinstance(fields, dict):
+        found = cast("dict[str, object]", fields)
+        values.update(
+            text
+            for field in _KEY_JSON_FIELDS
+            if isinstance(text := found.get(field), str) and len(text) >= _SHORTEST_MASKED
+        )
     return values
 
 
@@ -2480,12 +2508,12 @@ def _token_file_values(environ: Mapping[str, str]) -> set[str]:
     A file that cannot be read, is larger than `_LONGEST_TOKEN_FILE`, is not
     UTF-8, or holds no value in `_TOKEN`'s shape of at least
     `_SHORTEST_MASKED` characters is skipped, since it holds no token a
-    reader sends. The file's path is not recorded.
+    reader sends. The file's path is not recorded. Each variable is looked up
+    by `_name_as_read`, as in `_environment_values`.
     """
     values: set[str] = set()
-    for name in _TOKEN_FILE_VARIABLES:
-        path = environ.get(name)
-        if not path:
+    for name, path in environ.items():
+        if not path or _name_as_read(name) not in _TOKEN_FILE_VARIABLES:
             continue
         try:
             with open(path, "rb") as file:

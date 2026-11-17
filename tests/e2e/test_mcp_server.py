@@ -41,7 +41,11 @@ def _server_environment() -> dict[str, str]:
         *mcp_server._TOKEN_FILE_VARIABLES,
         mcp_server._KEY_JSON_VARIABLE,
     }
-    return {name: value for name, value in os.environ.items() if name not in left_out}
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if mcp_server._name_as_read(name) not in left_out
+    }
 
 
 def _text(result: CallToolResult) -> str:
