@@ -6075,6 +6075,34 @@ class TestEnvironmentReferences:
                 id="account-key-of-another-shape",
             ),
             pytest.param(
+                _ICEBERG_SAS.format(token="x").replace(
+                    "adls.sas-token: x", "adls.account-key: ${KEY}"
+                ),
+                {"KEY": "SGVsbG8gV29ybGQhIHNlY3JldEB="},
+                "the value of ${KEY} in source -> storage_options -> adls.account-key must be "
+                "an account key in base64",
+                id="account-key-a-reader-decodes-only-leniently",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://vdref0x:${KEY}@db.internal/sales"\n'
+                "  table: orders\n",
+                {"KEY": "q7"},
+                "the value of ${KEY} in source -> uri must be at least 4 characters",
+                id="uri-password-after-a-user-that-looks-like-a-reference",
+            ),
+            pytest.param(
+                "  type: database\n  uri: sqlite://u@/x.db\n  table: t\n  password: ${KEY}\n",
+                {"KEY": "Hunter2Secret//TailPartXYZ"},
+                "source -> password cannot take ${KEY} for a SQLite file",
+                id="sqlite-password-the-system-folds",
+            ),
+            pytest.param(
+                "  type: database\n  uri: sqlite://u@/x.db\n  table: t\n  password: ${KEY}\n",
+                {"KEY": "postgresql://ledger_svc:Hunter2DbPass@db.internal:5432/sales"},
+                "source -> password cannot take ${KEY} for a SQLite file",
+                id="sqlite-password-that-is-a-uri",
+            ),
+            pytest.param(
                 '  type: database\n  uri: "postgresql://u:${KEY}@db.internal/sales"\n'
                 "  table: orders\n",
                 {"KEY": "p@ss/word"},
@@ -6241,7 +6269,7 @@ class TestEnvironmentReferences:
         assert not _holds_a_form(_shown(result), "SvcLedgerReader")
 
     @_REFERENCE_TOOLS
-    def test_it_masks_a_password_a_refused_sqlite_path_holds_in_each_form(
+    def test_it_refuses_a_sqlite_password_before_any_path_quotes_it(
         self,
         tmp_path: Path,
         tmp_path_factory: pytest.TempPathFactory,
@@ -6249,16 +6277,19 @@ class TestEnvironmentReferences:
         tool: str,
         arguments: dict[str, object],
     ) -> None:
-        """Ensure a `password` the driver reads into a SQLite path never comes back.
+        """Ensure a `password` the driver would read into a SQLite path never comes back.
 
-        The process runs outside the root, so the path, with the password in
-        it, is refused. Neither the password nor its encoded form shows.
+        The process runs outside the root, where the check of the path would
+        quote it, with the password resolved into it. The target's reference
+        is refused at the load, so no form of the value shows.
         """
-        password = "p@ss/w#rd+%9"
+        password = "p@ss/w#rd+%9/../tail"
         monkeypatch.setenv("PW", password)
-        config = _with_source(
+        config = _write(
             tmp_path,
-            "  type: database\n  uri: sqlite://u@/x.db\n  table: t\n  password: ${PW}\n",
+            "source:\n  path: a.csv\n"
+            "target:\n  type: database\n  uri: sqlite://u@/x.db\n  table: t\n"
+            "  password: ${PW}\nprimary_keys: [id]\n",
         )
         monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
 
@@ -6269,9 +6300,11 @@ class TestEnvironmentReferences:
         )
 
         shown = _shown(result)
-        assert "SQLite file" in shown
-        for form in (password, quote(password, safe="")):
-            assert form.casefold() not in shown.casefold()
+        assert "target -> password cannot take ${PW} for a SQLite file" in shown
+        folded = password.casefold()
+        windows = {folded[i : i + 6] for i in range(len(folded) - 5)}
+        for text in (shown.casefold(), unquote(shown).casefold()):
+            assert not any(window in text for window in windows)
 
     def test_it_masks_from_its_own_load_and_not_from_a_second_read_of_the_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -6361,6 +6394,41 @@ class TestEnvironmentReferences:
         )
 
         assert "ConnectorError: *** *** ***" in _text(result)
+
+    @pytest.mark.parametrize("signature", ["", "a"])
+    def test_it_masks_no_signature_too_short_to_mask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signature: str
+    ) -> None:
+        """Ensure a recorded value with a short `sig` leaves later answers as they are.
+
+        The value is masked whole, but a signature of 1 to 3 characters, or
+        none, would mask ordinary text, or every gap between characters, in
+        every answer until the server stops.
+        """
+        monkeypatch.setenv("VD_SAS", f"sv=2022-11-02&sig={signature}")
+        _with_source(tmp_path, "  path: a.csv\n")
+        (tmp_path / "a.csv").write_text("id,name\n1,alpha\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\n"
+            "  options: {storage_options: {aws_secret_access_key: '${VD_SAS}'}}\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            "one.yaml",
+        )
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool("describe_schema", {"path": name, "side": "source"})
+                for name in ("one.yaml", "veridelta.yaml")
+            ]
+
+        loaded, later = _with_client(Settings((tmp_path,)), work)
+
+        for result in (loaded, later):
+            assert result.structured_content == {
+                "side": "source",
+                "columns": {"id": "Int64", "name": "String"},
+            }
 
     def test_each_slot_names_a_field_of_its_model(self) -> None:
         """Ensure the slot table names real fields, and the option sets split the no-host keys."""

@@ -19,6 +19,7 @@ person names its host. The SDK is imported by the first `build_server()`, not
 with this module, so `veridelta` imports without the extra.
 """
 
+import base64
 import functools
 import glob
 import importlib
@@ -244,8 +245,10 @@ _ACCOUNT_KEY_OPTIONS: Final = frozenset(
 
 In object_store, `access_key` is the Azure account key. A reader signs
 with the key, and never writes it into a request or a message, so no
-reader echoes it. Its shape is base64, which a reader has no cause to
-encode."""
+reader echoes it. Its shape is base64 as an encoder writes it, which a
+reader has no cause to encode. object_store's error for a key it cannot
+decode names a character of it, so `_is_account_key` refuses every other
+key before a reader sees it."""
 
 _LOGIN_OPTIONS: Final = frozenset(
     {
@@ -1974,25 +1977,43 @@ def _is_sas_token(value: str) -> bool:
     )
 
 
+def _is_account_key(value: str) -> bool:
+    """Say whether a value is base64 as an encoder writes it, so a reader decodes it without an error.
+
+    object_store decodes a key strictly, and its error for a last symbol with
+    bits it does not use names that symbol and where it stands. A key that
+    decodes only leniently is refused before a reader sees it.
+    """
+    return (
+        BASE64.fullmatch(value) is not None
+        and base64.b64encode(base64.b64decode(value)).decode() == value
+    )
+
+
 def _uri_slot(match: re.Match[str]) -> _Slot | None:
     """Say whether a reference is a database uri's whole user or its whole password.
 
     Each reference in the uri stands as letters while the login is split, so
     no value moves a boundary.
     """
-    template, mine, last = "", "", 0
+    template, mine, last = "", (-1, -1), 0
     for index, other in enumerate(match.re.finditer(match.string)):
+        template += match.string[last : other.start()]
         placeholder = _PLACEHOLDER.format(index)
-        template += match.string[last : other.start()] + placeholder
-        mine = placeholder if other.start() == match.start() else mine
+        if other.start() == match.start():
+            mine = (len(template), len(template) + len(placeholder))
+        template += placeholder
         last = other.end()
     login = _URI_LOGIN.match(template + match.string[last:])
     if login is None:
         return None
-    user, colon, password = login[1].partition(":")
-    if user == mine:
+    # The part is found by where the reference stands, since the uri's own text
+    # can hold the letters that stand for it.
+    user, colon, _ = login[1].partition(":")
+    start = login.start(1)
+    if mine == (start, start + len(user)):
         return "uri user"
-    return "uri password" if colon and password == mine else None
+    return "uri password" if colon and mine == (start + len(user) + 1, login.end(1)) else None
 
 
 _OPTION_PATHS: Final[Mapping[str, tuple[str, ...]]] = {
@@ -2033,7 +2054,7 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
         return None
     if slot in ("secret", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
         return f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
-    if slot == "account key" and BASE64.fullmatch(value) is None:
+    if slot == "account key" and not _is_account_key(value):
         return "an account key in base64, as Azure gives one"
     if slot == "login" and _LOGIN_NAME.fullmatch(value) is None:
         return (
@@ -2120,8 +2141,39 @@ def _load_checked(
 
     This is the server's one way to load a file, so the masked values come
     from the load itself, and the refusal comes before any check or reader.
+
+    A SQLite file has no password. The driver reads a database side's
+    `password` into the file's path, which the system resolves, so a message
+    could repeat the value with a `/` changed or a `..` folded away. So a
+    `${NAME}` in the `password` of a SQLite side is refused too.
+
+    Raises:
+        ConfigError: If a reference stands outside a credential setting, or in
+            the `password` of a SQLite side.
     """
-    return load_config_with_hook(resolved, unset_env=unset, on_reference=_record_and_check)
+    references: list[Reference] = []
+
+    def check_and_keep(reference: Reference, match: re.Match[str]) -> None:
+        _record_and_check(reference, match)
+        references.append(reference)
+
+    loaded = load_config_with_hook(resolved, unset_env=unset, on_reference=check_and_keep)
+    sides = {"source": loaded[1], "target": loaded[2]}
+    for reference in references:
+        side = sides.get(str(reference.path[0]))
+        if (
+            reference.path[1:] == ("password",)
+            and isinstance(side, DatabaseConfig)
+            and sqlite_path(side) is not None
+        ):
+            raise ConfigError(
+                f"On veridelta mcp, {reference.path[0]} -> password cannot take "
+                f"${{{reference.name}}} for a SQLite file. SQLite has no password, and the "
+                "driver reads this one into the file's path, in forms this server cannot "
+                "mask. Remove the password.",
+                locations=(ConfigLocation(path=reference.path),),
+            )
+    return loaded
 
 
 def check_configuration(
@@ -2494,8 +2546,8 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     forms = {
         form
         for value in values
-        if len(value) >= _SHORTEST_MASKED
         for form in (value, quote(value, safe=""), *_sas_signatures(value))
+        if len(form) >= _SHORTEST_MASKED
     }
     if not forms:
         return None
