@@ -3745,75 +3745,77 @@ class TestLakehouseFiles:
             log / "_sidecars" / f"{1:020}.json",
         }
 
-    @pytest.mark.parametrize(
-        ("version", "hint", "start"),
-        [
-            (None, None, 3),
-            (None, {"version": 1, "size": 3}, 1),
-            (None, "{", 3),
-            (2, None, 1),
-            (2, {"version": 3, "size": 3}, 1),
-            (0, None, 0),
-        ],
-        ids=["latest", "earlier-hint", "unread-hint", "version", "later-hint", "first"],
-    )
-    def test_it_copies_a_delta_log_from_the_checkpoint_deltalake_starts_at(
-        self,
-        tmp_path: Path,
-        mocker: MockerFixture,
-        version: int | None,
-        hint: dict[str, int] | str | None,
-        start: int,
+    @pytest.mark.parametrize("version", [None, 4, 2, 0], ids=["latest", "last", "middle", "first"])
+    def test_it_copies_a_delta_log_up_to_the_version_deltalake_loads(
+        self, tmp_path: Path, mocker: MockerFixture, version: int | None
     ) -> None:
-        """Ensure the copy holds the files of the log from the checkpoint deltalake loads the version from.
+        """Ensure the copy holds each file of the log from version 0 to the version loaded, and no later one.
 
-        deltalake reads the latest complete checkpoint at or before the
-        version, and the commits after it, so an earlier file costs the copy
-        nothing. deltalake before 1.0 starts at the checkpoint
-        `_last_checkpoint` names, at or before the version, even an earlier
-        one, so the copy starts there then. The table loads from the copy.
+        deltalake loads a version from files at or before it, so a later
+        commit or checkpoint costs the copy nothing, while every earlier one
+        is there should deltalake pass over a checkpoint. The table loads from
+        the copy, though `_last_checkpoint` names a checkpoint it lacks.
         """
         table = tmp_path / "events"
-        for at in range(5):
+        for at in range(6):
             _ROW.write_delta(table, mode="append")
             if at in (1, 3):
                 DeltaTable(str(table)).create_checkpoint()
-        if hint is not None:
-            text = hint if isinstance(hint, str) else json.dumps(hint)
-            (table / "_delta_log" / "_last_checkpoint").write_text(text, encoding="utf-8")
         copied = mocker.spy(mcp_server, "_copy_checked")
         target = DeltaLakeConfig(table_uri="events", version=version)
 
         check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
 
         names = sorted(Path(call.args[0]).name for call in copied.call_args_list)
+        last = 5 if version is None else version
         expected = [
             name
             for name in sorted(each.name for each in (table / "_delta_log").iterdir())
-            if name == "_last_checkpoint" or int(name[:20]) >= start
+            if name == "_last_checkpoint" or int(name[:20]) <= last
         ]
         assert names == expected
+        assert f"{last:020}.json" in names
+        assert f"{last + 1:020}.json" not in names
 
-    def test_it_starts_a_delta_log_copy_at_a_checkpoint_only_once_each_part_is_there(self) -> None:
-        """Ensure a checkpoint in parts starts the copy only when each of its parts is in the log.
+    @pytest.mark.parametrize(
+        "name",
+        [
+            f"{2:020}.checkpoint.json",
+            f"{2:020}.checkpoint.{1:010}.{1:010}.json",
+            f"{2:020}.checkpoint.{1:010}.{1:010}.{uuid.UUID(int=2)}.parquet",
+            f"{2:020}.checkpoint.{uuid.UUID(int=2)}.json",
+        ],
+        ids=["json", "part-json", "part-uuid", "uuid-json"],
+    )
+    def test_it_reads_the_rows_of_a_delta_table_beside_a_checkpoint_deltalake_passes_over(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        """Ensure an empty file named as a checkpoint leaves the rows the server reads as `veridelta run` reads them.
 
-        deltalake skips a checkpoint with a part missing, and reads an earlier
-        one, which the copy then holds too.
+        deltalake reads no such file as a checkpoint, or passes over one it
+        cannot read, to the commits before it. A copy that started at the
+        checkpoint would lack those commits, and read only the rows of the
+        commits after it, since a later commit that writes the protocol and
+        the metadata again, as a change of a table property does, loads alone.
         """
-        names = [
-            f"{2:020}.checkpoint.parquet",
-            f"{4:020}.checkpoint.{1:010}.{2:010}.parquet",
-            f"{4:020}.checkpoint.{2:010}.{2:010}.parquet",
-            f"{6:020}.checkpoint.{1:010}.{2:010}.parquet",
-            f"{8:020}.checkpoint.{uuid.UUID(int=8)}.json",
-            f"{8:020}.json",
-        ]
-        start = mcp_server._delta_log_start  # pyright: ignore[reportPrivateUsage] - the names alone choose where the copy starts
+        table = tmp_path / "events"
+        pl.DataFrame({"id": [1, 2, 3]}).write_delta(table)
+        pl.DataFrame({"id": [4]}).write_delta(table, mode="append")
+        DeltaTable(str(table)).alter.set_table_properties({"delta.enableChangeDataFeed": "true"})
+        pl.DataFrame({"id": [6]}).write_delta(table, mode="append")
+        (table / "_delta_log" / name).write_bytes(b"")
+        pl.DataFrame({"id": [1, 2, 3, 4, 6]}).write_parquet(tmp_path / "a.parquet")
+        _write(
+            tmp_path,
+            "source:\n  path: a.parquet\n  format: parquet\n"
+            "target:\n  type: delta\n  table_uri: events\nprimary_keys: [id]\n",
+        )
 
-        assert start(names, None) == 8
-        assert start(names, 7) == 4
-        assert start(names, 3) == 2
-        assert start(names, 1) == 0
+        report = run_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert sorted(pl.read_delta(str(table))["id"].to_list()) == [1, 2, 3, 4, 6]
+        assert report["verdict"] == "match"
+        assert report["total_rows_target"] == 5
 
     @pytest.mark.parametrize("limit", ["bytes", "files", "room"])
     def test_it_refuses_a_delta_log_larger_than_it_copies(
