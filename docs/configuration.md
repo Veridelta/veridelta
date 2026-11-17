@@ -128,7 +128,7 @@ target:
 primary_keys: ["event_id"]
 ```
 
-- `${NAME}` is replaced by the variable's value. It can sit inside longer text, as in `s3://${LAKE_BUCKET}/events`. A variable that is set but empty gives empty text.
+- `${NAME}` is replaced by the variable's value. It can sit inside longer text, as in `s3://${LAKE_BUCKET}/events`. A variable that is set but empty gives empty text. `veridelta mcp` takes a `${NAME}` only as the whole value of a credential setting, as [the MCP server](agents.md#mcp-server) says.
 - `${NAME:-default}` uses `default` when the variable is unset or empty. The default is literal text and cannot contain `}` or another reference.
 - `$${` writes a literal `${`. Write any value that contains `${` this way.
 - A value read from the environment is never expanded again. A secret that contains `$` or `${` arrives intact.

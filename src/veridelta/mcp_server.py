@@ -28,8 +28,10 @@ import logging
 import os
 import re
 import stat
+import threading
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
@@ -53,7 +55,7 @@ from pydantic import Field
 
 from veridelta import __version__
 from veridelta._checks import error_from_exception, unset_variable_findings
-from veridelta.config import load_config, referenced_variables
+from veridelta.config import Reference, load_config_with_hook
 from veridelta.connectors.base import (
     mask_secrets,
     names_another_machine,
@@ -64,6 +66,7 @@ from veridelta.connectors.base import (
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import WRITE_AHEAD_LOGS, beside, sandboxed
 from veridelta.connectors.lakehouse import (
+    BASE64,
     CheckedDeltaTable,
     DeltaLogCopy,
     azure_account,
@@ -81,6 +84,7 @@ from veridelta.engine import (
 )
 from veridelta.exceptions import (
     ConfigError,
+    ConfigLocation,
     ConnectorError,
     VerideltaError,
     may_quote_data,
@@ -200,52 +204,87 @@ name, so a tool passes on only a value of letters, digits, and hyphens."""
 _REGION: Final = re.compile(r"[A-Za-z0-9-]+")
 """A region a tool passes on, such as `us-east-1`."""
 
-_NO_HOST_OPTIONS: Final = frozenset(
+_SECRET_OPTIONS: Final = frozenset(
     {
-        "access_key",
-        "access_key_id",
-        "account_key",
-        "adls.account-key",
-        "adls.client-id",
-        "adls.client-secret",
-        "adls.sas-token",
-        "adls.tenant-id",
-        "aws_access_key_id",
         "aws_secret_access_key",
-        "aws_session_token",
-        "aws_skip_signature",
-        "aws_token",
-        "azure_client_id",
-        "azure_client_secret",
-        "azure_storage_access_key",
-        "azure_storage_account_key",
-        "azure_storage_client_id",
-        "azure_storage_client_secret",
-        "azure_storage_sas_key",
-        "azure_storage_sas_token",
-        "azure_storage_tenant_id",
-        "azure_storage_token",
-        "azure_tenant_id",
-        "bearer_token",
-        "client.access-key-id",
-        "client.secret-access-key",
-        "client.session-token",
-        "client_id",
-        "client_secret",
-        "gcs.oauth2.token",
-        "hf.token",
-        "s3.access-key-id",
-        "s3.anonymous",
-        "s3.secret-access-key",
-        "s3.session-token",
-        "sas_key",
-        "sas_token",
         "secret_access_key",
+        "s3.secret-access-key",
+        "client.secret-access-key",
+        "aws_session_token",
+        "aws_token",
         "session_token",
-        "skip_signature",
-        "tenant_id",
+        "s3.session-token",
+        "client.session-token",
+        "azure_client_secret",
+        "client_secret",
+        "azure_storage_client_secret",
+        "adls.client-secret",
+        "bearer_token",
         "token",
+        "azure_storage_token",
+        "hf.token",
+        "gcs.oauth2.token",
     }
+)
+"""Storage option keys, in lowercase, that hold a secret key or a token.
+
+A reader signs a request with such a value, or sends it in a header, and
+never writes it into a path, a host, or a message, so no reader echoes it."""
+
+_ACCOUNT_KEY_OPTIONS: Final = frozenset(
+    {
+        "account_key",
+        "access_key",
+        "azure_storage_account_key",
+        "azure_storage_access_key",
+        "adls.account-key",
+    }
+)
+"""Storage option keys, in lowercase, that hold an Azure account key.
+
+In object_store, `access_key` is the Azure account key. A reader signs
+with the key, and never writes it into a request or a message, so no
+reader echoes it. Its shape is base64, which a reader has no cause to
+encode."""
+
+_LOGIN_OPTIONS: Final = frozenset(
+    {
+        "aws_access_key_id",
+        "access_key_id",
+        "s3.access-key-id",
+        "client.access-key-id",
+        "azure_client_id",
+        "client_id",
+        "azure_storage_client_id",
+        "adls.client-id",
+        "azure_tenant_id",
+        "tenant_id",
+        "azure_storage_tenant_id",
+        "adls.tenant-id",
+    }
+)
+"""Storage option keys, in lowercase, that hold an access key id, a client id, or a tenant id.
+
+A service can echo such an id, as AWS does in a signature error. A value
+in `_LOGIN_NAME`'s shape reads the same raw, encoded, and decoded, so an
+echo is the text the mask matches, in any case."""
+
+_SAS_OPTIONS: Final = frozenset(
+    {"adls.sas-token", "azure_storage_sas_token", "azure_storage_sas_key", "sas_token", "sas_key"}
+)
+"""Storage option keys, in lowercase, that hold an Azure SAS token.
+
+The Azure SDK quotes a signed request's URL, with the token's parameters
+sorted. A token in the shape `_is_sas_token` checks holds only parameters
+the mask finds one by one: the server masks the whole token, and the
+`sig` parameter as written, decoded, and encoded, and leaves out each
+URL's query."""
+
+_SWITCH_OPTIONS: Final = frozenset({"aws_skip_signature", "skip_signature", "s3.anonymous"})
+"""Storage option keys, in lowercase, that turn signing off."""
+
+_NO_HOST_OPTIONS: Final = (
+    _SECRET_OPTIONS | _ACCOUNT_KEY_OPTIONS | _LOGIN_OPTIONS | _SAS_OPTIONS | _SWITCH_OPTIONS
 )
 """Storage option keys, in lowercase, that hold a credential or a switch and choose
 no host. A tool refuses any key in none of these sets, since a reader can take
@@ -1872,21 +1911,234 @@ def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
         )
 
 
+_Slot = Literal["secret", "account key", "login", "sas", "uri user", "uri password"]
+"""What a setting that may take a `${NAME}` holds, which sets the shape its value needs."""
+
+_FIELD_SLOTS: Final[Mapping[tuple[str, str | int], _Slot]] = {
+    ("snowflake", "password"): "secret",
+    ("snowflake", "private_key_passphrase"): "secret",
+    ("databricks", "access_token"): "secret",
+    ("database", "password"): "secret",
+    ("duckdb", "motherduck_token"): "secret",
+    ("snowflake", "user"): "login",
+}
+"""The model fields, by block type, that may take a `${NAME}` on the server.
+
+A driver sends a password, a passphrase, or a token to its service and
+masks it in its own errors, so no reader echoes one. Snowflake can echo
+the `user`, a login name whose shape `_LOGIN_NAME` holds to text that reads
+the same raw, encoded, and decoded, so an echo is the text the mask matches."""
+
+_OPTION_SLOTS: Final[tuple[tuple[frozenset[str], _Slot], ...]] = (
+    (_SECRET_OPTIONS, "secret"),
+    (_ACCOUNT_KEY_OPTIONS, "account key"),
+    (_LOGIN_OPTIONS, "login"),
+    (_SAS_OPTIONS, "sas"),
+)
+"""The storage option keys that may take a `${NAME}` on the server, each set's
+docstring saying why no reader echoes its value, or why an echo is the text
+the mask matches."""
+
+_URI_LOGIN: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://([^@/?#]*)@")
+"""A database uri's scheme and login, up to the `@` that ends it."""
+
+_PLACEHOLDER: Final = "vdref{}x"
+"""Letters that stand for one reference while a uri is split into its parts."""
+
+_LOGIN_NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,255}")
+"""A login name a service may echo: no character a reader encodes or reads as a boundary."""
+
+_UNRESERVED: Final = re.compile(r"[A-Za-z0-9._~-]+")
+"""A uri's user or password whose raw, encoded, and decoded forms are the same text."""
+
+_SAS_NAMES: Final = frozenset(
+    {
+        "sv", "ss", "srt", "sp", "se", "st", "sip", "spr", "sig", "sr", "si", "sdd", "ses",
+        "skoid", "sktid", "skt", "ske", "sks", "skv", "saoid", "suoid", "scid", "sduoid",
+        "rscc", "rscd", "rsce", "rscl", "rsct",
+    }
+)  # fmt: skip
+"""The parameters an Azure SAS token holds."""
+
+_SAS_VALUE: Final = re.compile(r"[A-Za-z0-9%._~:,+/=-]*")
+"""A SAS parameter's value, as Azure writes one: encoded, with no `&`, `#`, quote, or space."""
+
+
+def _is_sas_token(value: str) -> bool:
+    """Say whether a value is an Azure SAS token: `name=value` parameters joined by `&`, each once."""
+    parameters = [part.partition("=") for part in value.removeprefix("?").split("&")]
+    names = {name for name, _, _ in parameters}
+    return len(names) == len(parameters) and all(
+        name in _SAS_NAMES and equals and _SAS_VALUE.fullmatch(written)
+        for name, equals, written in parameters
+    )
+
+
+def _uri_slot(match: re.Match[str]) -> _Slot | None:
+    """Say whether a reference is a database uri's whole user or its whole password.
+
+    Each reference in the uri stands as letters while the login is split, so
+    no value moves a boundary.
+    """
+    template, mine, last = "", "", 0
+    for index, other in enumerate(match.re.finditer(match.string)):
+        placeholder = _PLACEHOLDER.format(index)
+        template += match.string[last : other.start()] + placeholder
+        mine = placeholder if other.start() == match.start() else mine
+        last = other.end()
+    login = _URI_LOGIN.match(template + match.string[last:])
+    if login is None:
+        return None
+    user, colon, password = login[1].partition(":")
+    if user == mine:
+        return "uri user"
+    return "uri password" if colon and password == mine else None
+
+
+_OPTION_PATHS: Final[Mapping[str, tuple[str, ...]]] = {
+    "delta": ("storage_options",),
+    "iceberg": ("storage_options",),
+    "file": ("options", "storage_options"),
+}
+"""Where each block type holds its storage options, after the side's name."""
+
+
+def _option_key(block_type: str, path: tuple[str | int, ...]) -> str | None:
+    """Return the storage option key a setting's path names, in lowercase, if it names one."""
+    if _OPTION_PATHS.get(block_type) != path[1:-1]:
+        return None
+    key = path[-1]
+    return key.lower() if isinstance(key, str) and key.isascii() else None
+
+
+def _slot(reference: Reference, match: re.Match[str]) -> _Slot | None:
+    """Return the credential slot a reference stands in, or None when it stands elsewhere."""
+    if not isinstance(reference.block_type, str):
+        return None
+    if len(reference.path) == 2:
+        field = (reference.block_type, reference.path[1])
+        if field == ("database", "uri"):
+            return _uri_slot(match)
+        return _FIELD_SLOTS.get(field)
+    key = _option_key(reference.block_type, reference.path)
+    return next((slot for keys, slot in _OPTION_SLOTS if key in keys), None)
+
+
+def _shape_needed(slot: _Slot, value: str) -> str | None:
+    """Say what shape a slot's value needs, or None when it has it.
+
+    An empty value passes, since it holds nothing to mask.
+    """
+    if not value:
+        return None
+    if slot in ("secret", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
+        return f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
+    if slot == "account key" and BASE64.fullmatch(value) is None:
+        return "an account key in base64, as Azure gives one"
+    if slot == "login" and _LOGIN_NAME.fullmatch(value) is None:
+        return (
+            "a login name of letters, digits, '.', '_', '@', and '-' that starts with a letter "
+            "or a digit, since a service can repeat it in other forms"
+        )
+    if slot in ("uri user", "uri password") and _UNRESERVED.fullmatch(value) is None:
+        unreserved = (
+            "letters, digits, '.', '_', '~', and '-' only, so the uri reads the same encoded or "
+            "decoded"
+        )
+        if slot == "uri user":
+            return unreserved
+        return (
+            f"{unreserved}. Put a password with other characters in the side's 'password' setting"
+        )
+    if slot == "sas" and not _is_sas_token(value):
+        return (
+            "an Azure SAS token: name=value parameters joined by '&', such as sv=...&sig=..., "
+            "each named once"
+        )
+    return None
+
+
+def _check_reference(reference: Reference, match: re.Match[str]) -> None:
+    """Refuse a `${NAME}` that stands anywhere but as the whole value of a credential setting.
+
+    A reader can repeat a setting's value cut, encoded, or joined to other
+    text, in forms no mask matches. A credential slot holds a value no reader
+    echoes, or one whose shape makes an echo the text the mask matches. A
+    default, or an unset name, is text from the file and needs no shape.
+
+    Raises:
+        ConfigError: If the reference stands outside a slot, shares its setting
+            with other text, or its value lacks the slot's shape. The message
+            names the setting and the variable, never the value.
+    """
+    where = " -> ".join(str(step) for step in reference.path)
+    named = f"${{{reference.name}}}"
+    locations = (ConfigLocation(path=reference.path),)
+    slot = _slot(reference, match)
+    if slot is None:
+        raise ConfigError(
+            f"On veridelta mcp, {where} cannot take {named}. A reader can repeat a setting's "
+            "value in forms this server cannot mask, so here a ${NAME} may stand only as the "
+            "whole value of a credential setting, such as a password, a token, or a key. Write "
+            "the value in the file, or run the configuration with veridelta run.",
+            locations=locations,
+        )
+    if slot not in ("uri user", "uri password") and not reference.whole:
+        raise ConfigError(
+            f"On veridelta mcp, {where} must be {named} alone, with no text around it, since a "
+            "reader can cut or encode a value joined to other text.",
+            locations=locations,
+        )
+    needed = None if reference.value is None else _shape_needed(slot, reference.value)
+    if needed is not None:
+        raise ConfigError(
+            f"On veridelta mcp, the value of {named} in {where} must be {needed}.",
+            locations=locations,
+        )
+
+
+_RECORDED: ContextVar[set[str] | None] = ContextVar("_RECORDED", default=None)
+"""The values the running server has expanded from its environment, for the call in progress."""
+
+_RECORDING: Final = threading.Lock()
+"""Held while a recorded set is read or added to, since the SDK runs each call in a thread."""
+
+
+def _record_and_check(reference: Reference, match: re.Match[str]) -> None:
+    """Refuse a reference outside a credential slot, else record the value it expands to."""
+    _check_reference(reference, match)
+    recorded = _RECORDED.get()
+    if recorded is not None and reference.value is not None:
+        with _RECORDING:
+            recorded.add(reference.value)
+
+
+def _load_checked(
+    resolved: Path, unset: list[str] | None
+) -> tuple[DiffConfig, SourceRef, SourceRef]:
+    """Load a configuration the server opens, refusing a `${NAME}` outside a credential slot.
+
+    This is the server's one way to load a file, so the masked values come
+    from the load itself, and the refusal comes before any check or reader.
+    """
+    return load_config_with_hook(resolved, unset_env=unset, on_reference=_record_and_check)
+
+
 def check_configuration(
     settings: Settings,
     path: str,
     *,
     schemas: bool = False,
     allow_missing_env: bool = False,
-    secrets: tuple[str, ...] = (),
 ) -> ValidationReport:
     """Check a configuration file for what would stop a run, as `validate --json` does.
 
-    Unless the server allows row values, a finding leaves out what Polars, a
-    reader, or a driver said about a schema read that failed. Each finding has
-    `secrets` masked, and then each URL in it loses its query, which can hold
-    a credential the reader signed with. The masking comes first, so a secret
-    that holds a `?` is masked whole.
+    A `${NAME}` outside a credential setting is an error, as the server loads
+    every file. Unless the server allows row values, a finding leaves out what
+    Polars, a reader, or a driver said about a schema read that failed. Each
+    finding has the values the server expanded masked, and then each URL in it
+    loses its query, which can hold a credential the reader signed with. The
+    masking comes first, so a value that holds a `?` is masked whole.
 
     Args:
         settings (Settings): The roots and the row values the server was started with.
@@ -1895,7 +2147,6 @@ def check_configuration(
             side's columns, which reads no rows.
         allow_missing_env (bool): Whether an unset `${NAME}` is a warning rather
             than an error, so a file can be checked without its secrets.
-        secrets (tuple[str, ...]): The values to mask in each finding.
 
     Returns:
         ValidationReport: The errors and warnings, with the resolved path.
@@ -1912,7 +2163,7 @@ def check_configuration(
     # The file is loaded once, and the checks connect with what was checked, so a
     # file swapped between the two cannot reach a host the server does not allow.
     try:
-        diff, source, target = load_config(resolved, unset_env=unset)
+        diff, source, target = _load_checked(resolved, unset)
     except ConfigError as exc:
         findings = [error_from_exception(exc)]
     else:
@@ -1925,7 +2176,15 @@ def check_configuration(
             )
     findings = [
         finding.model_copy(
-            update={"message": without_queries(mask_secrets(finding.message, *secrets))}
+            update={
+                "message": without_queries(_mask(finding.message)),
+                "locations": [
+                    location.model_copy(
+                        update={"message": location.message and _mask(location.message)}
+                    )
+                    for location in finding.locations
+                ],
+            }
         )
         for finding in findings
     ]
@@ -1934,7 +2193,7 @@ def check_configuration(
 
 def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
     """Load a configuration a tool opens, refusing data outside the roots or on a host not allowed."""
-    diff, source, target = load_config(resolve_path(settings, path))
+    diff, source, target = _load_checked(resolve_path(settings, path), None)
     _refuse_hosts(settings, source, target)
     source, target = check_data_paths(settings, source, target)
     return diff, source, target
@@ -2218,33 +2477,6 @@ def _failure(exc: BaseException, *, row_values: bool) -> str:
     return f"{type(exc).__name__}: {str(exc).strip()}"
 
 
-def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
-    """Return the value of each environment variable a configuration file references.
-
-    A tool masks each in its answer, since a path, a name, or an error built
-    from the configuration carries the values it took. A file outside the
-    roots, or one that cannot be read, gives none, and so does a variable
-    that is unset or shorter than four characters. A value that holds an
-    Azure SAS token's `sig` parameter also gives that signature, as written,
-    decoded, and encoded, since the Azure SDK writes the token's parameters
-    back in another order.
-
-    Args:
-        settings (Settings): The roots the server was started with.
-        path (str): The configuration file from the tool call.
-
-    Returns:
-        tuple[str, ...]: The values to mask.
-    """
-    try:
-        text = resolve_path(settings, path).read_text(encoding="utf-8")
-    except (ConfigError, OSError, UnicodeDecodeError):
-        return ()
-    values = [os.environ.get(name, "") for name in referenced_variables(text)]
-    signatures = [form for value in values for form in _sas_signatures(value)]
-    return tuple(value for value in [*values, *signatures] if len(value) >= _SHORTEST_MASKED)
-
-
 def _sas_signatures(value: str) -> tuple[str, ...]:
     """Return each form of the `sig` parameter a SAS token holds: as written, decoded, and encoded."""
     parameters = (part.partition("=") for part in value.removeprefix("?").split("&"))
@@ -2256,41 +2488,77 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
     )
 
 
-def _masked(value: Any, secrets: tuple[str, ...]) -> Any:
-    """Mask each secret in every string of an answer, the keys of a mapping included."""
+@functools.lru_cache(maxsize=8)
+def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
+    """Join every form of the recorded values into one pattern, longest first, in any case."""
+    forms = {
+        form
+        for value in values
+        if len(value) >= _SHORTEST_MASKED
+        for form in (value, quote(value, safe=""), *_sas_signatures(value))
+    }
+    if not forms:
+        return None
+    ordered = sorted(forms, key=len, reverse=True)
+    # Matching in any case can mask more than the value, which is the safe side
+    # here, unlike the check of a scheme or a host, which matches ASCII only.
+    return re.compile("|".join(map(re.escape, ordered)), re.IGNORECASE)
+
+
+def _mask(text: str) -> str:
+    """Mask every value the server has expanded from its environment, in each form, in any case.
+
+    It reads the recorded values when the answer is built, so a value a
+    reader echoes in a later call, such as from Polars' cache of object
+    stores, is masked there too.
+    """
+    with _RECORDING:
+        values = frozenset(_RECORDED.get() or ())
+    pattern = _mask_pattern(values)
+    return text if pattern is None else pattern.sub("***", text)
+
+
+def _masked(value: Any) -> Any:
+    """Mask the recorded values in every string of an answer, the keys of a mapping included."""
     if isinstance(value, str):
-        return mask_secrets(value, *secrets)
+        return _mask(value)
     if isinstance(value, dict):
         mapping = cast("dict[str, Any]", value)
-        return {_masked(key, secrets): _masked(item, secrets) for key, item in mapping.items()}
+        return {_masked(key): _masked(item) for key, item in mapping.items()}
     if isinstance(value, list):
-        return [_masked(item, secrets) for item in cast("list[object]", value)]
+        return [_masked(item) for item in cast("list[object]", value)]
     return value
 
 
 def _answer(
     tool_error: Any,
     work: Callable[[], _R],
-    secrets: tuple[str, ...] = (),
+    recorded: set[str],
     *,
     row_values: bool = False,
 ) -> _R:
-    """Run a tool's work, masking `secrets` in its answer, or fail the call.
+    """Run a tool's work, masking the server's recorded values in its answer, or fail the call.
 
-    The SDK passes only a `ToolError`'s message on to the agent, so every
-    failure becomes one, named as `run --json` names it, with the secrets
-    masked there too. Unless `row_values` is set, a message that can quote
-    the data is left out. Each URL in a failure's message then loses its
-    query, which can hold a credential the reader signed with. The masking
-    comes first, so a secret that holds a `?` is masked whole.
+    `recorded` holds every value the server has expanded from its
+    environment since it started, and the work adds to it as it loads a
+    file. The SDK passes only a `ToolError`'s message on to the agent, so
+    every failure becomes one, named as `run --json` names it, with the
+    values masked there too. Unless `row_values` is set, a message that can
+    quote the data is left out. Each URL in a failure's message then loses
+    its query, which can hold a credential the reader signed with. The
+    masking comes first, so a value that holds a `?` is masked whole.
     """
+    token = _RECORDED.set(recorded)
     try:
-        result = work()
-    except (Exception, PanicException) as exc:
-        # A panic in Polars is no `Exception`, and would stop the server instead.
-        failure = _failure(exc, row_values=row_values)
-        raise tool_error(without_queries(mask_secrets(failure, *secrets))) from exc
-    return cast("_R", _masked(result, secrets))
+        try:
+            result = work()
+        except (Exception, PanicException) as exc:
+            # A panic in Polars is no `Exception`, and would stop the server instead.
+            failure = _failure(exc, row_values=row_values)
+            raise tool_error(without_queries(_mask(failure))) from exc
+        return cast("_R", _masked(result))
+    finally:
+        _RECORDED.reset(token)
 
 
 def build_server(settings: Settings) -> "MCPServer":
@@ -2317,6 +2585,9 @@ def build_server(settings: Settings) -> "MCPServer":
         # program. The command line sets Veridelta's own logging with --verbose.
         root.handlers[:] = handlers
         root.setLevel(level)
+    # Every value this server expands from its environment, kept while it runs,
+    # since a reader's cache can echo one in a later call that never named it.
+    seen: set[str] = set()
 
     def validate_config(
         path: Annotated[str, Field(description="The configuration file.")],
@@ -2332,17 +2603,12 @@ def build_server(settings: Settings) -> "MCPServer":
         Reads no rows. Returns what `veridelta validate --json` prints: its errors and
         warnings, each placed in the file where the check can.
         """
-        secrets = environment_values(settings, path)
         return _answer(
             loaded.tool_error,
             lambda: check_configuration(
-                settings,
-                path,
-                schemas=schemas,
-                allow_missing_env=allow_missing_env,
-                secrets=secrets,
+                settings, path, schemas=schemas, allow_missing_env=allow_missing_env
             ),
-            secrets,
+            seen,
             row_values=settings.allow_row_values,
         )
 
@@ -2356,7 +2622,7 @@ def build_server(settings: Settings) -> "MCPServer":
         return _answer(
             loaded.tool_error,
             lambda: run_configuration(settings, path),
-            environment_values(settings, path),
+            seen,
             row_values=settings.allow_row_values,
         )
 
@@ -2371,7 +2637,7 @@ def build_server(settings: Settings) -> "MCPServer":
         return _answer(
             loaded.tool_error,
             lambda: describe_side(settings, path, side),
-            environment_values(settings, path),
+            seen,
             row_values=settings.allow_row_values,
         )
 
@@ -2397,7 +2663,7 @@ def build_server(settings: Settings) -> "MCPServer":
         return _answer(
             loaded.tool_error,
             lambda: read_rows(settings, path, kind, limit),
-            environment_values(settings, path),
+            seen,
             row_values=settings.allow_row_values,
         )
 
@@ -2429,7 +2695,7 @@ def build_server(settings: Settings) -> "MCPServer":
                 min_support=min_support,
                 sample_fraction=sample_fraction,
             ),
-            environment_values(settings, path),
+            seen,
             row_values=settings.allow_row_values,
         )
 
@@ -2452,7 +2718,7 @@ def build_server(settings: Settings) -> "MCPServer":
         return _answer(
             loaded.tool_error,
             lambda: suggest(settings, path, max_share=max_share),
-            environment_values(settings, path),
+            seen,
             row_values=settings.allow_row_values,
         )
 

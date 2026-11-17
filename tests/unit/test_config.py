@@ -3,6 +3,8 @@
 
 """Unit tests for YAML configuration parsing and validation."""
 
+import inspect
+import re
 import time
 import traceback
 import tracemalloc
@@ -11,7 +13,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from veridelta.config import files_config, load_config, referenced_variables
+from veridelta.config import (
+    Reference,
+    files_config,
+    load_config,
+    load_config_with_hook,
+    referenced_variables,
+)
 from veridelta.exceptions import ConfigError, ConfigLocation
 from veridelta.models import (
     DatabaseConfig,
@@ -844,6 +852,101 @@ class TestUnsetEnvironmentTolerance:
                 "source:\n  path: ${1}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
                 unset_env=[],
             )
+
+
+class TestReferenceHook:
+    """Validate what `load_config_with_hook` tells its hook about each `${NAME}`."""
+
+    @staticmethod
+    def _references(tmp_path: Path, text: str, unset: list[str] | None = None) -> list[Reference]:
+        """Load a file and return each reference the hook saw, in order."""
+        seen: list[Reference] = []
+
+        def hook(reference: Reference, match: re.Match[str]) -> None:
+            assert match.string == reference.written
+            seen.append(reference)
+
+        path = tmp_path / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        load_config_with_hook(path, unset_env=unset, on_reference=hook)
+        return seen
+
+    def test_it_names_where_each_reference_stands_and_what_it_became(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the hook gets the setting, the block's type, the text, and the value.
+
+        A default and an unset name are text from the file, so neither is a value.
+        """
+        monkeypatch.setenv("VD_PASSWORD", "hunter2")
+        monkeypatch.setenv("VD_BUCKET", "lake")
+        monkeypatch.delenv("VD_ROLE", raising=False)
+        monkeypatch.delenv("VD_UNSET", raising=False)
+        text = (
+            "source:\n  type: snowflake\n  account: xy\n  user: u\n  warehouse: W\n"
+            "  database: D\n  schema_name: S\n  table: T\n  password: ${VD_PASSWORD}\n"
+            "  role: ${VD_ROLE:-ANALYST}\n"
+            "target:\n  path: s3://${VD_BUCKET}/${VD_UNSET}.csv\nprimary_keys: [id]\n"
+        )
+
+        seen = self._references(tmp_path, text, unset=[])
+
+        written = "s3://${VD_BUCKET}/${VD_UNSET}.csv"
+        assert seen == [
+            Reference(
+                "VD_PASSWORD",
+                ("source", "password"),
+                "snowflake",
+                True,
+                "${VD_PASSWORD}",
+                "hunter2",
+            ),
+            Reference(
+                "VD_ROLE", ("source", "role"), "snowflake", True, "${VD_ROLE:-ANALYST}", None
+            ),
+            Reference("VD_BUCKET", ("target", "path"), "file", False, written, "lake"),
+            Reference("VD_UNSET", ("target", "path"), "file", False, written, None),
+        ]
+
+    def test_it_sees_a_reference_written_through_a_yaml_escape(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the hook sees text as YAML parsed it, so an escaped `$` still names a variable."""
+        monkeypatch.setenv("VD_KEY", "value")
+
+        seen = self._references(
+            tmp_path,
+            'source: {path: "\\x24{VD_KEY}.csv"}\ntarget: {path: b.csv}\nprimary_keys: [id]\n',
+        )
+
+        assert [(reference.name, reference.written) for reference in seen] == [
+            ("VD_KEY", "${VD_KEY}.csv")
+        ]
+
+    def test_it_calls_no_hook_for_an_escaped_reference(self, tmp_path: Path) -> None:
+        """Ensure `$${` writes a literal `${` and names no variable."""
+        seen = self._references(
+            tmp_path,
+            "source: {path: '$${VD_KEY}.csv'}\ntarget: {path: b.csv}\nprimary_keys: [id]\n",
+        )
+
+        assert seen == []
+
+    def test_a_hook_refuses_a_reference_by_raising(self, tmp_path: Path) -> None:
+        """Ensure an error the hook raises ends the load before the value is used."""
+
+        def refuse(reference: Reference, _: re.Match[str]) -> None:
+            raise ConfigError(f"No {reference.name} here.")
+
+        path = tmp_path / "config.yaml"
+        path.write_text("source: {path: '${VD_KEY}'}\ntarget: {path: b.csv}\n", encoding="utf-8")
+
+        with pytest.raises(ConfigError, match="No VD_KEY here"):
+            load_config_with_hook(path, on_reference=refuse)
+
+    def test_load_config_takes_no_hook(self) -> None:
+        """Ensure the public loader keeps its signature."""
+        assert list(inspect.signature(load_config).parameters) == ["path", "unset_env"]
 
 
 class TestReferencedVariables:

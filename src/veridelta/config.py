@@ -9,7 +9,8 @@
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -63,7 +64,36 @@ def _step(key: object) -> str | int:
     return key if isinstance(key, str | int) else str(key)
 
 
-def _substitute(match: re.Match[str], path: _Path, unset: list[str] | None) -> str:
+@dataclass(frozen=True)
+class Reference:
+    """One `${NAME}` the loader expands, with where it stands and what it became."""
+
+    name: str
+    """The variable's name."""
+    path: _Path
+    """The setting that holds it, such as `("source", "storage_options", "token")`."""
+    block_type: object
+    """The block's `type` as written, `file` when it has none."""
+    whole: bool
+    """Whether the reference is the setting's whole text."""
+    written: str
+    """The setting's text, as YAML parsed it."""
+    value: str | None
+    """The environment's value, or None when a default or the unset name stands instead."""
+
+
+OnReference = Callable[[Reference, re.Match[str]], None]
+"""Called with each `${NAME}` before the loader puts its value in place."""
+
+
+def _substitute(
+    match: re.Match[str],
+    path: _Path,
+    unset: list[str] | None,
+    *,
+    block_type: object = "file",
+    on_reference: OnReference | None = None,
+) -> str:
     """Resolve one `_ENV_REFERENCE` match."""
     # Errors never quote the surrounding text, which may be a literal credential.
     if match["escape"]:
@@ -77,37 +107,55 @@ def _substitute(match: re.Match[str], path: _Path, unset: list[str] | None) -> s
         )
     value = os.environ.get(name)
     default = match["default"]
+    result = value
     if default is not None and not value:
-        return default
-    if value is None and unset is not None:
+        value, result = None, default
+    elif value is None and unset is not None:
         if name not in unset:
             unset.append(name)
-        return name
-    if value is None:
+        result = name
+    if on_reference is not None:
+        whole = match.group(0) == match.string
+        on_reference(Reference(name, path, block_type, whole, match.string, value), match)
+    if result is None:
         raise ConfigError(
             f"Environment variable '{name}' is not set, but {_location(path)} references it. "
             "Set it, or write ${NAME:-default} to give a fallback.",
             locations=(ConfigLocation(path=path),),
         )
-    return value
+    return result
 
 
-def _expand_env(value: Any, path: _Path, unset: list[str] | None = None) -> Any:
+def _expand_env(
+    value: Any,
+    path: _Path,
+    unset: list[str] | None = None,
+    *,
+    block_type: object = "file",
+    on_reference: OnReference | None = None,
+) -> Any:
     """Expand environment references in the strings of a `source` or `target` block.
 
     The loader has refused any alias loop and bounded what aliases repeat, so the
     walk ends and its work grows with the file's logical size.
     """
+
+    def expand(item: object, at: _Path) -> Any:
+        return _expand_env(item, at, unset, block_type=block_type, on_reference=on_reference)
+
+    def substitute(match: re.Match[str]) -> str:
+        return _substitute(match, path, unset, block_type=block_type, on_reference=on_reference)
+
     # A YAML anchor can share one mapping between both blocks, so an in-place edit reaches both.
     if isinstance(value, dict):
         mapping = cast("dict[object, object]", value)
-        return {key: _expand_env(item, (*path, _step(key)), unset) for key, item in mapping.items()}
+        return {key: expand(item, (*path, _step(key))) for key, item in mapping.items()}
     if isinstance(value, list):
         items = cast("list[object]", value)
-        return [_expand_env(item, (*path, index), unset) for index, item in enumerate(items)]
+        return [expand(item, (*path, index)) for index, item in enumerate(items)]
     if isinstance(value, str):
         # `sub` never rescans substituted text, so a secret holding `${` arrives intact.
-        return _ENV_REFERENCE.sub(lambda match: _substitute(match, path, unset), value)
+        return _ENV_REFERENCE.sub(substitute, value)
     return value
 
 
@@ -334,16 +382,32 @@ def _read_yaml(stream: IO[str]) -> Any:
         loader.dispose()
 
 
-def _parse_source_ref(raw: Any, *, label: str, unset: list[str] | None = None) -> SourceRef:
+def _parse_source_ref(
+    raw: Any,
+    *,
+    label: str,
+    unset: list[str] | None = None,
+    on_reference: OnReference | None = None,
+) -> SourceRef:
     """Validate a YAML source/target block as a discriminated `SourceRef`."""
     if not isinstance(raw, dict):
         raise ConfigError(
             f"The '{label}' block must be a mapping.", locations=(ConfigLocation(path=(label,)),)
         )
+    block = cast("dict[object, object]", raw)
     guessed: list[str] | None = None if unset is None else []
-    payload: dict[str, Any] = _expand_env(raw, (label,), unset=guessed)
-    if unset is not None and guessed:
-        unset.extend(name for name in guessed if name not in unset)
+    try:
+        payload: dict[str, Any] = _expand_env(
+            block,
+            (label,),
+            unset=guessed,
+            block_type=block.get("type", "file"),
+            on_reference=on_reference,
+        )
+    finally:
+        # A reference the hook refuses still reports the unset names before it.
+        if unset is not None and guessed:
+            unset.extend(name for name in guessed if name not in unset)
     payload.setdefault("type", "file")
     try:
         return _SOURCE_REF_ADAPTER.validate_python(payload)
@@ -397,6 +461,20 @@ def load_config(
         >>> diff.primary_keys, source.path
         (['id'], 'a.csv')
     """
+    return load_config_with_hook(path, unset_env=unset_env)
+
+
+def load_config_with_hook(
+    path: str | Path,
+    *,
+    unset_env: list[str] | None = None,
+    on_reference: OnReference | None = None,
+) -> tuple[DiffConfig, SourceRef, SourceRef]:
+    """Load a configuration file as `load_config` does, calling `on_reference` on each `${NAME}`.
+
+    The hook sees each reference in `source` and `target` after YAML has parsed
+    the string and before its value is put in place, and refuses it by raising.
+    """
     file_path = Path(path)
 
     if not file_path.is_file():
@@ -417,8 +495,12 @@ def load_config(
     if "source" not in raw_config or "target" not in raw_config:
         raise ConfigError("Configuration must contain both 'source' and 'target' blocks.")
 
-    source_cfg = _parse_source_ref(raw_config.pop("source"), label="source", unset=unset_env)
-    target_cfg = _parse_source_ref(raw_config.pop("target"), label="target", unset=unset_env)
+    source_cfg = _parse_source_ref(
+        raw_config.pop("source"), label="source", unset=unset_env, on_reference=on_reference
+    )
+    target_cfg = _parse_source_ref(
+        raw_config.pop("target"), label="target", unset=unset_env, on_reference=on_reference
+    )
     try:
         diff_cfg = DiffConfig.model_validate(raw_config)
     except ValidationError as e:
