@@ -30,7 +30,7 @@ import os
 import re
 import stat
 import threading
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -93,6 +93,7 @@ from veridelta.exceptions import (
     missing_extra,
 )
 from veridelta.models import (
+    BigQueryConfig,
     DatabaseConfig,
     DatabricksConfig,
     DeltaLakeConfig,
@@ -172,6 +173,19 @@ _URI_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 _SPECIAL_SCHEMES: Final = frozenset({"file", "ftp", "http", "https", "ws", "wss"})
 """The schemes a URL parser reads without their slashes, as in `http:host`."""
 
+_ENDPOINT_OPTIONS: Final = frozenset(
+    {
+        "aws_endpoint",
+        "aws_endpoint_url",
+        "azure_endpoint",
+        "azure_storage_endpoint",
+        "endpoint",
+        "endpoint_url",
+        "s3.endpoint",
+    }
+)
+"""Storage option keys, in lowercase, whose value names an endpoint, with or without a scheme."""
+
 _BUCKET_OPTIONS: Final = frozenset(
     {
         "aws_bucket",
@@ -187,22 +201,34 @@ _BUCKET_OPTIONS: Final = frozenset(
 """Storage option keys, in lowercase, whose value names a bucket or a container,
 which a tool passes on only in lowercase, as `_refuse_capital_bucket` says."""
 
-_HOST_OPTIONS: Final = _BUCKET_OPTIONS | frozenset(
-    {
-        "account_name",
-        "adls.account-name",
-        "aws_endpoint",
-        "aws_endpoint_url",
-        "azure_endpoint",
-        "azure_storage_account_name",
-        "azure_storage_endpoint",
-        "endpoint",
-        "endpoint_url",
-        "s3.endpoint",
-    }
+_NAME_OPTIONS: Final = _BUCKET_OPTIONS | frozenset(
+    {"account_name", "adls.account-name", "azure_storage_account_name"}
 )
+"""Storage option keys, in lowercase, whose value names a bucket, a container, or an
+account, which a reader writes into the request's host or path."""
+
+_HOST_OPTIONS: Final = _ENDPOINT_OPTIONS | _NAME_OPTIONS
 """Storage option keys, in lowercase, whose value names the host a reader connects
 to: an endpoint, with or without a scheme, a bucket, or an account name."""
+
+_LOCATION_FORM: Final = (
+    "with at most a port of digits after it, as in host:port or scheme://host:port/path"
+)
+"""How `_refuse_host` says to write a location's host, which may have a path after it."""
+
+_ENDPOINT_FORM: Final = (
+    "with at most a port of digits after it, as in host:port or https://host:port"
+)
+"""How `_refuse_host` says to write an endpoint, which `_refuse_endpoint_path` holds to no path."""
+
+_NAME_FORM: Final = "with at most a port of digits after it, as in lake"
+"""How `_refuse_host` says to write a bucket, a container, or an account, as a name alone."""
+
+_ACCOUNT_FORM: Final = "with no port or path after it, as in xy12345.us-east-1"
+"""How `_refuse_host` says to write a Snowflake account, which the driver ends in its own domain."""
+
+_SERVER_FORM: Final = "with no port or path after it, as in adb-1.azuredatabricks.net"
+"""How `_refuse_host` says to write a Databricks server's host, which takes no port or path."""
 
 _REGION_OPTIONS: Final = frozenset(
     {"aws_default_region", "aws_region", "client.region", "default_region", "region", "s3.region"}
@@ -1696,12 +1722,14 @@ def _location_hosts(
     return [(setting, _url_host(location, shape))]
 
 
-def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:
-    """Name each host a side's storage options send a reader to, with the option that names it.
+def _option_hosts(options: object) -> Iterator[tuple[str, str | None, str]]:
+    """Name each host a side's storage options send a reader to, with the option and its form.
 
     A host of None marks an option a tool does not pass on: one outside the
     known keys, a key outside ASCII, or a region that a reader could not write
     into a host name. An endpoint is a host with an optional port, or a URL.
+    The form is how a refusal says to write the host: `_ENDPOINT_FORM` for an
+    endpoint, and `_NAME_FORM` for a bucket, a container, or an account.
     """
     if not isinstance(options, Mapping):
         return
@@ -1709,14 +1737,15 @@ def _option_hosts(options: object) -> Iterator[tuple[str, str | None]]:
         name, text = str(key), str(value)
         setting = f"storage option '{key}'"
         if not name.isascii():
-            yield setting, None
+            yield setting, None, _NAME_FORM
         elif name.lower() in _HOST_OPTIONS:
-            yield setting, _url_host(text) if "://" in text else _host(text)
+            form = _ENDPOINT_FORM if name.lower() in _ENDPOINT_OPTIONS else _NAME_FORM
+            yield setting, _url_host(text) if "://" in text else _host(text), form
         elif name.lower() in _REGION_OPTIONS:
             if _REGION.fullmatch(text) is None:
-                yield setting, None
+                yield setting, None, _NAME_FORM
         elif name.lower() not in _NO_HOST_OPTIONS:
-            yield setting, None
+            yield setting, None, _NAME_FORM
 
 
 def _refuse_database_uri(side: str, config: DatabaseConfig) -> None:
@@ -1881,8 +1910,10 @@ def _refuse_endpoint_path(side: str, config: SourceRef) -> None:
     after the host and port, where a URL parser ends the authority, so
     every spelling of a path, `%2F` and `..` included, is refused whole.
     Other text after the host, such as a login, is left to `_refuse_host`.
-    The message names the option and not its value, which can hold a
-    `${NAME}` value.
+    A bucket, a container, or an account option is held to the same shape,
+    since a reader writes its value into the request's host or path, and
+    its message speaks of a name rather than an endpoint. The message names
+    the option and not its value, which can hold a `${NAME}` value.
 
     Raises:
         ConfigError: If a host option's value holds a path, a query, or a fragment.
@@ -1892,6 +1923,13 @@ def _refuse_endpoint_path(side: str, config: SourceRef) -> None:
         written = _HOST_AND_PORT.match(rest)
         after = "" if written is None else rest[written.end() :]
         if after not in ("", "/") and after[0] in "/\\?#":
+            if str(key).lower() in _NAME_OPTIONS:
+                raise ConfigError(
+                    f"The {side} storage option '{key}' holds a path, a query, or a fragment "
+                    "after its name. A reader writes the value into the request's host or path, "
+                    "so it could read a bucket, a container, or an account this server did not "
+                    "check. A tool passes on such an option only as a name, as in lake."
+                )
             raise ConfigError(
                 f"The {side} storage option '{key}' holds a path, a query, or a fragment after "
                 "its host, which a reader puts before the bucket or the container, so it could "
@@ -1929,34 +1967,45 @@ def _refuse_plain_http(side: str, config: SourceRef) -> None:
             )
 
 
-def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
-    """Name each host a side connects to that its configuration chooses, with the setting.
+def _destinations(config: SourceRef) -> list[tuple[str, str | None, str]]:
+    """Name each host a side connects to that its configuration chooses, with the setting and its form.
 
     A host of None marks a setting a tool does not pass on, since the server
     cannot check the host it sends a reader to. A BigQuery key file is one: its
     `token_uri` names the host the sign-in goes to. Hugging Face, MotherDuck
     with no option that moves it, and BigQuery with the server's own
-    credentials reach their own service's hosts, so they name none.
+    credentials reach their own service's hosts, so they name none. The form
+    is how `_refuse_host` says to write the host: a location may have a path,
+    and an endpoint, a bucket, an account, or a server may not.
     """
-    if isinstance(config, SourceConfig):
-        return [*_location_hosts("path", config.path), *_option_hosts(_storage_options(config))]
-    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
-        return [
-            *_location_hosts("table_uri", config.table_uri),
-            *_option_hosts(_storage_options(config)),
-        ]
-    if isinstance(config, DuckDBConfig):
-        return _duckdb_hosts(config)
-    if isinstance(config, DatabaseConfig):
-        return [*_database_hosts(config)]
     if isinstance(config, SnowflakeConfig):
         # The driver ends the host in `.cn` when the account's second label starts with `cn-`.
         labels = config.account.split(".")
         china = config.account.find(".") > 0 and labels[1].lower().startswith("cn-")
-        return [("account", f"{config.account}.snowflakecomputing.{'cn' if china else 'com'}")]
+        host = f"{config.account}.snowflakecomputing.{'cn' if china else 'com'}"
+        return [("account", host, _ACCOUNT_FORM)]
     if isinstance(config, DatabricksConfig):
-        return [("server_hostname", config.server_hostname.removeprefix("https://").rstrip("/"))]
-    return [] if config.credentials_path is None else [("credentials_path", None)]
+        host = config.server_hostname.removeprefix("https://").rstrip("/")
+        return [("server_hostname", host, _SERVER_FORM)]
+    return [
+        *((setting, host, _LOCATION_FORM) for setting, host in _location_destinations(config)),
+        *_option_hosts(_storage_options(config)),
+    ]
+
+
+def _location_destinations(config: SourceRef) -> Sequence[tuple[str, str | None]]:
+    """Name each host a side's location, database, or key file reaches, with its setting."""
+    if isinstance(config, SourceConfig):
+        return _location_hosts("path", config.path)
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return _location_hosts("table_uri", config.table_uri)
+    if isinstance(config, DuckDBConfig):
+        return _duckdb_hosts(config)
+    if isinstance(config, DatabaseConfig):
+        return _database_hosts(config)
+    if isinstance(config, BigQueryConfig) and config.credentials_path is not None:
+        return [("credentials_path", None)]
+    return []
 
 
 def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> None:
@@ -1979,8 +2028,8 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
         for setting, location in _named_locations(config):
             _refuse_dot_segment(f"The {side} {setting}", location)
         _refuse_endpoint_path(side, config)
-        for setting, host in _destinations(config):
-            _refuse_host(settings, f"The {side} {setting}", host)
+        for setting, host, form in _destinations(config):
+            _refuse_host(settings, f"The {side} {setting}", host, form)
         _refuse_plain_http(side, config)
         for setting, location in _named_locations(config):
             _refuse_capital_bucket(f"The {side} {setting}", location)
@@ -2072,8 +2121,14 @@ def _refuse_capital_option(side: str, config: SourceRef) -> None:
             )
 
 
-def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
+def _refuse_host(
+    settings: Settings, named: str, host: str | None, form: str = _LOCATION_FORM
+) -> None:
     """Refuse a host the server does not allow, in a message that starts with `named` and leaves the host out.
+
+    A host in another shape is refused with `form`, which says how to write
+    it for its kind of setting: a location may have a path after its host,
+    and an endpoint may not.
 
     Raises:
         ConfigError: If the host is None, not in `_HOST_AND_PORT`'s shape, or
@@ -2089,9 +2144,8 @@ def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
         raise ConfigError(
             f"{named} does not name its host in the one shape every reader splits alike, so "
             "a tool could check one host and a reader connect to another. Write the host as "
-            "DNS labels or an IP address in ASCII, with at most a port of digits after it, as "
-            "in host:port or scheme://host:port/path. Leave out '@', '%', '\\', spaces, and "
-            "control characters, other than in a database URI's login."
+            f"DNS labels or an IP address in ASCII, {form}. Leave out '@', '%', '\\', spaces, "
+            "and control characters, other than in a database URI's login."
         )
     if host.lower() not in settings.allowed_hosts:
         raise ConfigError(
