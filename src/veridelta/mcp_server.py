@@ -230,7 +230,11 @@ _SECRET_OPTIONS: Final = frozenset(
 """Storage option keys, in lowercase, that hold a secret key or a token.
 
 A reader signs a request with such a value, or sends it in a header, and
-never writes it into a path, a host, or a message, so no reader echoes it."""
+never writes it into a path, a host, or a message. A service can still
+echo a value it rejects: S3 writes a session token it cannot read back
+into its error XML-escaped, trimmed, and with each letter outside ASCII
+garbled. So a value must be in `_TOKEN`'s shape, whose echo is the text
+the mask matches."""
 
 _ACCOUNT_KEY_OPTIONS: Final = frozenset(
     {
@@ -1914,26 +1918,28 @@ def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
         )
 
 
-_Slot = Literal["secret", "account key", "login", "sas", "uri user", "uri password"]
+_Slot = Literal["secret", "token", "account key", "login", "sas", "uri user", "uri password"]
 """What a setting that may take a `${NAME}` holds, which sets the shape its value needs."""
 
 _FIELD_SLOTS: Final[Mapping[tuple[str, str | int], _Slot]] = {
     ("snowflake", "password"): "secret",
     ("snowflake", "private_key_passphrase"): "secret",
-    ("databricks", "access_token"): "secret",
+    ("databricks", "access_token"): "token",
     ("database", "password"): "secret",
-    ("duckdb", "motherduck_token"): "secret",
+    ("duckdb", "motherduck_token"): "token",
     ("snowflake", "user"): "login",
 }
 """The model fields, by block type, that may take a `${NAME}` on the server.
 
 A driver sends a password, a passphrase, or a token to its service and
-masks it in its own errors, so no reader echoes one. Snowflake can echo
-the `user`, a login name whose shape `_LOGIN_NAME` holds to text that reads
-the same raw, encoded, and decoded, so an echo is the text the mask matches."""
+masks it in its own errors, so no reader echoes one. A token still keeps
+`_TOKEN`'s shape, as a storage option's does, which costs a real token
+nothing. Snowflake can echo the `user`, a login name whose shape
+`_LOGIN_NAME` holds to text that reads the same raw, encoded, and decoded,
+so an echo is the text the mask matches."""
 
 _OPTION_SLOTS: Final[tuple[tuple[frozenset[str], _Slot], ...]] = (
-    (_SECRET_OPTIONS, "secret"),
+    (_SECRET_OPTIONS, "token"),
     (_ACCOUNT_KEY_OPTIONS, "account key"),
     (_LOGIN_OPTIONS, "login"),
     (_SAS_OPTIONS, "sas"),
@@ -1950,6 +1956,13 @@ _PLACEHOLDER: Final = "vdref{}x"
 
 _LOGIN_NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,255}")
 """A login name a service may echo: no character a reader encodes or reads as a boundary."""
+
+_TOKEN: Final = re.compile(r"[A-Za-z0-9+/=._~-]+")
+"""A secret key or a token: base64, base64url, or a JWT, in ASCII.
+
+A service that echoes such a value writes it back as the same text, since
+XML and JSON escape none of these characters, none is space a service
+trims, and none changes with the text's encoding."""
 
 _UNRESERVED: Final = re.compile(r"[A-Za-z0-9._~-]+")
 """A uri's user or password whose raw, encoded, and decoded forms are the same text."""
@@ -2052,8 +2065,13 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
     """
     if not value:
         return None
-    if slot in ("secret", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
+    if slot in ("secret", "token", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
         return f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
+    if slot == "token" and _TOKEN.fullmatch(value) is None:
+        return (
+            "a key or a token of letters, digits, '+', '/', '=', '.', '_', '~', and '-' only, "
+            "since a service can repeat a value it rejects in other forms"
+        )
     if slot == "account key" and not _is_account_key(value):
         return "an account key in base64, as Azure gives one"
     if slot == "login" and _LOGIN_NAME.fullmatch(value) is None:
@@ -2542,11 +2560,16 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
 
 @functools.lru_cache(maxsize=8)
 def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
-    """Join every form of the recorded values into one pattern, longest first, in any case."""
+    """Join every form of the recorded values into one pattern, longest first, in any case.
+
+    A value's forms are its text, its percent-encoding, its bytes in hex
+    with a space between each, as S3 writes a request it could not verify,
+    and the `sig` of a SAS token.
+    """
     forms = {
         form
         for value in values
-        for form in (value, quote(value, safe=""), *_sas_signatures(value))
+        for form in (value, quote(value, safe=""), value.encode().hex(" "), *_sas_signatures(value))
         if len(form) >= _SHORTEST_MASKED
     }
     if not forms:

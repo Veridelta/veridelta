@@ -11,6 +11,7 @@ whether a call failed.
 import functools
 import getpass
 import glob
+import html
 import importlib.util
 import json
 import logging
@@ -5889,6 +5890,12 @@ _REFERENCE_TOOLS = pytest.mark.parametrize(
 _KEY = "Hunter2SECRETPASSWORD"
 """The value of `KEY` unless a test sets another."""
 
+_S3_TOKEN_TARGET = (
+    "target:\n  type: delta\n  table_uri: s3://lake/t\n  storage_options:\n"
+    "    aws_session_token: ${KEY}\n"
+)
+"""A Delta Lake side in S3 whose session token is `KEY`."""
+
 _ICEBERG_SAS = (
     "  type: iceberg\n  table_uri: abfs://lake/t/metadata/v1.metadata.json\n"
     "  storage_options:\n    adls.account-name: acct\n    adls.sas-token: {token}\n"
@@ -6110,6 +6117,26 @@ class TestEnvironmentReferences:
                 "'-' only, so the uri reads the same encoded or decoded. Put a password with "
                 "other characters in the side's 'password' setting",
                 id="uri-password-a-reader-encodes",
+            ),
+            *(
+                pytest.param(
+                    _S3_TOKEN_TARGET.replace("target:\n", ""),
+                    {"KEY": value},
+                    "the value of ${KEY} in source -> storage_options -> aws_session_token must "
+                    "be a key or a token of letters, digits",
+                    id=f"session-token-{name}",
+                )
+                for name, value in (
+                    ("s3-escapes", "Hunter2&Correct<Horse>Battery"),
+                    ("s3-trims", "Hunter2SECRETpasswordXYZ "),
+                    ("outside-ascii", "Hunter2\u00e9SECRET\u03a9password"),
+                )
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:sales'\n  table: t\n  motherduck_token: ${KEY}\n",
+                {"KEY": "eyJhbGciOi JIUzI1NiJ9"},
+                "the value of ${KEY} in source -> motherduck_token must be a key or a token",
+                id="motherduck-token-with-a-space",
             ),
         ],
     )
@@ -6395,6 +6422,35 @@ class TestEnvironmentReferences:
 
         assert "ConnectorError: *** *** ***" in _text(result)
 
+    def test_it_masks_a_session_token_s3_writes_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a session token S3 repeats in its error is masked, as text and as bytes in hex.
+
+        S3 writes a token it cannot read back XML-escaped, and a request it
+        could not verify as bytes in hex. A token in its shape reads the same
+        escaped, so both forms are masked.
+        """
+        token = "IQoJb3JpZ2luX2VjEJr//////////wEaCXVz+Q7ledger="
+        monkeypatch.setenv("KEY", token)
+        body = (
+            "<Error><Code>InvalidToken</Code><Message>The provided token is malformed or "
+            f"otherwise invalid.</Message><Token-0>{html.escape(token)}</Token-0>"
+            f"<CanonicalRequestBytes>{token.encode().hex(' ')}</CanonicalRequestBytes></Error>"
+        )
+        mocker.patch.object(DiffEngine, "read_schema", side_effect=ConnectorError(body))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _with_source(tmp_path, _S3_TOKEN_TARGET.replace("target:\n", ""))
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",)),
+            {"path": "veridelta.yaml", "side": "source"},
+            tool="describe_schema",
+        )
+
+        assert "<Token-0>***</Token-0><CanonicalRequestBytes>***<" in _text(result)
+        assert not _holds_a_form(_shown(result), token)
+
     @pytest.mark.parametrize("signature", ["", "a"])
     def test_it_masks_no_signature_too_short_to_mask(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signature: str
@@ -6410,25 +6466,28 @@ class TestEnvironmentReferences:
         (tmp_path / "a.csv").write_text("id,name\n1,alpha\n", encoding="utf-8")
         _write(
             tmp_path,
-            "source:\n  path: a.csv\n"
-            "  options: {storage_options: {aws_secret_access_key: '${VD_SAS}'}}\n"
+            "source:\n  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+            "  table: orders\n  password: '${VD_SAS}'\n"
             "target:\n  path: b.csv\nprimary_keys: [id]\n",
             "one.yaml",
         )
 
         async def work(client: Client) -> list[CallToolResult]:
             return [
-                await client.call_tool("describe_schema", {"path": name, "side": "source"})
-                for name in ("one.yaml", "veridelta.yaml")
+                await client.call_tool("validate_config", {"path": "one.yaml"}),
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
             ]
 
-        loaded, later = _with_client(Settings((tmp_path,)), work)
+        loaded, later = _with_client(Settings((tmp_path,), allowed_hosts=("db.internal",)), work)
 
-        for result in (loaded, later):
-            assert result.structured_content == {
-                "side": "source",
-                "columns": {"id": "Int64", "name": "String"},
-            }
+        assert loaded.structured_content is not None
+        assert loaded.structured_content["valid"] is True
+        assert later.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", "name": "String"},
+        }
 
     def test_each_slot_names_a_field_of_its_model(self) -> None:
         """Ensure the slot table names real fields, and the option sets split the no-host keys."""
@@ -6500,7 +6559,7 @@ class TestEnvironmentReferences:
                 "      aws_session_token: ${V_TOKEN}\n",
                 {
                     "V_LOGIN": "AKIAQ7ZX3LEDGER9READER",
-                    "V_SECRET": "wJal+rXUtn/FEMI%K7MDENG=bPxRfiCY",
+                    "V_SECRET": "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCY",
                     "V_TOKEN": "IQoJb3JpZ2luX2VjEJr//////////wEaCXVz",
                 },
                 id="file-s3",
@@ -6508,7 +6567,7 @@ class TestEnvironmentReferences:
             pytest.param(
                 "  type: delta\n  table_uri: s3://lake/t\n  storage_options:\n"
                 "    AWS_SECRET_ACCESS_KEY: ${V_SECRET}\n    aws_access_key_id: ${V_LOGIN}\n",
-                {"V_SECRET": "Zq8+Kx/9mN#pR2w$Tz!", "V_LOGIN": "svc.delta-reader@corp"},
+                {"V_SECRET": "Zq8+Kx/9mN_pR2w~Tz-Q7", "V_LOGIN": "svc.delta-reader@corp"},
                 id="delta",
             ),
             pytest.param(
@@ -6586,15 +6645,16 @@ class TestEnvironmentReferences:
         """Ensure no answer holds six characters in a row of any value a configuration took.
 
         Every engine call fails with a message that echoes each value as
-        written, in lowercase, and percent-encoded. The check casefolds each
-        answer and also reads it once percent-decoded.
+        written, in lowercase, percent-encoded, and as bytes in hex, as S3
+        writes a request it could not verify. The check casefolds each answer
+        and also reads it once percent-decoded.
         """
         for name, value in environment.items():
             monkeypatch.setenv(name, value)
         echo = " ".join(
             form
             for value in environment.values()
-            for form in (value, value.lower(), quote(value, safe=""))
+            for form in (value, value.lower(), quote(value, safe=""), value.encode().hex(" "))
         )
         for name in (
             "check_configs",
@@ -6636,6 +6696,7 @@ class TestEnvironmentReferences:
                     folded = value.casefold()
                     windows = {folded[i : i + 6] for i in range(len(folded) - 5)}
                     assert not any(window in text for window in windows), (tool, value)
+                    assert value.encode().hex(" ") not in text, (tool, value)
 
 
 class TestReadRows:
