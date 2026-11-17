@@ -46,7 +46,7 @@ Run Python tools through uv, such as `uv run pytest tests/unit`. Do not use `pip
 | Rule | Applies to |
 | :--- | :--- |
 | [Engine](rules/engine.md): data manipulation, models and configuration, loaders | `src/veridelta/` |
-| [Security](rules/security.md): warehouse SQL assembly, the execution boundary | `src/veridelta/connectors/`, `src/veridelta/models.py`, `src/veridelta/engine.py`, `src/veridelta/_warehouses.py`, `src/veridelta/_pushdown.py`, `src/veridelta/_checks.py`, `src/veridelta/_value_maps.py` |
+| [Security](rules/security.md): warehouse SQL assembly, the execution boundary | `src/veridelta/connectors/`, `src/veridelta/models.py`, `src/veridelta/engine.py`, `src/veridelta/_warehouses.py`, `src/veridelta/_pushdown.py`, `src/veridelta/_checks.py`, `src/veridelta/_value_maps.py`, `src/veridelta/mcp_server.py`, `src/veridelta/config.py` |
 | [Testing](rules/testing.md): layout, fixtures, markers, the parity suite | `tests/` |
 
 `tests/unit/test_rules.py` fails on any of these:
@@ -109,5 +109,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [On Windows, the MCP server's DuckDB connection opens no other file](decisions/mcp-duckdb-opens-no-other-file-on-windows.md)
 - [A DuckDB file's connection keeps no persistent secret](decisions/duckdb-file-keeps-no-persistent-secret.md)
 - [The MCP server confirms which DuckDB file DuckDB opened](decisions/mcp-confirms-the-duckdb-file-opened.md)
+- [The MCP server takes a ${NAME} only as the whole value of a credential setting](decisions/mcp-takes-environment-values-only-in-credential-settings.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

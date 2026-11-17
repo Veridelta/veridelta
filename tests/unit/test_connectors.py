@@ -43,6 +43,7 @@ from veridelta.connectors import (
 )
 from veridelta.connectors.base import (
     mask_secrets,
+    masking_first,
     names_another_machine,
     read_subject,
     without_queries,
@@ -150,6 +151,21 @@ class TestSharedHelpers:
 
         assert masked == "key=*** pass=*** token="
         assert mask_secrets("nothing set", None) == "nothing set"
+
+    def test_it_applies_a_callers_mask_before_any_secret_only_inside_its_block(self) -> None:
+        """Ensure a caller's value is masked whole before a shorter secret can cut it.
+
+        A password of one letter, masked first, would leave the caller's value
+        in pieces its mask no longer finds.
+        """
+        text = 'failed for user "LedgerReader"'
+
+        with masking_first(lambda shown: shown.replace("LedgerReader", "***")):
+            inside = mask_secrets(text, "e")
+        outside = mask_secrets(text, "e")
+
+        assert inside == 'fail***d for us***r "***"'
+        assert outside == 'fail***d for us***r "L***dg***rR***ad***r"'
 
     @pytest.mark.parametrize(
         ("text", "shown"),
