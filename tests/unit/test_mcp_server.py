@@ -6865,6 +6865,41 @@ class TestEnvironmentReferences:
         assert "<Token-0>***</Token-0><CanonicalRequestBytes>***<" in _text(result)
         assert not _holds_a_form(_shown(result), token)
 
+    def test_it_masks_a_form_encoded_secret(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a client secret is masked as object_store form-encodes it, with `~` as `%7E`.
+
+        object_store writes an OAuth request's body form-encoded, which escapes
+        `~`, where percent-encoding leaves it as it is. Every Entra secret
+        holds a `~`.
+        """
+        secret = "Mk18Q~ab.cd_ef-gh+ij/kl=Zq9x7Pw"
+        monkeypatch.setenv("SECRET", secret)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(
+                "client_secret=Mk18Q%7Eab.cd_ef-gh%2Bij%2Fkl%3DZq9x7Pw", quotes_data=True
+            ),
+        )
+        _with_source(
+            tmp_path,
+            "  path: s3://lake/a.csv\n"
+            "  options: {storage_options: {azure_client_secret: '${SECRET}'}}\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",)),
+            {"path": "veridelta.yaml", "side": "source"},
+            tool="describe_schema",
+        )
+
+        shown = _shown(result)
+        assert "client_secret=***" in shown
+        assert not _holds_a_form(shown, secret)
+        assert "%7Eab.cd_ef" not in shown
+
     @pytest.mark.parametrize("signature", ["", "a"])
     def test_it_masks_no_signature_too_short_to_mask(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signature: str

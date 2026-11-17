@@ -2690,9 +2690,10 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
 def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     """Join every form of the recorded values into one pattern, longest first, in any case.
 
-    A value's forms are its text, its percent-encoding, its bytes in hex
-    with a space between each, as S3 writes a request it could not verify,
-    and the `sig` of a SAS token. A byte outside UTF-8 is encoded as it was
+    A value's forms are its text, its percent-encoding, its form encoding,
+    where `~` becomes `%7E`, as object_store writes an OAuth request's body,
+    its bytes in hex with a space between each, as S3 writes a request it
+    could not verify, and the `sig` of a SAS token. A byte outside UTF-8 is encoded as it was
     read, so no value stops the pattern from being built.
 
     No head of a value is a form. A head would let an agent learn a value one
@@ -2706,6 +2707,7 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
         for form in (
             value,
             quote(value, safe="", errors="surrogateescape"),
+            quote(value, safe="", errors="surrogateescape").replace("~", "%7E"),
             value.encode(errors="surrogateescape").hex(" "),
             *_sas_signatures(value),
         )
