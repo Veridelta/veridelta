@@ -4854,6 +4854,24 @@ _ENDPOINT_TARGETS = {
 """For each endpoint key a tool passes on, a target up to its `storage_options`, for a reader that takes it:
 Polars for a file, deltalake for a Delta Lake table, and PyIceberg's FileIO for an Iceberg table."""
 
+_NAME_TARGET = "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: "
+"""A target up to its `storage_options`, for a bucket, a container, or an account option."""
+
+_NAME_KEYS = (
+    "account_name",
+    "adls.account-name",
+    "aws_bucket",
+    "aws_bucket_name",
+    "azure_container_name",
+    "azure_storage_account_name",
+    "bucket",
+    "bucket_name",
+    "container_name",
+    "google_bucket",
+    "google_bucket_name",
+)
+"""Each storage option key a tool passes on that names a bucket, a container, or an account."""
+
 
 _MOTHERDUCK_NAME = (
     "database name, which may hold only letters, digits, _, -, and /, and not start with /,"
@@ -5413,18 +5431,6 @@ class TestAllowedHosts:
                     ("at-sign-in-the-path", "https://db.internal:9000/x@127.0.0.1"),
                 )
             ),
-            pytest.param(
-                "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
-                "aws_bucket",
-                "bucket?x",
-                id="bucket-with-a-question-mark",
-            ),
-            pytest.param(
-                "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
-                "bucket",
-                "bucket/other",
-                id="bucket-with-a-path",
-            ),
         ],
     )
     def test_it_refuses_an_endpoint_with_a_path(
@@ -5449,8 +5455,155 @@ class TestAllowedHosts:
             describe_side(settings, "veridelta.yaml", "target")
 
         assert str(refused.value).startswith(f"The target storage option '{key}' holds")
+        assert "as in https://host:port." in str(refused.value)
         assert value not in str(refused.value)
         read.assert_not_called()
+
+    def test_it_knows_a_target_for_each_endpoint_and_name_option(self) -> None:
+        """Ensure the endpoint and name tests cover every host option, each under its own message."""
+        assert frozenset(_ENDPOINT_TARGETS) == mcp_server._ENDPOINT_OPTIONS
+        assert frozenset(_NAME_KEYS) == mcp_server._NAME_OPTIONS
+        assert mcp_server._HOST_OPTIONS == mcp_server._ENDPOINT_OPTIONS | mcp_server._NAME_OPTIONS
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            pytest.param(key, value, id=f"{key}-{spelling}")
+            for key in _NAME_KEYS
+            for spelling, value in (
+                ("path", "bucket/other"),
+                ("query", "bucket?x"),
+                ("fragment", "bucket#x"),
+                ("backslash", "bucket\\other"),
+                ("port-and-path", "bucket:9000/other"),
+                ("scheme-and-path", "https://bucket/other"),
+                ("scheme-without-slashes", "https:bucket/other"),
+            )
+        ],
+    )
+    def test_it_refuses_a_bucket_container_or_account_with_a_path(
+        self, tmp_path: Path, mocker: MockerFixture, key: str, value: str
+    ) -> None:
+        """Ensure a bucket, a container, or an account option holds no path, in a message about a name.
+
+        A reader writes such a value into the request's host or path, so text
+        after the name could reach a bucket the server did not check. The host
+        is allowed, so only the path refuses it. The message speaks of a name,
+        not of an endpoint's host and port.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, f"{_NAME_TARGET}{{{key}: '{value}'}}\n")
+        settings = Settings((tmp_path,), allowed_hosts=_ALLOWED)
+
+        with pytest.raises(ConfigError) as refused:
+            describe_side(settings, "veridelta.yaml", "target")
+
+        message = str(refused.value)
+        assert message.startswith(
+            f"The target storage option '{key}' holds a path, a query, or a fragment after its name."
+        )
+        assert message.endswith("only as a name, as in lake.")
+        assert "endpoint" not in message
+        assert "host:port" not in message
+        assert value not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("target", "setting", "form"),
+        [
+            *(
+                pytest.param(
+                    f"{_ENDPOINT_TARGETS[key]}{{{key}: 'https://u@db.internal'}}\n",
+                    f"storage option '{key}'",
+                    "with at most a port of digits after it, as in host:port or https://host:port.",
+                    id=f"{key}-with-a-login",
+                )
+                for key in _ENDPOINT_TARGETS
+            ),
+            *(
+                pytest.param(
+                    f"{_NAME_TARGET}{{{key}: 'u@bucket'}}\n",
+                    f"storage option '{key}'",
+                    "with at most a port of digits after it, as in lake.",
+                    id=f"{key}-with-a-login",
+                )
+                for key in _NAME_KEYS
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: 'https://u@db.internal/t'\n",
+                "table_uri",
+                "with at most a port of digits after it, as in host:port or "
+                "scheme://host:port/path.",
+                id="location-with-a-login",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://u@db.internal:54x2/db\n  table: t\n",
+                "uri",
+                "with at most a port of digits after it, as in host:port or "
+                "scheme://host:port/path.",
+                id="database-uri-with-a-port-that-is-not-digits",
+            ),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: 'xy12345:443'\n",
+                "account",
+                "with no port or path after it, as in xy12345.us-east-1.",
+                id="snowflake-account-with-a-port",
+            ),
+            pytest.param(
+                f"{_DATABRICKS}  server_hostname: 'adb-1.azuredatabricks.net:8443'\n",
+                "server_hostname",
+                "with no port or path after it, as in adb-1.azuredatabricks.net.",
+                id="databricks-with-a-port",
+            ),
+        ],
+    )
+    def test_it_says_how_to_write_a_host_for_its_kind_of_setting(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, setting: str, form: str
+    ) -> None:
+        """Ensure a host in another shape is refused with an example that fits its setting.
+
+        A location may have a path after its host. An endpoint may not, since
+        `_refuse_endpoint_path` refuses one, and a bucket, a container, or an
+        account is a name alone. A Snowflake account and a Databricks server
+        take no port or path.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, target)
+
+        with pytest.raises(ConfigError) as refused:
+            describe_side(Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target")
+
+        message = str(refused.value)
+        assert message.startswith(f"The target {setting} does not name its host")
+        assert f"in ASCII, {form} Leave out" in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            pytest.param(key, value, id=f"{key}-{spelling}")
+            for key in _NAME_KEYS
+            for spelling, value in (
+                ("name", "bucket"),
+                ("port", "bucket:9000"),
+                ("scheme", "https://bucket"),
+                ("scheme-and-slash", "https://bucket/"),
+            )
+        ],
+    )
+    def test_it_reads_with_a_bucket_container_or_account_name(
+        self, tmp_path: Path, mocker: MockerFixture, key: str, value: str
+    ) -> None:
+        """Ensure a bucket, a container, or an account option written as an allowed name still reads."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, f"{_NAME_TARGET}{{{key}: '{value}'}}\n")
+
+        report = describe_side(
+            Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target"
+        )
+
+        assert report["columns"] == {"id": "Int64"}
 
     @pytest.mark.parametrize(
         ("target", "key", "value"),
