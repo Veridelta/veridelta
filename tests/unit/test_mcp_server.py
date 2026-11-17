@@ -11,6 +11,7 @@ whether a call failed.
 import functools
 import getpass
 import glob
+import html
 import importlib.util
 import json
 import logging
@@ -32,7 +33,7 @@ from decimal import Decimal
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast, get_args
 from unittest.mock import MagicMock, patch
 from urllib.error import URLError
 from urllib.parse import parse_qsl, quote, unquote, urlencode
@@ -54,7 +55,7 @@ from pyiceberg.manifest import ManifestFile, write_manifest_list
 from pytest_mock import MockerFixture
 
 from veridelta import __version__, mcp_server
-from veridelta.config import load_config
+from veridelta.config import load_config, load_config_with_hook
 from veridelta.connectors import base, database
 from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.database import sqlite_path
@@ -77,7 +78,6 @@ from veridelta.mcp_server import (
     check_configuration,
     check_data_paths,
     describe_side,
-    environment_values,
     propose_maps,
     read_rows,
     resolve_path,
@@ -123,6 +123,13 @@ _QUERY_HOST = "db.example.com"
 """The host of `_QUERY`'s database."""
 
 _SECRET = "hunter2-do-not-print"
+
+_PASSWORD_FROM_ENV = (
+    "source:\n  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+    "  table: orders\n  password: ${VD_MCP_PASSWORD}\n"
+    "target:\n  path: b.csv\nprimary_keys: [id]\n"
+)
+"""A configuration that takes a database password from `VD_MCP_PASSWORD`, as a server allows."""
 
 _CANARY = "CANARY-123-45-6789"
 """A cell value that a server started without `--allow-row-values` never returns."""
@@ -533,22 +540,19 @@ class TestCheckConfiguration:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Ensure an unset variable fails by default, and is a warning when allowed."""
-        monkeypatch.delenv("VD_MCP_TABLE", raising=False)
-        _write(
-            tmp_path,
-            "source:\n  path: ${VD_MCP_TABLE}.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
-        )
+        monkeypatch.delenv("VD_MCP_PASSWORD", raising=False)
+        _write(tmp_path, _PASSWORD_FROM_ENV)
         settings = Settings((tmp_path,))
 
         strict = check_configuration(settings, "veridelta.yaml")
         lenient = check_configuration(settings, "veridelta.yaml", allow_missing_env=True)
 
         assert strict["valid"] is False
-        assert "Environment variable 'VD_MCP_TABLE' is not set" in strict["errors"][0]
+        assert "Environment variable 'VD_MCP_PASSWORD' is not set" in strict["errors"][0]
         assert lenient["valid"] is True
         assert lenient["warnings"] == [
-            "Environment variable 'VD_MCP_TABLE' is not set, so its references were "
-            "checked as the text 'VD_MCP_TABLE'."
+            "Environment variable 'VD_MCP_PASSWORD' is not set, so its references were "
+            "checked as the text 'VD_MCP_PASSWORD'."
         ]
 
     def test_it_checks_rules_against_stored_columns_with_schemas(self, tmp_path: Path) -> None:
@@ -618,11 +622,11 @@ class TestCheckConfiguration:
         )
 
         def load_then_swap(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
-            loaded = load_config(*args, **kwargs)
+            loaded = load_config_with_hook(*args, **kwargs)
             path.write_text(swapped)
             return loaded
 
-        mocker.patch.object(mcp_server, "load_config", side_effect=load_then_swap)
+        mocker.patch.object(mcp_server, "load_config_with_hook", side_effect=load_then_swap)
         checks = mocker.spy(DiffEngine, "check_configs")
 
         report = check_configuration(Settings((tmp_path,)), "veridelta.yaml", schemas=True)
@@ -2495,8 +2499,8 @@ class TestCheckDataPaths:
 
         The driver drops a leading `./` before it expands `~`, so `./~/k.pem`
         is the key in the home folder, outside the root that holds the
-        working directory. The path can hold a `${NAME}` value, so the message
-        leaves it out.
+        working directory. The message names the setting and leaves the path
+        out.
         """
         outside = tmp_path_factory.mktemp("outside")
         (outside / "k.pem").write_text("not a real key\n", encoding="utf-8")
@@ -5893,54 +5897,47 @@ class TestAllowedHosts:
             pytest.param(
                 "  type: database\n  uri: postgresql://u@${VD_MCP_SECRET}.elsewhere.example/db\n"
                 "  table: t\n",
-                "uri",
+                "target -> uri",
                 id="database",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: hdfs://${VD_MCP_SECRET}.elsewhere.example/t\n",
-                "table_uri",
+                "target -> table_uri",
                 id="hdfs",
             ),
             pytest.param(
                 "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n"
                 "  storage_options: {s3.endpoint: 'http://${VD_MCP_SECRET}:1@bucket'}\n",
-                "storage option 's3.endpoint'",
-                id="endpoint-in-a-shape-readers-split-differently",
+                "target -> storage_options -> s3.endpoint",
+                id="endpoint",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:sales?${VD_MCP_SECRET}=1'\n  table: t\n",
+                "target -> database",
+                id="motherduck-option",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: '${VD_MCP_SECRET}_scanner:host=127.0.0.1'\n"
+                "  table: t\n",
+                "target -> database",
+                id="duckdb-extension",
             ),
         ],
     )
-    def test_it_names_the_setting_and_not_a_host_from_the_environment(
+    def test_it_takes_no_host_from_the_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str, setting: str
     ) -> None:
-        """Ensure a value a host takes from the environment stays out of the refusal."""
+        """Ensure a host from `${NAME}` is refused before any host check, by setting and name."""
         monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
         _remote(tmp_path, target)
 
-        with pytest.raises(ConfigError, match=re.escape(f"The target {setting} ")) as refused:
+        with pytest.raises(
+            ConfigError,
+            match=re.escape(f"On veridelta mcp, {setting} cannot take ${{VD_MCP_SECRET}}"),
+        ) as refused:
             run_configuration(Settings((tmp_path,), allowed_hosts=("bucket",)), "veridelta.yaml")
 
         assert _SECRET not in str(refused.value)
-
-    @pytest.mark.parametrize(
-        "database",
-        [
-            pytest.param("md:sales?${VD_MCP_SECRET}=1", id="motherduck-option"),
-            pytest.param("md:sales&${VD_MCP_SECRET}=1", id="motherduck-name"),
-            pytest.param("${VD_MCP_SECRET}_scanner:host=127.0.0.1", id="duckdb-extension"),
-        ],
-    )
-    def test_it_names_no_duckdb_text_from_the_environment(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, database: str
-    ) -> None:
-        """Ensure a refused DuckDB `database` keeps a value from the environment out of the refusal."""
-        monkeypatch.setenv("VD_MCP_SECRET", "hunter2_do_not_print")
-        _remote(tmp_path, f"  type: duckdb\n  database: '{database}'\n  table: t\n")
-
-        refusal = "is not one a tool passes on|open it through an extension"
-        with pytest.raises(ConfigError, match=refusal) as refused:
-            run_configuration(Settings((tmp_path,)), "veridelta.yaml")
-
-        assert "hunter2" not in str(refused.value)
 
     def test_a_check_with_schemas_connects_to_no_host_it_does_not_allow(
         self, tmp_path: Path, mocker: MockerFixture
@@ -6105,57 +6102,1022 @@ class TestAllowedHosts:
         )  # pyright: ignore[reportPrivateUsage] - the listing runs it on each file a table names
 
 
-class TestEnvironmentValues:
-    """Validate the values a tool masks: those its configuration took from the environment."""
+_STORE_PASSWORD = "  options: {storage_options: {aws_secret_access_key: '${PW}'}}\n"
+"""A file source's storage option that takes its secret key from `PW`."""
 
-    def test_it_returns_each_referenced_value(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+_S3_TARGET = "target:\n  path: s3://lake/b.csv\nprimary_keys: [id]\n"
+"""A target in an allowed bucket, so a configuration's source is the only side a test varies."""
+
+_SOURCE_MODELS = get_args(get_args(SourceRef)[0])
+"""Each model a `source` or `target` block can validate as."""
+
+_REFERENCE_HOSTS = (
+    "lake",
+    "127.0.0.1",
+    "db.internal",
+    "acct",
+    "acct.dfs.core.windows.net",
+    "xy12345.snowflakecomputing.com",
+    "adb-1.azuredatabricks.net",
+)
+"""Every host the configurations in the `${NAME}` tests name, so no host check stops them first."""
+
+_REFERENCE_TOOLS = pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("validate_config", {"schemas": True}),
+        ("run_comparison", {}),
+        ("describe_schema", {"side": "source"}),
+    ],
+    ids=["validate_config", "run_comparison", "describe_schema"],
+)
+"""The tools that load a configuration and open its source."""
+
+_KEY = "Hunter2SECRETPASSWORD"
+"""The value of `KEY` unless a test sets another."""
+
+_S3_TOKEN_TARGET = (
+    "target:\n  type: delta\n  table_uri: s3://lake/t\n  storage_options:\n"
+    "    aws_session_token: ${KEY}\n"
+)
+"""A Delta Lake side in S3 whose session token is `KEY`."""
+
+_ICEBERG_SAS = (
+    "  type: iceberg\n  table_uri: abfs://lake/t/metadata/v1.metadata.json\n"
+    "  storage_options:\n    adls.account-name: acct\n    adls.sas-token: {token}\n"
+)
+"""An Azure Iceberg source whose SAS token the test writes."""
+
+
+def _with_source(root: Path, source: str) -> Path:
+    """Write a configuration whose source is `source`, and whose target is a file under the root."""
+    (root / "b.csv").write_text("id\n1\n", encoding="utf-8")
+    return _write(root, f"source:\n{source}target:\n  path: b.csv\nprimary_keys: [id]\n")
+
+
+def _shown(result: CallToolResult) -> str:
+    """Join everything a tool call returned: its structured result and its text."""
+    return json.dumps(result.structured_content) + _text(result)
+
+
+def _forms(value: str) -> set[str]:
+    """Return the forms of a value an answer must not hold: as written, encoded, and its pieces.
+
+    A piece is a run of eight or more letters and digits, which a reader can
+    return cut from the rest. Each form is casefolded.
+    """
+    pieces = [piece for piece in re.split(r"[^A-Za-z0-9]", value) if len(piece) >= 8]
+    encoded = quote(value, safe="", errors="surrogateescape")
+    return {form.casefold() for form in (value, encoded, *pieces)}
+
+
+def _holds_a_form(shown: str, value: str) -> bool:
+    """Say whether an answer holds a form of `value`, as written or once decoded, in any case."""
+    texts = (shown.casefold(), unquote(shown).casefold())
+    return any(form in text for form in _forms(value) for text in texts)
+
+
+@pytest.fixture
+def engine_calls(mocker: MockerFixture) -> list[MagicMock]:
+    """Mock each engine call that reads a side, so a test sees whether any was made."""
+    return [
+        mocker.patch.object(DiffEngine, name)
+        for name in ("check_configs", "read_schema", "run_from_configs")
+    ]
+
+
+class TestEnvironmentReferences:
+    """Validate the rule that a `${NAME}` stands only as the whole value of a credential setting.
+
+    A reader can repeat a setting's value cut, encoded, or joined to other
+    text, so the server refuses a reference anywhere else as it loads the
+    file, before any check or reader, and masks every value it expanded.
+    """
+
+    @pytest.mark.parametrize(
+        ("source", "environment", "refusal"),
+        [
+            pytest.param(
+                _ICEBERG_SAS.format(token='"0=\' &${VDPW}"'),
+                {"VDPW": "zz=1&aa=SECRETVALUE"},
+                "source -> storage_options -> adls.sas-token must be ${VDPW} alone",
+                id="sas-after-a-quote",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token='"?${VDPW}"'),
+                {"VDPW": "zz=1&aa=SECRETVALUE"},
+                "source -> storage_options -> adls.sas-token must be ${VDPW} alone",
+                id="sas-after-a-mark",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token="${VDPW}"),
+                {"VDPW": "zz=1&aa=SECRETVALUE"},
+                "the value of ${VDPW} in source -> storage_options -> adls.sas-token must be "
+                "an Azure SAS token",
+                id="sas-of-another-shape",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token='"\\x24{VDPW}"'),
+                {"VDPW": "zz=1&aa=SECRETVALUE"},
+                "the value of ${VDPW} in source -> storage_options -> adls.sas-token must be "
+                "an Azure SAS token",
+                id="sas-through-a-yaml-escape",
+            ),
+            pytest.param(
+                '  path: "s3://lake/${KEY}.csv"\n',
+                {"KEY": "Hunter2+SEC%RET"},
+                "source -> path cannot take ${KEY}",
+                id="path-a-reader-encodes",
+            ),
+            pytest.param(
+                '  path: "s3://lake/\\x24{KEY}.csv"\n',
+                {},
+                "source -> path cannot take ${KEY}",
+                id="path-through-a-yaml-escape",
+            ),
+            pytest.param(
+                '  type: iceberg\n  table_uri: "abfs://lake/${KEY}#x/t"\n',
+                {},
+                "source -> table_uri cannot take ${KEY}",
+                id="table-uri-a-reader-cuts",
+            ),
+            pytest.param(
+                "  type: database\n  uri: ${VD_MCP_URI}\n  table: orders\n",
+                {"VD_MCP_URI": "postgresql://db.internal/sales-ledger?application_name=orders"},
+                "source -> uri cannot take ${VD_MCP_URI}",
+                id="whole-uri",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "sqlite+${KEY}://x.db"\n  table: t\n',
+                {"KEY": "Hunter2SECRET:PASSWORDtail"},
+                "source -> uri cannot take ${KEY}",
+                id="uri-scheme-after-text",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "${KEY}://x.db"\n  table: t\n',
+                {"KEY": "Hunter2SECRET:PASSWORDtail"},
+                "source -> uri cannot take ${KEY}",
+                id="uri-scheme",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://${KEY}@127.0.0.1:9/db"\n  table: t\n',
+                {"KEY": "svc_ledger_reader:Hunter2SECRETPASS"},
+                "the value of ${KEY} in source -> uri must be letters, digits",
+                id="uri-login-in-the-user",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "sqlite://${KEY}@/m.db"\n  table: t\n',
+                {"KEY": "svc_ledger_reader:Hunter2SECRETPASS"},
+                "the value of ${KEY} in source -> uri must be letters, digits",
+                id="sqlite-login-in-the-user",
+            ),
+            pytest.param(
+                "  path: s3://lake/a.csv\n"
+                "  options: {storage_options: {aws_access_key_id: '${KEY}'}}\n",
+                {"KEY": "svc\\ledger_reader"},
+                "the value of ${KEY} in source -> options -> storage_options -> "
+                "aws_access_key_id must be a login name",
+                id="login-with-a-backslash",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+                "  table: orders\n  password: ${KEY}\n",
+                {"KEY": "q7Z"},
+                "the value of ${KEY} in source -> password must be at least 4 characters",
+                id="short-password",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+                "  table: orders\n  password: ${KEY}\n",
+                {"KEY": "Hunter2\udcffSecretPass"},
+                "the value of ${KEY} in source -> password must be text in UTF-8",
+                id="password-outside-utf-8",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://${KEY}:wrongpw1@db.internal/sales"\n'
+                "  table: orders\n",
+                {"KEY": "LedgerReaderForTheSalesTeamQ2026x"},
+                "the value of ${KEY} in source -> uri must be at most 32 characters",
+                id="uri-user-a-database-can-cut",
+            ),
+            pytest.param(
+                "  path: a.csv\n  options: {row_index_name: '${KEY}'}\n",
+                {},
+                "source -> options -> row_index_name cannot take ${KEY}",
+                id="row-index-name",
+            ),
+            pytest.param(
+                "  path: a.csv\n  options: {new_columns: [id, '${KEY}']}\n",
+                {},
+                "source -> options -> new_columns -> 1 cannot take ${KEY}",
+                id="new-columns",
+            ),
+            pytest.param(
+                "  path: a.csv\n  options: {include_file_paths: '${KEY}'}\n",
+                {},
+                "source -> options -> include_file_paths cannot take ${KEY}",
+                id="include-file-paths",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: w.duckdb\n  query: \"select '${KEY}'\"\n",
+                {},
+                "source -> query cannot take ${KEY}",
+                id="query",
+            ),
+            pytest.param(
+                '  path: "g/[${KEY}].csv"\n', {}, "source -> path cannot take ${KEY}", id="glob"
+            ),
+            pytest.param(
+                "  type: [file]\n  path: ${KEY}\n",
+                {},
+                "source -> path cannot take ${KEY}",
+                id="type-that-is-no-text",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token="x").replace(
+                    "adls.sas-token: x", "adls.account-key: ${KEY}"
+                ),
+                {"KEY": "Hunter2-SECRET-KEY"},
+                "the value of ${KEY} in source -> storage_options -> adls.account-key must be "
+                "an account key in base64",
+                id="account-key-of-another-shape",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token="x").replace(
+                    "adls.sas-token: x", "adls.account-key: ${KEY}"
+                ),
+                {"KEY": "SGVsbG8gV29ybGQhIHNlY3JldEB="},
+                "the value of ${KEY} in source -> storage_options -> adls.account-key must be "
+                "an account key in base64",
+                id="account-key-a-reader-decodes-only-leniently",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://vdref0x:${KEY}@db.internal/sales"\n'
+                "  table: orders\n",
+                {"KEY": "q7"},
+                "the value of ${KEY} in source -> uri must be at least 4 characters",
+                id="uri-password-after-a-user-that-looks-like-a-reference",
+            ),
+            pytest.param(
+                "  type: database\n  uri: sqlite://u@/x.db\n  table: t\n  password: ${KEY}\n",
+                {"KEY": "Hunter2Secret//TailPartXYZ"},
+                "source -> password cannot take ${KEY} for a SQLite file",
+                id="sqlite-password-the-system-folds",
+            ),
+            pytest.param(
+                "  type: database\n  uri: sqlite://u@/x.db\n  table: t\n  password: ${KEY}\n",
+                {"KEY": "postgresql://ledger_svc:Hunter2DbPass@db.internal:5432/sales"},
+                "source -> password cannot take ${KEY} for a SQLite file",
+                id="sqlite-password-that-is-a-uri",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://u:${KEY}@db.internal/sales"\n'
+                "  table: orders\n",
+                {"KEY": "p@ss/word"},
+                "the value of ${KEY} in source -> uri must be letters, digits, '.', '_', '~', and "
+                "'-' only, so the uri reads the same encoded or decoded. Put a password with "
+                "other characters in the side's 'password' setting",
+                id="uri-password-a-reader-encodes",
+            ),
+            *(
+                pytest.param(
+                    _S3_TOKEN_TARGET.replace("target:\n", ""),
+                    {"KEY": value},
+                    "the value of ${KEY} in source -> storage_options -> aws_session_token must "
+                    "be a key or a token of letters, digits",
+                    id=f"session-token-{name}",
+                )
+                for name, value in (
+                    ("s3-escapes", "Hunter2&Correct<Horse>Battery"),
+                    ("s3-trims", "Hunter2SECRETpasswordXYZ "),
+                    ("outside-ascii", "Hunter2\u00e9SECRET\u03a9password"),
+                )
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:sales'\n  table: t\n  motherduck_token: ${KEY}\n",
+                {"KEY": "eyJhbGciOi JIUzI1NiJ9"},
+                "the value of ${KEY} in source -> motherduck_token must be a key or a token",
+                id="motherduck-token-with-a-space",
+            ),
+        ],
+    )
+    @_REFERENCE_TOOLS
+    def test_it_refuses_a_reference_before_it_reads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        engine_calls: list[MagicMock],
+        source: str,
+        environment: dict[str, str],
+        refusal: str,
+        tool: str,
+        arguments: dict[str, object],
     ) -> None:
-        """Ensure a set variable counts, and an unset or short one does not."""
-        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
-        monkeypatch.setenv("VD_MCP_SHORT", "abc")
-        monkeypatch.delenv("VD_MCP_UNSET", raising=False)
-        _write(
-            tmp_path,
-            "source:\n  path: ${VD_MCP_SECRET}.csv\n  format: ${VD_MCP_SHORT}\n"
-            "target:\n  path: ${VD_MCP_UNSET:-b.csv}\nprimary_keys: [id]\n",
+        """Ensure each form a reader could repeat unmasked is refused, naming the setting.
+
+        The refusal names the setting and the variable, holds no form of the
+        value, and comes before any check or read.
+        """
+        environment = {"KEY": _KEY, **environment}
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        _with_source(tmp_path, source)
+        settings = Settings(
+            (tmp_path,),
+            allow_row_values=True,
+            allow_queries=True,
+            allowed_hosts=_REFERENCE_HOSTS,
         )
 
-        assert environment_values(Settings((tmp_path,)), "veridelta.yaml") == (_SECRET,)
+        result = _call(settings, {"path": "veridelta.yaml", **arguments}, tool=tool)
 
-    @pytest.mark.parametrize("mark", ["", "?"], ids=["bare", "with-mark"])
-    def test_it_returns_each_form_of_a_sas_signature(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mark: str
+        shown = _shown(result)
+        if tool == "validate_config":
+            assert result.structured_content is not None
+            assert result.structured_content["valid"] is False
+        else:
+            assert result.is_error is True
+        assert f"On veridelta mcp, {refusal}" in shown
+        for value in environment.values():
+            assert not _holds_a_form(shown, value)
+        for mock in engine_calls:
+            mock.assert_not_called()
+
+    def test_it_checks_where_an_unset_variable_stands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure a SAS token's signature counts on its own, as written, decoded, and encoded.
+        """Ensure `allow_missing_env` still refuses a reference outside a credential setting."""
+        monkeypatch.delenv("DATA", raising=False)
+        _with_source(tmp_path, "  path: ${DATA}.csv\n")
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", "allow_missing_env": True})
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert "source -> path cannot take ${DATA}" in report["errors"][0]
+        assert report["findings"][0]["locations"] == [{"path": ["source", "path"]}]
+        assert report["warnings"] == [
+            "Environment variable 'DATA' is not set, so its references were checked as the "
+            "text 'DATA'."
+        ]
+
+    def test_it_takes_a_uri_user_and_password_and_masks_them_in_any_case(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a uri's whole user and whole password may each be a `${NAME}`.
+
+        A driver error that writes the uri in lowercase still has both masked.
+        """
+        monkeypatch.setenv("PGUSER", "Ledger_Reader")
+        monkeypatch.setenv("PGPASSWORD", "Hunter2-SECRET_pass")
+        uri = "postgresql://Ledger_Reader:Hunter2-SECRET_pass@db.internal/sales"
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(f"could not connect to {uri.lower()}"),
+        )
+        _with_source(
+            tmp_path,
+            "  type: database\n"
+            '  uri: "postgresql://${PGUSER}:${PGPASSWORD}@db.internal/sales"\n'
+            "  table: orders\n",
+        )
+        settings = Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True)
+
+        checked = _call(settings, {"path": "veridelta.yaml"})
+        read = _call(settings, {"path": "veridelta.yaml", "schemas": True})
+
+        assert checked.structured_content is not None
+        assert checked.structured_content["valid"] is True
+        assert "could not connect to postgresql://***:***@db.internal/sales" in _shown(read)
+        for value in ("Ledger_Reader", "Hunter2-SECRET_pass"):
+            assert not _holds_a_form(_shown(read), value)
+
+    def test_it_takes_a_uri_user_of_32_characters_and_masks_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a uri user of 32 characters loads, and is masked where a driver repeats it.
+
+        No supported database cuts a user name this short before it writes the
+        name into its error, so the error holds the whole value.
+        """
+        user = "LedgerReaderForTheSalesTeamQ2026"
+        monkeypatch.setenv("VDUSER", user)
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(f'FATAL: password authentication failed for user "{user}"'),
+        )
+        _with_source(
+            tmp_path,
+            '  type: database\n  uri: "postgresql://${VDUSER}:wrongpw1@db.internal/sales"\n'
+            "  table: orders\n",
+        )
+        settings = Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True)
+
+        checked = _call(settings, {"path": "veridelta.yaml"})
+        read = _call(settings, {"path": "veridelta.yaml", "schemas": True})
+
+        assert len(user) == 32
+        assert checked.structured_content is not None
+        assert checked.structured_content["valid"] is True
+        assert 'failed for user \\"***\\"' in _shown(read)
+        assert not _holds_a_form(_shown(read), user)
+
+    @pytest.mark.parametrize(
+        "side",
+        [
+            pytest.param(
+                '  uri: "postgresql://${VDUSER}:e@db.internal/sales"\n', id="uri-password"
+            ),
+            pytest.param(
+                '  uri: "postgresql://${VDUSER}@db.internal/sales"\n  password: e\n',
+                id="password-setting",
+            ),
+        ],
+    )
+    def test_it_masks_a_value_whole_before_the_reader_masks_a_shorter_secret(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, side: str
+    ) -> None:
+        """Ensure a password written in the file cannot split a recorded value before the mask.
+
+        The reader masks its own password in a driver's message. A password of
+        one letter, masked first, would cut the user from `${VDUSER}` into
+        pieces the mask no longer finds whole, and a call for each letter
+        would give the rest of it.
+        """
+        user = "LedgerReaderForTheSalesTeamQ2026"
+        monkeypatch.setenv("VDUSER", user)
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(f'FATAL: password authentication failed for user "{user}"'),
+        )
+        _with_source(tmp_path, f"  type: database\n{side}  table: orders\n")
+        settings = Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True)
+
+        read = _call(settings, {"path": "veridelta.yaml", "schemas": True})
+
+        assert 'fail***d for us***r \\"***\\"' in _shown(read)
+        assert "q2026" not in _shown(read).casefold()
+
+    def test_it_leaves_a_token_that_shares_an_opening_with_a_recorded_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a recorded JWT leaves another JWT with the same header as it is.
+
+        Every JWT signed the same way opens with the same header, so a mask of
+        a value's head would garble other data for as long as the server runs.
+        """
+        header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        recorded = header + "eyJzdWIiOiJsZWRnZXIifQ.c2lnbmF0dXJlTGVkZ2Vy"
+        other = header + "eyJzdWIiOiJvdGhlciJ9.b3RoZXJTaWduYXR1cmU"
+        monkeypatch.setenv("VD_TOKEN", recorded)
+        _with_source(tmp_path, "  path: a.csv\n")
+        (tmp_path / "a.csv").write_text(f"id,{other}\n1,2\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  type: duckdb\n  database: 'md:sales'\n  table: t\n"
+            "  motherduck_token: ${VD_TOKEN}\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            "one.yaml",
+        )
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool("validate_config", {"path": "one.yaml"}),
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+            ]
+
+        loaded, later = _with_client(Settings((tmp_path,)), work)
+
+        assert loaded.structured_content is not None
+        assert loaded.structured_content["valid"] is True
+        assert later.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", other: "Int64"},
+        }
+
+    def test_it_masks_no_prefix_of_a_recorded_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a guess at a value's head, named as a column, comes back as written.
+
+        An agent could otherwise name guessed heads as columns of another
+        configuration and see which come back masked, learning a value one
+        character per call. Only a guess of the whole value is masked.
+        """
+        token = "dapiQ7f3e9a1b2c4d6e8f0a1b2c3d4e5f6"
+        heads = [token[:16], token[:24].upper(), token[:-1]]
+        monkeypatch.setenv("VD_TOKEN", token)
+        _with_source(tmp_path, "  path: a.csv\n")
+        (tmp_path / "a.csv").write_text(
+            ",".join(["id", *heads, token]) + "\n1,2,3,4,5\n", encoding="utf-8"
+        )
+        _write(
+            tmp_path,
+            "source:\n  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+            "  table: orders\n  password: ${VD_TOKEN}\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            "one.yaml",
+        )
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool("validate_config", {"path": "one.yaml"}),
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+            ]
+
+        loaded, later = _with_client(Settings((tmp_path,)), work)
+
+        assert loaded.structured_content is not None
+        assert loaded.structured_content["valid"] is True
+        assert later.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", **dict.fromkeys(heads, "Int64"), "***": "Int64"},
+        }
+
+    def test_it_builds_a_mask_for_a_value_outside_utf_8(self) -> None:
+        """Ensure a recorded value with a byte outside UTF-8 still gives a mask, as its bytes read."""
+        pattern = mcp_server._mask_pattern(frozenset({"Hunter2\udcffSecretPass"}))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+
+        assert pattern is not None
+        assert pattern.sub("***", "Hunter2%FFSecretPass") == "***"
+
+    def test_it_takes_an_empty_credential(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a credential set but empty loads, since it holds nothing to mask."""
+        monkeypatch.setenv("PW", "")
+        _with_source(tmp_path, "  path: a.csv\n" + _STORE_PASSWORD)
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
+
+        assert result.structured_content is not None
+        assert result.structured_content["valid"] is True
+
+    def test_it_takes_a_short_login_and_leaves_it_unmasked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a login name of 3 characters loads, and is too short to mask.
+
+        A login name is an identifier a service may echo, not a secret, and a
+        mask that short would hide ordinary text in every answer.
+        """
+        monkeypatch.setenv("KID", "kQz")
+        mocker.patch.object(
+            DiffEngine, "read_schema", side_effect=ConfigError("The access key id kQz is unknown.")
+        )
+        _with_source(
+            tmp_path,
+            "  path: s3://lake/a.csv\n  options: {storage_options: {aws_access_key_id: '${KID}'}}\n",
+        )
+        settings = Settings((tmp_path,), allowed_hosts=("lake",))
+
+        checked = _call(settings, {"path": "veridelta.yaml"})
+        described = _call(
+            settings, {"path": "veridelta.yaml", "side": "source"}, tool="describe_schema"
+        )
+
+        assert checked.structured_content is not None
+        assert checked.structured_content["valid"] is True
+        assert "The access key id kQz is unknown." in _text(described)
+
+    def test_it_masks_a_snowflake_user_a_driver_writes_in_lowercase(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a login name from `${NAME}` is masked in any case, as a service can echo it."""
+        monkeypatch.setenv("SFUSER", "SvcLedgerReader")
+        monkeypatch.setenv("SFPASSWORD", _SECRET)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError("Incorrect username or password for svcledgerreader."),
+        )
+        _with_source(
+            tmp_path,
+            "  type: snowflake\n  account: xy12345\n  user: ${SFUSER}\n"
+            "  password: ${SFPASSWORD}\n  warehouse: WH\n  database: DB\n"
+            "  schema_name: PUBLIC\n  table: ORDERS\n",
+        )
+        settings = Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS, allow_row_values=True)
+
+        result = _call(settings, {"path": "veridelta.yaml", "side": "source"}, "describe_schema")
+
+        assert "Incorrect username or password for ***." in _text(result)
+        assert not _holds_a_form(_shown(result), "SvcLedgerReader")
+
+    @_REFERENCE_TOOLS
+    def test_it_refuses_a_sqlite_password_before_any_path_quotes_it(
+        self,
+        tmp_path: Path,
+        tmp_path_factory: pytest.TempPathFactory,
+        monkeypatch: pytest.MonkeyPatch,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a `password` the driver would read into a SQLite path never comes back.
+
+        The process runs outside the root, where the check of the path would
+        quote it, with the password resolved into it. The target's reference
+        is refused at the load, so no form of the value shows.
+        """
+        password = "p@ss/w#rd+%9/../tail"
+        monkeypatch.setenv("PW", password)
+        config = _write(
+            tmp_path,
+            "source:\n  path: a.csv\n"
+            "target:\n  type: database\n  uri: sqlite://u@/x.db\n  table: t\n"
+            "  password: ${PW}\nprimary_keys: [id]\n",
+        )
+        monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": str(config), **arguments},
+            tool=tool,
+        )
+
+        shown = _shown(result)
+        assert "target -> password cannot take ${PW} for a SQLite file" in shown
+        folded = password.casefold()
+        windows = {folded[i : i + 6] for i in range(len(folded) - 5)}
+        for text in (shown.casefold(), unquote(shown).casefold()):
+            assert not any(window in text for window in windows)
+
+    def test_it_masks_from_its_own_load_and_not_from_a_second_read_of_the_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file rewritten after the load still has its value masked.
+
+        The read rewrites the file without the reference, then fails with a
+        message that quotes the password, so only the load's own record of the
+        value can mask it.
+        """
+        monkeypatch.setenv("PW", _SECRET)
+        config = _with_source(tmp_path, "  path: a.csv\n" + _STORE_PASSWORD)
+
+        def rewrite_then_fail(*_: object) -> None:
+            _with_source(tmp_path, "  path: a.csv\n")
+            raise ConnectorError(f"The store refused the key {_SECRET}.")
+
+        mocker.patch.object(DiffEngine, "read_schema", side_effect=rewrite_then_fail)
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": str(config), "side": "source"},
+            tool="describe_schema",
+        )
+
+        assert "The store refused the key ***." in _text(result)
+        assert _SECRET not in _shown(result)
+
+    def test_it_masks_a_value_a_later_call_echoes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a value one call expanded is masked in a later call that never names it.
+
+        Polars caches an object store across calls, and its error can name the
+        path of the call that built it. The server keeps every value it
+        expanded while it runs, so the later answer masks it too.
+        """
+        monkeypatch.setenv("KEY", _KEY)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"HEAD failed (path: s3://lake/{_KEY}.csv)"),
+        )
+        _write(tmp_path, 'source:\n  path: "s3://lake/${KEY}.csv"\n' + _S3_TARGET, "one.yaml")
+        _write(
+            tmp_path,
+            "source:\n  path: s3://lake/a.csv\n"
+            "  options: {storage_options: {aws_secret_access_key: '${KEY}'}}\n" + _S3_TARGET,
+            "two.yaml",
+        )
+        _write(tmp_path, "source:\n  path: s3://lake/plain.csv\n" + _S3_TARGET, "three.yaml")
+        settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",))
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool("describe_schema", {"path": name, "side": "source"})
+                for name in ("one.yaml", "two.yaml", "three.yaml")
+            ]
+
+        refused, loaded, later = _with_client(settings, work)
+
+        assert "source -> path cannot take ${KEY}" in _text(refused)
+        assert "(path: s3://lake/***.csv)" in _text(loaded)
+        assert "(path: s3://lake/***.csv)" in _text(later)
+        for result in (refused, loaded, later):
+            assert not _holds_a_form(_shown(result), _KEY)
+
+    def test_it_masks_each_form_of_a_sas_signature(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a SAS token's signature is masked on its own, as written, decoded, and encoded.
 
         The Azure SDK writes the token's parameters back in another order, so
         the token's whole text may not appear where its signature does.
         """
-        token = f"{mark}sv=2024-01-01&sig=c2ln%2bbmF0/dXJl%3D&sp=r"
-        monkeypatch.setenv("VD_AZURE_SAS", token)
+        signature = "c2ln%2bbmF0/dXJl%3D"
+        monkeypatch.setenv("VD_AZURE_SAS", f"sv=2024-01-01&sig={signature}&sp=r")
+        forms = (signature, "c2ln+bmF0/dXJl=", "c2ln%2BbmF0%2FdXJl%3D")
+        mocker.patch.object(DiffEngine, "read_schema", side_effect=ConnectorError(" ".join(forms)))
+        _with_source(tmp_path, _ICEBERG_SAS.format(token="${VD_AZURE_SAS}"))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+            {"path": "veridelta.yaml", "side": "source"},
+            tool="describe_schema",
+        )
+
+        assert "ConnectorError: *** *** ***" in _text(result)
+
+    def test_it_masks_a_session_token_s3_writes_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a session token S3 repeats in its error is masked, as text and as bytes in hex.
+
+        S3 writes a token it cannot read back XML-escaped, and a request it
+        could not verify as bytes in hex. A token in its shape reads the same
+        escaped, so both forms are masked.
+        """
+        token = "IQoJb3JpZ2luX2VjEJr//////////wEaCXVz+Q7ledger="
+        monkeypatch.setenv("KEY", token)
+        body = (
+            "<Error><Code>InvalidToken</Code><Message>The provided token is malformed or "
+            f"otherwise invalid.</Message><Token-0>{html.escape(token)}</Token-0>"
+            f"<CanonicalRequestBytes>{token.encode().hex(' ')}</CanonicalRequestBytes></Error>"
+        )
+        mocker.patch.object(DiffEngine, "read_schema", side_effect=ConnectorError(body))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _with_source(tmp_path, _S3_TOKEN_TARGET.replace("target:\n", ""))
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",)),
+            {"path": "veridelta.yaml", "side": "source"},
+            tool="describe_schema",
+        )
+
+        assert "<Token-0>***</Token-0><CanonicalRequestBytes>***<" in _text(result)
+        assert not _holds_a_form(_shown(result), token)
+
+    @pytest.mark.parametrize("signature", ["", "a"])
+    def test_it_masks_no_signature_too_short_to_mask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signature: str
+    ) -> None:
+        """Ensure a recorded value with a short `sig` leaves later answers as they are.
+
+        The value is masked whole, but a signature of 1 to 3 characters, or
+        none, would mask ordinary text, or every gap between characters, in
+        every answer until the server stops.
+        """
+        monkeypatch.setenv("VD_SAS", f"sv=2022-11-02&sig={signature}")
+        _with_source(tmp_path, "  path: a.csv\n")
+        (tmp_path / "a.csv").write_text("id,name\n1,alpha\n", encoding="utf-8")
         _write(
             tmp_path,
-            "source:\n  path: a.csv\ntarget:\n  type: iceberg\n  table_uri: abfs://lake/t\n"
-            "  storage_options:\n    adls.sas-token: ${VD_AZURE_SAS}\nprimary_keys: [id]\n",
+            "source:\n  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+            "  table: orders\n  password: '${VD_SAS}'\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+            "one.yaml",
         )
 
-        assert environment_values(Settings((tmp_path,)), "veridelta.yaml") == (
-            token,
-            "c2ln%2bbmF0/dXJl%3D",
-            "c2ln+bmF0/dXJl=",
-            "c2ln%2BbmF0%2FdXJl%3D",
-        )
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool("validate_config", {"path": "one.yaml"}),
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+            ]
 
-    def test_it_returns_none_for_a_file_it_cannot_read(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+        loaded, later = _with_client(Settings((tmp_path,), allowed_hosts=("db.internal",)), work)
+
+        assert loaded.structured_content is not None
+        assert loaded.structured_content["valid"] is True
+        assert later.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", "name": "String"},
+        }
+
+    def test_each_slot_names_a_field_of_its_model(self) -> None:
+        """Ensure the slot table names real fields, and the option sets split the no-host keys."""
+        models = {model.model_fields["type"].default: model for model in _SOURCE_MODELS}
+        option_sets = [
+            mcp_server._SECRET_OPTIONS,
+            mcp_server._ACCOUNT_KEY_OPTIONS,
+            mcp_server._LOGIN_OPTIONS,
+            mcp_server._SAS_OPTIONS,
+            mcp_server._SWITCH_OPTIONS,
+        ]
+
+        for block_type, field in mcp_server._FIELD_SLOTS:
+            assert field in models[block_type].model_fields
+        assert sum(map(len, option_sets)) == len(mcp_server._NO_HOST_OPTIONS)
+        assert frozenset().union(*option_sets) == mcp_server._NO_HOST_OPTIONS
+
+    @pytest.mark.parametrize(
+        ("block_type", "field"),
+        [
+            pytest.param(model.model_fields["type"].default, field, id=f"{model.__name__}-{field}")
+            for model in _SOURCE_MODELS
+            for field in model.model_fields
+            if (model.model_fields["type"].default, field) not in mcp_server._FIELD_SLOTS
+        ],
+    )
+    def test_it_refuses_a_reference_in_every_other_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block_type: str, field: str
     ) -> None:
-        """Ensure a missing file, or one outside the roots, gives nothing to mask."""
-        outside = _write(tmp_path_factory.mktemp("outside"), _VALID)
+        """Ensure each model field that is no credential slot takes no `${NAME}`.
+
+        The refusal comes before validation, so the field's own type does not
+        matter.
+        """
+        monkeypatch.setenv("VD_X", _KEY)
+        block = {"type": block_type, field: "${VD_X}"}
+        _with_source(tmp_path, "".join(f"  {key}: '{value}'\n" for key, value in block.items()))
+
+        report = check_configuration(Settings((tmp_path,)), "veridelta.yaml")
+
+        assert report["valid"] is False
+        assert f"source -> {field} cannot take ${{VD_X}}" in report["errors"][0]
+
+    def test_it_loads_a_file_only_through_its_own_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the server loads a file only with its hook, never through `load_config`.
+
+        Every module that binds `load_config` gets one that fails, and the hook
+        must see the file's reference, so a load without it fails the test.
+        """
+        monkeypatch.setenv("PW", _SECRET)
+        for module in ("veridelta", "veridelta.config", "veridelta.engine", "veridelta.cli"):
+            monkeypatch.setattr(
+                f"{module}.load_config", MagicMock(side_effect=AssertionError("loaded"))
+            )
+        hook = mocker.spy(mcp_server, "_record_and_check")
+        _with_source(tmp_path, "  path: b.csv\n" + _STORE_PASSWORD)
         settings = Settings((tmp_path,))
 
-        assert environment_values(settings, "missing.yaml") == ()
-        assert environment_values(settings, str(outside)) == ()
+        checked = _call(settings, {"path": "veridelta.yaml", "schemas": True})
+        ran = _call(settings, {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert checked.structured_content is not None
+        assert checked.structured_content["valid"] is True
+        assert ran.is_error is False
+        assert [call.args[0].name for call in hook.call_args_list] == ["PW", "PW"]
+
+    @pytest.mark.parametrize("row_values", [False, True], ids=["no-rows", "rows"])
+    @pytest.mark.parametrize(
+        ("source", "environment"),
+        [
+            pytest.param(
+                "  path: s3://lake/a.csv\n  options:\n    storage_options:\n"
+                "      aws_access_key_id: ${V_LOGIN}\n      aws_secret_access_key: ${V_SECRET}\n"
+                "      aws_session_token: ${V_TOKEN}\n",
+                {
+                    "V_LOGIN": "AKIAQ7ZX3LEDGER9READER",
+                    "V_SECRET": "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCY",
+                    "V_TOKEN": "IQoJb3JpZ2luX2VjEJr//////////wEaCXVz",
+                },
+                id="file-s3",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://lake/t\n  storage_options:\n"
+                "    AWS_SECRET_ACCESS_KEY: ${V_SECRET}\n    aws_access_key_id: ${V_LOGIN}\n",
+                {"V_SECRET": "Zq8+Kx/9mN_pR2w~Tz-Q7", "V_LOGIN": "svc.delta-reader@corp"},
+                id="delta",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token="${V_SAS}"),
+                {
+                    "V_SAS": "?sv=2024-01-01&se=2031-07-15T09%3A00Z&sp=rl"
+                    "&sig=QmFzZTY0U2lnbmF0dXJl%2BXyZ%2F9%3D"
+                },
+                id="iceberg-sas",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: abfs://lake/t/metadata/v1.metadata.json\n"
+                "  storage_options:\n    adls.account-name: acct\n"
+                "    adls.account-key: ${V_KEY}\n    adls.tenant-id: ${V_TENANT}\n",
+                {
+                    "V_KEY": "q3Zk9Lw+Xa7/Vb2NcR8tYm4Hp6Ju1Ef0Gd5Sx3Kz8Qw=",
+                    "V_TENANT": "6f1c2a9e-3b7d-4e58-9a0c-ledger00tenant",
+                },
+                id="iceberg-account-key",
+            ),
+            pytest.param(
+                "  type: snowflake\n  account: xy12345\n  user: ${V_USER}\n"
+                "  password: ${V_SECRET}\n"
+                "  warehouse: WH\n  database: DB\n  schema_name: PUBLIC\n  table: ORDERS\n",
+                {
+                    "V_USER": "SvcLedgerReaderQ7",
+                    "V_SECRET": "Pw#9 x&y?z=Q7kLm horse battery",
+                },
+                id="snowflake",
+            ),
+            pytest.param(
+                "  type: snowflake\n  account: xy12345\n  user: analyst\n"
+                "  private_key_path: k.pem\n  private_key_passphrase: ${V_PHRASE}\n"
+                "  warehouse: WH\n  database: DB\n  schema_name: PUBLIC\n  table: ORDERS\n",
+                {"V_PHRASE": "staple Q7 horse/battery+correct"},
+                id="snowflake-key-pair",
+            ),
+            pytest.param(
+                "  type: databricks\n  server_hostname: adb-1.azuredatabricks.net\n"
+                "  http_path: /sql/1.0/warehouses/1\n  table: orders\n"
+                "  access_token: ${V_TOKEN}\n",
+                {"V_TOKEN": "dapiQ7f3e9a1b2c4d6e8f0a1b2c3d4e5f6"},
+                id="databricks",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: 'md:sales'\n  table: t\n"
+                "  motherduck_token: ${V_TOKEN}\n",
+                {"V_TOKEN": "eyJhbGciOiJIUzI1NiJ9.Q7ledger.sig"},
+                id="motherduck",
+            ),
+            pytest.param(
+                "  type: database\n"
+                '  uri: "postgresql://${V_USER}:${V_PASSWORD}@db.internal/sales"\n'
+                "  table: orders\n",
+                {"V_USER": "ledger_reader_q7", "V_PASSWORD": "Hunter2-Q7_secret.pass~x"},
+                id="uri-parts",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+                "  table: orders\n  password: ${V_PASSWORD}\n",
+                {"V_PASSWORD": "p@ss/w#rd+%9 Q7ledger"},
+                id="database-password",
+            ),
+        ],
+    )
+    def test_no_tool_returns_any_part_of_a_value_from_the_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        environment: dict[str, str],
+        row_values: bool,
+    ) -> None:
+        """Ensure no answer holds six characters in a row of any value a configuration took.
+
+        Every engine call fails with a message that echoes each value as
+        written, in lowercase, percent-encoded, and as bytes in hex, as S3
+        writes a request it could not verify. The check casefolds each answer
+        and also reads it once percent-decoded.
+        """
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        echo = " ".join(
+            form
+            for value in environment.values()
+            for form in (value, value.lower(), quote(value, safe=""), value.encode().hex(" "))
+        )
+        for name in (
+            "check_configs",
+            "read_schema",
+            "run_from_configs",
+            "propose_value_maps_from_configs",
+            "suggest_rules_from_configs",
+        ):
+            mocker.patch.object(DiffEngine, name, side_effect=ConfigError(f"echo: {echo}"))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _with_source(tmp_path, source)
+        settings = Settings(
+            (tmp_path,), allow_row_values=row_values, allowed_hosts=_REFERENCE_HOSTS
+        )
+        calls: list[tuple[str, dict[str, Any]]] = [
+            ("validate_config", {}),
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "source"}),
+            ("read_discrepancies", {"kind": "added"}),
+            ("propose_value_maps", {}),
+            ("suggest_rules", {}),
+        ]
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool(tool, {"path": "veridelta.yaml", **arguments})
+                for tool, arguments in calls
+            ]
+
+        results = _with_client(settings, work)
+
+        for (tool, _), result in zip(calls, results, strict=True):
+            shown = _shown(result)
+            if row_values or tool in ("validate_config", "run_comparison", "describe_schema"):
+                assert "echo: ***" in shown, tool
+            for text in (shown.casefold(), unquote(shown).casefold()):
+                for value in environment.values():
+                    folded = value.casefold()
+                    windows = {folded[i : i + 6] for i in range(len(folded) - 5)}
+                    assert not any(window in text for window in windows), (tool, value)
+                    assert value.encode().hex(" ") not in text, (tool, value)
 
 
 class TestReadRows:
@@ -6694,11 +7656,8 @@ class TestServer:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Ensure `allow_missing_env` reaches the check, so an unset variable only warns."""
-        monkeypatch.delenv("VD_MCP_TABLE", raising=False)
-        _write(
-            tmp_path,
-            "source:\n  path: ${VD_MCP_TABLE}.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
-        )
+        monkeypatch.delenv("VD_MCP_PASSWORD", raising=False)
+        _write(tmp_path, _PASSWORD_FROM_ENV)
 
         result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", "allow_missing_env": True})
 
@@ -6775,7 +7734,11 @@ class TestServer:
     ) -> None:
         """Ensure no tool that opens a side sends an environment value to a host not allowed."""
         monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
-        _remote(tmp_path, "  path: http://127.0.0.1:1/a.csv?t=${VD_MCP_SECRET}\n")
+        _remote(
+            tmp_path,
+            "  path: http://127.0.0.1:1/a.csv\n"
+            "  options: {storage_options: {bearer_token: '${VD_MCP_SECRET}'}}\n",
+        )
         settings = Settings((tmp_path,), allow_row_values=True)
         calls: list[tuple[str, dict[str, Any]]] = [
             ("validate_config", {"path": "veridelta.yaml", "schemas": True}),
@@ -7132,65 +8095,29 @@ class TestServer:
         assert "***" in shown
         assert _SECRET not in shown
 
-    @pytest.mark.parametrize(
-        ("tool", "arguments"),
-        [("validate_config", {"schemas": True}), ("run_comparison", {})],
-        ids=["finding", "failure"],
-    )
-    def test_it_masks_a_value_with_a_query_before_it_leaves_out_the_query(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        mocker: MockerFixture,
-        tool: str,
-        arguments: dict[str, object],
-    ) -> None:
-        """Ensure a whole URL from `${NAME}`, query and all, comes back as `***`.
-
-        The driver's message quotes the URL. Leaving out its query first would
-        leave the text before the `?`, which is no longer the whole value, so
-        the masking comes first. Veridelta's own words name the URI without
-        its query, which no masking of the value covers.
-        """
-        uri = "postgresql://db.internal/sales-ledger?application_name=orders"
-        monkeypatch.setenv("VD_MCP_URI", uri)
-        mocker.patch(
-            "veridelta.connectors.database.pl.read_database_uri",
-            side_effect=RuntimeError(f"could not connect to '{uri}'"),
-        )
-        (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
-        _write(
-            tmp_path,
-            "source:\n  type: database\n  uri: ${VD_MCP_URI}\n  table: orders\n"
-            "target:\n  path: b.csv\nprimary_keys: [id]\n",
-        )
-
-        result = _call(
-            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
-            {"path": "veridelta.yaml", **arguments},
-            tool=tool,
-        )
-
-        shown = json.dumps(result.structured_content) + _text(result)
-        assert "could not connect to '***'" in shown
-        assert "application_name" not in shown
-
     def test_it_masks_each_value_the_configuration_took_from_the_environment(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
         """Ensure a value from `${NAME}` comes back as `***`, in an error or in a result.
 
-        A path built from a variable names it in the read's error, and a
-        column named after one names it in the schema.
+        A reader names the value in its error, and a column named after it
+        names it in the schema, here through mocks of each.
         """
         monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
-        (tmp_path / "a.csv").write_text("id,x\n1,2\n")
-        _write(
-            tmp_path,
-            "source:\n  path: ${VD_MCP_SECRET}.csv\ntarget:\n  path: a.csv\n"
-            "  options:\n    new_columns: [id, '${VD_MCP_SECRET}']\nprimary_keys: [id]\n",
+        mocker.patch.object(
+            DiffEngine,
+            "run_from_configs",
+            side_effect=ConfigError(f"The csv file '{_SECRET}.csv' does not exist."),
         )
-        settings = Settings((tmp_path,))
+        mocker.patch.object(
+            DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64, _SECRET: pl.Int64})
+        )
+        _remote(
+            tmp_path,
+            "  path: s3://lake/a.csv\n"
+            "  options: {storage_options: {aws_secret_access_key: '${VD_MCP_SECRET}'}}\n",
+        )
+        settings = Settings((tmp_path,), allowed_hosts=("lake",))
 
         failed = _call(settings, {"path": "veridelta.yaml"}, tool="run_comparison")
         described = _call(

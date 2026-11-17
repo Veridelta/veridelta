@@ -9,6 +9,9 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from types import ModuleType, TracebackType
 from typing import ClassVar, Final, Literal, Self
 
@@ -21,8 +24,37 @@ from veridelta.models import redacted_location
 logger = logging.getLogger(__name__)
 
 
+_FIRST_MASK: ContextVar[Callable[[str], str] | None] = ContextVar("_FIRST_MASK", default=None)
+"""The mask `masking_first` sets, which `mask_secrets` applies before a connector's own secrets."""
+
+
+@contextmanager
+def masking_first(mask: Callable[[str], str]) -> Generator[None]:
+    """Have `mask_secrets` apply `mask` before it masks any secret a connector holds, while inside.
+
+    A caller that masks values of its own in what a connector returns, such
+    as `veridelta mcp` with each value it expanded from its environment, needs
+    each one whole in the text. A connector's secret can be short, such as a
+    password of one letter, and masking it first would cut such a value into
+    pieces that the caller's mask no longer finds.
+
+    Args:
+        mask (Callable[[str], str]): Masks the caller's values in a text.
+
+    Yields:
+        None: Control, with the mask in place for this context.
+    """
+    token = _FIRST_MASK.set(mask)
+    try:
+        yield
+    finally:
+        _FIRST_MASK.reset(token)
+
+
 def mask_secrets(text: str, *secrets: str | None) -> str:
     """Replace each set secret in driver output with `***`, longest first.
+
+    Inside `masking_first`, the caller's mask runs before any of these.
 
     Args:
         text (str): Driver output that may repeat a credential.
@@ -31,6 +63,9 @@ def mask_secrets(text: str, *secrets: str | None) -> str:
     Returns:
         str: The text with every secret replaced.
     """
+    first = _FIRST_MASK.get()
+    if first is not None:
+        text = first(text)
     # Longest first, so a secret containing another is masked whole.
     for secret in sorted({secret for secret in secrets if secret}, key=len, reverse=True):
         text = text.replace(secret, "***")

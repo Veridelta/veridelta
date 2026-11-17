@@ -120,7 +120,7 @@ def azure_account(scheme: str, authority: str) -> tuple[str, str] | None:
     return (container, host) if at and scheme in _AZURE_SCHEMES else None
 
 
-_BASE64: Final = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
+BASE64: Final = re.compile(r"(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
 """Base64 text with its padding, the only shape of account key PyArrow's `AzureFileSystem` decodes.
 
 PyArrow ends the process on a key in any other shape, such as one with a
@@ -163,7 +163,7 @@ def _refuse_azure_options(properties: dict[str, str]) -> None:
         )
     key = properties.get("adls.account-key")
     if key:
-        if _BASE64.fullmatch(key) is None:
+        if BASE64.fullmatch(key) is None:
             # The key is a secret, so the message leaves it out.
             raise ConfigError(
                 "The storage option 'adls.account-key' is not base64 text, and PyArrow ends the "
