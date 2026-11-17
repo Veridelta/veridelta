@@ -33,6 +33,11 @@ _FIRST_THE_CHECKS_FOLLOW = {
     # `connectorx_url`, which follows this release's scheme rewrite. 0.4.5
     # reads `clickhouse://` as MySQL and `redshift-iam://` as Postgres.
     "connectorx": Version("0.4.6"),
+    # `checked_file_io` parses each location as this release does, with the
+    # storage options, and reads a Windows path with a drive letter as a path
+    # on this machine. Before 0.11.0, the listing and the scan could read a
+    # manifest list from a cache an earlier scan filled, not from the file.
+    "pyiceberg": Version("0.12.0"),
 }
 
 
