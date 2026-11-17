@@ -761,8 +761,19 @@ class TestDuckDBPushdown:
         monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", folders_hold)
         home = tmp_path / "home"
         home.mkdir()
+        # DuckDB 1.5.0 to 1.5.2 find the home folder only through HOME or
+        # USERPROFILE. On Windows, DuckDB reads those through the C runtime,
+        # which a change to os.environ after start does not reach, so every
+        # connection here is also given the home folder as a setting.
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("USERPROFILE", str(home))
+        connect = duckdb.connect
+
+        def at_home(*args: Any, **kwargs: Any) -> Any:
+            kwargs["config"] = {**(kwargs.get("config") or {}), "home_directory": str(home)}
+            return connect(*args, **kwargs)
+
+        monkeypatch.setattr(duckdb, "connect", at_home)
         with duckdb.connect() as user:
             user.execute("CREATE PERSISTENT SECRET mine (TYPE http, BEARER_TOKEN 'marker')")
         stored = sorted(home.rglob("*"))
