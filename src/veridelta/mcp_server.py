@@ -2205,15 +2205,37 @@ _READER_ONLY_VARIABLES: Final[Mapping[str, _Slot]] = {
             "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
             "ALIBABA_CLOUD_SECURITY_TOKEN",
             "OSS_ACCESS_KEY_SECRET",
+            "OSS_SESSION_TOKEN",
+            "TENCENTCLOUD_SECRET_KEY",
+            "TKE_SECRET_KEY",
+            "TENCENTCLOUD_TOKEN",
+            "TENCENTCLOUD_SECURITY_TOKEN",
+            "QCLOUD_SECRET_TOKEN",
+            "HUAWEI_CLOUD_SECRET_ACCESS_KEY",
+            "HUAWEI_CLOUD_SECURITY_TOKEN",
+            "AZURE_STORAGE_BEARER_TOKEN",
+            "SYSTEM_ACCESSTOKEN",
             *MOTHERDUCK_TOKEN_VARIABLES,
         ),
         "token",
     ),
     "AZURE_STORAGE_MASTER_KEY": "account key",
+    "AZBLOB_ACCOUNT_KEY": "account key",
     "AWS_SSE_CUSTOMER_KEY_BASE64": "account key",
-    "AZURE_AUTHORITY_ID": "login",
-    "AZURE_STORAGE_AUTHORITY_ID": "login",
-    "ALIBABA_CLOUD_ACCESS_KEY_ID": "login",
+    **dict.fromkeys(
+        (
+            "AZURE_AUTHORITY_ID",
+            "AZURE_STORAGE_AUTHORITY_ID",
+            "ARM_CLIENT_ID",
+            "ARM_TENANT_ID",
+            "ALIBABA_CLOUD_ACCESS_KEY_ID",
+            "OSS_ACCESS_KEY_ID",
+            "TENCENTCLOUD_SECRET_ID",
+            "TKE_SECRET_ID",
+            "HUAWEI_CLOUD_ACCESS_KEY_ID",
+        ),
+        "login",
+    ),
 }
 """The environment variables a reader takes a credential from that no storage option names.
 
@@ -2228,8 +2250,6 @@ Each name, its reader, and the evidence that the reader sends its value:
   in object_store, deltalake, and libarrow.
 - `GOOGLE_BEARER_TOKEN`: object_store. Probed, and echoed by a fake store.
 - `HF_TOKEN`: Polars, for an `hf://` location, a scheme in `_SERVICE_SCHEMES`.
-- `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, `ALIBABA_CLOUD_SECURITY_TOKEN`, and
-  `OSS_ACCESS_KEY_SECRET`: named in deltalake's binary, not probed.
 - Each name in `MOTHERDUCK_TOKEN_VARIABLES`: Veridelta's DuckDB connector.
 - `AZURE_STORAGE_MASTER_KEY`: object_store's alias of the account key.
 - `AWS_SSE_CUSTOMER_KEY_BASE64`: object_store. Probed, and echoed with
@@ -2237,7 +2257,29 @@ Each name, its reader, and the evidence that the reader sends its value:
   key nothing.
 - `AZURE_AUTHORITY_ID` and `AZURE_STORAGE_AUTHORITY_ID`: object_store's
   aliases of the tenant id.
-- `ALIBABA_CLOUD_ACCESS_KEY_ID`: named in deltalake's binary, not probed.
+
+deltalake's OpenDAL stores, at an `opendal+` scheme, read the rest. Each
+store needs an `opendal.` storage option, such as `opendal.endpoint`, which
+the server refuses, so no configuration reaches them on the server yet. They
+are listed so that the mask does not rest on that refusal. A secret key
+takes the token slot, as `aws_secret_access_key` does.
+
+- `ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET`,
+  `ALIBABA_CLOUD_SECURITY_TOKEN`, and their aliases `OSS_ACCESS_KEY_ID`,
+  `OSS_ACCESS_KEY_SECRET`, and `OSS_SESSION_TOKEN`: the OSS store. Probed,
+  and sent in each request's headers.
+- `TENCENTCLOUD_SECRET_ID`, `TENCENTCLOUD_SECRET_KEY`, and
+  `TENCENTCLOUD_TOKEN`, their aliases `TKE_SECRET_ID`, `TKE_SECRET_KEY`,
+  `TENCENTCLOUD_SECURITY_TOKEN`, and `QCLOUD_SECRET_TOKEN`: the COS store.
+  Probed, and sent in each request's headers.
+- `HUAWEI_CLOUD_ACCESS_KEY_ID`, `HUAWEI_CLOUD_SECRET_ACCESS_KEY`, and
+  `HUAWEI_CLOUD_SECURITY_TOKEN`: the OBS store. Probed, and sent in each
+  request's headers.
+- `AZBLOB_ACCOUNT_KEY` and `AZURE_STORAGE_BEARER_TOKEN`: the Azure store,
+  which signs with the key. Probed, and the token sent as a bearer token.
+- `SYSTEM_ACCESSTOKEN`, `ARM_CLIENT_ID`, and `ARM_TENANT_ID`: the Azure
+  store's sign-in from Azure Pipelines. Probed, and the token sent to the
+  host `SYSTEM_OIDCREQUESTURI` names. The ids go to Microsoft Entra ID.
 
 Some names are left out. ConnectorX reads none of `PGPASSWORD`, `MYSQL_PWD`,
 `MSSQL_PASSWORD`, and `SQLCMDPASSWORD`, as its binary and a probe show.
@@ -2280,8 +2322,17 @@ _TOKEN_FILE_VARIABLES: Final = (
     "AWS_WEB_IDENTITY_TOKEN_FILE",
     "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
     "AZURE_FEDERATED_TOKEN_FILE",
+    "ALIBABA_CLOUD_OIDC_TOKEN_FILE",
+    "TENCENTCLOUD_WEB_IDENTITY_TOKEN_FILE",
+    "TKE_IDENTITY_TOKEN_FILE",
 )
-"""The environment variables that name a file a reader reads a token from."""
+"""The environment variables that name a file a reader reads a token from.
+
+deltalake's OpenDAL OSS store sends the token in `ALIBABA_CLOUD_OIDC_TOKEN_FILE`'s
+file to Alibaba Cloud's STS in a URL's query, which a probe's STS echoed. Its
+COS store sends the token in the other two names' file to Tencent Cloud's
+STS, as its binary shows, not probed. Neither store is reached on the
+server yet, as `_READER_ONLY_VARIABLES` says."""
 
 _LONGEST_TOKEN_FILE: Final = 64 * 1024
 """The most bytes of a token file the server reads. A larger file holds no token."""
