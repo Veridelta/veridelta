@@ -549,7 +549,11 @@ def mcp(args: argparse.Namespace) -> int:
         # Ctrl-C is how a person stops a server they started by hand.
         return EXIT_MATCH
     except Exception as exc:
-        return _report_failure(exc, as_json=False)
+        # The server reads no configuration file as it starts: a refusal there is of
+        # an option or of a reader's credential variable, and a bug report needs only
+        # the options, never the environment, which holds the credentials.
+        held = "options or environment" if isinstance(exc, ConfigError) else "options"
+        return _report_failure(exc, as_json=False, settings=f"server's {held}")
     return EXIT_MATCH
 
 

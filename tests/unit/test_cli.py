@@ -1394,6 +1394,29 @@ class TestMCPCommand:
         assert "uv add 'veridelta[mcp]'" in captured.err
         assert captured.out == ""
 
+    def test_it_asks_for_the_options_alone_in_a_report_of_a_bug(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Ensure an unexpected error asks for the server's options, never its environment.
+
+        The environment holds the readers' credentials, and the server reads
+        no configuration file as it starts.
+        """
+        monkeypatch.chdir(tmp_path)
+        mocker.patch("veridelta.cli.serve", side_effect=RuntimeError("broken"))
+
+        exit_code = mcp(_serve_args(None))
+        captured = capsys.readouterr()
+
+        assert exit_code == 3
+        assert "issues with the server's options and this message" in captured.err
+        assert "environment" not in captured.err
+        assert "configuration file" not in captured.err
+
     def test_it_stops_quietly_on_ctrl_c(
         self,
         tmp_path: Path,
@@ -1447,7 +1470,8 @@ class TestMCPCommand:
     ) -> None:
         """Ensure a reader's credential variable of a shape the server cannot mask stops it.
 
-        The command exits 3 and names the variable on stderr, never its value.
+        The command exits 3 and names the variable on stderr, never its value,
+        and points at the server's environment, not at a configuration file.
         """
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv(name, value)
@@ -1459,6 +1483,8 @@ class TestMCPCommand:
         captured = capsys.readouterr()
         mock_exit.assert_called_once_with(3)
         assert f"the environment variable {name} must be" in captured.err
+        assert "a problem with the server's options or environment" in captured.err
+        assert "configuration file" not in captured.err
         assert captured.out == ""
 
 
