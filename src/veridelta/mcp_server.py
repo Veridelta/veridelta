@@ -732,17 +732,19 @@ def _refuse_opened(settings: Settings, location: str, remote: bool) -> None:
     A path on this machine is the one PyArrow opens: relative to the working
     directory, and with no `~` expanded. PyArrow drops a folder and the `..`
     after it before it follows a link, so the path must lie under a root read
-    either way. A file on another machine is held to the allowed hosts, as a
-    configuration's location is. The message leaves the file out, since the
-    table's files named it.
+    either way. A file on another machine is held to the allowed hosts, and
+    may hold no `.` or `..` segment, as a configuration's location is. The
+    message leaves the file out, since the table's files named it.
 
     Raises:
         ConfigError: If the path lies outside every root, or the file on a host
-            the server does not allow.
+            the server does not allow, or with a `.` or `..` segment.
     """
     if remote:
+        named = "A file that a lakehouse scan was about to open"
+        _refuse_dot_segment(named, location, _NAMED_FILE)
         for _, host in _location_hosts("file", location, _NAMED_FILE):
-            _refuse_host(settings, "A file that a lakehouse scan was about to open", host)
+            _refuse_host(settings, named, host)
     elif not _under_both_readings(settings, location):
         raise ConfigError(
             "A Delta Lake or Iceberg scan was about to open a file outside the folders this "
@@ -965,22 +967,26 @@ def _decoded_twice(location: str) -> bool:
     return scheme is not None and scheme.group()[:-1].lower() in _TWICE_DECODED and "%" in text
 
 
+def _named_locations(config: SourceRef) -> list[tuple[str, str]]:
+    """Name each data location a side's configuration writes as a path or a URI, with its setting."""
+    if isinstance(config, SourceConfig):
+        return [("path", config.path)]
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return [("table_uri", config.table_uri)]
+    if isinstance(config, DuckDBConfig) and not config.is_motherduck:
+        return [("database", config.database)]
+    return []
+
+
 def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
     """Name each path on this machine a side could read: its setting, location, and path."""
-    named: list[tuple[str, str]] = []
-    if isinstance(config, SourceConfig):
-        named = [("path", config.path)]
-    elif isinstance(config, (DeltaLakeConfig, IcebergConfig)):
-        named = [("table_uri", config.table_uri)]
-    elif isinstance(config, DuckDBConfig) and not config.is_motherduck:
-        named = [("database", config.database)]
-    elif isinstance(config, DatabaseConfig):
+    if isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)
         return [] if path is None else [("SQLite file", path, path)]
     return [
         (setting, location, path)
-        for setting, location in named
+        for setting, location in _named_locations(config)
         for path in _local_paths(location, f"{side} {setting}")
     ]
 
@@ -1577,11 +1583,13 @@ def _refuse_listed(
     open for it, and the host it names. The message about a host leaves the
     location out, since a file named it. The message about a path quotes it
     when `quoted`, or on a server that allows row values, since a path a
-    table's files name is a value from them, such as a partition's.
+    table's files name is a value from them, such as a partition's. A file
+    on another machine may hold no `.` or `..` segment, as `_refuse_dot_segment` says.
     """
     quoted = quoted or settings.allow_row_values
     for local in _local_paths(location, f"{side} {setting}"):
         _refuse_outside(settings, side, setting, location, local, quoted=quoted)
+    _refuse_dot_segment(f"The {side} {setting}", location, _NAMED_FILE)
     for _, host in _location_hosts(setting, location, _NAMED_FILE):
         _refuse_host(settings, f"The {side} {setting}", host)
 
@@ -1878,15 +1886,48 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     this machine or its network. A host written in any shape but
     `_HOST_AND_PORT`'s is refused on its own, since readers split it in
     different places. An endpoint is refused over plain HTTP, by
-    `_refuse_plain_http`. The message names the setting and not the host,
-    which can hold such a value.
+    `_refuse_plain_http`. A location on another machine may hold no `.` or
+    `..` segment, as `_refuse_dot_segment` says. The message names the
+    setting and not the host, which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
+        for setting, location in _named_locations(config):
+            _refuse_dot_segment(f"The {side} {setting}", location)
         for setting, host in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host)
         _refuse_plain_http(side, config)
+
+
+def _refuse_dot_segment(named: str, location: str, shape: re.Pattern[str] = _URL) -> None:
+    r"""Refuse a location on another machine whose path holds a `.` or `..` segment, in any spelling.
+
+    PyArrow and the other readers send such a path to the store as written.
+    The store, or an HTTP layer before it, can then remove the segment and
+    the one before it. Where the bucket or the container is the first
+    segment of the request's path, as in Azure and in S3 through a
+    path-style endpoint, the read reaches another bucket or container on
+    the same host, with the same credential, though only the one written
+    was allowed. `_holds_dot_segment` finds such a segment in every spelling
+    a parser or a store could remove: `%2e`, decoded as often as an escape
+    remains, `\` as a separator, and a tab or line break inside it. An empty
+    segment removes no other, so it passes. A location `_location_hosts`
+    names no host for, on this machine or a service's own hosts, is left to
+    the other checks. The message names the setting or the file in `named`,
+    and not the location, which can hold a `${NAME}` value or a value from
+    a table's files.
+
+    Raises:
+        ConfigError: If the location names a host in `shape` and holds such a segment.
+    """
+    if _holds_dot_segment(location) and _location_hosts("", location, shape):
+        raise ConfigError(
+            f"{named} is a URI on another machine with a '.' or '..' segment in its path, "
+            "in some spelling. The store can remove the segment with the bucket or container "
+            "before it, and so read one this server did not check, so a tool does not pass "
+            "it on. Write the location without the segment."
+        )
 
 
 def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
