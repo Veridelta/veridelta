@@ -13,9 +13,11 @@ turns the server's record of the environment and its blanking of S3's elements
 off, and shows each probe does echo the value.
 """
 
+import multiprocessing
 import os
 import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -150,15 +152,16 @@ def _azure(_: Path, endpoint: str) -> dict[str, str]:
     }
 
 
-_CASES = [
-    pytest.param(_Case("s3", False, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN)), id="polars-keys"),
-    pytest.param(_Case("s3", True, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN)), id="deltalake-keys"),
-    pytest.param(_Case("s3", False, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN)), id="polars-aws-token"),
-    pytest.param(_Case("s3", True, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN)), id="deltalake-aws-token"),
+_CASES: dict[str, _Case] = {
+    "polars-keys": _Case("s3", False, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
+    "deltalake-keys": _Case("s3", True, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
+    "polars-aws-token": _Case("s3", False, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
+    "deltalake-aws-token": _Case("s3", True, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
     # deltalake reads no credentials file: it asks for an instance role instead.
-    pytest.param(_Case("s3", False, _profile, (_PROFILE_KEY_ID, _PROFILE_TOKEN)), id="polars-profile"),
-    pytest.param(_Case("az", False, _azure, (_CLIENT_ID, _TENANT_ID, _CLIENT_SECRET)), id="polars-azure"),
-]  # fmt: skip
+    "polars-profile": _Case("s3", False, _profile, (_PROFILE_KEY_ID, _PROFILE_TOKEN)),
+    "polars-azure": _Case("az", False, _azure, (_CLIENT_ID, _TENANT_ID, _CLIENT_SECRET)),
+}
+"""Each reader and the credentials it takes from the environment, by name."""
 
 _TOOLS: list[tuple[str, dict[str, Any]]] = [
     ("describe_schema", {"side": "source"}),
@@ -186,17 +189,6 @@ def echo_store() -> Iterator[str]:
         thread.join()
 
 
-@pytest.fixture(autouse=True)
-def _only_the_case_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Leave each reader only the credentials a case gives, and reach the store with no proxy."""
-    monkeypatch.chdir(tmp_path)
-    for name in list(os.environ):
-        if name.upper().startswith(("AWS_", "AZURE_", "GOOGLE_")):
-            monkeypatch.delenv(name)
-    for name in ("NO_PROXY", "no_proxy"):
-        monkeypatch.setenv(name, "127.0.0.1,localhost")
-
-
 def _holds_a_form(shown: str, value: str) -> bool:
     """Say whether an answer holds `value` as written or percent-encoded, once decoded, in any case."""
     texts = (shown.casefold(), unquote(shown).casefold())
@@ -204,27 +196,38 @@ def _holds_a_form(shown: str, value: str) -> bool:
     return any(form in text for form in forms for text in texts)
 
 
-def _answers(
-    case: _Case, tmp_path: Path, endpoint: str, monkeypatch: pytest.MonkeyPatch, bucket: str
-) -> list[str]:
-    """Set the case's environment, then call each tool that reads the side, and return its answer.
+def _answers(name: str, folder: str, endpoint: str, control: bool) -> list[str]:
+    """Set a case's environment, call each tool that reads the side, and return each answer.
 
-    Polars caches an object store by its bucket, so each run names a bucket of its own.
+    This runs in a child process. It leaves each reader only the credentials
+    the case gives, and reaches the store with no proxy. With `control`, the
+    server neither records its environment nor blanks S3's elements.
     """
-    for name, value in case.environment(tmp_path, endpoint).items():
-        monkeypatch.setenv(name, value)
+    case, root = _CASES[name], Path(folder)
+    os.chdir(root)
+    for variable in list(os.environ):
+        if variable.upper().startswith(("AWS_", "AZURE_", "GOOGLE_")):
+            del os.environ[variable]
+    os.environ.update(
+        {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
+        **case.environment(root, endpoint),
+    )
+    if control:
+        setattr(mcp_server, "_environment_values", lambda _: set())  # noqa: B010 - the child patches as monkeypatch would
+        setattr(mcp_server, "_without_echoed_credentials", lambda text: text)  # noqa: B010 - as above
+    bucket = f"bkt-{name}"
     if case.delta:
         source = f"  type: delta\n  table_uri: {case.scheme}://{bucket}/t\n"
         # deltalake's storage handler lists nothing from a store on this machine and never
         # returns, so the walk of the log is skipped. The table's own load still runs.
-        monkeypatch.setattr(mcp_server, "delta_log_vectors", lambda *_: [])
+        setattr(mcp_server, "delta_log_vectors", lambda *_: [])  # noqa: B010 - as above
     else:
         source = f"  path: {case.scheme}://{bucket}/a.parquet\n"
-    (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
-    (tmp_path / "veridelta.yaml").write_text(
+    (root / "b.csv").write_text("id\n1\n", encoding="utf-8")
+    (root / "veridelta.yaml").write_text(
         f"source:\n{source}target:\n  path: b.csv\nprimary_keys: [id]\n", encoding="utf-8"
     )
-    settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=(bucket,))
+    settings = Settings((root,), allow_row_values=True, allowed_hosts=(bucket,))
 
     async def session() -> list[CallToolResult]:
         async with Client(build_server(settings)) as client:
@@ -239,36 +242,36 @@ def _answers(
     ]
 
 
-@pytest.mark.parametrize("case", _CASES)
+def _in_a_child(name: str, folder: Path, endpoint: str, *, control: bool = False) -> list[str]:
+    """Run `_answers` in a new process, and return what it returns.
+
+    Polars starts a thread on its first read from a cloud store, which reads
+    the environment for as long as the process runs. A later test that changes
+    the environment at the same moment would crash the suite's process, so
+    each case reads in a process of its own.
+    """
+    with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
+        return pool.submit(_answers, name, str(folder), endpoint, control).result()
+
+
+@pytest.mark.parametrize("name", list(_CASES))
 def test_no_credential_from_the_environment_comes_back(
-    case: _Case,
-    tmp_path: Path,
-    echo_store: str,
-    monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
+    name: str, tmp_path: Path, echo_store: str
 ) -> None:
     """Ensure each tool's answer holds no form of a credential the readers took and sent."""
-    bucket = f"bkt-{request.node.callspec.id}"
-
-    for shown in _answers(case, tmp_path, echo_store, monkeypatch, bucket):
+    for shown in _in_a_child(name, tmp_path, echo_store):
         assert "***" in shown
-        for value in case.echoed:
+        for value in _CASES[name].echoed:
             assert not _holds_a_form(shown, value), value
 
 
-@pytest.mark.parametrize("case", _CASES)
+@pytest.mark.parametrize("name", list(_CASES))
 def test_each_probe_echoes_the_credentials_without_the_mask(
-    case: _Case,
-    tmp_path: Path,
-    echo_store: str,
-    monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
+    name: str, tmp_path: Path, echo_store: str
 ) -> None:
     """Ensure the store does echo a credential, so the test above shows the mask at work."""
-    monkeypatch.setattr(mcp_server, "_environment_values", lambda _: set())
-    monkeypatch.setattr(mcp_server, "_without_echoed_credentials", lambda text: text)
-    bucket = f"bkt-control-{request.node.callspec.id}"
+    answers = _in_a_child(name, tmp_path, echo_store, control=True)
 
-    answers = _answers(case, tmp_path, echo_store, monkeypatch, bucket)
-
-    assert all(any(_holds_a_form(shown, value) for value in case.echoed) for shown in answers)
+    assert all(
+        any(_holds_a_form(shown, value) for value in _CASES[name].echoed) for shown in answers
+    )
