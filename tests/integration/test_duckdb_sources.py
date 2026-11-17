@@ -958,7 +958,11 @@ class TestDuckDBFilesBesideTheDatabase:
     def test_it_spills_into_a_folder_of_the_sandboxs_own(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure the MCP server's reads spill outside the roots, into a folder it removes."""
+        """Ensure the MCP server's reads spill outside the roots, into a folder it removes.
+
+        This holds where DuckDB's folders hold, so it runs here on every system.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", True)
         database = _duckdb(tmp_path / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
         monkeypatch.chdir(tmp_path)
 
@@ -967,4 +971,24 @@ class TestDuckDBFilesBesideTheDatabase:
 
         assert not folder.is_relative_to(tmp_path)
         assert not folder.exists()
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["w.duckdb"]
+
+    @pytest.mark.usefixtures("_little_memory")
+    def test_it_spills_nowhere_when_sandboxed_where_duckdbs_folders_do_not_hold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a sandboxed query that would spill fails, and leaves no file in the roots.
+
+        On Windows, a sandboxed file opens no other file, and a spill is one.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", False)
+        database = _duckdb(tmp_path / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        monkeypatch.chdir(tmp_path)
+
+        with (
+            sandboxed([tmp_path]),
+            pytest.raises(ConnectorError, match="File system LocalFileSystem has been disabled"),
+        ):
+            _spilled(database)
+
         assert sorted(path.name for path in tmp_path.iterdir()) == ["w.duckdb"]
