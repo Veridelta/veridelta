@@ -397,12 +397,24 @@ class TestSettings:
         with pytest.raises(ConfigError, match="at least 1, got 0"):
             Settings((tmp_path,), max_rows=0)
 
-    def test_it_allows_no_host_by_default_and_lowercases_each(self, tmp_path: Path) -> None:
-        """Ensure a server connects to no host unless named, and compares hosts in any case."""
-        settings = Settings((tmp_path,), allowed_hosts=("DB.Example.com", "10.0.0.5", "[::1]"))
+    def test_it_allows_no_host_by_default_and_each_host_it_names(self, tmp_path: Path) -> None:
+        """Ensure a server connects to no host unless named, and keeps each host as given."""
+        settings = Settings((tmp_path,), allowed_hosts=("db.example.com", "10.0.0.5", "[::1]"))
 
         assert Settings((tmp_path,)).allowed_hosts == ()
         assert settings.allowed_hosts == ("db.example.com", "10.0.0.5", "[::1]")
+
+    @pytest.mark.parametrize("host", ["LAKE", "DB.Example.com", "[::FFFF:1]"])
+    def test_it_refuses_an_allowed_host_with_a_capital_letter(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        """Ensure an allowed host with a capital letter is refused, and not lowercased.
+
+        A reader keeps a bucket's case, so lowercasing `LAKE` would allow
+        bucket `lake`, which the operator never named.
+        """
+        with pytest.raises(ConfigError, match=r"^--allow-host takes a host in lowercase"):
+            Settings((tmp_path,), allowed_hosts=(host,))
 
     @pytest.mark.parametrize(
         "host",
@@ -4898,6 +4910,34 @@ _DOT_SEGMENT_HOSTS = ("lake", "acct", "acct.dfs.core.windows.net", "acct.blob.co
 _DOT_SEGMENT_REFUSAL = r"^The target {} is a URI on another machine with a '\.' or '\.\.' segment"
 """How a refusal of a location in a store with a dot segment starts, for a setting."""
 
+_CAPITAL_PREFIXES = [
+    *(
+        pytest.param(f"{scheme}://Lake", id=scheme)
+        for scheme in (
+            "s3",
+            "s3a",
+            "s3n",
+            "gs",
+            "gcs",
+            "az",
+            "abfs",
+            "abfss",
+            "wasb",
+            "wasbs",
+            "oss",
+            "hdfs",
+            "opendal+s3",
+            "made-up",
+        )
+    ),
+    pytest.param("S3://lAke", id="scheme-in-capitals"),
+    pytest.param("s3://lakE:9000", id="port"),
+]
+"""The start of a location on another machine whose bucket, container, or host `lake` holds a capital letter."""
+
+_CAPITAL_REFUSAL = r"^The target {} names its bucket, container, or host with a capital letter\."
+"""How a refusal of a bucket or a container with a capital letter starts, for a setting."""
+
 
 class TestAllowedHosts:
     """Validate the rule that holds every host a side connects to to the hosts the server allows."""
@@ -5132,7 +5172,7 @@ class TestAllowedHosts:
                 id="delta-in-a-container-named-https",
             ),
             pytest.param(
-                "  type: delta\n  table_uri: s3://WSS/events\n  storage_options: {bucket: WSS}\n",
+                "  type: delta\n  table_uri: s3://wss/events\n  storage_options: {bucket: wss}\n",
                 id="delta-in-a-bucket-named-wss",
             ),
         ],
@@ -6248,6 +6288,165 @@ class TestAllowedHosts:
 
         mcp_server._refuse_listed(settings, "target", "data file", location, quoted=True)  # pyright: ignore[reportPrivateUsage] - the listing runs it on each file a table names
         mcp_server._refuse_opened(settings, location, True)  # pyright: ignore[reportPrivateUsage] - a lakehouse scan runs it on each file it opens
+
+    @pytest.mark.parametrize("prefix", _CAPITAL_PREFIXES)
+    def test_it_refuses_a_remote_path_whose_bucket_holds_a_capital_letter(
+        self, tmp_path: Path, mocker: MockerFixture, prefix: str
+    ) -> None:
+        """Ensure a bucket or a container with a capital letter is refused, though its lowercase is allowed.
+
+        A reader keeps the case of the name after any scheme but a special
+        one, so `s3://Lake` reads another bucket than `lake`. The refusal
+        names the setting and leaves the name out.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, f"  path: {prefix}/t/a.parquet\n  format: parquet\n")
+
+        with pytest.raises(ConfigError, match=_CAPITAL_REFUSAL.format("path")) as refused:
+            describe_side(
+                Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS), "veridelta.yaml", "target"
+            )
+
+        assert prefix.partition("://")[2] not in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("kind", ["delta", "iceberg"])
+    def test_it_refuses_a_table_uri_whose_bucket_holds_a_capital_letter_before_it_lists_it(
+        self, tmp_path: Path, mocker: MockerFixture, kind: str
+    ) -> None:
+        """Ensure a lakehouse table in a bucket with a capital letter is refused before it is listed."""
+        listed = mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, f"  type: {kind}\n  table_uri: s3://LAKE/t/metadata/v1.metadata.json\n")
+
+        with pytest.raises(ConfigError, match=_CAPITAL_REFUSAL.format("table_uri")) as refused:
+            describe_side(
+                Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS), "veridelta.yaml", "target"
+            )
+
+        assert "LAKE" not in str(refused.value)
+        listed.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            *(pytest.param(key, "Lake", id=key) for key in sorted(mcp_server._BUCKET_OPTIONS)),  # pyright: ignore[reportPrivateUsage] - the keys whose value names a bucket or a container
+            pytest.param("AWS_BUCKET", "lAke", id="key-in-capitals"),
+            pytest.param("bucket", "https://Lake", id="with-a-scheme"),
+        ],
+    )
+    def test_it_refuses_a_bucket_option_with_a_capital_letter(
+        self, tmp_path: Path, mocker: MockerFixture, key: str, value: str
+    ) -> None:
+        """Ensure a storage option that names a bucket or a container with a capital letter is refused.
+
+        No reader takes such an option over the location's bucket today, but
+        the server holds it to the allowed hosts as a bucket all the same. The
+        refusal names the option and leaves its value out.
+        """
+        listed = mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(
+            tmp_path,
+            f"  type: delta\n  table_uri: s3://lake/events\n  storage_options: {{{key}: '{value}'}}\n",
+        )
+
+        with pytest.raises(
+            ConfigError,
+            match=f"^The target storage option '{key}' names a bucket or a container with a "
+            "capital letter",
+        ) as refused:
+            describe_side(
+                Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS), "veridelta.yaml", "target"
+            )
+
+        assert value not in str(refused.value)
+        listed.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            *_CAPITAL_PREFIXES,
+            pytest.param("abfss://Lake@acct.dfs.core.windows.net", id="abfss-at-account"),
+            pytest.param("wasbs://laKe@acct.blob.core.windows.net", id="wasbs-at-account"),
+        ],
+    )
+    def test_it_refuses_a_file_a_table_names_in_a_bucket_with_a_capital_letter(
+        self, tmp_path: Path, prefix: str
+    ) -> None:
+        """Ensure a file a log or metadata names in a bucket or a container with a capital letter is refused.
+
+        The listing checks the file as the table names it, and the scan checks
+        it again just before it opens it. Both leave the file out.
+        """
+        settings = Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS)
+        location = f"{prefix}/t/part-0.parquet"
+        refuse_listed = mcp_server._refuse_listed  # pyright: ignore[reportPrivateUsage] - the listing runs it on each file a table names
+        refuse_opened = mcp_server._refuse_opened  # pyright: ignore[reportPrivateUsage] - a lakehouse scan runs it on each file it opens
+
+        with pytest.raises(ConfigError, match=_CAPITAL_REFUSAL.format("data file")) as listed:
+            refuse_listed(settings, "target", "data file", location, quoted=True)
+        with pytest.raises(
+            ConfigError, match="about to open names its bucket, container, or host with a capital"
+        ) as opened:
+            refuse_opened(settings, location, True)
+
+        assert prefix.partition("://")[2] not in str(listed.value)
+        assert prefix.partition("://")[2] not in str(opened.value)
+
+    @pytest.mark.parametrize(
+        "location",
+        [
+            pytest.param("abfss://lake@ACCT.dfs.core.windows.net/t/a.parquet", id="azure-host"),
+            pytest.param("https://ACCT.blob.core.windows.net/lake/a.parquet", id="https"),
+            pytest.param("HTTPS://Acct.Blob.Core.Windows.Net/lake/a.parquet", id="https-scheme"),
+            pytest.param("s3://lake/T/A.parquet", id="path"),
+            pytest.param("ftp://Lake/a.parquet", id="ftp"),
+            pytest.param("FTP://Lake/a.parquet", id="ftp-scheme"),
+            pytest.param("ws://Lake/a.parquet", id="ws"),
+            pytest.param("wss://Lake/a.parquet", id="wss"),
+        ],
+    )
+    def test_it_reads_a_file_whose_dns_host_or_path_holds_a_capital_letter(
+        self, tmp_path: Path, location: str
+    ) -> None:
+        """Ensure a DNS host keeps any case, and so does a path after the bucket.
+
+        A URL parser lowercases the host of `https`, `ftp`, `ws`, and `wss`,
+        and an Azure account's host after an `@` is a DNS name too.
+        """
+        settings = Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS)
+
+        mcp_server._refuse_listed(settings, "target", "data file", location, quoted=True)  # pyright: ignore[reportPrivateUsage] - the listing runs it on each file a table names
+        mcp_server._refuse_opened(settings, location, True)  # pyright: ignore[reportPrivateUsage] - a lakehouse scan runs it on each file it opens
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            pytest.param("  path: https://Acct.Blob.Core.Windows.Net/lake/a.parquet\n", id="https"),
+            pytest.param(
+                "  type: delta\n  table_uri: az://lake/T\n  storage_options: "
+                "{azure_storage_account_name: ACCT, azure_storage_endpoint: 'https://ACCT'}\n",
+                id="account-and-endpoint",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://lake/T/metadata/v1.metadata.json\n"
+                "  storage_options: {s3.endpoint: 'https://Acct:9000'}\n",
+                id="iceberg-endpoint",
+            ),
+        ],
+    )
+    def test_it_reads_from_a_dns_host_in_any_case(
+        self, tmp_path: Path, mocker: MockerFixture, target: str
+    ) -> None:
+        """Ensure an https host, an endpoint, an account, and a path keep any case on the server."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, target)
+
+        report = describe_side(
+            Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS), "veridelta.yaml", "target"
+        )
+
+        assert report["columns"] == {"id": "Int64"}
 
     def test_it_resolves_a_file_uri_with_a_dot_segment_on_this_machine(
         self, tmp_path: Path

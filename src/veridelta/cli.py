@@ -160,7 +160,7 @@ def _directory(text: str) -> Path:
 
 
 def _host(text: str) -> str:
-    """Parse `--allow-host`, a host with no scheme or port, in lowercase."""
+    """Parse `--allow-host`, a host in lowercase with no scheme or port."""
     try:
         return allowed_host(text)
     except ConfigError as exc:
@@ -839,7 +839,7 @@ def _add_mcp_arguments(mcp_parser: argparse.ArgumentParser) -> None:
         metavar="HOST",
         help=(
             "A host a side may connect to, such as a database server, a bucket, or a URL's "
-            "host. Repeat it for more hosts. Without it, a tool reads only data on this "
+            "host, in lowercase. Repeat it for more hosts. Without it, a tool reads only data on this "
             "machine, MotherDuck, Hugging Face, or BigQuery with the server's own credentials."
         ),
     )
