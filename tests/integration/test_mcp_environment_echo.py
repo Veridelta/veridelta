@@ -16,6 +16,7 @@ error's body.
 
 import multiprocessing
 import os
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
@@ -213,6 +214,19 @@ _CASES: dict[str, _Case] = {
 }
 """Each reader and the credentials it takes from the environment, by name."""
 
+_NAMES: Final = [
+    pytest.param(
+        name,
+        marks=pytest.mark.skipif(
+            sys.platform == "win32" and "mixed-case" in name,
+            reason="Windows holds each environment variable's name in upper case, so no "
+            "reader sees a name in mixed case.",
+        ),
+    )
+    for name in _CASES
+]
+"""Each case's name, with those that set a name in mixed case kept to Linux and macOS."""
+
 _TOOLS: list[tuple[str, dict[str, Any]]] = [
     ("describe_schema", {"side": "source"}),
     ("run_comparison", {}),
@@ -306,7 +320,7 @@ def _in_a_child(name: str, folder: Path, endpoint: str, *, control: bool = False
         return pool.submit(_answers, name, str(folder), endpoint, control).result()
 
 
-@pytest.mark.parametrize("name", list(_CASES))
+@pytest.mark.parametrize("name", _NAMES)
 def test_no_credential_from_the_environment_comes_back(
     name: str, tmp_path: Path, echo_store: str
 ) -> None:
@@ -321,7 +335,7 @@ def test_no_credential_from_the_environment_comes_back(
             assert not _holds_a_form(shown, value), value
 
 
-@pytest.mark.parametrize("name", list(_CASES))
+@pytest.mark.parametrize("name", _NAMES)
 def test_each_probe_echoes_the_credentials_without_the_mask(
     name: str, tmp_path: Path, echo_store: str
 ) -> None:

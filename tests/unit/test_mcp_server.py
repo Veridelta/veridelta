@@ -7466,6 +7466,11 @@ class TestEnvironmentCredentials:
 
         assert "ConnectorError: region us-east-1-zz" in _text(result)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows holds each environment variable's name in upper case, so no reader "
+        "sees a name in mixed case.",
+    )
     @pytest.mark.parametrize(
         ("name", "slot"),
         [
@@ -7506,11 +7511,18 @@ class TestEnvironmentCredentials:
     def test_it_will_not_start_on_a_mixed_case_variable_it_cannot_mask(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure a malformed value under a mixed-case name stops the server, naming it as set."""
-        monkeypatch.setenv("AZURE_Client_Secret", "ab cd")
+        """Ensure a malformed value under a mixed-case name stops the server, naming it as set.
 
-        with pytest.raises(ConfigError, match="the environment variable AZURE_Client_Secret must"):
+        Windows holds the name in upper case, so the refusal names it as
+        `os.environ` holds it there.
+        """
+        monkeypatch.setenv("AZURE_Client_Secret", "ab cd")
+        held = next(name for name in os.environ if name.upper() == "AZURE_CLIENT_SECRET")
+
+        with pytest.raises(ConfigError, match=f"the environment variable {held} must"):
             build_server(Settings((tmp_path,)))
+
+        assert held == ("AZURE_CLIENT_SECRET" if sys.platform == "win32" else "AZURE_Client_Secret")
 
     def test_it_reads_a_mixed_case_key_and_token_file(self, tmp_path: Path) -> None:
         """Ensure a Google key and a token file are read under a mixed-case name too."""
