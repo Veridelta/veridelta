@@ -4141,10 +4141,9 @@ class TestLakehouseFiles:
     ) -> None:
         """Ensure an Azure error that quotes a request's URL comes back without its query.
 
-        The Azure SDK writes a SAS token's parameters back sorted, and encodes
-        them anew, so the URL PyArrow quotes in its error does not hold the
-        variable's value that the server masks. The mock fails each read with
-        such a URL. The listing fails, or, with no listing, the scan, which
+        The Azure SDK writes a SAS token's parameters back sorted, so the URL
+        PyArrow quotes in its error does not hold the variable's value that
+        the server masks. The mock fails each read with such a URL. The listing fails, or, with no listing, the scan, which
         `validate_config` reports as a finding. The Azure SDK encodes a quote
         in a file's path as written, so the URL's path can hold one.
         """
@@ -6886,6 +6885,49 @@ class TestServer:
         assert result.structured_content["valid"] is False
         assert "***" in shown
         assert _SECRET not in shown
+
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [("validate_config", {"schemas": True}), ("run_comparison", {})],
+        ids=["finding", "failure"],
+    )
+    def test_it_masks_a_value_with_a_query_before_it_leaves_out_the_query(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a whole URL from `${NAME}`, query and all, comes back as `***`.
+
+        The driver's message quotes the URL. Leaving out its query first would
+        leave the text before the `?`, which is no longer the whole value, so
+        the masking comes first. Veridelta's own words name the URI without
+        its query, which no masking of the value covers.
+        """
+        uri = "postgresql://db.internal/sales-ledger?application_name=orders"
+        monkeypatch.setenv("VD_MCP_URI", uri)
+        mocker.patch(
+            "veridelta.connectors.database.pl.read_database_uri",
+            side_effect=RuntimeError(f"could not connect to '{uri}'"),
+        )
+        (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  type: database\n  uri: ${VD_MCP_URI}\n  table: orders\n"
+            "target:\n  path: b.csv\nprimary_keys: [id]\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=("db.internal",), allow_row_values=True),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        shown = json.dumps(result.structured_content) + _text(result)
+        assert "could not connect to '***'" in shown
+        assert "application_name" not in shown
 
     def test_it_masks_each_value_the_configuration_took_from_the_environment(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

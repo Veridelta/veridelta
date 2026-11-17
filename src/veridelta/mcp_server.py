@@ -1873,13 +1873,20 @@ def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
 
 
 def check_configuration(
-    settings: Settings, path: str, *, schemas: bool = False, allow_missing_env: bool = False
+    settings: Settings,
+    path: str,
+    *,
+    schemas: bool = False,
+    allow_missing_env: bool = False,
+    secrets: tuple[str, ...] = (),
 ) -> ValidationReport:
     """Check a configuration file for what would stop a run, as `validate --json` does.
 
     Unless the server allows row values, a finding leaves out what Polars, a
-    reader, or a driver said about a schema read that failed. Each URL in a
-    finding loses its query, which can hold a credential the reader signed with.
+    reader, or a driver said about a schema read that failed. Each finding has
+    `secrets` masked, and then each URL in it loses its query, which can hold
+    a credential the reader signed with. The masking comes first, so a secret
+    that holds a `?` is masked whole.
 
     Args:
         settings (Settings): The roots and the row values the server was started with.
@@ -1888,6 +1895,7 @@ def check_configuration(
             side's columns, which reads no rows.
         allow_missing_env (bool): Whether an unset `${NAME}` is a warning rather
             than an error, so a file can be checked without its secrets.
+        secrets (tuple[str, ...]): The values to mask in each finding.
 
     Returns:
         ValidationReport: The errors and warnings, with the resolved path.
@@ -1916,7 +1924,9 @@ def check_configuration(
                 diff, source, target, schemas=schemas, quote_data=settings.allow_row_values
             )
     findings = [
-        finding.model_copy(update={"message": without_queries(finding.message)})
+        finding.model_copy(
+            update={"message": without_queries(mask_secrets(finding.message, *secrets))}
+        )
         for finding in findings
     ]
     return validation_report(str(resolved), [*unset_variable_findings(unset or []), *findings])
@@ -2201,12 +2211,11 @@ def _failure(exc: BaseException, *, row_values: bool) -> str:
     Polars, a reader, or a driver can quote cells in its message, so unless the
     server allows row values, such a message gives way to a fixed hint. A
     Veridelta error keeps its own, which names columns and counts, unless it
-    quotes a reader's or a driver's text. Each URL in the message loses its
-    query, which can hold a credential the reader signed with.
+    quotes a reader's or a driver's text.
     """
     if may_quote_data(exc) and not row_values:
         return f"{type(exc).__name__}: {_WITHHELD}"
-    return f"{type(exc).__name__}: {without_queries(str(exc).strip())}"
+    return f"{type(exc).__name__}: {str(exc).strip()}"
 
 
 def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
@@ -2271,14 +2280,16 @@ def _answer(
     The SDK passes only a `ToolError`'s message on to the agent, so every
     failure becomes one, named as `run --json` names it, with the secrets
     masked there too. Unless `row_values` is set, a message that can quote
-    the data is left out.
+    the data is left out. Each URL in a failure's message then loses its
+    query, which can hold a credential the reader signed with. The masking
+    comes first, so a secret that holds a `?` is masked whole.
     """
     try:
         result = work()
     except (Exception, PanicException) as exc:
         # A panic in Polars is no `Exception`, and would stop the server instead.
         failure = _failure(exc, row_values=row_values)
-        raise tool_error(mask_secrets(failure, *secrets)) from exc
+        raise tool_error(without_queries(mask_secrets(failure, *secrets))) from exc
     return cast("_R", _masked(result, secrets))
 
 
@@ -2321,12 +2332,17 @@ def build_server(settings: Settings) -> "MCPServer":
         Reads no rows. Returns what `veridelta validate --json` prints: its errors and
         warnings, each placed in the file where the check can.
         """
+        secrets = environment_values(settings, path)
         return _answer(
             loaded.tool_error,
             lambda: check_configuration(
-                settings, path, schemas=schemas, allow_missing_env=allow_missing_env
+                settings,
+                path,
+                schemas=schemas,
+                allow_missing_env=allow_missing_env,
+                secrets=secrets,
             ),
-            environment_values(settings, path),
+            secrets,
             row_values=settings.allow_row_values,
         )
 

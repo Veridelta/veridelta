@@ -82,14 +82,14 @@ def without_queries(text: str) -> str:
 
     A reader can quote a URL it built with a credential, such as each request
     PyArrow signs with an Azure SAS token. The Azure SDK writes the token's
-    parameters back sorted, and can encode them anew, so masking the token's
-    own text misses them. A URL inside quotes keeps its path up to its first
-    `?`, quotes in the path included, and loses everything from there up to
-    the first quote of its kind that a space or the end of the text follows,
-    perhaps after one mark such as a period, so spaces and other quotes in the
-    query go too. With no such quote, it loses the rest of the text. Any other
-    URL loses everything from its first `?` up to the next space. Each match
-    takes the text it scans, so the time stays linear in the text's length.
+    parameters back sorted, so masking the token's own text misses them. A
+    URL inside quotes keeps its path up to its first `?`, quotes in the path
+    included, and loses everything from there up to the first quote of its
+    kind that a space or the end of the text follows, perhaps after one mark
+    such as a period, so spaces and other quotes in the query go too. With no
+    such quote, it loses the rest of the text. Any other URL loses everything
+    from its first `?` up to the next space. Each match takes the text it
+    scans, so the time stays linear in the text's length.
 
     Args:
         text (str): The driver's message.
