@@ -2960,6 +2960,10 @@ class TestLakehouseFiles:
             ),
             pytest.param("{outside}/part-0.parquet", "is outside", id="local-file"),
             pytest.param("s3://ann@lake/part-0.parquet", "one shape", id="at-sign-in-a-host"),
+            pytest.param("s3://lake/../hidden/part-0.parquet", "segment", id="dot-segment"),
+            pytest.param(
+                "s3://lake/%2E%2E/hidden/part-0.parquet", "segment", id="encoded-dot-segment"
+            ),
         ],
     )
     def test_it_lists_a_remote_delta_table(
@@ -4816,6 +4820,42 @@ _MOTHERDUCK_NAME = (
 """How a refusal names a MotherDuck `database` whose text before its `?` a tool does not pass on."""
 
 
+_REMOTE_PREFIXES = [
+    pytest.param("s3://lake", id="s3"),
+    pytest.param("s3a://lake", id="s3a"),
+    pytest.param("gs://lake", id="gs"),
+    pytest.param("gcs://lake", id="gcs"),
+    pytest.param("az://lake", id="az"),
+    pytest.param("abfs://lake", id="abfs"),
+    pytest.param("abfss://lake", id="abfss"),
+    pytest.param("wasb://lake", id="wasb"),
+    pytest.param("wasbs://lake", id="wasbs"),
+    pytest.param("oss://lake", id="oss"),
+    pytest.param("https://acct.blob.core.windows.net/lake", id="https"),
+]
+"""The start of a location in a store, up to the bucket or container `lake`, in each remote scheme."""
+
+_DOT_SEGMENTS = [
+    pytest.param("../", id="dot-dot"),
+    pytest.param("./", id="dot"),
+    pytest.param("%2e%2e/", id="encoded"),
+    pytest.param("%2E%2E/", id="encoded-upper"),
+    pytest.param(".%2e/", id="half-encoded"),
+    pytest.param("%252e%252e/", id="encoded-twice"),
+    pytest.param("..%2f", id="encoded-separator"),
+    pytest.param("..\\", id="backslash"),
+    pytest.param(".\t./", id="tab"),
+    pytest.param("x/../", id="after-a-folder"),
+]
+"""The spellings of a `.` or `..` segment that a parser or a store could remove, each before a folder."""
+
+_DOT_SEGMENT_HOSTS = ("lake", "acct", "acct.dfs.core.windows.net", "acct.blob.core.windows.net")
+"""The hosts a tool allows for those locations: the container or bucket, and the account's hosts."""
+
+_DOT_SEGMENT_REFUSAL = r"^The target {} is a URI on another machine with a '\.' or '\.\.' segment"
+"""How a refusal of a location in a store with a dot segment starts, for a setting."""
+
+
 class TestAllowedHosts:
     """Validate the rule that holds every host a side connects to to the hosts the server allows."""
 
@@ -5736,6 +5776,10 @@ class TestAllowedHosts:
                 id="motherduck-options",
             ),
             pytest.param("  path: hf://datasets/org/data/a.parquet\n", id="hugging-face"),
+            pytest.param(
+                "  path: hf://datasets/org/data/../data/a.parquet\n",
+                id="hugging-face-with-a-dot-segment",
+            ),
         ],
     )
     def test_it_needs_no_host_for_a_service_that_picks_its_own(
@@ -5857,6 +5901,114 @@ class TestAllowedHosts:
             call(Settings((tmp_path,), allowed_hosts=_ALLOWED))
 
         listed.assert_not_called()
+
+    @pytest.mark.parametrize("spelling", _DOT_SEGMENTS)
+    @pytest.mark.parametrize("prefix", _REMOTE_PREFIXES)
+    def test_it_refuses_a_remote_path_with_a_dot_segment(
+        self, tmp_path: Path, mocker: MockerFixture, prefix: str, spelling: str
+    ) -> None:
+        """Ensure a location in a store whose path holds `.` or `..`, in any spelling, is refused before it is read.
+
+        A reader sends the path as written, and the store could remove the
+        segment with the bucket or container before it, and so read another
+        one. The refusal names the setting and leaves the location out.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        path = f"{prefix}/{spelling}hidden/a.parquet"
+        _remote(tmp_path, f"  path: {json.dumps(path)}\n  format: parquet\n")
+
+        with pytest.raises(ConfigError, match=_DOT_SEGMENT_REFUSAL.format("path")) as refused:
+            describe_side(
+                Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS), "veridelta.yaml", "target"
+            )
+
+        assert "hidden" not in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("kind", ["delta", "iceberg"])
+    def test_it_refuses_a_remote_table_uri_with_a_dot_segment_before_it_lists_it(
+        self, tmp_path: Path, mocker: MockerFixture, kind: str
+    ) -> None:
+        """Ensure a lakehouse table in a store, with `..` in its URI, is refused before it is listed."""
+        listed = mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, f"  type: {kind}\n  table_uri: abfs://lake/%2e%2e/hidden/t\n")
+
+        with pytest.raises(ConfigError, match=_DOT_SEGMENT_REFUSAL.format("table_uri")):
+            describe_side(
+                Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS), "veridelta.yaml", "target"
+            )
+
+        listed.assert_not_called()
+
+    @pytest.mark.parametrize("spelling", _DOT_SEGMENTS)
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            *_REMOTE_PREFIXES,
+            pytest.param("abfss://lake@acct.dfs.core.windows.net", id="abfss-at-account"),
+            pytest.param("wasbs://lake@acct.blob.core.windows.net", id="wasbs-at-account"),
+        ],
+    )
+    def test_it_refuses_a_file_a_table_names_in_a_store_with_a_dot_segment(
+        self, tmp_path: Path, prefix: str, spelling: str
+    ) -> None:
+        """Ensure a file a log or metadata names in a store, with `.` or `..` in its path, is refused.
+
+        The listing checks the file as the table names it, and the scan checks
+        it again just before it opens it. Both leave the file out.
+        """
+        settings = Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS)
+        location = f"{prefix}/{spelling}hidden/part-0.parquet"
+        refuse_listed = mcp_server._refuse_listed  # pyright: ignore[reportPrivateUsage] - the listing runs it on each file a table names
+        refuse_opened = mcp_server._refuse_opened  # pyright: ignore[reportPrivateUsage] - a lakehouse scan runs it on each file it opens
+
+        with pytest.raises(ConfigError, match=_DOT_SEGMENT_REFUSAL.format("data file")) as listed:
+            refuse_listed(settings, "target", "data file", location, quoted=True)
+        with pytest.raises(
+            ConfigError, match="about to open is a URI on another machine"
+        ) as opened:
+            refuse_opened(settings, location, True)
+
+        assert "hidden" not in str(listed.value)
+        assert "hidden" not in str(opened.value)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            pytest.param("..hidden", id="dots-before-a-name"),
+            pytest.param(".hidden", id="hidden-name"),
+            pytest.param("hidden..", id="dots-after-a-name"),
+            pytest.param("%2e%2ehidden", id="encoded-dots-before-a-name"),
+            pytest.param("/hidden", id="empty-segment"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "prefix",
+        [
+            *_REMOTE_PREFIXES,
+            pytest.param("abfss://lake@acct.dfs.core.windows.net", id="abfss-at-account"),
+        ],
+    )
+    def test_it_reads_a_file_in_a_store_whose_names_hold_dots(
+        self, tmp_path: Path, prefix: str, name: str
+    ) -> None:
+        """Ensure a name with dots in it, or an empty segment, which removes no other, passes."""
+        settings = Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS)
+        location = f"{prefix}/{name}/part-0.parquet"
+
+        mcp_server._refuse_listed(settings, "target", "data file", location, quoted=True)  # pyright: ignore[reportPrivateUsage] - the listing runs it on each file a table names
+        mcp_server._refuse_opened(settings, location, True)  # pyright: ignore[reportPrivateUsage] - a lakehouse scan runs it on each file it opens
+
+    def test_it_resolves_a_file_uri_with_a_dot_segment_on_this_machine(
+        self, tmp_path: Path
+    ) -> None:
+        """Ensure a file a table names on this machine is held to the roots after `..`, and not refused for it."""
+        (tmp_path / "events").mkdir()
+        location = (tmp_path / "events" / ".." / "part-0.parquet").as_uri()
+
+        mcp_server._refuse_listed(
+            Settings((tmp_path,)), "target", "data file", location, quoted=True
+        )  # pyright: ignore[reportPrivateUsage] - the listing runs it on each file a table names
 
 
 class TestEnvironmentValues:
