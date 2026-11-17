@@ -823,7 +823,8 @@ def _add_mcp_arguments(mcp_parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "Let a tool run a side's query, which runs as written. A DuckDB file still "
-            "reads other files only from under the roots. Off by default."
+            "reads other files only from under the roots, and on Windows none at all. "
+            "Off by default."
         ),
     )
     mcp_parser.add_argument(

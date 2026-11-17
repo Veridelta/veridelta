@@ -488,6 +488,7 @@ class TestLakehouseConnectors:
 
         assert "snapshot_id 99 not found" in str(info.value)
         assert "uv sync" not in str(info.value)
+        assert info.value.quotes_data is True
         assert isinstance(info.value.__cause__, pl.exceptions.ComputeError)
         assert "Iceberg scan of s3://lake/iceberg/events failed" in caplog.text
 
@@ -506,6 +507,19 @@ class TestLakehouseConnectors:
 
         assert "bucket lake does not exist" in str(info.value)
         assert "uv sync" not in str(info.value)
+        assert info.value.quotes_data is True
+
+    def test_it_keeps_an_iceberg_refusal_in_its_own_words_readable(
+        self, static_table: MagicMock
+    ) -> None:
+        """Ensure a refusal Veridelta wrote, raised inside a scan, quotes no reader's text."""
+        static_table.side_effect = ConnectorError("A scan was stopped.")
+        connector = IcebergConnector(_iceberg_config())
+
+        with pytest.raises(ConnectorError, match="A scan was stopped") as info:
+            connector.connect()
+
+        assert info.value.quotes_data is False
 
     def test_it_wraps_missing_delta_extra_as_connector_error(self, mocker: MockerFixture) -> None:
         """Ensure ImportError from pl.scan_delta becomes an install hint."""

@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import stat
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -61,13 +62,16 @@ from veridelta.connectors.base import (
     without_queries,
 )
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
-from veridelta.connectors.duckdb import sandboxed
+from veridelta.connectors.duckdb import WRITE_AHEAD_LOGS, beside, sandboxed
 from veridelta.connectors.lakehouse import (
+    CheckedDeltaTable,
+    DeltaLogCopy,
     azure_account,
     checked_file_io,
     checking_table_files,
     deletion_vector_files,
     delta_log_vectors,
+    delta_reads_here,
 )
 from veridelta.engine import (
     DEFAULT_MAX_SHARE,
@@ -96,7 +100,6 @@ from veridelta.models import (
 from veridelta.outputs import ValidationReport, validation_report
 
 if TYPE_CHECKING:
-    from deltalake import DeltaTable
     from mcp.server import MCPServer
 
 INSTRUCTIONS: Final = (
@@ -133,11 +136,35 @@ all the same."""
 _TWICE_DECODED: Final = frozenset({"fs", "opendal+fs"})
 """URI schemes whose path deltalake decodes twice before it reads a table's log."""
 
+_DELTA_LOG_NAME: Final = re.compile(
+    r"_last_checkpoint|[0-9]{20}\.(?:json|crc|checkpoint\.parquet"
+    r"|checkpoint\.[0-9]{10}\.[0-9]{10}\.parquet"
+    r"|checkpoint\.[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}\.(?:json|parquet)"
+    r"|[0-9]{20}\.compacted\.json)"
+)
+"""The names of the files at the top of a Delta Lake log that deltalake reads: `_last_checkpoint`,
+and a version's commit, checksum, checkpoint, checkpoint part, or checkpoint named by a UUID, or
+the compacted commits of a range of versions. deltalake skips any other name, and so does the
+copy of the log."""
+
+_DELTA_LOG_COPY_LIMIT: Final = 1 << 30
+"""The most room the copy of one table's log and vectors takes, 1 GiB, so the files under a root
+cannot fill the system's temporary folder. Each file copied counts its bytes, as they are read,
+and one block of the copy's folder, its `st_blksize` or 4 KiB, whichever is larger, since even an
+empty file takes room there. Each folder made for a file counts one block too."""
+
+_DELTA_LOG_COPY_FILES: Final = 10_000
+"""The most files and folders the copy of one table's log and vectors holds, so links named as
+commits to one file under a root cannot fill the system's temporary folder with files."""
+
 _URL_SPACE: Final = "".join(chr(code) for code in range(0x21))
 """The C0 controls and the space, which a URL parser strips from both ends of a URL."""
 
 _URI_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:")
 """The start of a URI: a scheme of two or more characters, since one letter is a Windows drive."""
+
+_SPECIAL_SCHEMES: Final = frozenset({"file", "ftp", "http", "https", "ws", "wss"})
+"""The schemes a URL parser reads without their slashes, as in `http:host`."""
 
 _HOST_OPTIONS: Final = frozenset(
     {
@@ -388,8 +415,8 @@ class Settings:
             those calls returns. At least 1. Defaults to 50.
         allow_queries (bool): Whether a tool may run a side's `query`, which
             runs as written with the configuration's credentials. A DuckDB file
-            still reads other files only from under the roots. Defaults to
-            False.
+            still reads other files only from under the roots, and on Windows
+            none at all. Defaults to False.
         allowed_hosts (tuple[str, ...]): The hosts a side may connect to, in
             lowercase on creation. A side that names any other host, such as a
             database server, an object store's bucket, or a URL's host, is
@@ -682,11 +709,13 @@ def _refuse_opened(settings: Settings, location: str, remote: bool) -> None:
 def _reading(settings: Settings) -> Generator[None]:
     """Hold what a tool's sides read to the roots, while they read.
 
-    A DuckDB file's connection reads other files only from under the roots.
-    A Delta Lake or Iceberg scan opens a file on this machine only from under
-    them, and one elsewhere only on an allowed host, each checked just before
-    it is opened. A Delta Lake scan lists and checks its table's files again
-    as it starts, and reads the version it checked.
+    A DuckDB file opens only by a path with no link in it, its connection reads
+    other files only from under the roots, and on Windows none at all, and it
+    spills only into a folder the block creates. A Delta Lake or Iceberg scan
+    opens a file on this machine only from under them, and one elsewhere only
+    on an allowed host, each checked just before it is opened. A Delta Lake
+    scan lists and checks its table's files again as it starts, and reads the
+    version it checked.
     """
     with (
         sandboxed(settings.roots),
@@ -761,12 +790,22 @@ def _local_paths(location: str, named: str) -> list[str]:
     3.14. The message names `named`, the setting, but not the value, which a
     table's files can hold.
 
+    A `dbfs:` URI is refused whatever its host: deltalake opens its path on
+    this machine, and ignores the host, once the server's environment allows
+    it to.
+
     Raises:
         ConfigError: If a `file:` URI names a host, a local scheme's URI has
-            a path that starts with `//`, or Python cannot convert one of the
-            URI's paths.
+            a path that starts with `//`, Python cannot convert one of the
+            URI's paths, or the location is a `dbfs:` URI.
     """
     parts = _split(location)
+    if parts is not None and parts.scheme == "dbfs":
+        raise ConfigError(
+            f"The {named} is a dbfs: URI. deltalake opens its path on this machine whatever "
+            "host it names, so this server refuses it. Write it as a path under the folders "
+            "this server reads from."
+        )
     if parts is None or parts.scheme not in _LOCAL_SCHEMES:
         return [location]
     standard = _split(location.replace("\\", "/").strip(_URL_SPACE))
@@ -808,26 +847,6 @@ def _local_paths(location: str, named: str) -> list[str]:
     # The decoded path comes first, so a refusal names the file the reader opens, and the
     # same check refuses first on every system. The text as written is checked last.
     return [*dict.fromkeys(paths), location]
-
-
-# Each log DuckDB names beside a database file, by the setting a refusal names.
-# A read-only open replays `.wal`, and `.wal.checkpoint` after a crash during a
-# checkpoint. Only a read-write open writes `.wal.recovery`, but it is checked too.
-_DUCKDB_LOGS = (
-    ("database's WAL", ".wal"),
-    ("database's checkpoint WAL", ".wal.checkpoint"),
-    ("database's recovery WAL", ".wal.recovery"),
-)
-
-
-def _wal_beside(path: str, suffix: str = ".wal") -> str:
-    """Add a log's suffix to a database's path as DuckDB's `AddSuffixToPath` does.
-
-    It goes before the first `?` in the path rather than at the end, so
-    `L?/x.duckdb` has its log at `L.wal?/x.duckdb`, in another folder.
-    """
-    mark = path.find("?")
-    return f"{path}{suffix}" if mark < 0 else f"{path[:mark]}{suffix}{path[mark:]}"
 
 
 def _resolved_database(side: str, database: str) -> str:
@@ -920,10 +939,173 @@ def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
     ]
 
 
+def _file_at(path: str) -> os.stat_result | None:
+    """Return the file at a path, following its links, or None when none is there."""
+    try:
+        return os.stat(path)
+    except FileNotFoundError:
+        return None
+
+
+def _refuse_outside_copy(target: Path, copy: DeltaLogCopy) -> None:
+    """Refuse a path in a table's log copy that is a link, or that a link leads out of the copy's folder.
+
+    Raises:
+        ValueError: If the path is a link, or does not lie in the copy's
+            folder once its links are followed.
+    """
+    inside = Path(os.path.realpath(target)).is_relative_to(os.path.realpath(copy.folder))
+    if os.path.islink(target) or not inside:
+        raise ValueError(
+            "a file of the copy of the table's log would lie outside the copy's folder, so "
+            "this server reads none of the table"
+        )
+
+
+def _copy_checked(
+    source: str, copy: DeltaLogCopy, target: Path, seen: os.stat_result | None
+) -> None:
+    """Copy a file just checked into a table's log copy, when the file opened is the one checked.
+
+    `seen` is the file at `source` before the check, or None when none was
+    there, which leaves the copy without it, as the table was. The file
+    opened must be that same file, by its device and number, and a regular
+    file. Otherwise another file was swapped in, before the check or after
+    it, so it is refused before it is read: a file swapped in could lie
+    anywhere. The file is opened without waiting for a writer, so a named
+    pipe is refused, not waited on. Two swaps that bracket the check, one
+    file for the check and the first again by the open, pass, as
+    `rules/security.md` says.
+
+    `target` is a name this server builds in the copy's folder, never a path
+    a log names. It must lie in that folder after its links, before and after
+    its folders are made, and the file is created there new, never through a
+    link, so the copy writes nothing outside its folder. The copy holds at
+    most `_DELTA_LOG_COPY_FILES` files and folders, and takes at most
+    `_DELTA_LOG_COPY_LIMIT`: each file, and each folder made for it, counts
+    one block of the copy's folder before it is made, and the file's bytes
+    count as they are read.
+
+    Raises:
+        ValueError: If the file opened is not the one at the path before the
+            check, or is not a regular file, or `target` leads out of the
+            copy's folder, or the copy would grow past its limits.
+    """
+    if seen is None:
+        return
+    # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe without waiting for a writer.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    with open(os.open(source, flags), "rb") as file:
+        opened = os.fstat(file.fileno())
+        if not os.path.samestat(seen, opened):
+            raise ValueError(
+                "a file of the table was replaced as this server checked it, so it reads none "
+                "of the table"
+            )
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(
+                "a file of the table is not a regular file, so this server reads none of the table"
+            )
+        _refuse_outside_copy(target, copy)
+        # Even an empty file takes a block, as does each folder made for it, so each counts
+        # before it is made: links to one file under a root take no room there.
+        made = 1 + sum(not folder.exists() for folder in target.parents)
+        copy.files += made
+        _charge_copy(copy, made * copy.block)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _refuse_outside_copy(target, copy)
+        # O_EXCL creates the file or fails, and fails at a link too. Only POSIX has O_NOFOLLOW.
+        new = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        written = os.open(target, new | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with open(written, "wb") as copied:
+            # The size is counted as the file is read, since a file can grow after its stat.
+            while chunk := file.read(1 << 20):
+                _charge_copy(copy, len(chunk))
+                copied.write(chunk)
+
+
+def _charge_copy(copy: DeltaLogCopy, room: int) -> None:
+    """Count room a table's log copy takes, and refuse a copy past its limits.
+
+    Raises:
+        ValueError: If the copy holds more than `_DELTA_LOG_COPY_FILES` files
+            and folders, or takes more than `_DELTA_LOG_COPY_LIMIT`.
+    """
+    copy.size += room
+    if copy.files > _DELTA_LOG_COPY_FILES or copy.size > _DELTA_LOG_COPY_LIMIT:
+        raise ValueError(
+            "the copy of the files of the table's log and deletion vectors that deltalake "
+            "reads would pass the 10,000 files and folders, or the 1 GiB, this server allows "
+            "it, so it reads none of the table. Read such a table with veridelta run"
+        )
+
+
+def _delta_log(
+    side: str, uri: str, copy: DeltaLogCopy | None, version: int | None
+) -> Generator[tuple[str, str, bool], None, tuple[list[str], dict[Path, Path]]]:
+    r"""Name each entry of the log of a table on this machine, each before it is read.
+
+    With a `copy`, for a table deltalake reads from this machine, each file at
+    the top of the log whose name deltalake reads, for `version` or one
+    before it, is copied into it just after its check, in a folder of its own
+    for each folder the table's location names: `_last_checkpoint`, and each
+    commit, checksum, checkpoint, and compacted file from version 0 to
+    `version`, or to the latest. deltalake skips any other name, and a file
+    of a later version when it loads `version`, and reads the copy, so the
+    other entries are checked but never read. The copy starts at version 0,
+    not at a checkpoint, since deltalake passes over a checkpoint it cannot
+    use to the commits before it, and a name alone does not say whether it
+    can. A table deltalake reads from its store has its entries here
+    checked, but none read.
+
+    Returns:
+        tuple[list[str], dict[Path, Path]]: The copy of each file of the log,
+            and the folder of the copy of each of the table's folders that
+            holds a log.
+
+    Raises:
+        ValueError: If a name in the log holds a `\` outside Windows, or
+            `_copy_checked` refuses a file of the log.
+    """
+    logged: list[str] = []
+    logs: dict[Path, Path] = {}
+    for index, local in enumerate(_local_paths(uri, f"{side} table_uri")):
+        # Absolute, so a reading such as `s3:/b/t`, from `s3://b/t`, names no host.
+        folder = Path(os.path.expanduser(local)).absolute()
+        log = folder / "_delta_log"
+        yield "log", str(log), True
+        for parent, folders, files in os.walk(log):
+            top = Path(parent) == log
+            for name in sorted(folders + files):
+                path = os.path.join(parent, name)
+                if copy is not None and os.sep != "\\" and "\\" in name:
+                    # deltalake reads a `\` in a name it lists as `/`, and resolves a `..`, so
+                    # such a name leads it to a file elsewhere. The copy holds no such name, but
+                    # `veridelta run` would read that file, so neither reading is the table's.
+                    raise ValueError(
+                        "a name in the table's log holds a '\\', which deltalake reads as a "
+                        "'/' that could lead out of the log, so this server reads none of the "
+                        "table"
+                    )
+                read = top and _DELTA_LOG_NAME.fullmatch(name) is not None
+                # Every name but `_last_checkpoint` starts with the version it is a file of.
+                hint = name == "_last_checkpoint"
+                read = read and (hint or version is None or int(name[:20]) <= version)
+                seen = _file_at(path) if copy is not None and read and name in files else None
+                yield "log file", path, True
+                if copy is not None and seen is not None:
+                    logs[folder] = copy.folder / str(index)
+                    # The walk's own names, each one entry of a folder, under the copy's folder.
+                    copied = logs[folder] / os.path.relpath(path, folder)
+                    _copy_checked(path, copy, copied, seen)
+                    logged.append(str(copied))
+    return logged, logs
+
+
 def _delta_files(
-    side: str, config: DeltaLakeConfig
-) -> Generator[tuple[str, str, bool], None, "DeltaTable"]:
-    """Name each file a scan of a Delta Lake table reads, from the version it reads.
+    settings: Settings, side: str, config: DeltaLakeConfig
+) -> Generator[tuple[str, str, bool], None, CheckedDeltaTable]:
+    r"""Name each file a scan of a Delta Lake table reads, from the version it reads.
 
     The log of a table on this machine comes first, each entry before the log
     is read, since a commit or checkpoint can be a link out of the table's
@@ -934,39 +1116,138 @@ def _delta_files(
     loads the table, so the log is read before deltalake reads it, and a
     table whose log records a sidecar is refused.
 
-    A path that starts with `~` is expanded as Polars expands it, and
-    deltalake reads the expanded path, since it expands only `~` and `~/` and
-    would read `~alice/t` as a folder of that name.
+    deltalake reads the log again as it loads the table, and a vector as a
+    scan starts, in Rust, where no check runs. So for a table deltalake reads
+    from this machine, each file of the log that deltalake reads for the
+    version, and each vector at a path relative to the table, is copied just
+    after its check into a private folder outside every root, up to 10,000
+    files and folders and 1 GiB in all, and the log read and the table loaded
+    are that copy. A file opened for the copy that is not the one checked is
+    refused. Each file of the copy lies at a name this server builds in the
+    copy's folder: the walk's own names for the log, and a vector's folder of
+    letters and digits and its UUID.
+    deltalake would read a vector that the log stores at its own path where
+    the log says, which a copy could change only by writing there or by
+    rewriting the log, so such a table is refused.
+
+    A path that starts with `~` is expanded as Polars expands it, and the
+    walk reads the expanded path, since deltalake expands only `~` and `~/`
+    and would read `~alice/t` as a folder of that name.
+
+    Each file comes with its setting, its location, and whether a refusal may
+    quote it on any server: the log and its entries may, and a file the log
+    names may not, since a data file's folder can hold a partition's value.
 
     Returns:
-        DeltaTable: The table, at the version whose files were named.
+        CheckedDeltaTable: The table, at the version whose files were named.
+
+    Raises:
+        ValueError: If the copy would lie under a root or in a folder whose
+            path deltalake reads as another folder's, more than one folder
+            the table's location names holds a log, or the log of a table on
+            this machine holds a name with a `\` outside Windows, outgrows the
+            copy, or stores a vector at its own path.
     """
     from deltalake import DeltaTable
 
     uri = config.table_uri
     if uri.startswith("~"):
         # deltalake expands only `~` and `~/`, and reads `~alice/t` as a folder of that name,
-        # where the walk, as Polars does, reads the home of the user it names. So deltalake
-        # gets the path the walk reads.
+        # where Polars reads the home of the user it names. So the walk, and deltalake for a
+        # table it reads from its store, read the path Polars reads.
         uri = os.path.expanduser(uri)
-    logged: list[str] = []
-    for local in _local_paths(uri, f"{side} table_uri"):
-        # Absolute, so a reading such as `s3:/b/t`, from `s3://b/t`, names no host.
-        log = Path(os.path.expanduser(local)).absolute() / "_delta_log"
-        yield "log", str(log), True
-        for folder, folders, files in os.walk(log):
-            for name in sorted(folders + files):
-                yield "log file", os.path.join(folder, name), True
-            logged += [os.path.join(folder, name) for name in sorted(files)]
+    copy = DeltaLogCopy() if delta_reads_here(uri) else None
+    if copy is not None and _inside(settings, str(copy.folder)) is not None:
+        raise ValueError(
+            "the system's temporary folder lies under a folder this server reads from, where "
+            "this server would copy the table's log for deltalake to read. Start the server "
+            "with TMPDIR set to a folder outside them"
+        )
+    # deltalake decodes a `%` escape in the copy's path, and outside Windows reads a `\` there
+    # as `/`, so it would read the log of another folder, which no check saw. Its `table_uri`
+    # still names the copy, so only the path itself can show it.
+    rewritten = "%" if os.sep == "\\" else "%\\"
+    if copy is not None and any(character in rewritten for character in str(copy.folder)):
+        raise ValueError(
+            "the path of the system's temporary folder holds a '%', or a '\\' outside Windows, "
+            "which deltalake reads as other text as it reads the copy of the table's log there. "
+            "Start the server with TMPDIR set to a folder whose path holds neither"
+        )
+    logged, logs = yield from _delta_log(side, uri, copy, config.version)
+    if len(logs) > 1:
+        raise ValueError(
+            "readers read the table's location as more than one folder, and more than one "
+            "holds a Delta Lake log, so this server reads none of them"
+        )
     # deltalake reads each sidecar a checkpoint names as it loads the table, so the log is
     # read first, and a log that names one is refused.
     vectors = delta_log_vectors(uri, config.storage_options, logged)
-    table = DeltaTable(uri, version=config.version, storage_options=config.storage_options or None)
-    for uri in table.file_uris():
-        yield "data file", uri, True
-    for location in deletion_vector_files(table, vectors):
-        yield "deletion vector", location, True
-    return table
+    if copy is None:
+        options = config.storage_options or None
+        checked = CheckedDeltaTable(
+            DeltaTable(uri, version=config.version, storage_options=options)
+        )
+        for name in checked.table.file_uris():
+            yield "data file", name, False
+        for location in deletion_vector_files(checked.table, vectors):
+            yield "deletion vector", location, False
+        return checked
+    return (yield from _copied_delta_files(config, copy, logs, vectors))
+
+
+def _copied_delta_files(
+    config: DeltaLakeConfig,
+    copy: DeltaLogCopy,
+    logs: dict[Path, Path],
+    vectors: list[dict[str, Any]],
+) -> Generator[tuple[str, str, bool], None, CheckedDeltaTable]:
+    """Load a table on this machine from the copy of its log, and name each file a scan reads.
+
+    Each vector, at a path relative to the table, is copied into the copy just
+    after its check, at a name built from its folder of letters and digits
+    and its UUID.
+
+    Args:
+        config (DeltaLakeConfig): The table.
+        copy (DeltaLogCopy): The copy, which holds the checked log.
+        logs (dict[Path, Path]): The folder of the copy of the table's folder
+            that holds a log, or nothing for a table with no log.
+        vectors (list[dict[str, Any]]): Each vector the log records.
+
+    Returns:
+        CheckedDeltaTable: The table, at the version whose files were named.
+
+    Raises:
+        ValueError: If the log stores a vector at its own path.
+    """
+    from deltalake import DeltaTable
+
+    if any(vector.get("storageType") == "p" for vector in vectors):
+        # deltalake opens such a vector where the log says, so a copy could hold it only in
+        # a folder the log names, or with the log rewritten.
+        raise ValueError(
+            "the log stores a deletion vector at a path of its own, which deltalake reads "
+            "where the log says, apart from this server's check, so this server reads none "
+            "of the table. Read such a table with veridelta run"
+        )
+    # A copy that holds no log, as of a table that does not exist, fails as the table would.
+    found = next(iter(logs), None)
+    root = copy.folder if found is None else logs[found]
+    options = config.storage_options or None
+    table = DeltaTable(str(root), version=config.version, storage_options=options)
+    checked = CheckedDeltaTable(table, found, copy)
+    for name in checked.table.file_uris():
+        yield "data file", checked.located(name), False
+    copied: set[str] = set()
+    for location in deletion_vector_files(checked.table, vectors):
+        # A vector at a relative path, in a folder of letters and digits under the table's,
+        # named by the UUID the log encodes. One file can hold many, and a log name one twice.
+        local = checked.located(location)
+        seen = None if local in copied else _file_at(local)
+        yield "deletion vector", local, False
+        _copy_checked(local, copy, root / os.path.relpath(local, found), seen)
+        copied.add(local)
+    return checked
 
 
 def _iceberg_files(
@@ -977,9 +1258,11 @@ def _iceberg_files(
     A table folder's version hint, the manifest list, and each manifest name
     the next files to read, so the caller checks each name before this reads
     the file. The version hint is read as `StaticTable.from_metadata` reads
-    it, so the check and the scan read the same metadata file, but its text is
-    never quoted, since it is a value from a file. The data and delete files
-    come from the manifests, as a scan plans them.
+    it, so the check and the scan read the same metadata file. The data and
+    delete files come from the manifests, as a scan plans them. Each file
+    comes with its setting, its location, and whether a refusal may quote it
+    on any server: the version hint may, and a file named by a file's text may
+    not, since that text is a value from the table.
 
     The files are read as the scan on this server reads them: through the
     FileIO `checked_file_io` builds from `storage_options` alone, whatever the
@@ -1006,7 +1289,7 @@ def _iceberg_files(
         if hint is None:
             raise
         # The error would quote the metadata file, and so the version hint's text.
-        raise OSError(f"the metadata file that '{hint}' names could not be read") from None
+        raise ConnectorError(f"the metadata file that '{hint}' names could not be read") from None
     snapshot = (
         metadata.current_snapshot()
         if config.snapshot_id is None
@@ -1016,25 +1299,28 @@ def _iceberg_files(
         # The scan reads no file: an empty table has none, and a snapshot it
         # cannot find stops it.
         return
-    yield "manifest list", snapshot.manifest_list, True
+    yield "manifest list", snapshot.manifest_list, False
     for manifest in snapshot.manifests(io):
-        yield "manifest", manifest.manifest_path, True
+        yield "manifest", manifest.manifest_path, False
         for entry in manifest.fetch_manifest_entry(io, discard_deleted=True):
-            yield "data file", entry.data_file.file_path, True
+            yield "data file", entry.data_file.file_path, False
 
 
 def _table_files(
     settings: Settings, side: str, config: DeltaLakeConfig | IcebergConfig
-) -> Generator[tuple[str, str, bool], None, "DeltaTable | None"]:
+) -> Generator[tuple[str, str, bool], None, CheckedDeltaTable | None]:
     """Name each file that the scan of a lakehouse table reads.
 
     A table's log or metadata names its files by full URI, so they can lie
     anywhere. A table whose files cannot be listed is refused, since the scan
     would read the same log or metadata. An Iceberg table's files are read
-    with the scan's own check, as well as the caller's.
+    with the scan's own check, as well as the caller's. The error of a table
+    that cannot be listed quotes the reader's message, which can hold a value
+    from the table's files, so it sets `quotes_data` unless Veridelta wrote
+    that message.
 
     Returns:
-        DeltaTable | None: A Delta Lake table, at the version listed, or None
+        CheckedDeltaTable | None: A Delta Lake table, at the version listed, or None
             for an Iceberg table.
 
     Raises:
@@ -1042,7 +1328,7 @@ def _table_files(
             log than the one this server lists.
         ConnectorError: If the extra is missing, or the table cannot be listed.
     """
-    files: Generator[tuple[str, str, bool], None, DeltaTable | None]
+    files: Generator[tuple[str, str, bool], None, CheckedDeltaTable | None]
     if isinstance(config, DeltaLakeConfig) and _holds_dot_segment(config.table_uri):
         raise ConfigError(
             f"The {side} table_uri '{shown_location(config.table_uri)}' is a URI with a '.' "
@@ -1059,7 +1345,7 @@ def _table_files(
             "read different tables. Write the table as a path, or as a file: URI."
         )
     if isinstance(config, DeltaLakeConfig):
-        files, kind, extra = _delta_files(side, config), "Delta Lake table", "delta"
+        files, kind, extra = _delta_files(settings, side, config), "Delta Lake table", "delta"
     else:
         check = functools.partial(_refuse_opened, settings)
         files, kind, extra = _iceberg_files(config, check), "Iceberg table", "iceberg"
@@ -1069,9 +1355,12 @@ def _table_files(
         raise ConnectorError(missing_extra(extra, f"Reading a {kind}")) from exc
     except Exception as exc:
         where = shown_location(config.table_uri)
+        # deltalake, PyIceberg, and PyArrow can quote a value from the table's files, where
+        # a refusal in Veridelta's words quotes none.
         raise ConnectorError(
             f"The files of the {side} {kind} '{where}' could not be listed, so this server "
-            f"reads none of them: {without_location(str(exc), config.table_uri)}"
+            f"reads none of them: {without_location(str(exc), config.table_uri)}",
+            quotes_data=may_quote_data(exc),
         ) from exc
 
 
@@ -1156,15 +1445,16 @@ def _as_checked(settings: Settings, side: str, config: SourceRef) -> SourceRef:
     DuckDB replays the write-ahead logs beside the file as it opens it, before
     the sandbox applies, so each log is held to the roots as the file is. A
     resolved path that names another machine, as a Windows long path does,
-    is refused too.
+    is refused too. Inside `sandboxed`, the connector then opens the file by
+    this path only through no link, and confirms DuckDB opened that file.
     """
     if not isinstance(config, DuckDBConfig) or config.is_motherduck:
         return config
     database = _resolved_database(side, config.database)
     _refuse_outside(settings, side, "database", database, database)
-    for setting, suffix in _DUCKDB_LOGS:
-        log = _wal_beside(database, suffix)
-        _refuse_outside(settings, side, setting, log, log)
+    for name, suffix in WRITE_AHEAD_LOGS:
+        log = beside(database, suffix)
+        _refuse_outside(settings, side, f"database's {name}", log, log)
     return config.model_copy(update={"database": database})
 
 
@@ -1239,15 +1529,18 @@ def _refuse_listed(
     A log or metadata names a file by any location, so the file is checked as
     a configuration's location is: each path on this machine a reader could
     open for it, and the host it names. The message about a host leaves the
-    location out, since a file named it.
+    location out, since a file named it. The message about a path quotes it
+    when `quoted`, or on a server that allows row values, since a path a
+    table's files name is a value from them, such as a partition's.
     """
+    quoted = quoted or settings.allow_row_values
     for local in _local_paths(location, f"{side} {setting}"):
         _refuse_outside(settings, side, setting, location, local, quoted=quoted)
     for _, host in _location_hosts(setting, location, _NAMED_FILE):
         _refuse_host(settings, f"The {side} {setting}", host)
 
 
-def _checked_delta_table(settings: Settings, config: DeltaLakeConfig) -> "DeltaTable":
+def _checked_delta_table(settings: Settings, config: DeltaLakeConfig) -> CheckedDeltaTable:
     """List and check every file a scan of a Delta Lake table reads, and return the version checked.
 
     A scan on this server calls this as it starts, and reads only the files of
@@ -1264,7 +1557,7 @@ def _checked_delta_table(settings: Settings, config: DeltaLakeConfig) -> "DeltaT
         try:
             setting, location, quoted = next(files)
         except StopIteration as listed:
-            return cast("DeltaTable", listed.value)
+            return cast("CheckedDeltaTable", listed.value)
         _refuse_listed(settings, "scanned", setting, location, quoted=quoted)
 
 
@@ -1453,6 +1746,54 @@ def _duckdb_hosts(config: DuckDBConfig) -> list[tuple[str, str | None]]:
     return [*_location_hosts("database", config.database)]
 
 
+def _storage_options(config: SourceRef) -> object:
+    """Return the `storage_options` a side hands its reader, or None for a side that takes none."""
+    if isinstance(config, SourceConfig):
+        return config.options.get("storage_options")
+    if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+        return config.storage_options
+    return None
+
+
+def _refuse_plain_http(side: str, config: SourceRef) -> None:
+    """Refuse a storage option that sends a reader to its endpoint over anything but HTTPS.
+
+    Polars and PyIceberg take the scheme from the endpoint, so an `http` one
+    sends the credentials and the rows unencrypted, as `aws_allow_http` would
+    for deltalake, which a tool refuses as a key it does not know. So a host
+    option's value with a scheme passes only when it starts with `https://`,
+    in lowercase, the one form every reader takes as HTTPS: the AWS SDK in
+    PyArrow takes any other as a host name. A value has a scheme when it holds
+    `://`, or when it holds a `:` and the text before the first one is one of
+    `_SPECIAL_SCHEMES`, in ASCII and any case, since the URL parser behind Polars reads such a
+    value as a URL without its slashes, and a number after it as an IPv4
+    address. No host is excepted, this machine's included, as none is for
+    `aws_allow_http`. Other text, such as `minio.internal:9000`, or a bucket
+    named `https` with no `:`, passes:
+    PyArrow then uses HTTPS, and object_store fails before it connects. The
+    message names the option and not its value, which can hold a `${NAME}`
+    value.
+
+    Raises:
+        ConfigError: If a host option's value has a scheme and does not start with `https://`.
+    """
+    options = _storage_options(config)
+    if not isinstance(options, Mapping):
+        return
+    for key, value in cast("Mapping[object, object]", options).items():
+        name, text = str(key), str(value)
+        if not (name.isascii() and name.lower() in _HOST_OPTIONS) or text.startswith("https://"):
+            continue
+        scheme, colon, _ = text.partition(":")
+        if "://" in text or (colon and scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES):
+            raise ConfigError(
+                f"The {side} storage option '{key}' names a host by a scheme other than "
+                "https, so a reader could send its credentials and rows unencrypted. A tool "
+                "reaches an endpoint only over HTTPS, on this machine too, so write it as "
+                "https://host:port, in lowercase."
+            )
+
+
 def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     """Name each host a side connects to that its configuration chooses, with the setting.
 
@@ -1463,14 +1804,11 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None]]:
     credentials reach their own service's hosts, so they name none.
     """
     if isinstance(config, SourceConfig):
-        return [
-            *_location_hosts("path", config.path),
-            *_option_hosts(config.options.get("storage_options")),
-        ]
+        return [*_location_hosts("path", config.path), *_option_hosts(_storage_options(config))]
     if isinstance(config, (DeltaLakeConfig, IcebergConfig)):
         return [
             *_location_hosts("table_uri", config.table_uri),
-            *_option_hosts(config.storage_options),
+            *_option_hosts(_storage_options(config)),
         ]
     if isinstance(config, DuckDBConfig):
         return _duckdb_hosts(config)
@@ -1493,14 +1831,16 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     side that could reach any host could send one there, or reach a service on
     this machine or its network. A host written in any shape but
     `_HOST_AND_PORT`'s is refused on its own, since readers split it in
-    different places. The message names the setting and not the host, which
-    can hold such a value.
+    different places. An endpoint is refused over plain HTTP, by
+    `_refuse_plain_http`. The message names the setting and not the host,
+    which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
         for setting, host in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host)
+        _refuse_plain_http(side, config)
 
 
 def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
