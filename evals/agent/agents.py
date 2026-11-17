@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import Awaitable, Callable
+import os
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -26,6 +27,7 @@ from mcp import Client
 
 from evals.agent.fixtures import Fixture
 from evals.agent.tasks import RESULT_MARKER, Task
+from veridelta import mcp_server
 from veridelta.mcp_server import Settings, build_server
 
 if TYPE_CHECKING:
@@ -106,6 +108,30 @@ def result_line(**fields: Any) -> str:
     return f"{RESULT_MARKER} {json.dumps(fields, sort_keys=True)}"
 
 
+@contextlib.contextmanager
+def _without_reader_credentials() -> Iterator[None]:
+    """Leave each credential variable a reader takes out of the environment while a control plays.
+
+    The server refuses to start on one it cannot mask, such as a dummy a
+    contributor's shell exports, and masks the rest in every answer. A
+    control reads only the fixture's files, so it needs none of them.
+    """
+    left_out = {
+        *mcp_server._ENVIRONMENT_SLOTS,
+        *mcp_server._TOKEN_FILE_VARIABLES,
+        mcp_server._KEY_JSON_VARIABLE,
+    }
+    taken = {
+        name: os.environ.pop(name)
+        for name in list(os.environ)
+        if mcp_server._name_as_read(name) in left_out
+    }
+    try:
+        yield
+    finally:
+        os.environ.update(taken)
+
+
 def play(task: Task, fixture: Fixture, script: Script) -> AgentRun:
     """Run a script against a server held to the fixture's folder, from inside that folder.
 
@@ -125,7 +151,7 @@ def play(task: Task, fixture: Fixture, script: Script) -> AgentRun:
             answer = await script(tools, task, fixture)
             return AgentRun(final_answer=answer, tool_calls=tools.calls, turns=len(tools.calls) + 1)
 
-    with contextlib.chdir(fixture.root):
+    with contextlib.chdir(fixture.root), _without_reader_credentials():
         return anyio.run(session)
 
 

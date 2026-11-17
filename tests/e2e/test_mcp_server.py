@@ -19,11 +19,33 @@ from mcp import Client, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import CallToolResult
 
+from veridelta import mcp_server
+
 pytestmark = [pytest.mark.e2e]
 
 _VALID = "source:\n  path: a.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "ci"
+
+
+def _server_environment() -> dict[str, str]:
+    """Return the environment the test runs in, for the server, without a reader's credentials.
+
+    The SDK gives the child a short allow-list of variables, not this
+    environment, so the one the test runs in is passed on. The server masks
+    each reader credential it finds there, and refuses one it cannot mask, so
+    a value from the machine the suite runs on is left out.
+    """
+    left_out = {
+        *mcp_server._ENVIRONMENT_SLOTS,
+        *mcp_server._TOKEN_FILE_VARIABLES,
+        mcp_server._KEY_JSON_VARIABLE,
+    }
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if mcp_server._name_as_read(name) not in left_out
+    }
 
 
 def _text(result: CallToolResult) -> str:
@@ -46,12 +68,10 @@ def test_the_console_script_serves_its_tools(
     )
     outside = tmp_path_factory.mktemp("outside") / "veridelta.yaml"
     outside.write_text(_VALID)
-    # The SDK gives the child a short allow-list of variables, not this
-    # environment, so the one the test runs in is passed on whole.
     server = StdioServerParameters(
         command="veridelta",
         args=["mcp", "--root", str(root), "--allow-row-values", "--max-rows", "2"],
-        env=dict(os.environ),
+        env=_server_environment(),
     )
     log = tmp_path / "server-stderr.log"
 
@@ -128,7 +148,7 @@ def test_the_console_script_proposes_rules_and_value_maps(tmp_path: Path) -> Non
     server = StdioServerParameters(
         command="veridelta",
         args=["mcp", "--root", str(root), "--allow-row-values", "--max-rows", "2"],
-        env=dict(os.environ),
+        env=_server_environment(),
     )
     log = tmp_path / "server-stderr.log"
 

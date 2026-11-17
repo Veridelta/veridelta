@@ -66,7 +66,12 @@ from veridelta.connectors.base import (
     without_queries,
 )
 from veridelta.connectors.database import connection_uri, connectorx_url, sqlite_path
-from veridelta.connectors.duckdb import WRITE_AHEAD_LOGS, beside, sandboxed
+from veridelta.connectors.duckdb import (
+    MOTHERDUCK_TOKEN_VARIABLES,
+    WRITE_AHEAD_LOGS,
+    beside,
+    sandboxed,
+)
 from veridelta.connectors.lakehouse import (
     BASE64,
     CheckedDeltaTable,
@@ -2185,6 +2190,102 @@ _OPTION_SLOTS: Final[tuple[tuple[frozenset[str], _Slot], ...]] = (
 docstring saying why no reader echoes its value, or why an echo is the text
 the mask matches."""
 
+_READER_ONLY_VARIABLES: Final[Mapping[str, _Slot]] = {
+    **dict.fromkeys(
+        (
+            "AWS_SECURITY_TOKEN",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+            "AZURE_FABRIC_TOKEN",
+            "AZURE_FABRIC_SESSION_TOKEN",
+            "IDENTITY_HEADER",
+            "MSI_SECRET",
+            "AZURE_MSI_SECRET",
+            "GOOGLE_BEARER_TOKEN",
+            "HF_TOKEN",
+            "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+            "ALIBABA_CLOUD_SECURITY_TOKEN",
+            "OSS_ACCESS_KEY_SECRET",
+            *MOTHERDUCK_TOKEN_VARIABLES,
+        ),
+        "token",
+    ),
+    "AZURE_STORAGE_MASTER_KEY": "account key",
+    "AWS_SSE_CUSTOMER_KEY_BASE64": "account key",
+    "AZURE_AUTHORITY_ID": "login",
+    "AZURE_STORAGE_AUTHORITY_ID": "login",
+    "ALIBABA_CLOUD_ACCESS_KEY_ID": "login",
+}
+"""The environment variables a reader takes a credential from that no storage option names.
+
+Each name, its reader, and the evidence that the reader sends its value:
+
+- `AWS_SECURITY_TOKEN`: boto3 behind Polars' credential provider, and
+  libarrow. Probed, and echoed.
+- `AWS_CONTAINER_AUTHORIZATION_TOKEN`: botocore, aws-sdk-cpp, and
+  deltalake's AWS SDK. Probed, and echoed through `CredentialRetrievalError`.
+- `AZURE_FABRIC_TOKEN` and `AZURE_FABRIC_SESSION_TOKEN`: object_store.
+- `IDENTITY_HEADER`, `MSI_SECRET`, and `AZURE_MSI_SECRET`: managed identity
+  in object_store, deltalake, and libarrow.
+- `GOOGLE_BEARER_TOKEN`: object_store. Probed, and echoed by a fake store.
+- `HF_TOKEN`: Polars, for an `hf://` location, a scheme in `_SERVICE_SCHEMES`.
+- `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, `ALIBABA_CLOUD_SECURITY_TOKEN`, and
+  `OSS_ACCESS_KEY_SECRET`: named in deltalake's binary, not probed.
+- Each name in `MOTHERDUCK_TOKEN_VARIABLES`: Veridelta's DuckDB connector.
+- `AZURE_STORAGE_MASTER_KEY`: object_store's alias of the account key.
+- `AWS_SSE_CUSTOMER_KEY_BASE64`: object_store. Probed, and echoed with
+  sse-c. It is base64 of a 32-byte key, so the canonical shape costs a real
+  key nothing.
+- `AZURE_AUTHORITY_ID` and `AZURE_STORAGE_AUTHORITY_ID`: object_store's
+  aliases of the tenant id.
+- `ALIBABA_CLOUD_ACCESS_KEY_ID`: named in deltalake's binary, not probed.
+
+Some names are left out. ConnectorX reads none of `PGPASSWORD`, `MYSQL_PWD`,
+`MSSQL_PASSWORD`, and `SQLCMDPASSWORD`, as its binary and a probe show.
+Veridelta passes the Snowflake and Databricks connectors every setting as an
+argument, so neither reads a `SNOWFLAKE_` or `DATABRICKS_` variable.
+`AZURE_CLIENT_CERTIFICATE_PASSWORD` unlocks a file on this machine and is
+never sent."""
+
+_ENVIRONMENT_SLOTS: Final[Mapping[str, _Slot]] = {
+    **{
+        key.upper(): slot
+        for keys, slot in _OPTION_SLOTS
+        for key in keys
+        if key.startswith(("aws_", "azure_", "google_"))
+    },
+    **_READER_ONLY_VARIABLES,
+}
+"""The environment variables whose value `veridelta mcp` masks, each with its slot.
+
+object_store's `from_env` reads `AWS_X` as the option `aws_x`, so the part
+taken from the option table cannot drift from it. `_name_as_read` gives the
+name a variable is looked up by here. A variable joins only with evidence
+that a reader sends its value to a service, and with the slot whose shape
+makes an echo the text the mask matches. Never record a prefix, since
+`AWS_ALLOW_HTTP=true` would then mask `true` in every answer."""
+
+_CASELESS_PREFIXES: Final = ("AWS_", "AZURE_", "GOOGLE_")
+"""The prefixes after which object_store's `from_env` ignores a name's case.
+
+It matches the prefix as written, then reads the whole name in lower case,
+so it reads `AZURE_Client_Secret` as the option `azure_client_secret`."""
+
+_KEY_JSON_VARIABLE: Final = "GOOGLE_SERVICE_ACCOUNT_KEY"
+"""The environment variable object_store reads a Google service account key from, as JSON."""
+
+_KEY_JSON_FIELDS: Final = ("private_key_id", "private_key", "client_secret", "refresh_token")
+"""The fields of a Google key whose value a service can echo on its own."""
+
+_TOKEN_FILE_VARIABLES: Final = (
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AZURE_FEDERATED_TOKEN_FILE",
+)
+"""The environment variables that name a file a reader reads a token from."""
+
+_LONGEST_TOKEN_FILE: Final = 64 * 1024
+"""The most bytes of a token file the server reads. A larger file holds no token."""
+
 _URI_LOGIN: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://([^@/?#]*)@")
 """A database uri's scheme and login, up to the `@` that ends it."""
 
@@ -2406,6 +2507,12 @@ def _check_reference(reference: Reference, match: re.Match[str]) -> None:
 _RECORDED: ContextVar[set[str] | None] = ContextVar("_RECORDED", default=None)
 """The values the running server has expanded from its environment, for the call in progress."""
 
+_TOKENS: ContextVar[frozenset[str]] = ContextVar("_TOKENS", default=frozenset())
+"""The tokens the token files held as the call in progress started.
+
+They are kept apart from `_RECORDED`, since a file rotates and a token it
+held before is no longer sent."""
+
 _RECORDING: Final = threading.Lock()
 """Held while a recorded set is read or added to, since the SDK runs each call in a thread."""
 
@@ -2417,6 +2524,106 @@ def _record_and_check(reference: Reference, match: re.Match[str]) -> None:
     if recorded is not None and reference.value is not None:
         with _RECORDING:
             recorded.add(reference.value)
+
+
+def _name_as_read(name: str) -> str:
+    """Return the name a reader takes an environment variable as.
+
+    A name that starts with one of `_CASELESS_PREFIXES`, as written, is read
+    in any case after it, so it is returned in upper case. Any other name is
+    read as written, and returned as it is. On Windows, `os.environ` ignores
+    case already.
+    """
+    return name.upper() if name.startswith(_CASELESS_PREFIXES) else name
+
+
+def _environment_values(environ: Mapping[str, str]) -> set[str]:
+    """Return each credential a reader takes from the server's environment, to be masked.
+
+    Each variable is looked up by `_name_as_read`, so a name such as
+    `AZURE_Client_Secret` is masked and checked as object_store reads it. A
+    Google key is recorded whole, and each field of it that a service can echo
+    on its own too. Its JSON is never refused, since object_store's errors for
+    it quote none of its text.
+
+    Raises:
+        ConfigError: If a variable's value lacks its slot's shape. The message
+            names the variable as it is set, never the value.
+    """
+    values: set[str] = set()
+    for name, value in environ.items():
+        if not value:
+            continue
+        read_as = _name_as_read(name)
+        if read_as == _KEY_JSON_VARIABLE:
+            values.update(_key_json_values(value))
+            continue
+        slot = _ENVIRONMENT_SLOTS.get(read_as)
+        if slot is None:
+            continue
+        needed = _shape_needed(slot, value)
+        if needed is not None:
+            raise ConfigError(
+                f"On veridelta mcp, the environment variable {name} must be {needed}. A reader "
+                "takes it from the server's environment, and a service can repeat it in an "
+                "error. Correct the value, or leave the variable out of the environment the "
+                "host starts the server with."
+            )
+        values.add(value)
+    return values
+
+
+def _key_json_values(key: str) -> set[str]:
+    """Return a Google key, whole, and each field of it a service can echo on its own."""
+    values = {key}
+    try:
+        fields = json.loads(key)
+    except ValueError:
+        fields = None
+    if isinstance(fields, dict):
+        found = cast("dict[str, object]", fields)
+        values.update(
+            text
+            for field in _KEY_JSON_FIELDS
+            if isinstance(text := found.get(field), str) and len(text) >= _SHORTEST_MASKED
+        )
+    return values
+
+
+def _token_file_values(environ: Mapping[str, str]) -> set[str]:
+    """Return the token in each file a token file variable names, to be masked.
+
+    A file that cannot be read, is larger than `_LONGEST_TOKEN_FILE`, is not
+    UTF-8, or holds no value in `_TOKEN`'s shape of at least
+    `_SHORTEST_MASKED` characters is skipped, since it holds no token a
+    reader sends. Only a regular file is read. A named pipe with no writer
+    would hold the server, and one such as `<(get-token)` gives its token
+    once, to the first process that reads it, which must be the reader. The
+    file's path is not recorded. Each variable is looked up by
+    `_name_as_read`, as in `_environment_values`.
+    """
+    # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe without waiting for a writer.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+    values: set[str] = set()
+    for name, path in environ.items():
+        if not path or _name_as_read(name) not in _TOKEN_FILE_VARIABLES:
+            continue
+        try:
+            if not stat.S_ISREG(os.stat(path).st_mode):
+                continue
+            with open(os.open(path, flags), "rb") as file:
+                # A pipe swapped in after the check is opened, but not read.
+                if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                    continue
+                read = file.read(_LONGEST_TOKEN_FILE + 1)
+            if len(read) > _LONGEST_TOKEN_FILE:
+                continue
+            token = read.decode("utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if len(token) >= _SHORTEST_MASKED and _TOKEN.fullmatch(token) is not None:
+            values.add(token)
+    return values
 
 
 def _load_checked(
@@ -2830,9 +3037,10 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
 def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     """Join every form of the recorded values into one pattern, longest first, in any case.
 
-    A value's forms are its text, its percent-encoding, its bytes in hex
-    with a space between each, as S3 writes a request it could not verify,
-    and the `sig` of a SAS token. A byte outside UTF-8 is encoded as it was
+    A value's forms are its text, its percent-encoding, its form encoding,
+    where `~` becomes `%7E`, as object_store writes an OAuth request's body,
+    its bytes in hex with a space between each, as S3 writes a request it
+    could not verify, and the `sig` of a SAS token. A byte outside UTF-8 is encoded as it was
     read, so no value stops the pattern from being built.
 
     No head of a value is a form. A head would let an agent learn a value one
@@ -2846,6 +3054,7 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
         for form in (
             value,
             quote(value, safe="", errors="surrogateescape"),
+            quote(value, safe="", errors="surrogateescape").replace("~", "%7E"),
             value.encode(errors="surrogateescape").hex(" "),
             *_sas_signatures(value),
         )
@@ -2859,15 +3068,41 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     return re.compile("|".join(map(re.escape, ordered)), re.IGNORECASE)
 
 
-def _mask(text: str) -> str:
-    """Mask every value the server has expanded from its environment, in each form, in any case.
+_ECHOED_CREDENTIAL: Final = re.compile(
+    r"(<(Token-\d+|AWSAccessKeyId|CanonicalRequest|CanonicalRequestBytes|StringToSign"
+    r"|StringToSignBytes|SignatureProvided)>)(.*?)(</\2>|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+"""The elements of an S3 error that repeat a credential, with their content.
 
-    It reads the recorded values when the answer is built, so a value a
-    reader echoes in a later call, such as from Polars' cache of object
-    stores, is masked there too.
+S3 writes a session token it rejected, the access key id, or a canonical
+request that holds `x-amz-security-token` into these elements. The server
+never sees a credential a reader finds on its own, from a profile, SSO, or
+an instance role, so it blanks these elements whatever they hold. `$`
+catches an element cut at the message's end."""
+
+
+def _without_echoed_credentials(text: str) -> str:
+    """Blank the content of each element of an S3 error that repeats a credential."""
+    return _ECHOED_CREDENTIAL.sub(r"\1***\4", text)
+
+
+def _mask(text: str) -> str:
+    """Mask every credential the server knows of, in each form, in any case.
+
+    It first blanks each element of an S3 error that repeats a credential,
+    since a reader can sign with one the server never saw. Then it masks
+    each value the server has expanded from its environment, and each
+    credential a reader takes from it. It reads the recorded values when the
+    answer is built, so a value a reader echoes in a later call, such as
+    from Polars' cache of object stores, is masked there too. A finding of
+    `validate_config` reaches the agent without `_failure`, so the blanking
+    is here, where every answer passes. It masks the tokens the token files
+    held as the call started too.
     """
+    text = _without_echoed_credentials(text)
     with _RECORDING:
-        values = frozenset(_RECORDED.get() or ())
+        values = frozenset(_RECORDED.get() or ()) | _TOKENS.get()
     pattern = _mask_pattern(values)
     return text if pattern is None else pattern.sub("***", text)
 
@@ -2901,7 +3136,13 @@ def _answer(
     quote the data is left out. Each URL in a failure's message then loses
     its query, which can hold a credential the reader signed with. The
     masking comes first, so a value that holds a `?` is masked whole.
+
+    A projected token file rotates about hourly, so each call masks the
+    token each file holds as the call starts, and none it held before, which
+    no reader sends any more and which would grow the mask for as long as
+    the server runs.
     """
+    tokens = _TOKENS.set(frozenset(_token_file_values(os.environ)))
     token = _RECORDED.set(recorded)
     try:
         try:
@@ -2916,6 +3157,7 @@ def _answer(
         return cast("_R", _masked(result))
     finally:
         _RECORDED.reset(token)
+        _TOKENS.reset(tokens)
 
 
 def build_server(settings: Settings) -> "MCPServer":
@@ -2929,8 +3171,14 @@ def build_server(settings: Settings) -> "MCPServer":
 
     Raises:
         VerideltaError: If the `mcp` extra is not installed.
+        ConfigError: If a credential variable a reader takes from the
+            server's environment lacks the shape the server can mask.
     """
     loaded = _load_sdk()
+    # Every value this server expands from its environment, kept while it runs,
+    # since a reader's cache can echo one in a later call that never named it,
+    # and every credential a reader takes from it. Each call reads the token files.
+    seen = _environment_values(os.environ)
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
     try:
@@ -2942,9 +3190,6 @@ def build_server(settings: Settings) -> "MCPServer":
         # program. The command line sets Veridelta's own logging with --verbose.
         root.handlers[:] = handlers
         root.setLevel(level)
-    # Every value this server expands from its environment, kept while it runs,
-    # since a reader's cache can echo one in a later call that never named it.
-    seen: set[str] = set()
 
     def validate_config(
         path: Annotated[str, Field(description="The configuration file.")],
