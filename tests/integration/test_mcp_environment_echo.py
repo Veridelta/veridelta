@@ -10,7 +10,8 @@ token request to Azure's authority gets its form body back. The configuration
 names no `${NAME}`: each reader takes its credentials from the server's
 environment on its own, or from a credentials file it finds there. A control
 turns the server's record of the environment and its blanking of S3's elements
-off, and shows each probe does echo the value.
+off, and shows each probe does echo the value, where its reader repeats the
+error's body.
 """
 
 import multiprocessing
@@ -21,13 +22,15 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from urllib.parse import quote, unquote
 
 import anyio
+import polars as pl
 import pytest
 from mcp import Client
 from mcp.types import CallToolResult
+from packaging.version import Version
 
 from veridelta import mcp_server
 from veridelta.mcp_server import Settings, build_server
@@ -80,14 +83,25 @@ class _Echo(BaseHTTPRequestHandler):
         """Keep request lines out of the test output."""
 
 
+_POLARS_ECHOES_S3: Final = Version(pl.__version__) >= Version("2.0.0")
+"""Whether Polars repeats the body of an S3 error, which holds the credentials.
+
+Before 2.0.0, Polars looks an object up with a HEAD request first, and S3
+answers one with no body, so its error ends at the status and holds no
+credential at all. From 2.0.0 on it sends a GET, whose answer repeats them.
+A probe of every release from 1.39.3, the floor, to 2.1.0 shows the change at
+2.0.0."""
+
+
 @dataclass(frozen=True)
 class _Case:
-    """A reader, a location, and the credentials it takes from the environment."""
+    """A reader, a location, the credentials it takes from the environment, and whether it echoes them."""
 
     scheme: str
     delta: bool
     environment: Callable[[Path, str], dict[str, str]]
     echoed: tuple[str, ...]
+    echoes: bool = True
 
 
 _KEY_ID = "AKIAQ7ZX3LEDGER9READ"
@@ -173,12 +187,18 @@ def _federated(file_name: str) -> Callable[[Path, str], dict[str, str]]:
 
 
 _CASES: dict[str, _Case] = {
-    "polars-keys": _Case("s3", False, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
+    "polars-keys": _Case(
+        "s3", False, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN), _POLARS_ECHOES_S3
+    ),
     "deltalake-keys": _Case("s3", True, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
-    "polars-aws-token": _Case("s3", False, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
+    "polars-aws-token": _Case(
+        "s3", False, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN), _POLARS_ECHOES_S3
+    ),
     "deltalake-aws-token": _Case("s3", True, _keys("AWS_TOKEN"), (_KEY_ID, _SESSION_TOKEN)),
     # deltalake reads no credentials file: it asks for an instance role instead.
-    "polars-profile": _Case("s3", False, _profile, (_PROFILE_KEY_ID, _PROFILE_TOKEN)),
+    "polars-profile": _Case(
+        "s3", False, _profile, (_PROFILE_KEY_ID, _PROFILE_TOKEN), _POLARS_ECHOES_S3
+    ),
     "polars-azure": _Case(
         "az", False, _azure("AZURE_CLIENT_SECRET"), (_CLIENT_ID, _TENANT_ID, _CLIENT_SECRET)
     ),
@@ -290,10 +310,14 @@ def _in_a_child(name: str, folder: Path, endpoint: str, *, control: bool = False
 def test_no_credential_from_the_environment_comes_back(
     name: str, tmp_path: Path, echo_store: str
 ) -> None:
-    """Ensure each tool's answer holds no form of a credential the readers took and sent."""
+    """Ensure each tool's answer holds no form of a credential the readers took and sent.
+
+    Where the reader repeats the error's body, the answer shows the mask.
+    """
+    case = _CASES[name]
     for shown in _in_a_child(name, tmp_path, echo_store):
-        assert "***" in shown
-        for value in _CASES[name].echoed:
+        assert ("***" in shown) is case.echoes
+        for value in case.echoed:
             assert not _holds_a_form(shown, value), value
 
 
@@ -301,9 +325,14 @@ def test_no_credential_from_the_environment_comes_back(
 def test_each_probe_echoes_the_credentials_without_the_mask(
     name: str, tmp_path: Path, echo_store: str
 ) -> None:
-    """Ensure the store does echo a credential, so the test above shows the mask at work."""
+    """Ensure the store does echo a credential, so the test above shows the mask at work.
+
+    A reader that does not repeat the error's body echoes nothing, so the
+    case says which it is, and an answer that differs fails either way.
+    """
+    case = _CASES[name]
     answers = _in_a_child(name, tmp_path, echo_store, control=True)
 
-    assert all(
-        any(_holds_a_form(shown, value) for value in _CASES[name].echoed) for shown in answers
-    )
+    assert [any(_holds_a_form(shown, value) for value in case.echoed) for shown in answers] == [
+        case.echoes
+    ] * len(_TOOLS)
