@@ -244,10 +244,12 @@ A file opens read-only, so a `query` that writes fails and the file never change
 A file's views and macros run as their author wrote them, so a file from someone else is code as well as data. Before any statement runs, the connection is held to the folder that holds the file:
 
 - A view, a macro, or a `query` reads other files and attaches other databases only from that folder and the folders under it. Anything outside it, such as `~/.ssh` or a URL, fails the read with a `Permission Error`.
+- On Windows, DuckDB's own check of the folder does not hold. A drive-relative path with a lowercase letter, such as `c:..\x.csv`, passes the check, and DuckDB then reads it from the parent of the working directory. A share path, such as `\\host\share\x.csv`, makes DuckDB contact that machine before it refuses the path. So on Windows, treat a file from someone else as code you run, or read it through the [MCP server](agents.md#mcp-server), which lets such a file open no other file there.
 - No extension installs or loads by itself, so a URL, which needs DuckDB's `httpfs` extension, fails too. `LOAD` and `INSTALL` fail as well.
+- DuckDB's persistent secrets are off, so a view or a `query` cannot read, store, or drop a secret in your home folder. `CREATE PERSISTENT SECRET` fails, while `CREATE SECRET` keeps a secret in memory for the read.
 - The settings lock, so a `query` cannot change them. `SET threads = 1` fails, while `SET VARIABLE` still works.
 
-Put the files a view or a `query` reads beside the database file, or in a folder under it. The [MCP server](agents.md#mcp-server) holds a file to its roots instead.
+Put the files a view or a `query` reads beside the database file, or in a folder under it. The [MCP server](agents.md#mcp-server) holds a file to its roots instead, and on Windows lets it open no other file.
 
 DuckDB replays the write-ahead log beside the file as it opens it, such as `warehouse.duckdb.wal`, so rows a writer has not yet checkpointed are read. The read fails when a log lies outside the file's folder, or is a link that leads out of it, since DuckDB would replay rows from elsewhere. The check looks at the folder once, as the read starts, so it holds against a file that arrives with such a link, not against another process that changes the folder while DuckDB opens the file.
 

@@ -413,8 +413,8 @@ class Settings:
             those calls returns. At least 1. Defaults to 50.
         allow_queries (bool): Whether a tool may run a side's `query`, which
             runs as written with the configuration's credentials. A DuckDB file
-            still reads other files only from under the roots. Defaults to
-            False.
+            still reads other files only from under the roots, and on Windows
+            none at all. Defaults to False.
         allowed_hosts (tuple[str, ...]): The hosts a side may connect to, in
             lowercase on creation. A side that names any other host, such as a
             database server, an object store's bucket, or a URL's host, is
@@ -708,12 +708,12 @@ def _reading(settings: Settings) -> Generator[None]:
     """Hold what a tool's sides read to the roots, while they read.
 
     A DuckDB file opens only by a path with no link in it, its connection reads
-    other files only from under the roots, and it spills only into a folder the
-    block creates.
-    A Delta Lake or Iceberg scan opens a file on this machine only from under
-    them, and one elsewhere only on an allowed host, each checked just before
-    it is opened. A Delta Lake scan lists and checks its table's files again
-    as it starts, and reads the version it checked.
+    other files only from under the roots, and on Windows none at all, and it
+    spills only into a folder the block creates. A Delta Lake or Iceberg scan
+    opens a file on this machine only from under them, and one elsewhere only
+    on an allowed host, each checked just before it is opened. A Delta Lake
+    scan lists and checks its table's files again as it starts, and reads the
+    version it checked.
     """
     with (
         sandboxed(settings.roots),

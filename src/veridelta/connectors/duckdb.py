@@ -20,12 +20,17 @@ Each session reads time in UTC, so a timestamp with a time zone, or a date cast
 in a `query`, does not depend on the machine. A file's connection reads other
 files only from the file's own folder, or inside `sandboxed`, from the folders
 that names, since a view stored in the file runs whatever its author wrote.
-DuckDB replays the write-ahead logs beside the file as it opens it, so a log
-that lies outside the file's own folder, or leads out of it, is refused. A
-large query spills into a folder this process creates in the system's
-temporary folder, never beside the file. Inside `sandboxed`, a file and its
-logs open only by a path with no link in it, and DuckDB must open the file
-the path named just before.
+It reads and writes no persistent secret. DuckDB replays the write-ahead logs
+beside the file as it opens it, so a log that lies outside the file's own
+folder, or leads out of it, is refused. A large query spills into a folder
+this process creates in the system's temporary folder, never beside the file.
+Inside `sandboxed`, a file and its logs open only by a path with no link in
+it, and DuckDB must open the file the path named just before. On Windows,
+DuckDB's own check of the folders lets a drive-relative path with a lowercase
+letter out, and it resolves a share path, reaching that machine, before it
+refuses it. So a file from someone else is code there, and inside `sandboxed`
+on Windows a connection opens no other file at all, so a query that would
+spill fails.
 
 A token never reaches a log line or an error. It goes to DuckDB as a
 connection setting, never in the connection string, and a failed read is
@@ -205,6 +210,17 @@ class _Sandbox:
 _sandbox: ContextVar[_Sandbox | None] = ContextVar("veridelta_duckdb_sandbox", default=None)
 """What a file's connection is held to, or None for its own folder."""
 
+_FOLDERS_HOLD: Final = os.path.sep != "\\" and sys.platform not in ("cygwin", "msys")
+r"""Whether DuckDB's `allowed_directories` holds a statement to its folders on this system.
+
+On Windows it does not, in DuckDB 1.5. DuckDB reads a drive-relative path with
+a lowercase letter, such as `c:..\x.csv`, as a name under the working
+directory, so it passes the check. Then it opens the path as Windows reads it,
+in the folder above that directory. DuckDB also resolves a share path, which
+reaches the machine it names, before it refuses it. Cygwin and MSYS read such
+paths as Windows does. A test sets this attribute.
+"""
+
 
 @contextmanager
 def sandboxed(directories: Iterable[Path]) -> Generator[None]:
@@ -213,16 +229,18 @@ def sandboxed(directories: Iterable[Path]) -> Generator[None]:
     A `query` runs as written, and so does each view stored in the file. A
     connection to a file reads other files, attaches databases, and loads
     extensions only from under the file's own folder, or, inside the block,
-    only from under `directories`, whatever its statements ask. The MCP server
-    opens every side inside this block. A MotherDuck connection is not held, since its
-    extension loads and reaches MotherDuck over the network.
+    only from under `directories`, whatever its statements ask. On Windows,
+    where DuckDB's folder check does not hold, a connection opened inside the
+    block opens no other file at all. The MCP server opens every side inside
+    this block. A MotherDuck connection is not held, since its extension
+    loads and reaches MotherDuck over the network.
 
     Inside the block, a file and the logs beside it open only by a path with
     no link in it, so hand the path resolved. DuckDB must then hold open the
     file that path named just before, and each log must be as it was, or the
     connection closes and the read fails. A large query spills into a folder
     the block creates in the system's temporary folder, as it opens its first
-    file, and removes at its end.
+    file, and removes at its end. On Windows, such a query fails instead.
 
     Args:
         directories (Iterable[Path]): The folders, resolved.
@@ -470,7 +488,11 @@ def _open(config: DuckDBConfig, token: str | None) -> tuple[Any, str | None]:
 
     A file is held to its own folder, or inside `sandboxed` to the folders
     that names, before any statement of the caller's or any view in the file
-    runs. A connection whose setup fails is closed.
+    runs, with persistent secrets off. On Windows, DuckDB's folder check lets
+    a lowercase drive-relative path out and resolves a share path, so outside
+    `sandboxed` a file from someone else is code there. Inside `sandboxed` on
+    such a system, the file opens no other file at all. A connection whose
+    setup fails is closed.
 
     A file opens as a DuckDB database, whatever its first bytes say, with no
     extension loading by itself. Otherwise DuckDB reads a SQLite file's header
@@ -523,7 +545,7 @@ def _open(config: DuckDBConfig, token: str | None) -> tuple[Any, str | None]:
         else:
             connection = _open_checked(path, sandbox)
             folders = sandbox.folders
-        setup += compile_duckdb_sandbox(folders)
+        setup += compile_duckdb_sandbox(folders, other_files=sandbox is None or _FOLDERS_HOLD)
     else:
         # A read-only MotherDuck connection needs a read-scaling token, so it opens read-write.
         connection = duckdb.connect(config.database, config={"motherduck_token": token})
