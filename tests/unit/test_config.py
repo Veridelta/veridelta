@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from veridelta.config import files_config, load_config, referenced_variables
+from veridelta.config import files_config, load_config, recording_expansions, referenced_variables
 from veridelta.exceptions import ConfigError, ConfigLocation
 from veridelta.models import (
     DatabaseConfig,
@@ -861,6 +861,71 @@ class TestReferencedVariables:
     def test_it_names_none_in_a_malformed_reference(self) -> None:
         """Ensure `${1}`, a regex capture outside the blocks, is no variable."""
         assert referenced_variables("rules:\n  - regex_replace: {'(a)': '${1}'}\n") == []
+
+
+class TestRecordingExpansions:
+    """Validate the values `recording_expansions` sees the loader take from the environment."""
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "${VD_REC_SECRET}",
+            "\\x24{VD_REC_SECRET}",
+            "\\u0024{VD_REC_SECRET}",
+            "\\U00000024{VD_REC_SECRET}",
+            "$\\x7bVD_REC_SECRET}",
+            "$\\\n    {VD_REC_SECRET}",
+        ],
+        ids=["plain", "x-escape", "u-escape", "long-u-escape", "brace-escape", "line-break"],
+    )
+    def test_it_records_each_value_however_the_file_writes_its_reference(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure a reference that YAML decodes into `${NAME}` is recorded, with its setting.
+
+        A double-quoted scalar can write the `$` or the `{` as an escape, or
+        join two lines with an escaped line break, so the file's text holds no
+        `${` where the loader expands one.
+        """
+        monkeypatch.setenv("VD_REC_SECRET", "hunter2-recorded")
+        monkeypatch.delenv("VD_REC_UNSET", raising=False)
+
+        with recording_expansions() as expanded:
+            _load_yaml(
+                tmp_path,
+                f'source:\n  path: "a-{written}.csv"\n'
+                "target:\n  path: ${VD_REC_UNSET:-b.csv}\nprimary_keys: [id]\n",
+            )
+
+        assert expanded == [(("source", "path"), "hunter2-recorded")]
+
+    def test_it_records_nothing_for_a_guessed_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure an unset variable read as its own name is no value from the environment."""
+        monkeypatch.delenv("VD_REC_UNSET", raising=False)
+
+        with recording_expansions() as expanded:
+            _load_yaml(
+                tmp_path,
+                "source:\n  path: ${VD_REC_UNSET}.csv\ntarget:\n  path: b.csv\nprimary_keys: [id]\n",
+                unset_env=[],
+            )
+
+        assert expanded == []
+
+    def test_it_adds_an_inner_recording_to_the_outer_one(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a recording inside another leaves the outer one complete, and ends with its block."""
+        monkeypatch.setenv("VD_REC_SECRET", "hunter2-recorded")
+        text = "source:\n  path: ${VD_REC_SECRET}\ntarget:\n  path: b.csv\nprimary_keys: [id]\n"
+
+        with recording_expansions() as outer, recording_expansions() as inner:
+            _load_yaml(tmp_path, text)
+        _load_yaml(tmp_path, text)
+
+        assert inner == outer == [(("source", "path"), "hunter2-recorded")]
 
 
 class TestFilesConfig:

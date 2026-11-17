@@ -52,7 +52,7 @@ from pydantic import Field
 
 from veridelta import __version__
 from veridelta._checks import error_from_exception, unset_variable_findings
-from veridelta.config import load_config, referenced_variables
+from veridelta.config import load_config, recording_expansions, referenced_variables
 from veridelta.connectors.base import (
     mask_secrets,
     names_another_machine,
@@ -338,6 +338,9 @@ _SHORTEST_MASKED: Final = 4
 
 A shorter value, such as a flag or a small number, would mask ordinary text
 throughout the answer, and holds no secret worth the loss."""
+
+_CUT_CHARACTERS: Final = frozenset("#?")
+"""The characters at which a reader that parses a location as a URL ends its path."""
 
 _R = TypeVar("_R")
 
@@ -1580,6 +1583,41 @@ def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
         )
 
 
+def _refuse_cut_locations(expanded: list[tuple[tuple[str | int, ...], str]]) -> None:
+    """Refuse a location into which a `${NAME}` value puts a `#` or a `?`.
+
+    A reader that parses a location as a URL, such as PyIceberg's, ends its
+    path at either one and can quote the part before it in an error, which
+    holds the start of the value but not all of it, so no mask matches it. A
+    location is a side's `path` or `table_uri`, or a storage option that
+    names a host, such as an endpoint. The message names the setting and not
+    the value.
+
+    Args:
+        expanded (list[tuple[tuple[str | int, ...], str]]): Each setting's path
+            and the value the loader put into it, as `recording_expansions` records them.
+
+    Raises:
+        ConfigError: If such a value holds a `#` or a `?`.
+    """
+    for location, value in expanded:
+        if _CUT_CHARACTERS.isdisjoint(value):
+            continue
+        side, key, option = location[0], location[-1], location[-2]
+        if len(location) == 2 and key in ("path", "table_uri"):
+            setting = str(key)
+        elif option == "storage_options" and str(key).lower() in _HOST_OPTIONS:
+            setting = f"storage option '{key}'"
+        else:
+            continue
+        raise ConfigError(
+            f"The {side} {setting} takes a ${{NAME}} value that holds a '#' or a '?'. A reader "
+            "can end a location there and quote the part before it, which no mask matches, "
+            "so a tool refuses it. Rename what the value names, or run the configuration "
+            "with veridelta run."
+        )
+
+
 def check_configuration(
     settings: Settings, path: str, *, schemas: bool = False, allow_missing_env: bool = False
 ) -> ValidationReport:
@@ -1602,8 +1640,9 @@ def check_configuration(
 
     Raises:
         ConfigError: If the path is outside the roots, or, with `schemas`, the
-            data a side reads on this machine is, or a side names a host the
-            server does not allow.
+            data a side reads on this machine is, a side names a host the
+            server does not allow, or a `${NAME}` value puts a `#` or a `?`
+            into a location.
         ConnectorError: With `schemas`, if the files of a lakehouse table
             cannot be listed.
     """
@@ -1612,11 +1651,13 @@ def check_configuration(
     # The file is loaded once, and the checks connect with what was checked, so a
     # file swapped between the two cannot reach a host the server does not allow.
     try:
-        diff, source, target = load_config(resolved, unset_env=unset)
+        with recording_expansions() as expanded:
+            diff, source, target = load_config(resolved, unset_env=unset)
     except ConfigError as exc:
         findings = [error_from_exception(exc)]
     else:
         if schemas:
+            _refuse_cut_locations(expanded)
             _refuse_hosts(settings, source, target)
             source, target = check_data_paths(settings, source, target)
         with _reading(settings):
@@ -1631,8 +1672,13 @@ def check_configuration(
 
 
 def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceRef]:
-    """Load a configuration a tool opens, refusing data outside the roots or on a host not allowed."""
-    diff, source, target = load_config(resolve_path(settings, path))
+    """Load a configuration a tool opens, refusing data outside the roots or on a host not allowed.
+
+    It also refuses a location that a `${NAME}` value can cut, as `_refuse_cut_locations` says.
+    """
+    with recording_expansions() as expanded:
+        diff, source, target = load_config(resolve_path(settings, path))
+    _refuse_cut_locations(expanded)
     _refuse_hosts(settings, source, target)
     source, target = check_data_paths(settings, source, target)
     return diff, source, target
@@ -1938,7 +1984,11 @@ def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
         text = resolve_path(settings, path).read_text(encoding="utf-8")
     except (ConfigError, OSError, UnicodeDecodeError):
         return ()
-    values = [os.environ.get(name, "") for name in referenced_variables(text)]
+    return _to_mask([os.environ.get(name, "") for name in referenced_variables(text)])
+
+
+def _to_mask(values: list[str]) -> tuple[str, ...]:
+    """Return the environment values to mask, with each SAS signature they hold, leaving out short ones."""
     signatures = [form for value in values for form in _sas_signatures(value)]
     return tuple(value for value in [*values, *signatures] if len(value) >= _SHORTEST_MASKED)
 
@@ -1963,7 +2013,12 @@ def _written_or_encoded(secret: str) -> str:
     """
     pieces: list[str] = []
     for char in secret:
-        encoded = quote(char, safe="")
+        try:
+            # On POSIX, os.environ holds a byte that is not UTF-8 as a lone surrogate.
+            encoded = quote(char, safe="", errors="surrogateescape")
+        except UnicodeEncodeError:
+            # Any other lone surrogate encodes to no bytes, so no reader writes it encoded.
+            encoded = char
         if encoded == char:
             pieces.append(re.escape(char))
             continue
@@ -1975,18 +2030,25 @@ def _written_or_encoded(secret: str) -> str:
     return "".join(pieces)
 
 
-def _secrets_pattern(secrets: tuple[str, ...]) -> re.Pattern[str] | None:
-    """Match any secret, as written or percent-encoded, trying the longest first."""
-    if not secrets:
-        return None
-    ordered = sorted(set(secrets), key=len, reverse=True)
-    return re.compile("|".join(_written_or_encoded(secret) for secret in ordered))
+def _secret_patterns(secrets: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """Match each secret, as written or percent-encoded, longest first.
+
+    A secret that is a URL with a query also counts without its query, as
+    `without_queries` leaves it in a message. Each is masked in turn, so where
+    two overlap, the longer is masked whole.
+    """
+    written = (form for secret in secrets for form in (secret, without_queries(secret)))
+    forms = {form for form in written if len(form) >= _SHORTEST_MASKED}
+    ordered = sorted(forms, key=lambda form: (-len(form), form))
+    return tuple(re.compile(_written_or_encoded(form)) for form in ordered)
 
 
-def _masked(value: Any, secrets: re.Pattern[str] | None) -> Any:
+def _masked(value: Any, secrets: tuple[re.Pattern[str], ...]) -> Any:
     """Mask each secret in every string of an answer, the keys of a mapping included."""
     if isinstance(value, str):
-        return value if secrets is None else secrets.sub("***", value)
+        for secret in secrets:
+            value = secret.sub("***", value)
+        return value
     if isinstance(value, dict):
         mapping = cast("dict[str, Any]", value)
         return {_masked(key, secrets): _masked(item, secrets) for key, item in mapping.items()}
@@ -2005,20 +2067,30 @@ def _answer(
     """Run a tool's work, masking `secrets` in its answer, or fail the call.
 
     The SDK passes only a `ToolError`'s message on to the agent, so every
-    failure becomes one, named as `run --json` names it, with the secrets
-    masked there too, and then each URL's query left out, since a query can
-    hold a credential a reader signed with. A secret is masked as written,
-    or with any of its characters percent-encoded. Unless `row_values` is
-    set, a message that can quote the data is left out.
+    failure becomes one, named as `run --json` names it, with each URL's
+    query left out, since a query can hold a credential a reader signed
+    with, and then the secrets masked there too. Each value the work's loads take
+    from the environment is masked too, however the file spells its
+    reference, such as with a YAML escape that the text `secrets` come from
+    does not show. A secret is masked as written, or with any of its
+    characters percent-encoded. Unless `row_values` is set, a message that
+    can quote the data is left out.
     """
-    pattern = _secrets_pattern(secrets)
-    try:
-        result = work()
-    except (Exception, PanicException) as exc:
-        # A panic in Polars is no `Exception`, and would stop the server instead.
-        failure = _masked(_failure(exc, row_values=row_values), pattern)
-        raise tool_error(without_queries(failure)) from exc
-    return cast("_R", _masked(result, pattern))
+    with recording_expansions() as expanded:
+        try:
+            result = work()
+        except (Exception, PanicException) as exc:
+            # A panic in Polars is no `Exception`, and would stop the server instead.
+            failure = without_queries(_failure(exc, row_values=row_values))
+            raise tool_error(_masked(failure, _expanded_patterns(secrets, expanded))) from exc
+    return cast("_R", _masked(result, _expanded_patterns(secrets, expanded)))
+
+
+def _expanded_patterns(
+    secrets: tuple[str, ...], expanded: list[tuple[tuple[str | int, ...], str]]
+) -> tuple[re.Pattern[str], ...]:
+    """Match `secrets` and each value the loader took from the environment."""
+    return _secret_patterns((*secrets, *_to_mask([value for _, value in expanded])))
 
 
 def build_server(settings: Settings) -> "MCPServer":

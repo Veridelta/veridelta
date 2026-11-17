@@ -9,7 +9,9 @@
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -53,6 +55,35 @@ _Path = tuple[str | int, ...]
 """The keys and indexes from the file's root to a setting, as a location names them."""
 
 
+_EXPANSIONS: ContextVar[list[tuple[_Path, str]] | None] = ContextVar("_EXPANSIONS", default=None)
+"""Where `_substitute` records each value it takes from the environment, while one records."""
+
+
+@contextmanager
+def recording_expansions() -> Generator[list[tuple[_Path, str]]]:
+    """Record each environment value that `load_config` puts into a setting while the block runs.
+
+    The list holds the setting's path and the value, in the order the loader
+    expands them, after YAML has decoded the file's text, so it holds what
+    the loader read however the file spells a reference. An unset variable
+    read as its own name, and a default, are no values from the environment
+    and are left out. A recording made inside another one adds to it too.
+
+    Yields:
+        list[tuple[tuple[str | int, ...], str]]: The path of each setting and
+            the value put into it.
+    """
+    outer = _EXPANSIONS.get()
+    recorded: list[tuple[_Path, str]] = []
+    token = _EXPANSIONS.set(recorded)
+    try:
+        yield recorded
+    finally:
+        _EXPANSIONS.reset(token)
+        if outer is not None:
+            outer.extend(recorded)
+
+
 def _location(path: _Path) -> str:
     """Write a path as the messages name it, such as `source -> path`."""
     return " -> ".join(str(part) for part in path)
@@ -89,6 +120,9 @@ def _substitute(match: re.Match[str], path: _Path, unset: list[str] | None) -> s
             "Set it, or write ${NAME:-default} to give a fallback.",
             locations=(ConfigLocation(path=path),),
         )
+    recorded = _EXPANSIONS.get()
+    if recorded is not None:
+        recorded.append((path, value))
     return value
 
 

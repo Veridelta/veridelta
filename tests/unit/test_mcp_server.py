@@ -80,6 +80,7 @@ from veridelta.mcp_server import (
     suggest,
 )
 from veridelta.models import (
+    ConfigFinding,
     DatabaseConfig,
     DeltaLakeConfig,
     DiffResult,
@@ -3665,7 +3666,7 @@ class TestLakehouseFiles:
 
     def test_it_masks_a_value_whose_characters_are_encoded_in_either_case(self) -> None:
         """Ensure an encoded character counts, whether its hex digits are upper or lower case."""
-        secrets = mcp_server._secrets_pattern(("a+b/c€d",))  # pyright: ignore[reportPrivateUsage] - the mask on its own
+        secrets = mcp_server._secret_patterns(("a+b/c€d",))  # pyright: ignore[reportPrivateUsage] - the mask on its own
 
         masked = mcp_server._masked(  # pyright: ignore[reportPrivateUsage] - the mask on its own
             ["a%2bb%2Fc%e2%82%ACd", "a+b/c€d", "a%2Bb/c€d", "a b/c€d"], secrets
@@ -6427,6 +6428,248 @@ class TestServer:
 
         assert result.is_error is True
         assert _text(result).endswith("RuntimeError: cannot open '***'")
+
+    def test_it_leaves_out_a_query_after_a_value_that_names_its_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a URL whose scheme and host a value holds still loses its query in a failure.
+
+        Masked first, the value would cover the URL's `://`, and nothing would
+        find the URL and its query any more.
+        """
+        monkeypatch.setenv("VD_MCP_URL", "https://acct.blob.core.windows.net")
+        mocker.patch.object(
+            DiffEngine,
+            "check_configs",
+            side_effect=RuntimeError(
+                "GetProperties failed for "
+                "'https://acct.blob.core.windows.net/lake/x?se=2030&sig=c2lnbmF0dXJl&sv=2024'"
+            ),
+        )
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: a.csv\n"
+            "  options:\n    new_columns: ['${VD_MCP_URL}']\nprimary_keys: [id]\n",
+        )
+
+        result = _call(Settings((tmp_path,), allow_row_values=True), {"path": "veridelta.yaml"})
+
+        assert _text(result).endswith("RuntimeError: GetProperties failed for '***/lake/x'")
+
+    def test_it_masks_a_value_with_a_query_in_a_finding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a finding that quotes a value from `${NAME}` with a query comes back masked whole.
+
+        A finding loses each URL's query before the answer is masked, so the
+        value counts without its query too.
+        """
+        value = f"postgresql://analyst:{_SECRET}@db.internal/sales?sslmode=require"
+        monkeypatch.setenv("VD_MCP_URL", value)
+        mocker.patch.object(
+            DiffEngine,
+            "check_configs",
+            return_value=[ConfigFinding(severity="error", message=f"cannot open '{value}'")],
+        )
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: a.csv\n"
+            "  options:\n    new_columns: ['${VD_MCP_URL}']\nprimary_keys: [id]\n",
+        )
+
+        result = _call(Settings((tmp_path,), allow_row_values=True), {"path": "veridelta.yaml"})
+
+        assert result.structured_content is not None
+        assert result.structured_content["errors"] == ["cannot open '***'"]
+
+    def test_it_masks_the_longer_of_two_values_that_overlap(self) -> None:
+        """Ensure the longer of two overlapping values is masked whole, and a short form is not one.
+
+        A value that is all query has a form without it too short to mask, so
+        ordinary text such as `://` stays.
+        """
+        secrets = mcp_server._secret_patterns(  # pyright: ignore[reportPrivateUsage] - the mask on its own
+            ("analyst", "ystVeryLongSecretPassword", "://?abcd")
+        )
+
+        masked = mcp_server._masked(  # pyright: ignore[reportPrivateUsage] - the mask on its own
+            ["analystVeryLongSecretPassword", "s3://b/x", "://?abcd"], secrets
+        )
+
+        assert masked == ["anal***", "s3://b/x", "***"]
+
+    @pytest.mark.parametrize(
+        "written",
+        [
+            "\\x24{VD_MCP_SECRET}",
+            "\\u0024{VD_MCP_SECRET}",
+            "$\\x7bVD_MCP_SECRET}",
+            "$\\\n    {VD_MCP_SECRET}",
+        ],
+        ids=["x-escape", "u-escape", "brace-escape", "line-break"],
+    )
+    def test_it_masks_a_value_whose_reference_a_yaml_escape_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, written: str
+    ) -> None:
+        """Ensure a value comes back masked when the file writes its `${NAME}` with a YAML escape.
+
+        YAML decodes a double-quoted scalar before the loader expands it, so
+        the file's text holds no `${` there, and the value is masked as the
+        loader takes it, in an error and in a result.
+        """
+        monkeypatch.setenv("VD_MCP_SECRET", _SECRET)
+        (tmp_path / "a.csv").write_text("id,x\n1,2\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            f'source:\n  path: "{written}.csv"\ntarget:\n  path: a.csv\n'
+            f'  options:\n    new_columns: [id, "{written}"]\nprimary_keys: [id]\n',
+        )
+        settings = Settings((tmp_path,))
+
+        failed = _call(settings, {"path": "veridelta.yaml"}, tool="run_comparison")
+        described = _call(
+            settings, {"path": "veridelta.yaml", "side": "target"}, tool="describe_schema"
+        )
+
+        assert failed.is_error is True
+        assert "***.csv" in _text(failed)
+        assert described.structured_content == {
+            "side": "target",
+            "columns": {"id": "Int64", "***": "Int64"},
+        }
+        for result in (failed, described):
+            assert _SECRET not in json.dumps(result.structured_content) + _text(result)
+
+    @pytest.mark.parametrize("value", [f"{_SECRET}#x", f"{_SECRET}?x"], ids=["hash", "question"])
+    @pytest.mark.parametrize(
+        ("side", "setting"),
+        [
+            ("  path: b-${VD_MCP_CUT}.csv\n", "path"),
+            (
+                "  type: iceberg\n  table_uri: abfs://lake/x${VD_MCP_CUT}/metadata/v1.metadata.json\n"
+                "  storage_options:\n    adls.account-name: acct\n    adls.account-key: a2V5\n",
+                "table_uri",
+            ),
+            (
+                "  type: delta\n  table_uri: s3://bucket/t\n"
+                "  storage_options:\n    aws_endpoint: https://minio.internal/${VD_MCP_CUT}\n",
+                "storage option 'aws_endpoint'",
+            ),
+            (
+                "  path: s3://bucket/b.parquet\n  format: parquet\n  options:\n"
+                "    storage_options:\n      endpoint_url: https://minio.internal/${VD_MCP_CUT}\n",
+                "storage option 'endpoint_url'",
+            ),
+        ],
+        ids=["path", "table_uri", "storage-option", "file-storage-option"],
+    )
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
+    def test_it_refuses_a_location_a_value_can_cut(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        side: str,
+        setting: str,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a `${NAME}` value that puts a `#` or a `?` into a location is refused, unread.
+
+        A reader such as PyIceberg ends the location there and quotes the part
+        before it, which holds the start of the value and so matches no mask.
+        """
+        monkeypatch.setenv("VD_MCP_CUT", value)
+        hosts = mocker.spy(mcp_server, "_refuse_hosts")
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(tmp_path, f"source:\n  path: a.csv\ntarget:\n{side}primary_keys: [id]\n")
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True, allowed_hosts=_AZURE_HOSTS),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        assert result.is_error is True
+        assert f"The target {setting} takes a ${{NAME}} value that holds" in _text(result)
+        assert _SECRET not in _text(result)
+        hosts.assert_not_called()
+
+    def test_it_reads_a_value_with_a_cut_character_outside_a_location(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a `#` or a `?` from `${NAME}` passes in a setting no reader parses as a URL."""
+        monkeypatch.setenv("VD_MCP_CUT", f"{_SECRET}#x?y")
+        (tmp_path / "a.csv").write_text("id,x\n1,2\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: a.csv\n"
+            "  options:\n    new_columns: [id, '${VD_MCP_CUT}']\nprimary_keys: [id]\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,)),
+            {"path": "veridelta.yaml", "side": "target"},
+            tool="describe_schema",
+        )
+
+        assert result.structured_content == {
+            "side": "target",
+            "columns": {"id": "Int64", "***": "Int64"},
+        }
+
+    @pytest.mark.skipif(
+        not hasattr(os, "environb"), reason="Windows keeps its environment as text, with no bytes."
+    )
+    def test_it_masks_a_value_whose_bytes_are_not_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a variable whose bytes are not UTF-8 is masked, and a tool still answers.
+
+        On POSIX, os.environ holds such a byte as a lone surrogate, which no
+        text encoding takes as it is.
+        """
+        monkeypatch.setitem(os.environb, b"VD_MCP_LATIN1", b"p\xe4ssword-" + _SECRET.encode())
+        value = os.environ["VD_MCP_LATIN1"]
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: a.csv\n"
+            "  options:\n    new_columns: ['${VD_MCP_LATIN1}']\nprimary_keys: [id]\n",
+        )
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        checked = _call(settings, {"path": "veridelta.yaml"})
+        mocker.patch.object(
+            DiffEngine, "check_configs", side_effect=RuntimeError(f"cannot open '{value}'")
+        )
+        failed = _call(settings, {"path": "veridelta.yaml"})
+
+        assert value == "p\udce4ssword-" + _SECRET
+        assert checked.structured_content is not None
+        assert checked.structured_content["valid"] is True
+        assert _text(failed).endswith("RuntimeError: cannot open '***'")
+
+    def test_it_masks_a_lone_surrogate_as_written_or_as_the_byte_it_stands_for(self) -> None:
+        """Ensure a byte held as a surrogate counts encoded, and any other surrogate as written."""
+        secrets = mcp_server._secret_patterns(("p\udce4ssword", "\ud800word"))  # pyright: ignore[reportPrivateUsage] - the mask on its own
+
+        masked = mcp_server._masked(  # pyright: ignore[reportPrivateUsage] - the mask on its own
+            ["p\udce4ssword", "p%E4ssword", "p%e4ssword", "\ud800word", "pässword"], secrets
+        )
+
+        assert masked == ["***", "***", "***", "***", "pässword"]
 
     def test_it_fails_the_call_when_polars_panics(
         self, tmp_path: Path, mocker: MockerFixture
