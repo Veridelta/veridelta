@@ -1846,6 +1846,25 @@ class TestDuckDBSelect:
             "SET autoload_known_extensions = false",
             "SET allowed_directories = ['/data/', '/it''s/']",
             "SET enable_external_access = false",
+            "SET allow_persistent_secrets = false",
+            "SET lock_configuration = true",
+        )
+
+    def test_it_disables_the_local_file_system_after_access_is_cut(self) -> None:
+        """Ensure a connection held to no other file drops the file system before the lock.
+
+        Cutting access resolves the open database's path, so the file system
+        goes after it.
+        """
+        statements = compile_duckdb_sandbox(["/data/"], other_files=False)
+
+        assert statements == (
+            "SET autoinstall_known_extensions = false",
+            "SET autoload_known_extensions = false",
+            "SET allowed_directories = ['/data/']",
+            "SET enable_external_access = false",
+            "SET allow_persistent_secrets = false",
+            "SET disabled_filesystems = 'LocalFileSystem'",
             "SET lock_configuration = true",
         )
 

@@ -202,7 +202,7 @@ target:
 primary_keys: ["order_id"]
 ```
 
-Veridelta opens one connection, the same way a local read does, and runs each statement there. A file opens read-only and reads other files only from its own folder, and every session reads time in UTC; see [DuckDB and MotherDuck](sources.md#duckdb-and-motherduck). Everything above applies, with these additions:
+Veridelta opens one connection, the same way a local read does, and runs each statement there. A file opens read-only and reads other files only from its own folder, except on Windows, where DuckDB's own check of the folder does not hold; see [DuckDB files](sources.md#duckdb-files). Every session reads time in UTC; see [DuckDB and MotherDuck](sources.md#duckdb-and-motherduck). Everything above applies, with these additions:
 
 - Both sides name a `table`, and their `database` and `motherduck_token` values match, so one connection reaches both tables. Write `database` the same way on both sides, since `./warehouse.duckdb` and `warehouse.duckdb` count as different. A `query` cannot be compared in place.
 - Set `pushdown` on both sides or on neither. A pair where only one side sets it raises `ConfigError` instead of reading both.

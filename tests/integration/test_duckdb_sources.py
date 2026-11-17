@@ -23,6 +23,7 @@ import pytest
 from pytest_mock import MockerFixture
 
 from veridelta.connectors import DuckDBConnector, DuckDBPushdownSession
+from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.duckdb import sandboxed
 from veridelta.engine import DiffEngine, LoaderFactory
 from veridelta.exceptions import ConfigError, ConnectorError
@@ -655,9 +656,14 @@ class TestDuckDBPushdown:
             session.close()
 
     def test_it_reads_only_files_under_its_folders_when_sandboxed(
-        self, tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure a query reads a file under the folders, and none beside them, even by prefix."""
+        """Ensure a query reads a file under the folders, and none beside them, even by prefix.
+
+        This is DuckDB's own check of the folders, which holds on Linux and
+        macOS, so it runs here on every system.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", True)
         root = tmp_path / "root"
         root.mkdir()
         database = _duckdb(root / "warehouse.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
@@ -686,6 +692,122 @@ class TestDuckDBPushdown:
         assert inside["id"].to_list() == [1]
         assert table["id"].to_list() == [1]
         assert "hunter2" not in str(refused.value)
+
+    def test_it_opens_no_other_file_when_sandboxed_where_duckdbs_folders_do_not_hold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a sandboxed file reads its own tables and views, and opens no other file.
+
+        On Windows, DuckDB's check of the folders lets some paths out, so a
+        query or a view may open no file at all there, even under the folders.
+        DuckDB refuses its file system by name before it resolves the path.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", False)
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "a.csv").write_text("id\n1\n", encoding="utf-8", newline="")
+        _duckdb(root / "other.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        database = _duckdb(
+            root / "warehouse.duckdb",
+            "CREATE TABLE t AS SELECT 1 AS id",
+            "CREATE VIEW plus AS SELECT id + 1 AS id FROM t",
+            f"CREATE VIEW csv AS SELECT * FROM read_csv('{root / 'a.csv'}')",
+        )
+
+        def read(table: str | None = None, query: str | None = None) -> pl.DataFrame:
+            connector = DuckDBConnector(DuckDBConfig(database=database, table=table, query=query))
+            connector.connect()
+            return connector.lazyframe().collect()
+
+        disabled = "File system LocalFileSystem has been disabled"
+        with sandboxed([root]):
+            table = read(table="t")
+            view = read(table="plus")
+            joined = read(query="SELECT t.id FROM t JOIN plus ON plus.id = t.id + 1")
+            with pytest.raises(ConnectorError, match=disabled):
+                read(table="csv")
+            for query in (
+                f"SELECT * FROM read_csv('{root / 'a.csv'}')",
+                f"SELECT * FROM glob('{root / '*'}')",
+                f"ATTACH '{root / 'other.duckdb'}' AS other; SELECT 1 AS id",
+            ):
+                with pytest.raises(ConnectorError, match=disabled):
+                    read(query=query)
+            with pytest.raises(ConnectorError, match="lock"):
+                read(query="SET disabled_filesystems = ''; SELECT 1 AS id")
+        # Outside the block, a file still reads the files beside it.
+        beside = read(table="csv")
+
+        assert table["id"].to_list() == [1]
+        assert view["id"].to_list() == [2]
+        assert joined["id"].to_list() == [1]
+        assert beside["id"].to_list() == [1]
+
+    @pytest.mark.parametrize(
+        ("held", "folders_hold"),
+        [(False, True), (True, True), (True, False)],
+        ids=["beside-the-file", "sandboxed", "sandboxed-where-folders-do-not-hold"],
+    )
+    def test_it_reads_and_writes_no_persistent_secret(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held: bool, folders_hold: bool
+    ) -> None:
+        """Ensure a file's connection lists, stores, and drops no secret in the home folder.
+
+        DuckDB 1.5.0 to 1.5.2 keep persistent secrets in the home folder,
+        whatever the folders or the disabled file system say. So without this,
+        a `query` or a view could read the user's secret, delete it, or store
+        one that each later DuckDB session loads. A secret in memory still works.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", folders_hold)
+        home = tmp_path / "home"
+        home.mkdir()
+        # DuckDB 1.5.0 to 1.5.2 find the home folder only through HOME or
+        # USERPROFILE. On Windows, DuckDB reads those through the C runtime,
+        # which a change to os.environ after start does not reach, so every
+        # connection here is also given the home folder as a setting.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        connect = duckdb.connect
+
+        def at_home(*args: Any, **kwargs: Any) -> Any:
+            kwargs["config"] = {**(kwargs.get("config") or {}), "home_directory": str(home)}
+            return connect(*args, **kwargs)
+
+        monkeypatch.setattr(duckdb, "connect", at_home)
+        with duckdb.connect() as user:
+            user.execute("CREATE PERSISTENT SECRET mine (TYPE http, BEARER_TOKEN 'marker')")
+        stored = sorted(home.rglob("*"))
+        root = tmp_path / "root"
+        root.mkdir()
+        database = _duckdb(
+            root / "warehouse.duckdb",
+            "CREATE TABLE t AS SELECT 1 AS id",
+            "CREATE VIEW listed AS SELECT count(*) AS id FROM duckdb_secrets()",
+        )
+
+        def read(table: str | None = None, query: str | None = None) -> pl.DataFrame:
+            connector = DuckDBConnector(DuckDBConfig(database=database, table=table, query=query))
+            if held:
+                with sandboxed([root]):
+                    connector.connect()
+            else:
+                connector.connect()
+            return connector.lazyframe().collect()
+
+        listed = read(table="listed")
+        with pytest.raises(ConnectorError, match="Persistent secrets are disabled"):
+            read(query="CREATE PERSISTENT SECRET planted (TYPE http, BEARER_TOKEN 'p'); SELECT 1")
+        with pytest.raises(ConnectorError, match="non-existent secret"):
+            read(query="DROP PERSISTENT SECRET mine; SELECT 1 AS id")
+        in_memory = read(
+            query="CREATE SECRET kept (TYPE http, BEARER_TOKEN 'm'); "
+            "SELECT count(*) AS id FROM duckdb_secrets()"
+        )
+
+        assert [path.name for path in stored] == [".duckdb", "stored_secrets", "mine.duckdb_secret"]
+        assert listed["id"].to_list() == [0]
+        assert in_memory["id"].to_list() == [1]
+        assert sorted(home.rglob("*")) == stored
 
     def test_it_compares_a_view_that_casts_what_polars_cannot_read(self, tmp_path: Path) -> None:
         """Ensure an INTERVAL column fails the probe by name, and a casting view compares."""
@@ -847,7 +969,11 @@ class TestDuckDBFilesBesideTheDatabase:
     def test_it_spills_into_a_folder_of_the_sandboxs_own(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Ensure the MCP server's reads spill outside the roots, into a folder it removes."""
+        """Ensure the MCP server's reads spill outside the roots, into a folder it removes.
+
+        This holds where DuckDB's folders hold, so it runs here on every system.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", True)
         database = _duckdb(tmp_path / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
         monkeypatch.chdir(tmp_path)
 
@@ -856,4 +982,24 @@ class TestDuckDBFilesBesideTheDatabase:
 
         assert not folder.is_relative_to(tmp_path)
         assert not folder.exists()
+        assert sorted(path.name for path in tmp_path.iterdir()) == ["w.duckdb"]
+
+    @pytest.mark.usefixtures("_little_memory")
+    def test_it_spills_nowhere_when_sandboxed_where_duckdbs_folders_do_not_hold(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a sandboxed query that would spill fails, and leaves no file in the roots.
+
+        On Windows, a sandboxed file opens no other file, and a spill is one.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", False)
+        database = _duckdb(tmp_path / "w.duckdb", "CREATE TABLE t AS SELECT 1 AS id")
+        monkeypatch.chdir(tmp_path)
+
+        with (
+            sandboxed([tmp_path]),
+            pytest.raises(ConnectorError, match="File system LocalFileSystem has been disabled"),
+        ):
+            _spilled(database)
+
         assert sorted(path.name for path in tmp_path.iterdir()) == ["w.duckdb"]

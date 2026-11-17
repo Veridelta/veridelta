@@ -221,11 +221,52 @@ class TestDuckDBConnector:
         held = [call.execute("SET TimeZone = 'UTC'")]
         # Each folder ends in the platform's separator, so `/data` admits no `/data-old`.
         folder = f"{Path('/data')}{os.sep}"
-        held += [call.execute(statement) for statement in compile_duckdb_sandbox([folder])]
+        # On Windows the sandbox also turns off DuckDB's local file system.
+        other_files = duckdb_connector._FOLDERS_HOLD
+        sandbox = compile_duckdb_sandbox([folder], other_files=other_files)
+        held += [call.execute(statement) for statement in sandbox]
         assert connection.mock_calls[: len(held) + 1] == [
             *held,
             call.sql('SELECT * FROM "main"."orders"'),
         ]
+
+    @pytest.mark.parametrize("folders_hold", [True, False])
+    def test_it_opens_no_other_file_when_sandboxed_where_duckdbs_folders_do_not_hold(
+        self,
+        opening: _Opening,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        folders_hold: bool,
+    ) -> None:
+        """Ensure a sandboxed file opens no other file on a system such as Windows.
+
+        There DuckDB's folder check lets some paths out, and the server cannot
+        see the paths a query or a view names.
+        """
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", folders_hold)
+        connection = opening(tmp_path / "warehouse.duckdb").connect.return_value
+        monkeypatch.chdir(tmp_path)
+
+        with sandboxed([Path("/data")]):
+            DuckDBConnector(_FILE).connect()
+
+        sandbox = compile_duckdb_sandbox([f"{Path('/data')}{os.sep}"], other_files=folders_hold)
+        held = [call.execute("SET TimeZone = 'UTC'"), *map(call.execute, sandbox)]
+        assert connection.mock_calls[: len(held)] == held
+
+    def test_it_holds_a_file_outside_the_sandbox_to_its_folder_wherever_it_runs(
+        self, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ensure a file outside the MCP server still reads the files beside it, on Windows too."""
+        monkeypatch.setattr(duckdb_connector, "_FOLDERS_HOLD", False)
+        monkeypatch.chdir(tmp_path)
+        connection = _driver(mocker).connect.return_value
+
+        DuckDBConnector(_FILE).connect()
+
+        sandbox = compile_duckdb_sandbox([f"{tmp_path.resolve()}{os.sep}"])
+        held = [call.execute("SET TimeZone = 'UTC'"), *map(call.execute, sandbox)]
+        assert connection.mock_calls[: len(held)] == held
 
     @pytest.mark.parametrize(
         ("database", "folder"),
