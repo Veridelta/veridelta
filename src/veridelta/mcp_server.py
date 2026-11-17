@@ -474,8 +474,8 @@ class Settings:
             runs as written with the configuration's credentials. A DuckDB file
             still reads other files only from under the roots, and on Windows
             none at all. Defaults to False.
-        allowed_hosts (tuple[str, ...]): The hosts a side may connect to, in
-            lowercase on creation. A side that names any other host, such as a
+        allowed_hosts (tuple[str, ...]): The hosts a side may connect to, each
+            in lowercase, as `allowed_host` checks on creation. A side that names any other host, such as a
             database server, an object store's bucket, or a URL's host, is
             refused before it connects. Defaults to none, so every tool reads
             only data on this machine, MotherDuck, Hugging Face, or BigQuery with
@@ -493,7 +493,7 @@ class Settings:
 
         Raises:
             ConfigError: If no root is given, `max_rows` is below 1, or an
-                allowed host is not a host.
+                allowed host is not a host in lowercase.
         """
         if not self.roots:
             raise ConfigError("The MCP server needs at least one folder to read from.")
@@ -506,25 +506,37 @@ class Settings:
 
 
 def allowed_host(text: str) -> str:
-    """Check a host the person who starts the server allows, and write it in lowercase.
+    """Check a host the person who starts the server allows, which is in lowercase.
+
+    `_refuse_host` compares a side's host in lowercase, as DNS does. A reader
+    keeps a bucket's case, though, as `_refuse_capital_bucket` says, and the
+    server cannot tell a bucket from a DNS name here. So it takes a host only
+    in lowercase: writing `LAKE` in lowercase would allow bucket `lake`,
+    another bucket, which nobody named.
 
     Args:
         text (str): A host name, an IPv4 address, or an IPv6 address in
-            brackets, with no scheme, login, or port.
+            brackets, with no scheme, login, or port, in lowercase.
 
     Returns:
-        str: The host in lowercase.
+        str: The host, as given.
 
     Raises:
         ConfigError: If the text is not a host written that way.
     """
-    host = text.lower()
-    if not text.isascii() or _HOST.fullmatch(host) is None:
+    if not text.isascii() or _HOST.fullmatch(text.lower()) is None:
         raise ConfigError(
             f"--allow-host takes a host name, an IPv4 address, or an IPv6 address in "
             f"brackets, with no scheme or port, got {text!r}."
         )
-    return host
+    if _CAPITAL.search(text):
+        raise ConfigError(
+            f"--allow-host takes a host in lowercase, got {text!r}. A bucket named in "
+            "another case is another bucket, so the server does not lowercase it. Write a "
+            "DNS name in lowercase. A bucket with a capital letter does not open on this "
+            "server, so read it with veridelta run."
+        )
+    return text
 
 
 class RunReport(TypedDict):
@@ -2033,9 +2045,9 @@ def _refuse_capital_bucket(named: str, location: str, shape: re.Pattern[str] = _
     if hosts and not special and _CAPITAL.search(hosts[0][1]):
         raise ConfigError(
             f"{named} names its bucket, container, or host with a capital letter. A reader "
-            "keeps the case of that name for any scheme but http and https, and a bucket "
-            "named in another case is another bucket, which this server did not check. "
-            "Write the name in lowercase."
+            "keeps the case of that name for any scheme whose host a URL parser does not "
+            "lowercase, such as s3, and a bucket named in another case is another bucket, "
+            "which this server did not check. Write the name in lowercase."
         )
 
 

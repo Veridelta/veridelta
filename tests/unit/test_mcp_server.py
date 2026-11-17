@@ -391,12 +391,24 @@ class TestSettings:
         with pytest.raises(ConfigError, match="at least 1, got 0"):
             Settings((tmp_path,), max_rows=0)
 
-    def test_it_allows_no_host_by_default_and_lowercases_each(self, tmp_path: Path) -> None:
-        """Ensure a server connects to no host unless named, and compares hosts in any case."""
-        settings = Settings((tmp_path,), allowed_hosts=("DB.Example.com", "10.0.0.5", "[::1]"))
+    def test_it_allows_no_host_by_default_and_each_host_it_names(self, tmp_path: Path) -> None:
+        """Ensure a server connects to no host unless named, and keeps each host as given."""
+        settings = Settings((tmp_path,), allowed_hosts=("db.example.com", "10.0.0.5", "[::1]"))
 
         assert Settings((tmp_path,)).allowed_hosts == ()
         assert settings.allowed_hosts == ("db.example.com", "10.0.0.5", "[::1]")
+
+    @pytest.mark.parametrize("host", ["LAKE", "DB.Example.com", "[::FFFF:1]"])
+    def test_it_refuses_an_allowed_host_with_a_capital_letter(
+        self, tmp_path: Path, host: str
+    ) -> None:
+        """Ensure an allowed host with a capital letter is refused, and not lowercased.
+
+        A reader keeps a bucket's case, so lowercasing `LAKE` would allow
+        bucket `lake`, which the operator never named.
+        """
+        with pytest.raises(ConfigError, match=r"^--allow-host takes a host in lowercase"):
+            Settings((tmp_path,), allowed_hosts=(host,))
 
     @pytest.mark.parametrize(
         "host",
@@ -6228,6 +6240,10 @@ class TestAllowedHosts:
             pytest.param("https://ACCT.blob.core.windows.net/lake/a.parquet", id="https"),
             pytest.param("HTTPS://Acct.Blob.Core.Windows.Net/lake/a.parquet", id="https-scheme"),
             pytest.param("s3://lake/T/A.parquet", id="path"),
+            pytest.param("ftp://Lake/a.parquet", id="ftp"),
+            pytest.param("FTP://Lake/a.parquet", id="ftp-scheme"),
+            pytest.param("ws://Lake/a.parquet", id="ws"),
+            pytest.param("wss://Lake/a.parquet", id="wss"),
         ],
     )
     def test_it_reads_a_file_whose_dns_host_or_path_holds_a_capital_letter(
@@ -6235,8 +6251,8 @@ class TestAllowedHosts:
     ) -> None:
         """Ensure a DNS host keeps any case, and so does a path after the bucket.
 
-        A URL parser lowercases the host of `https`, and an Azure account's
-        host after an `@` is a DNS name too.
+        A URL parser lowercases the host of `https`, `ftp`, `ws`, and `wss`,
+        and an Azure account's host after an `@` is a DNS name too.
         """
         settings = Settings((tmp_path,), allowed_hosts=_DOT_SEGMENT_HOSTS)
 
