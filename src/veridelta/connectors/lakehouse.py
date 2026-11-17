@@ -189,16 +189,24 @@ class DeltaLogCopy:
 
     Attributes:
         folder (Path): The folder.
-        size (int): The bytes copied into it so far.
+        block (int): The room the folder's file system gives a file at the
+            least: its `st_blksize`, or 4 KiB, whichever is larger.
+        files (int): The files copied into it so far, and the folders made
+            for them.
+        size (int): The room they take: the files' bytes, and a block for
+            each file and folder.
     """
 
     def __init__(self) -> None:
         """Make the folder in the system's temporary folder, with mode 0o700, as `mkdtemp` makes it.
 
         On Windows before Python 3.13, the mode is not applied, and the folder
-        takes the access of the temporary folder it lies in.
+        takes the access of the temporary folder it lies in. Windows gives no
+        `st_blksize`, so a block there counts 4 KiB.
         """
         self.folder = Path(tempfile.mkdtemp(prefix="veridelta-delta-log-"))
+        self.block = max(getattr(os.stat(self.folder), "st_blksize", 0), 4096)
+        self.files = 0
         self.size = 0
         weakref.finalize(self, shutil.rmtree, self.folder, ignore_errors=True)
 

@@ -3724,10 +3724,10 @@ class TestLakehouseFiles:
         """
         _ROW.write_delta(tmp_path / "events")
         log = tmp_path / "events" / "_delta_log"
-        (log / "notes").write_bytes(bytes(4096))
+        (log / "notes").write_bytes(bytes(2 << 20))
         (log / "_sidecars").mkdir()
-        (log / "_sidecars" / f"{1:020}.json").write_bytes(bytes(4096))
-        monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 4096)
+        (log / "_sidecars" / f"{1:020}.json").write_bytes(bytes(2 << 20))
+        monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 1 << 20)
         copied = mocker.spy(mcp_server, "_copy_checked")
         listed = mocker.spy(mcp_server, "_refuse_listed")
         _write(
@@ -3745,21 +3745,111 @@ class TestLakehouseFiles:
             log / "_sidecars" / f"{1:020}.json",
         }
 
-    def test_it_refuses_a_delta_log_larger_than_it_copies(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("version", "hint", "start"),
+        [
+            (None, None, 3),
+            (None, {"version": 1, "size": 3}, 1),
+            (None, "{", 3),
+            (2, None, 1),
+            (2, {"version": 3, "size": 3}, 1),
+            (0, None, 0),
+        ],
+        ids=["latest", "earlier-hint", "unread-hint", "version", "later-hint", "first"],
+    )
+    def test_it_copies_a_delta_log_from_the_checkpoint_deltalake_starts_at(
+        self,
+        tmp_path: Path,
+        mocker: MockerFixture,
+        version: int | None,
+        hint: dict[str, int] | str | None,
+        start: int,
     ) -> None:
-        """Ensure a log whose files add up to more than the copy holds is refused, not copied whole.
+        """Ensure the copy holds the files of the log from the checkpoint deltalake loads the version from.
+
+        deltalake reads the latest complete checkpoint at or before the
+        version, and the commits after it, so an earlier file costs the copy
+        nothing. deltalake before 1.0 starts at the checkpoint
+        `_last_checkpoint` names, at or before the version, even an earlier
+        one, so the copy starts there then. The table loads from the copy.
+        """
+        table = tmp_path / "events"
+        for at in range(5):
+            _ROW.write_delta(table, mode="append")
+            if at in (1, 3):
+                DeltaTable(str(table)).create_checkpoint()
+        if hint is not None:
+            text = hint if isinstance(hint, str) else json.dumps(hint)
+            (table / "_delta_log" / "_last_checkpoint").write_text(text, encoding="utf-8")
+        copied = mocker.spy(mcp_server, "_copy_checked")
+        target = DeltaLakeConfig(table_uri="events", version=version)
+
+        check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        names = sorted(Path(call.args[0]).name for call in copied.call_args_list)
+        expected = [
+            name
+            for name in sorted(each.name for each in (table / "_delta_log").iterdir())
+            if name == "_last_checkpoint" or int(name[:20]) >= start
+        ]
+        assert names == expected
+
+    def test_it_starts_a_delta_log_copy_at_a_checkpoint_only_once_each_part_is_there(self) -> None:
+        """Ensure a checkpoint in parts starts the copy only when each of its parts is in the log.
+
+        deltalake skips a checkpoint with a part missing, and reads an earlier
+        one, which the copy then holds too.
+        """
+        names = [
+            f"{2:020}.checkpoint.parquet",
+            f"{4:020}.checkpoint.{1:010}.{2:010}.parquet",
+            f"{4:020}.checkpoint.{2:010}.{2:010}.parquet",
+            f"{6:020}.checkpoint.{1:010}.{2:010}.parquet",
+            f"{8:020}.checkpoint.{uuid.UUID(int=8)}.json",
+            f"{8:020}.json",
+        ]
+        start = mcp_server._delta_log_start  # pyright: ignore[reportPrivateUsage] - the names alone choose where the copy starts
+
+        assert start(names, None) == 8
+        assert start(names, 7) == 4
+        assert start(names, 3) == 2
+        assert start(names, 1) == 0
+
+    @pytest.mark.parametrize("limit", ["bytes", "files", "room"])
+    def test_it_refuses_a_delta_log_larger_than_it_copies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, limit: str
+    ) -> None:
+        """Ensure a log that would take more files or room than the copy holds is refused, not copied whole.
 
         Files under a root that take no room there, such as sparse files or
-        links to one file, would otherwise fill the system's temporary folder.
+        hard links named as commits to one empty file, would otherwise fill
+        the system's temporary folder: each copy is a file of its own, and
+        takes a block even when empty. So each file counts a block and its
+        bytes, and the files are counted too.
         """
         _ROW.write_delta(tmp_path / "events")
-        (tmp_path / "events" / "_delta_log" / f"{1:020}.json").write_bytes(bytes(4096))
-        monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 4096)
+        log = tmp_path / "events" / "_delta_log"
+        if limit == "bytes":
+            (log / f"{1:020}.json").write_bytes(bytes(2 << 20))
+            monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 1 << 20)
+        else:
+            (tmp_path / "empty").touch()
+            for version in range(1, 61):
+                os.link(tmp_path / "empty", log / f"{version:020}.json")
+            if limit == "files":
+                monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_FILES", 40)
+            else:
+                # The bytes of all 61 files come to less than one block.
+                monkeypatch.setattr(mcp_server, "_DELTA_LOG_COPY_LIMIT", 40 * 4096)
+        copied = mocker.spy(mcp_server, "_copy_checked")
         target = DeltaLakeConfig(table_uri="events")
 
-        with pytest.raises(ConnectorError, match="larger than the 1 GiB this server copies"):
+        with pytest.raises(
+            ConnectorError, match=r"pass the 10,000 files and folders, or the 1 GiB"
+        ):
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), target)
+
+        assert copied.call_count <= 41
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="A '\\' separates a Windows path's folders."
