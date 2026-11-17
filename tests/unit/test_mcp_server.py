@@ -7653,6 +7653,45 @@ class TestEnvironmentCredentials:
             assert "ConnectorError: rejected ***" in _text(result)
             assert not _holds_a_form(_shown(result), token)
 
+    def test_it_keeps_no_token_a_file_held_before(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the mask of a call after a rotation holds the new token, and not the old one.
+
+        No reader sends a token its file no longer holds, and keeping each
+        one would grow the mask for as long as the server runs.
+        """
+        token_file = tmp_path / "token"
+        tokens = [
+            "eyJhbGciOiJSUzI1NiJ9.b2xk.c2lnbmF0dXJl",
+            "eyJhbGciOiJSUzI1NiJ9.bmV3ZXI.c2lnbmVk",
+        ]
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+        mocker.patch.object(
+            DiffEngine, "read_schema", side_effect=ConnectorError("refused", quotes_data=True)
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+        settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",))
+        masked = mocker.spy(mcp_server, "_mask_pattern")
+
+        async def mask_of_each_call(client: Client) -> list[list[frozenset[str]]]:
+            used: list[list[frozenset[str]]] = []
+            for content in tokens:
+                token_file.write_text(content, encoding="utf-8")
+                masked.reset_mock()
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                )
+                used.append([call.args[0] for call in masked.call_args_list])
+            return used
+
+        first, second = _with_client(settings, mask_of_each_call)
+
+        assert first
+        assert second
+        assert all(tokens[0] in values and tokens[1] not in values for values in first)
+        assert all(tokens[1] in values and tokens[0] not in values for values in second)
+
     @pytest.mark.parametrize(
         "content",
         [

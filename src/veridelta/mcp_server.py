@@ -2425,6 +2425,12 @@ def _check_reference(reference: Reference, match: re.Match[str]) -> None:
 _RECORDED: ContextVar[set[str] | None] = ContextVar("_RECORDED", default=None)
 """The values the running server has expanded from its environment, for the call in progress."""
 
+_TOKENS: ContextVar[frozenset[str]] = ContextVar("_TOKENS", default=frozenset())
+"""The tokens the token files held as the call in progress started.
+
+They are kept apart from `_RECORDED`, since a file rotates and a token it
+held before is no longer sent."""
+
 _RECORDING: Final = threading.Lock()
 """Held while a recorded set is read or added to, since the SDK runs each call in a thread."""
 
@@ -3009,11 +3015,12 @@ def _mask(text: str) -> str:
     answer is built, so a value a reader echoes in a later call, such as
     from Polars' cache of object stores, is masked there too. A finding of
     `validate_config` reaches the agent without `_failure`, so the blanking
-    is here, where every answer passes.
+    is here, where every answer passes. It masks the tokens the token files
+    held as the call started too.
     """
     text = _without_echoed_credentials(text)
     with _RECORDING:
-        values = frozenset(_RECORDED.get() or ())
+        values = frozenset(_RECORDED.get() or ()) | _TOKENS.get()
     pattern = _mask_pattern(values)
     return text if pattern is None else pattern.sub("***", text)
 
@@ -3048,12 +3055,12 @@ def _answer(
     its query, which can hold a credential the reader signed with. The
     masking comes first, so a value that holds a `?` is masked whole.
 
-    A projected token file rotates about hourly, so each call records the
-    token each file holds as the call starts.
+    A projected token file rotates about hourly, so each call masks the
+    token each file holds as the call starts, and none it held before, which
+    no reader sends any more and which would grow the mask for as long as
+    the server runs.
     """
-    found = _token_file_values(os.environ)
-    with _RECORDING:
-        recorded.update(found)
+    tokens = _TOKENS.set(frozenset(_token_file_values(os.environ)))
     token = _RECORDED.set(recorded)
     try:
         try:
@@ -3068,6 +3075,7 @@ def _answer(
         return cast("_R", _masked(result))
     finally:
         _RECORDED.reset(token)
+        _TOKENS.reset(tokens)
 
 
 def build_server(settings: Settings) -> "MCPServer":
@@ -3087,8 +3095,8 @@ def build_server(settings: Settings) -> "MCPServer":
     loaded = _load_sdk()
     # Every value this server expands from its environment, kept while it runs,
     # since a reader's cache can echo one in a later call that never named it,
-    # and every credential a reader takes from it.
-    seen = _environment_values(os.environ) | _token_file_values(os.environ)
+    # and every credential a reader takes from it. Each call reads the token files.
+    seen = _environment_values(os.environ)
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
     try:
