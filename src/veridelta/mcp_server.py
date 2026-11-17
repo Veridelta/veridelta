@@ -1810,19 +1810,79 @@ def _storage_options(config: SourceRef) -> object:
     return None
 
 
+def _host_option_values(config: SourceRef) -> Iterator[tuple[object, str]]:
+    """Yield each storage option of a side whose key is in `_HOST_OPTIONS`, with its value as text."""
+    options = _storage_options(config)
+    if not isinstance(options, Mapping):
+        return
+    for key, value in cast("Mapping[object, object]", options).items():
+        name = str(key)
+        if name.isascii() and name.lower() in _HOST_OPTIONS:
+            yield key, str(value)
+
+
+def _scheme_length(text: str) -> int:
+    """Return how much of a host option's value its scheme takes, with its `:` and any `//`, or 0.
+
+    A value has a scheme when it holds `://`, or when it holds a `:` and the
+    text before the first one is one of `_SPECIAL_SCHEMES`, in ASCII and any
+    case, since the URL parser behind Polars reads such a value as a URL
+    without its slashes, and a number after it as an IPv4 address. A value
+    with no `:`, such as a bucket named `https`, has none.
+    """
+    if "://" in text:
+        return text.index("://") + len("://")
+    scheme, colon, _ = text.partition(":")
+    special = colon and scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES
+    return len(scheme) + len(colon) if special else 0
+
+
+def _refuse_endpoint_path(side: str, config: SourceRef) -> None:
+    r"""Refuse a host option whose value holds a path, a query, or a fragment after its host.
+
+    Every reader joins the endpoint's path with the bucket or the container:
+    object_store, behind Polars and deltalake, requests
+    `{endpoint}/{bucket}/{key}` in S3 through a path-style endpoint, and
+    `{endpoint}/{container}/{key}` in Azure, and the AWS SDK in PyArrow,
+    behind PyIceberg, does so with or without a scheme. So
+    `https://minio.internal/other` reads bucket `other`, or a bucket under
+    it, on the same host, with the same credential, though only the one
+    written was allowed. A query or a fragment moves the bucket out of the
+    request's path. So the value, after its scheme as `_scheme_length`
+    finds it, passes only as `_HOST_AND_PORT`'s shape with nothing after it
+    but a single `/`. Its path starts at the first `/`, `\`, `?`, or `#`
+    after the host and port, where a URL parser ends the authority, so
+    every spelling of a path, `%2F` and `..` included, is refused whole.
+    Other text after the host, such as a login, is left to `_refuse_host`.
+    The message names the option and not its value, which can hold a
+    `${NAME}` value.
+
+    Raises:
+        ConfigError: If a host option's value holds a path, a query, or a fragment.
+    """
+    for key, text in _host_option_values(config):
+        rest = text[_scheme_length(text) :]
+        written = _HOST_AND_PORT.match(rest)
+        after = "" if written is None else rest[written.end() :]
+        if after not in ("", "/") and after[0] in "/\\?#":
+            raise ConfigError(
+                f"The {side} storage option '{key}' holds a path, a query, or a fragment after "
+                "its host, which a reader puts before the bucket or the container, so it could "
+                "read one this server did not check. A tool passes on an endpoint only as a "
+                "host and a port, with at most a '/' after them, as in https://host:port."
+            )
+
+
 def _refuse_plain_http(side: str, config: SourceRef) -> None:
     """Refuse a storage option that sends a reader to its endpoint over anything but HTTPS.
 
     Polars and PyIceberg take the scheme from the endpoint, so an `http` one
     sends the credentials and the rows unencrypted, as `aws_allow_http` would
     for deltalake, which a tool refuses as a key it does not know. So a host
-    option's value with a scheme passes only when it starts with `https://`,
-    in lowercase, the one form every reader takes as HTTPS: the AWS SDK in
-    PyArrow takes any other as a host name. A value has a scheme when it holds
-    `://`, or when it holds a `:` and the text before the first one is one of
-    `_SPECIAL_SCHEMES`, in ASCII and any case, since the URL parser behind Polars reads such a
-    value as a URL without its slashes, and a number after it as an IPv4
-    address. No host is excepted, this machine's included, as none is for
+    option's value with a scheme, as `_scheme_length` finds one, passes only
+    when it starts with `https://`, in lowercase, the one form every reader
+    takes as HTTPS: the AWS SDK in PyArrow takes any other as a host name. No
+    host is excepted, this machine's included, as none is for
     `aws_allow_http`. Other text, such as `minio.internal:9000`, or a bucket
     named `https` with no `:`, passes:
     PyArrow then uses HTTPS, and object_store fails before it connects. The
@@ -1832,15 +1892,8 @@ def _refuse_plain_http(side: str, config: SourceRef) -> None:
     Raises:
         ConfigError: If a host option's value has a scheme and does not start with `https://`.
     """
-    options = _storage_options(config)
-    if not isinstance(options, Mapping):
-        return
-    for key, value in cast("Mapping[object, object]", options).items():
-        name, text = str(key), str(value)
-        if not (name.isascii() and name.lower() in _HOST_OPTIONS) or text.startswith("https://"):
-            continue
-        scheme, colon, _ = text.partition(":")
-        if "://" in text or (colon and scheme.isascii() and scheme.lower() in _SPECIAL_SCHEMES):
+    for key, text in _host_option_values(config):
+        if not text.startswith("https://") and _scheme_length(text):
             raise ConfigError(
                 f"The {side} storage option '{key}' names a host by a scheme other than "
                 "https, so a reader could send its credentials and rows unencrypted. A tool "
@@ -1886,16 +1939,18 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     side that could reach any host could send one there, or reach a service on
     this machine or its network. A host written in any shape but
     `_HOST_AND_PORT`'s is refused on its own, since readers split it in
-    different places. An endpoint is refused over plain HTTP, by
-    `_refuse_plain_http`. A location on another machine may hold no `.` or
-    `..` segment, as `_refuse_dot_segment` says. The message names the
-    setting and not the host, which can hold such a value.
+    different places. An endpoint is refused with a path, by
+    `_refuse_endpoint_path`, and over plain HTTP, by `_refuse_plain_http`.
+    A location on another machine may hold no `.` or `..` segment, as
+    `_refuse_dot_segment` says. The message names the setting and not the
+    host, which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
         for setting, location in _named_locations(config):
             _refuse_dot_segment(f"The {side} {setting}", location)
+        _refuse_endpoint_path(side, config)
         for setting, host in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host)
         _refuse_plain_http(side, config)

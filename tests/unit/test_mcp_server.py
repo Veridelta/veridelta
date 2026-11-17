@@ -4818,6 +4818,21 @@ def _remote(root: Path, target: str) -> Path:
     return _write(root, f"source:\n  path: a.csv\ntarget:\n{target}primary_keys: [id]\n")
 
 
+_ENDPOINT_TARGETS = {
+    "aws_endpoint": "  path: s3://bucket/a.parquet\n" + _FILE_OPTIONS,
+    "endpoint_url": "  path: s3://bucket/a.parquet\n" + _FILE_OPTIONS,
+    "azure_endpoint": "  path: az://bucket/a.parquet\n" + _FILE_OPTIONS,
+    "aws_endpoint_url": "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
+    "endpoint": "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
+    "azure_storage_endpoint": "  type: delta\n  table_uri: az://bucket/events\n  storage_options: ",
+    "s3.endpoint": (
+        "  type: iceberg\n  table_uri: s3://bucket/t/metadata/v1.metadata.json\n  storage_options: "
+    ),
+}
+"""For each endpoint key a tool passes on, a target up to its `storage_options`, for a reader that takes it:
+Polars for a file, deltalake for a Delta Lake table, and PyIceberg's FileIO for an Iceberg table."""
+
+
 _MOTHERDUCK_NAME = (
     "database name, which may hold only letters, digits, _, -, and /, and not start with /,"
 )
@@ -5216,12 +5231,6 @@ class TestAllowedHosts:
             ),
             pytest.param(
                 "  type: delta\n  table_uri: s3://bucket/events\n"
-                "  storage_options: {endpoint: 'http://db.internal:9000/x@127.0.0.1'}\n",
-                "storage option 'endpoint'",
-                id="endpoint-with-an-at-sign-in-its-path",
-            ),
-            pytest.param(
-                "  type: delta\n  table_uri: s3://bucket/events\n"
                 "  storage_options: {endpoint: 'http://db%2einternal:9000'}\n",
                 "storage option 'endpoint'",
                 id="endpoint-percent-encoded",
@@ -5243,12 +5252,6 @@ class TestAllowedHosts:
                 '  storage_options: {endpoint: "http://db.internal\\t:9000"}\n',
                 "storage option 'endpoint'",
                 id="endpoint-with-a-tab",
-            ),
-            pytest.param(
-                "  type: delta\n  table_uri: s3://bucket/events\n"
-                "  storage_options: {aws_bucket: 'bucket?x'}\n",
-                "storage option 'aws_bucket'",
-                id="bucket-with-a-question-mark",
             ),
             pytest.param(
                 "  path: https://u@example.com/a.csv\n", "path", id="location-with-a-login"
@@ -5363,6 +5366,97 @@ class TestAllowedHosts:
 
         assert str(refused.value).startswith(f"The target {setting} does not name its host")
         read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("target", "key", "value"),
+        [
+            *(
+                pytest.param(_ENDPOINT_TARGETS[key], key, value, id=f"{key}-{spelling}")
+                for key in _ENDPOINT_TARGETS
+                for spelling, value in (
+                    ("path", "https://db.internal/other"),
+                    ("dot-dot", "https://db.internal/.."),
+                    ("encoded-slash", "https://db.internal/other%2Fx"),
+                    ("trailing-slash", "https://db.internal/other/"),
+                    ("two-slashes", "https://db.internal//"),
+                    ("port-and-path", "https://db.internal:9000/other"),
+                    ("ipv6-and-path", "https://[::1]:9000/other"),
+                    ("upper-case-scheme", "HTTPS://db.internal/other"),
+                    ("scheme-without-slashes", "https:db.internal/other"),
+                    ("no-scheme", "db.internal:9000/other"),
+                    ("backslash", "https://db.internal\\other"),
+                    ("query", "https://db.internal/?x=1"),
+                    ("query-after-the-host", "https://db.internal?x=1"),
+                    ("fragment", "https://db.internal#x"),
+                    ("at-sign-in-the-path", "https://db.internal:9000/x@127.0.0.1"),
+                )
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
+                "aws_bucket",
+                "bucket?x",
+                id="bucket-with-a-question-mark",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://bucket/events\n  storage_options: ",
+                "bucket",
+                "bucket/other",
+                id="bucket-with-a-path",
+            ),
+        ],
+    )
+    def test_it_refuses_an_endpoint_with_a_path(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, key: str, value: str
+    ) -> None:
+        """Ensure a host option holds no path, query, or fragment, in any spelling.
+
+        Polars and deltalake, through object_store, and PyIceberg, through the
+        AWS SDK in PyArrow, put an endpoint's path before the bucket or the
+        container, so `https://db.internal/other` would read bucket `other` on
+        an allowed host. A query or a fragment moves the bucket out of the
+        request's path. Each host is allowed, so only the path refuses it,
+        and the refusal names the option, not its value.
+        """
+        read = mocker.patch.object(DiffEngine, "read_schema")
+        _remote(tmp_path, f"{target}{{{key}: '{value}'}}\n")
+        settings = Settings((tmp_path,), allowed_hosts=_ALLOWED)
+
+        with pytest.raises(
+            ConfigError, match="holds a path, a query, or a fragment after its host"
+        ) as refused:
+            describe_side(settings, "veridelta.yaml", "target")
+
+        assert str(refused.value).startswith(f"The target storage option '{key}' holds")
+        assert value not in str(refused.value)
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("target", "key", "value"),
+        [
+            pytest.param(_ENDPOINT_TARGETS[key], key, value, id=f"{key}-{spelling}")
+            for key in _ENDPOINT_TARGETS
+            for spelling, value in (
+                ("no-path", "https://db.internal"),
+                ("slash", "https://db.internal/"),
+                ("port", "https://db.internal:9000"),
+                ("port-and-slash", "https://[::1]:9000/"),
+                ("no-scheme", "db.internal:9000"),
+            )
+        ],
+    )
+    def test_it_reads_through_an_endpoint_with_no_path(
+        self, tmp_path: Path, mocker: MockerFixture, target: str, key: str, value: str
+    ) -> None:
+        """Ensure an endpoint written as a host, a port, and at most a `/` still reads."""
+        mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+        mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, f"{target}{{{key}: '{value}'}}\n")
+
+        report = describe_side(
+            Settings((tmp_path,), allowed_hosts=_ALLOWED), "veridelta.yaml", "target"
+        )
+
+        assert report["columns"] == {"id": "Int64"}
 
     @pytest.mark.parametrize(
         "target",
