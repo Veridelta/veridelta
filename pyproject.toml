@@ -73,7 +73,13 @@ databricks = [
 ]
 delta = ["deltalake>=0.15.0"]
 iceberg = [
-    "pyiceberg>=0.6.0",
+    # 0.12.0 is the first release that the MCP server's checked FileIO,
+    # `checked_file_io`, works with on every system. 0.10.0 first parses a
+    # location with the storage options and reads Azure through PyArrow.
+    # 0.11.0 first reads a manifest list afresh on each scan, not from a cache
+    # an earlier scan filled. 0.12.0 first reads a Windows path with a drive
+    # letter as a path on this machine, and has Python 3.14 wheels.
+    "pyiceberg>=0.12.0",
     # Polars 2.1 plans an Iceberg scan with this plugin, and without it falls
     # back to PyIceberg with a PerformanceWarning on every scan. Older Polars
     # never imports it. The range is the one Polars' own `iceberg` extra names.
