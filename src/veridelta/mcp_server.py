@@ -2508,15 +2508,25 @@ def _token_file_values(environ: Mapping[str, str]) -> set[str]:
     A file that cannot be read, is larger than `_LONGEST_TOKEN_FILE`, is not
     UTF-8, or holds no value in `_TOKEN`'s shape of at least
     `_SHORTEST_MASKED` characters is skipped, since it holds no token a
-    reader sends. The file's path is not recorded. Each variable is looked up
-    by `_name_as_read`, as in `_environment_values`.
+    reader sends. Only a regular file is read. A named pipe with no writer
+    would hold the server, and one such as `<(get-token)` gives its token
+    once, to the first process that reads it, which must be the reader. The
+    file's path is not recorded. Each variable is looked up by
+    `_name_as_read`, as in `_environment_values`.
     """
+    # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe without waiting for a writer.
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     values: set[str] = set()
     for name, path in environ.items():
         if not path or _name_as_read(name) not in _TOKEN_FILE_VARIABLES:
             continue
         try:
-            with open(path, "rb") as file:
+            if not stat.S_ISREG(os.stat(path).st_mode):
+                continue
+            with open(os.open(path, flags), "rb") as file:
+                # A pipe swapped in after the check is opened, but not read.
+                if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                    continue
                 read = file.read(_LONGEST_TOKEN_FILE + 1)
             if len(read) > _LONGEST_TOKEN_FILE:
                 continue

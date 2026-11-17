@@ -7675,6 +7675,77 @@ class TestEnvironmentCredentials:
         assert mcp_server._token_file_values(os.environ) == set()
         assert _tools(Settings((tmp_path,)))
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no named pipe in a folder.")
+    def test_it_reads_no_token_file_that_is_a_named_pipe(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a token file that is a named pipe is neither waited on nor read.
+
+        A pipe with no writer would hold the server before it answers, and one
+        such as `<(get-token)` gives its token once, to the first process that
+        reads it, which must be the reader that signs in. The test holds the
+        pipe open to read it last, so the token waits in it while the server
+        starts and answers a call.
+        """
+        pipe = tmp_path / "token"
+        os.mkfifo(pipe)
+        token = b"eyJhbGciOiJSUzI1NiJ9.cGlwZQ.c2lnbmF0dXJl"
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", str(pipe))
+        _project(tmp_path, "modern_match.csv")
+        kept = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+        writer = os.open(pipe, os.O_WRONLY)
+        answered: list[CallToolResult] = []
+        try:
+            os.write(writer, token)
+            server = threading.Thread(
+                target=lambda: answered.append(
+                    _call(Settings((tmp_path,)), {"path": "veridelta.yaml"})
+                ),
+                daemon=True,
+            )
+            server.start()
+            server.join(timeout=60)
+
+            assert not server.is_alive()
+            assert answered[0].is_error is False
+            assert os.read(kept, 1024) == token
+        finally:
+            # Closing the writer ends a read that waits on the pipe, so no thread is left.
+            os.close(writer)
+            os.close(kept)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has no named pipe in a folder.")
+    def test_it_reads_no_pipe_swapped_in_after_its_check(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a pipe that takes a regular file's place after its check is not read."""
+        pipe = tmp_path / "token"
+        os.mkfifo(pipe)
+        regular = tmp_path / "regular"
+        regular.write_text("x", encoding="utf-8")
+        stat_of = os.stat
+        token = b"eyJhbGciOiJSUzI1NiJ9.c3dhcA.c2lnbmF0dXJl"
+        kept = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+        writer = os.open(pipe, os.O_WRONLY)
+        try:
+            os.write(writer, token)
+            mocker.patch.object(
+                os,
+                "stat",
+                side_effect=lambda path, *args, **named: stat_of(
+                    regular if path == str(pipe) else path, *args, **named
+                ),
+            )
+
+            values = mcp_server._token_file_values({"AWS_WEB_IDENTITY_TOKEN_FILE": str(pipe)})
+
+            mocker.stopall()
+            assert values == set()
+            assert os.read(kept, 1024) == token
+        finally:
+            os.close(writer)
+            os.close(kept)
+
     def test_it_reads_a_token_file_of_64_kib(self, tmp_path: Path) -> None:
         """Ensure a token file of exactly 64 KiB is read, since only a larger one is skipped."""
         token_file = tmp_path / "token"
