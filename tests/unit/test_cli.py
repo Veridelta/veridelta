@@ -21,7 +21,7 @@ from polars.exceptions import PanicException
 from pytest_mock import MockerFixture
 
 from tests.otlp_collector import running_collector
-from veridelta import __version__, mcp_server
+from veridelta import __version__
 from veridelta.cli import (  # pyright: ignore[reportPrivateUsage]
     _verbose_logging,
     build_parser,
@@ -59,23 +59,6 @@ def recorded_run(mocker: MockerFixture) -> MagicMock:
         MagicMock: The mock, which a test reads to check what `run` passed.
     """
     return mocker.patch("veridelta.cli.collect_provenance", return_value=_RUN_RECORD)
-
-
-@pytest.fixture(autouse=True)
-def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset each credential variable a reader takes from `veridelta mcp`'s environment, in any spelling.
-
-    The server refuses to start on a value it cannot mask, so a value from the
-    machine the suite runs on would change what a test sees.
-    """
-    left_out = {
-        *mcp_server._ENVIRONMENT_SLOTS,
-        *mcp_server._TOKEN_FILE_VARIABLES,
-        mcp_server._KEY_JSON_VARIABLE,
-    }
-    for name in list(os.environ):
-        if mcp_server._name_as_read(name) in left_out:
-            monkeypatch.delenv(name)
 
 
 def _acted_on(text: str) -> list[str]:

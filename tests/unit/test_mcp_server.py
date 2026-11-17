@@ -262,24 +262,6 @@ def _in_the_first_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
 
 
-@pytest.fixture(autouse=True)
-def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Unset each credential variable a reader takes from the server's environment, in any spelling.
-
-    The server masks each such value in every answer, and refuses one it
-    cannot mask, so a value from the machine the suite runs on would change
-    what a test sees.
-    """
-    left_out = {
-        *mcp_server._ENVIRONMENT_SLOTS,
-        *mcp_server._TOKEN_FILE_VARIABLES,
-        mcp_server._KEY_JSON_VARIABLE,
-    }
-    for name in list(os.environ):
-        if mcp_server._name_as_read(name) in left_out:
-            monkeypatch.delenv(name)
-
-
 def _write(folder: Path, text: str, name: str = "veridelta.yaml") -> Path:
     """Write a configuration file."""
     path = folder / name
