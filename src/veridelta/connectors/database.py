@@ -131,7 +131,11 @@ class DatabaseConnector(ReaderConnector):
         path = sqlite_path(self._config)
         scheme = urlsplit(self._config.uri).scheme.lower()
         statement = self._statement(scheme)
-        uri = connection_uri(self._config) if path is None else _existing_sqlite_uri(path)
+        uri = (
+            connection_uri(self._config)
+            if path is None
+            else _existing_sqlite_uri(self._config, path)
+        )
 
         started = time.perf_counter()
         declared: dict[str, pl.Decimal] = {}
@@ -724,12 +728,17 @@ def sqlite_path(config: DatabaseConfig) -> str | None:
     return os.path.realpath(decoded)
 
 
-def _existing_sqlite_uri(path: str) -> str:
-    """Encode a SQLite file's path for ConnectorX and require the file to exist."""
+def _existing_sqlite_uri(config: DatabaseConfig, path: str) -> str:
+    """Encode a SQLite file's path for ConnectorX and require the file to exist.
+
+    A missing file is named by `uri` as written, not by the path decoded and
+    resolved, since decoding and resolving can change or cut a value the
+    `uri` takes from the environment, which a mask of the value then misses.
+    """
     # ConnectorX opens SQLite in create mode, so a missing file leaves an empty database behind.
     if not Path(path).is_file():
         raise ConnectorError(
-            f"SQLite database '{path}' does not exist. Point 'uri' at an existing file, "
-            "written as sqlite:// followed by its path."
+            f"SQLite database '{config.redacted_uri}' does not exist. Point 'uri' at an "
+            "existing file, written as sqlite:// followed by its path."
         )
     return _SQLITE_PREFIX + quote(path)

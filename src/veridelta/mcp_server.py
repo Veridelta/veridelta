@@ -26,6 +26,7 @@ import inspect
 import json
 import logging
 import os
+import posixpath
 import re
 from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import contextmanager
@@ -54,7 +55,6 @@ from veridelta import __version__
 from veridelta._checks import error_from_exception, unset_variable_findings
 from veridelta.config import load_config, recording_expansions, referenced_variables
 from veridelta.connectors.base import (
-    mask_secrets,
     names_another_machine,
     shown_location,
     without_location,
@@ -341,6 +341,12 @@ throughout the answer, and holds no secret worth the loss."""
 
 _CUT_CHARACTERS: Final = frozenset("#?")
 """The characters at which a reader that parses a location as a URL ends its path."""
+
+_SCHEME_AND_SLASHES: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+:(?://)?")
+"""A URI's scheme and the `//` after it, which no reader folds into one slash."""
+
+_SEPARATORS: Final = "/\\"
+"""The characters a path on Windows separates its parts with, either of which a reader can write."""
 
 _R = TypeVar("_R")
 
@@ -900,7 +906,7 @@ def _data_locations(side: str, config: SourceRef) -> list[tuple[str, str, str]]:
     elif isinstance(config, DatabaseConfig):
         # The connector opens this resolved text, so a link or `..` leads nowhere else.
         path = sqlite_path(config)
-        return [] if path is None else [("SQLite file", path, path)]
+        return [] if path is None else [("uri", path, path)]
     return [
         (setting, location, path)
         for setting, location in named
@@ -1084,17 +1090,17 @@ def _refuse_outside(
     *,
     quoted: bool = True,
     expanded: bool = False,
-    password: str | None = None,
+    shown: str | None = None,
 ) -> None:
     """Refuse a path on this machine that a side could read for a location, outside the roots.
 
     The message quotes the path only when `quoted`, since a path read from a
-    file is a value from it, and masks `password` in it. With `expanded`, the
-    location is one Polars expands as a pattern, so each file it matches is
-    checked, and a pattern that can match `..`, or one in a `file:` URI, is
-    refused.
+    file is a value from it, and quotes `shown` in its place when given. With
+    `expanded`, the location is one Polars expands as a pattern, so each file
+    it matches is checked, and a pattern that can match `..`, or one in a
+    `file:` URI, is refused.
     """
-    named = f"{setting} '{mask_secrets(local, password)}'" if quoted else setting
+    named = f"{setting} '{local if shown is None else shown}'" if quoted else setting
     pattern = expanded and bool(_GLOB_CHARACTERS.intersection(location + local))
     if pattern and local != location:  # A `file:` URI, which `_local_paths` decoded.
         raise ConfigError(
@@ -1217,12 +1223,11 @@ def check_data_paths(
     sides = (("source", source), ("target", target))
     checked: list[SourceRef] = []
     for side, config in sides:
-        # A SQLite path carries the `password` field, as the driver reads it.
-        password = config.password if isinstance(config, DatabaseConfig) else None
+        # A SQLite path carries the `password` field, as the driver reads it, and decoding
+        # and resolving it can cut a value in it, so a refusal quotes the `uri` as written.
+        shown = config.redacted_uri if isinstance(config, DatabaseConfig) else None
         for setting, location, local in _data_locations(side, config):
-            _refuse_outside(
-                settings, side, setting, location, local, expanded=True, password=password
-            )
+            _refuse_outside(settings, side, setting, location, local, expanded=True, shown=shown)
         _refuse_key_file(settings, side, config)
         checked.append(_as_checked(settings, side, config))
     for side, config in sides:
@@ -1583,39 +1588,85 @@ def _refuse_host(settings: Settings, named: str, host: str | None) -> None:
         )
 
 
-def _refuse_cut_locations(expanded: list[tuple[tuple[str | int, ...], str]]) -> None:
-    """Refuse a location into which a `${NAME}` value puts a `#` or a `?`.
+def _refuse_cut_locations(
+    expanded: list[tuple[tuple[str | int, ...], str]], source: SourceRef, target: SourceRef
+) -> None:
+    """Refuse a location that a reader can quote with only part of a `${NAME}` value in it.
 
     A reader that parses a location as a URL, such as PyIceberg's, ends its
-    path at either one and can quote the part before it in an error, which
+    path at a `#` or a `?` and can quote the part before it in an error, which
     holds the start of the value but not all of it, so no mask matches it. A
     location is a side's `path` or `table_uri`, or a storage option that
-    names a host, such as an endpoint. The message names the setting and not
-    the value.
+    names a host, such as an endpoint. A reader can also decode a path's `%`
+    escapes, or fold its `.` and `..` segments and repeated slashes, as
+    PyIceberg folds a path on this machine, and then quote a value changed or
+    cut short. So a side's `path` or `table_uri` is refused unless each value
+    in it survives those, as `_folds_away` checks. The message names the
+    setting and not the value.
 
     Args:
         expanded (list[tuple[tuple[str | int, ...], str]]): Each setting's path
             and the value the loader put into it, as `recording_expansions` records them.
+        source (SourceRef): The source configuration the loader returned.
+        target (SourceRef): The target configuration the loader returned.
 
     Raises:
-        ConfigError: If such a value holds a `#` or a `?`.
+        ConfigError: If such a value holds a `#` or a `?`, or a reader would
+            quote it changed or in part.
     """
+    sides: dict[str | int, SourceRef] = {"source": source, "target": target}
     for location, value in expanded:
-        if _CUT_CHARACTERS.isdisjoint(value):
-            continue
-        side, key, option = location[0], location[-1], location[-2]
+        side, key = location[0], location[-1]
+        written = None
         if len(location) == 2 and key in ("path", "table_uri"):
             setting = str(key)
-        elif option == "storage_options" and str(key).lower() in _HOST_OPTIONS:
+            written = getattr(sides[side], setting, None)
+        elif (
+            len(location) > 2
+            and location[-2] == "storage_options"
+            and str(key).lower() in _HOST_OPTIONS
+        ):
             setting = f"storage option '{key}'"
         else:
             continue
-        raise ConfigError(
-            f"The {side} {setting} takes a ${{NAME}} value that holds a '#' or a '?'. A reader "
-            "can end a location there and quote the part before it, which no mask matches, "
-            "so a tool refuses it. Rename what the value names, or run the configuration "
-            "with veridelta run."
-        )
+        if not _CUT_CHARACTERS.isdisjoint(value):
+            raise ConfigError(
+                f"The {side} {setting} takes a ${{NAME}} value that holds a '#' or a '?'. A "
+                "reader can end a location there and quote the part before it, which no mask "
+                "matches, so a tool refuses it. Rename what the value names, or run the "
+                "configuration with veridelta run."
+            )
+        if isinstance(written, str) and _folds_away(written, value):
+            raise ConfigError(
+                f"The {side} {setting} takes a ${{NAME}} value that a reader would not quote "
+                "whole once it decodes the '%' escapes or folds the '.' and '..' segments and "
+                "repeated slashes of the location, so no mask would match what it quotes, and "
+                "a tool refuses it. Write the setting and the value without those, or run the "
+                "configuration with veridelta run."
+            )
+
+
+def _folds_away(written: str, value: str) -> bool:
+    r"""Tell whether a reader that decodes or folds a location can lose part of a value in it.
+
+    A reader can decode the location's `%` escapes, fold its `.` and `..`
+    segments and repeated slashes, or both, and Windows writes each `/` as
+    `\`, which the mask takes for one another. A URI's scheme and its `//`
+    stay as written. The value must then appear as many times as the location
+    holds it as written, in each of those forms. A trailing slash is left out
+    of it first, since a folded path drops one and the mask matches the value
+    without it too. A value too short to mask is not checked.
+    """
+    kept = value.rstrip("/\\").replace("\\", "/")
+    if len(kept) < _SHORTEST_MASKED:
+        return False
+    text = written.replace("\\", "/")
+    scheme = _SCHEME_AND_SLASHES.match(text)
+    head = "" if scheme is None else scheme.group()
+    path = text[len(head) :]
+    decoded = unquote(path)
+    forms = (decoded, posixpath.normpath(path), posixpath.normpath(decoded))
+    return any((head + form).count(kept) < text.count(kept) for form in forms)
 
 
 def check_configuration(
@@ -1641,8 +1692,8 @@ def check_configuration(
     Raises:
         ConfigError: If the path is outside the roots, or, with `schemas`, the
             data a side reads on this machine is, a side names a host the
-            server does not allow, or a `${NAME}` value puts a `#` or a `?`
-            into a location.
+            server does not allow, or a reader can quote a location with
+            only part of a `${NAME}` value in it.
         ConnectorError: With `schemas`, if the files of a lakehouse table
             cannot be listed.
     """
@@ -1657,7 +1708,7 @@ def check_configuration(
         findings = [error_from_exception(exc)]
     else:
         if schemas:
-            _refuse_cut_locations(expanded)
+            _refuse_cut_locations(expanded, source, target)
             _refuse_hosts(settings, source, target)
             source, target = check_data_paths(settings, source, target)
         with _reading(settings):
@@ -1678,7 +1729,7 @@ def _load(settings: Settings, path: str) -> tuple[DiffConfig, SourceRef, SourceR
     """
     with recording_expansions() as expanded:
         diff, source, target = load_config(resolve_path(settings, path))
-    _refuse_cut_locations(expanded)
+    _refuse_cut_locations(expanded, source, target)
     _refuse_hosts(settings, source, target)
     source, target = check_data_paths(settings, source, target)
     return diff, source, target
@@ -1988,9 +2039,14 @@ def environment_values(settings: Settings, path: str) -> tuple[str, ...]:
 
 
 def _to_mask(values: list[str]) -> tuple[str, ...]:
-    """Return the environment values to mask, with each SAS signature they hold, leaving out short ones."""
+    """Return the environment values to mask, with each SAS signature they hold, leaving out short ones.
+
+    A value that ends in a slash counts without it too, since a reader that
+    folds a path drops it.
+    """
     signatures = [form for value in values for form in _sas_signatures(value)]
-    return tuple(value for value in [*values, *signatures] if len(value) >= _SHORTEST_MASKED)
+    kept = [value.rstrip("/\\") for value in values if value.endswith(("/", "\\"))]
+    return tuple(value for value in [*values, *kept, *signatures] if len(value) >= _SHORTEST_MASKED)
 
 
 def _sas_signatures(value: str) -> tuple[str, ...]:
@@ -2000,33 +2056,52 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
         form
         for name, _, written in parameters
         if name == "sig"
-        for form in (written, unquote(written), quote(unquote(written), safe=""))
+        for form in (written, unquote(written), _encoded(unquote(written)))
     )
 
 
+def _encoded(text: str) -> str:
+    """Percent-encode every character of a text as a reader would, `/` included.
+
+    On POSIX, os.environ holds a byte that is not UTF-8 as a lone surrogate,
+    which is encoded as that byte. Any other lone surrogate encodes to no
+    bytes, so no reader writes it encoded, and it stays as it is.
+    """
+    pieces: list[str] = []
+    for char in text:
+        try:
+            pieces.append(quote(char, safe="", errors="surrogateescape"))
+        except UnicodeEncodeError:
+            pieces.append(char)
+    return "".join(pieces)
+
+
 def _written_or_encoded(secret: str) -> str:
-    """Return a pattern for a secret as written, or with any of its characters percent-encoded.
+    r"""Return a pattern for a secret as written, or with any of its characters percent-encoded.
 
     The Azure SDK percent-encodes some characters of a file's path, such as
     `+` and `%`, and PyArrow quotes the path that results in its errors, so a
-    secret placed in the path comes back in a form of its own.
+    secret placed in the path comes back in a form of its own. A reader on
+    Windows can write a `/` in a path as `\`, so either one matches the other.
     """
     pieces: list[str] = []
     for char in secret:
-        try:
-            # On POSIX, os.environ holds a byte that is not UTF-8 as a lone surrogate.
-            encoded = quote(char, safe="", errors="surrogateescape")
-        except UnicodeEncodeError:
-            # Any other lone surrogate encodes to no bytes, so no reader writes it encoded.
-            encoded = char
-        if encoded == char:
-            pieces.append(re.escape(char))
-            continue
-        # The hex digits can be written in either case.
-        hexed = "".join(
-            f"[{c.upper()}{c.lower()}]" if c.isalpha() else re.escape(c) for c in encoded
+        spellings = _SEPARATORS if char in _SEPARATORS else char
+        alternatives: list[str] = []
+        for spelling in spellings:
+            alternatives.append(re.escape(spelling))
+            encoded = _encoded(spelling)
+            if encoded != spelling:
+                # The hex digits can be written in either case.
+                alternatives.append(
+                    "".join(
+                        f"[{c.upper()}{c.lower()}]" if c.isalpha() else re.escape(c)
+                        for c in encoded
+                    )
+                )
+        pieces.append(
+            alternatives[0] if len(alternatives) == 1 else f"(?:{'|'.join(alternatives)})"
         )
-        pieces.append(f"(?:{re.escape(char)}|{hexed})")
     return "".join(pieces)
 
 

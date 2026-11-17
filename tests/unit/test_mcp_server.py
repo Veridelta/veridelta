@@ -999,7 +999,7 @@ class TestCheckDataPaths:
             ),
             pytest.param(
                 lambda folder: DatabaseConfig(uri=f"sqlite://{folder / 'x.db'}", table="t"),
-                "SQLite file",
+                "uri 'sqlite://",
                 id="sqlite",
             ),
         ],
@@ -1011,15 +1011,19 @@ class TestCheckDataPaths:
         build: Callable[[Path], SourceRef],
         setting: str,
     ) -> None:
-        """Ensure each setting that names a file on this machine is held to the roots."""
+        """Ensure each setting that names a file on this machine is held to the roots.
+
+        A SQLite file is named by its `uri` as written.
+        """
         outside = tmp_path_factory.mktemp("outside")
+        quoted = setting if setting.endswith("//") else f"{setting} '"
 
         with pytest.raises(
             ConfigError, match="outside the folders this server reads from"
         ) as refused:
             check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), build(outside))
 
-        assert str(refused.value).startswith(f"The target {setting} '{outside}")
+        assert str(refused.value).startswith(f"The target {quoted}{outside}")
         assert "--root" in str(refused.value)
 
     @pytest.mark.skipif(
@@ -1042,7 +1046,7 @@ class TestCheckDataPaths:
         outside = build(tmp_path, outside_file)
 
         check_data_paths(settings, SourceConfig(path="a.csv"), inside)
-        with pytest.raises(ConfigError, match=r"The target SQLite file '.+' is outside"):
+        with pytest.raises(ConfigError, match=r"The target uri 'sqlite://.+' is outside"):
             check_data_paths(settings, SourceConfig(path="a.csv"), outside)
 
         # The connector opens this text too, and SQLite reads no `file:` URI in an absolute path.
@@ -1062,7 +1066,7 @@ class TestCheckDataPaths:
         side = _sqlite("sqlite://~/x.db")
 
         check_data_paths(Settings((tmp_path,)), SourceConfig(path="a.csv"), side)
-        with pytest.raises(ConfigError, match=r"The target SQLite file '.+' is outside"):
+        with pytest.raises(ConfigError, match=r"The target uri 'sqlite://.+' is outside"):
             check_data_paths(Settings((home,)), SourceConfig(path=str(home / "a.csv")), side)
 
         assert sqlite_path(side) == str(tmp_path / "~" / "x.db")
@@ -1560,7 +1564,7 @@ class TestCheckDataPaths:
         outside = _sqlite(f"sqlite://link/{dots}/{dots}/{dots}/{tmp_path.name}/x.db")
 
         check_data_paths(settings, SourceConfig(path="a.csv"), inside)
-        with pytest.raises(ConfigError, match=r"The target SQLite file '.+' is outside"):
+        with pytest.raises(ConfigError, match=r"The target uri 'sqlite://.+' is outside"):
             check_data_paths(settings, SourceConfig(path="a.csv"), outside)
 
         # The connector opens this text, so no `..` is left for ConnectorX to fold another way.
@@ -1627,13 +1631,15 @@ class TestCheckDataPaths:
         tmp_path_factory: pytest.TempPathFactory,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Ensure a refusal never repeats the `password` the driver reads as part of the path."""
+        """Ensure a refusal never repeats the `password` the driver reads as part of the path.
+
+        It quotes the `uri` as written, which holds no password.
+        """
         monkeypatch.chdir(tmp_path_factory.mktemp("elsewhere"))
         side = _sqlite("sqlite://u@/x.db", "hunter2")
 
-        # Windows reads `u:` as a drive and writes it `U:\`.
         with pytest.raises(
-            ConfigError, match=r"The target SQLite file '.*[uU]:\\?\*\*\*@"
+            ConfigError, match=r"^The target uri 'sqlite://u@/x\.db' is outside"
         ) as refused:
             check_data_paths(
                 Settings((tmp_path,)), SourceConfig(path=str(tmp_path / "a.csv")), side
@@ -1790,8 +1796,8 @@ class TestCheckDataPaths:
             ),
             pytest.param(
                 lambda file: DatabaseConfig(uri=f"sqlite://{file}", table="t"),
-                "SQLite file",
-                lambda file: str(Path(file).resolve()),
+                "uri",
+                lambda file: f"sqlite://{file}",
                 id="sqlite",
             ),
         ],
@@ -1810,8 +1816,7 @@ class TestCheckDataPaths:
 
         DuckDB and SQLite open it as a file from the working directory, through
         a link in the root named `s3:`. DuckDB opens it before the sandbox holds
-        its connection. A refusal names the SQLite path the driver opens, with
-        the link followed.
+        its connection. A refusal quotes the SQLite `uri` as written.
         """
         monkeypatch.chdir(tmp_path)
         outside = tmp_path_factory.mktemp("outside")
@@ -2022,7 +2027,7 @@ class TestCheckDataPaths:
         settings = Settings((tmp_path,))
         reached = _as_windows(monkeypatch, mocker)
 
-        with pytest.raises(ConfigError, match=r"The source SQLite file '.+' is outside"):
+        with pytest.raises(ConfigError, match=r"The source uri 'sqlite://.+' is outside"):
             check_data_paths(settings, _sqlite(uri), _snowflake())
 
         assert not _on_another_machine(reached())
@@ -3595,10 +3600,10 @@ class TestLakehouseFiles:
             ("adls.account-key: ${VD_AZURE_PART}", "U0VDUkVU+/+/abcdSECRET==", "U0VDUkVU"),
             (
                 "adls.sas-token: ${VD_AZURE_PART}",
-                "sv=2024-01-01&sig=c2lnbmF0dXJl%2BZm9y%2FdGVzdA%3D%3D",
+                "sv=2024-01-01&sig=c2lnbmF0dXJl+Zm9y/dGVzdA==",
                 "c2lnbmF0dXJl",
             ),
-            ("adls.sas-token: sv=2024-01-01", "hunter2+not/a%41credential\u00e9", "hunter2"),
+            ("adls.sas-token: sv=2024-01-01", "hunter2+not/a credential\u00e9", "hunter2"),
         ],
         ids=["account-key", "sas-token", "any-value"],
     )
@@ -3624,10 +3629,11 @@ class TestLakehouseFiles:
         """Ensure a variable in an Azure table's path comes back masked, though encoded.
 
         The Azure SDK percent-encodes some characters of a request's path,
-        such as `+`, `%`, `#`, and any outside ASCII, and PyArrow quotes the
+        such as `+`, a space, and any outside ASCII, and PyArrow quotes the
         path that results, so the error holds no longer the variable's value
         as written. The mock fails each read with such a path, encoded as the
-        Azure SDK encodes it.
+        Azure SDK encodes it. A value with a `%` in it is refused before any
+        read, since a reader can decode it.
         """
         monkeypatch.setenv("VD_AZURE_PART", value)
 
@@ -6606,6 +6612,208 @@ class TestServer:
         assert _SECRET not in _text(result)
         hosts.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("side", "value"),
+        [
+            pytest.param(
+                "  type: iceberg\n  table_uri: t/${VD_MCP_FOLD}/../metadata/v1.metadata.json\n",
+                "U0VDUkVUS0VZ/hunter2do0VDUkVU==",
+                id="iceberg-dot-dot-after",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: t/${VD_MCP_FOLD}/metadata/v1.metadata.json\n",
+                "U0VDUkVUS0VZ//hunter2do0VDUkVU==",
+                id="iceberg-repeated-slash",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: t/${VD_MCP_FOLD}/metadata/v1.metadata.json\n",
+                "U0VDUkVUS0VZ/./hunter2do0VDUkVU==",
+                id="iceberg-dot",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: file:///t/${VD_MCP_FOLD}\n",
+                "U0VDUkVUS0VZ%41hunter2do0VDUkVU==",
+                id="delta-escape",
+            ),
+            pytest.param(
+                "  path: file:///d/${VD_MCP_FOLD}/b.csv\n",
+                "U0VDUkVUS0VZ%41hunter2do0VDUkVU==",
+                id="path-escape",
+            ),
+            pytest.param(
+                "  path: d/${VD_MCP_FOLD}/../b.csv\n",
+                "U0VDUkVUS0VZ\\hunter2do0VDUkVU==",
+                id="path-backslash",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
+    def test_it_refuses_a_location_a_reader_folds_a_value_out_of(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        side: str,
+        value: str,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        r"""Ensure a location that a reader would quote with a value changed or cut is refused.
+
+        PyIceberg folds a path on this machine, and a `file:` URI's path is
+        decoded, so the quoted path holds the value with a slash fewer, with
+        its escapes decoded, or only up to its last slash, which no mask
+        matches. A base64 key often holds a `/`. Windows reads a `\` as a `/`.
+        """
+        monkeypatch.setenv("VD_MCP_FOLD", value)
+        hosts = mocker.spy(mcp_server, "_refuse_hosts")
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(tmp_path, f"source:\n  path: a.csv\ntarget:\n{side}primary_keys: [id]\n")
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        assert result.is_error is True
+        assert "takes a ${NAME} value that a reader would not quote whole" in _text(result)
+        assert "U0VDUkVUS0VZ" not in _text(result)
+        hosts.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("block", "value"),
+        [
+            pytest.param("  path: ${VD_MCP_FOLD}/b.csv\n", "{root}/data/", id="folder-slash"),
+            pytest.param("  path: ${VD_MCP_FOLD}b.csv\n", "{root}/data/", id="folder-joined"),
+            pytest.param("  path: ./data/${VD_MCP_FOLD}\n", "b.csv", id="dot-around"),
+            pytest.param("  path: data/${VD_MCP_FOLD}\n", "b+c%zz.csv", id="no-escape"),
+            pytest.param("  path: data/${VD_MCP_FOLD}/../b.csv\n", "b", id="too-short"),
+        ],
+    )
+    def test_it_reads_a_location_whose_values_a_reader_keeps_whole(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, block: str, value: str
+    ) -> None:
+        """Ensure a value that folding and decoding leave whole, such as a folder with a slash, reads.
+
+        A value of fewer than four characters is not masked, so it is not
+        checked either.
+        """
+        monkeypatch.setenv("VD_MCP_FOLD", value.format(root=tmp_path.as_posix()))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data" / "b").mkdir(parents=True)
+        for name in ("a.csv", "data/b.csv", "data/b+c%zz.csv"):
+            (tmp_path / name).write_text("id\n1\n", encoding="utf-8")
+        _write(tmp_path, f"source:\n  path: a.csv\ntarget:\n{block}primary_keys: [id]\n")
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml"}, tool="run_comparison")
+
+        assert result.is_error is False
+
+    def test_it_masks_a_value_without_its_trailing_slash(self) -> None:
+        """Ensure a value that ends in a slash is masked where a folded path drops the slash.
+
+        PyIceberg folds a table's path on this machine, so its error can hold
+        the value without its trailing slash.
+        """
+        secrets = mcp_server._secret_patterns(mcp_server._to_mask([f"/lake/{_SECRET}/"]))  # pyright: ignore[reportPrivateUsage] - the mask on its own
+
+        masked = mcp_server._masked(f"Failed to open '/lake/{_SECRET}'", secrets)  # pyright: ignore[reportPrivateUsage] - the mask on its own
+
+        assert masked == "Failed to open '***'"
+
+    @pytest.mark.parametrize(
+        ("uri", "value"),
+        [
+            pytest.param("sqlite://d/${VD_MCP_FOLD}.db", "U0VDUkVUS0VZ//hunter2", id="slashes"),
+            pytest.param("sqlite://d/${VD_MCP_FOLD}.db", "p%40ssU0VDUkVUS0VZ", id="escape"),
+            pytest.param("sqlite://d/${VD_MCP_FOLD}/../x.db", "U0VDUkVUS0VZ/hunter2", id="dot-dot"),
+            pytest.param("sqlite:///${VD_MCP_FOLD}/../x.db", "U0VDUkVUS0VZ/hunter2", id="outside"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {"schemas": True}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
+    def test_it_names_a_sqlite_file_by_its_uri_as_written(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        uri: str,
+        value: str,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a SQLite file a tool cannot read is named with each value in its `uri` masked.
+
+        The connector decodes the path and resolves it, which can change a
+        value in it or cut it short, so a message quotes the `uri` as written.
+        """
+        monkeypatch.setenv("VD_MCP_FOLD", value)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            f'source:\n  path: a.csv\ntarget:\n  type: database\n  uri: "{uri}"\n  table: t\n'
+            "primary_keys: [id]\n",
+        )
+
+        result = _call(Settings((tmp_path,)), {"path": "veridelta.yaml", **arguments}, tool=tool)
+
+        shown = json.dumps(result.structured_content) + _text(result)
+        assert f"'{uri.replace('${VD_MCP_FOLD}', '***')}'" in shown
+        assert "U0VDUkVUS0VZ" not in shown
+        assert "p@ss" not in shown
+
+    @pytest.mark.parametrize(
+        ("written", "value", "folded"),
+        [
+            pytest.param("t/K1/K2/../m", "K1/K2", True, id="dot-dot-after"),
+            pytest.param("t/K1//K2/m", "K1//K2", True, id="repeated-slash"),
+            pytest.param("t/K1/./K2/m", "K1/./K2", True, id="dot"),
+            pytest.param("file:///t/K1%41K2", "K1%41K2", True, id="escape"),
+            pytest.param("t/K1K2/x/K1K2/..", "K1K2", True, id="one-of-two-cut"),
+            pytest.param("t\\K1\\K2\\..\\m", "K1\\K2", True, id="backslashes"),
+            pytest.param("s3://bucket/lake/t", "s3://bucket", False, id="scheme"),
+            pytest.param("file:///data/t", "file:///data", False, id="file-scheme"),
+            pytest.param("/data//t", "/data/", False, id="trailing-slash"),
+            pytest.param("/data/t/", "/data/t/", False, id="trailing-slash-at-end"),
+            pytest.param("C:\\data\\t", "C:\\data", False, id="windows-drive"),
+            pytest.param("//host/share/t", "//host/share", False, id="two-leading-slashes"),
+            pytest.param("t/K1/K2/../m", "K1/", False, id="too-short"),
+            pytest.param("./t/K1K2/m", "K1K2", False, id="dot-in-the-setting"),
+        ],
+    )
+    def test_it_tells_whether_a_reader_folds_a_value_away(
+        self, written: str, value: str, folded: bool
+    ) -> None:
+        """Ensure a value counts as kept only where each decoded and folded form holds it whole."""
+        assert mcp_server._folds_away(written, value) is folded  # pyright: ignore[reportPrivateUsage] - the check on its own
+
+    def test_it_masks_a_value_with_either_separator(self) -> None:
+        r"""Ensure a `/` in a value matches a `\` in a message and the reverse, as Windows writes."""
+        secrets = mcp_server._secret_patterns(("K1K2/K3K4", "K5K6\\K7K8"))  # pyright: ignore[reportPrivateUsage] - the mask on its own
+
+        masked = mcp_server._masked(  # pyright: ignore[reportPrivateUsage] - the mask on its own
+            ["C:\\t\\K1K2\\K3K4", "K1K2%2fK3K4", "K5K6/K7K8", "K5K6%5CK7K8", "K1K2-K3K4"],
+            secrets,
+        )
+
+        assert masked == ["C:\\t\\***", "***", "***", "***", "K1K2-K3K4"]
+
     def test_it_reads_a_value_with_a_cut_character_outside_a_location(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -6662,14 +6870,67 @@ class TestServer:
         assert _text(failed).endswith("RuntimeError: cannot open '***'")
 
     def test_it_masks_a_lone_surrogate_as_written_or_as_the_byte_it_stands_for(self) -> None:
-        """Ensure a byte held as a surrogate counts encoded, and any other surrogate as written."""
-        secrets = mcp_server._secret_patterns(("p\udce4ssword", "\ud800word"))  # pyright: ignore[reportPrivateUsage] - the mask on its own
+        """Ensure a byte held as a surrogate counts encoded, and any other surrogate as written.
+
+        A SAS token's `sig` parameter is masked on its own, in each form, so
+        a surrogate there must encode too.
+        """
+        values = ["p\udce4ssword", "\ud800word", "sv=2024-01-01&sig=ab\udce4cd\ud800"]
+        secrets = mcp_server._secret_patterns(mcp_server._to_mask(values))  # pyright: ignore[reportPrivateUsage] - the mask on its own
 
         masked = mcp_server._masked(  # pyright: ignore[reportPrivateUsage] - the mask on its own
-            ["p\udce4ssword", "p%E4ssword", "p%e4ssword", "\ud800word", "pässword"], secrets
+            [
+                "p\udce4ssword",
+                "p%E4ssword",
+                "p%e4ssword",
+                "\ud800word",
+                "pässword",
+                "sig=ab%E4cd\ud800&sv=2024-01-01",
+            ],
+            secrets,
         )
 
-        assert masked == ["***", "***", "***", "***", "pässword"]
+        assert masked == ["***", "***", "***", "***", "pässword", "sig=***&sv=2024-01-01"]
+
+    @pytest.mark.skipif(
+        not hasattr(os, "environb"), reason="Windows keeps its environment as text, with no bytes."
+    )
+    @pytest.mark.parametrize(
+        ("tool", "arguments"),
+        [
+            ("validate_config", {}),
+            ("run_comparison", {}),
+            ("describe_schema", {"side": "target"}),
+        ],
+        ids=["validate_config", "run_comparison", "describe_schema"],
+    )
+    def test_it_answers_with_a_sas_signature_whose_bytes_are_not_utf8(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tool: str,
+        arguments: dict[str, object],
+    ) -> None:
+        """Ensure a referenced variable whose `sig` parameter is not UTF-8 leaves a tool working.
+
+        The variable appears only in a comment, so the file's text references
+        it and the loader does not expand it.
+        """
+        monkeypatch.setitem(os.environb, b"VD_MCP_ODD_SIG", b"sv=2024-01-01&sig=ab\xe4cdSECRET")
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _write(
+            tmp_path,
+            "source:\n  path: a.csv\ntarget:\n  path: a.csv\n"
+            "primary_keys: [id]  # signed with ${VD_MCP_ODD_SIG}\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allow_row_values=True),
+            {"path": "veridelta.yaml", **arguments},
+            tool=tool,
+        )
+
+        assert result.is_error is False
 
     def test_it_fails_the_call_when_polars_panics(
         self, tmp_path: Path, mocker: MockerFixture

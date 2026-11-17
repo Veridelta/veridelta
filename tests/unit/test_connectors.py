@@ -964,16 +964,35 @@ class TestDatabaseConnector:
         """
         read = _read_database(mocker)
         missing = tmp_path / "legacy.db"
-        connector = DatabaseConnector(
-            DatabaseConfig(uri="sqlite://" + quote(str(missing)), table="orders")
-        )
+        uri = "sqlite://" + quote(str(missing))
+        connector = DatabaseConnector(DatabaseConfig(uri=uri, table="orders"))
 
         with pytest.raises(ConnectorError, match="does not exist") as info:
             connector.connect()
 
-        assert str(missing) in str(info.value)
+        assert f"SQLite database '{uri}' does not exist" in str(info.value)
         read.assert_not_called()
         assert not missing.exists()
+
+    def test_it_names_a_missing_sqlite_file_by_its_uri_as_written(
+        self, mocker: MockerFixture, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a missing SQLite file is named by `uri`, neither decoded nor resolved.
+
+        Decoding and resolving the path can change or cut a value the `uri`
+        takes from the environment, which a mask of the value then misses.
+        The `password` the driver reads as part of the path stays out too.
+        """
+        _read_database(mocker)
+        monkeypatch.chdir(tmp_path)
+        uri = "sqlite://u@d/p%40ssword//tail/../x.db"
+        connector = DatabaseConnector(DatabaseConfig(uri=uri, password="hunter2", table="t"))
+
+        with pytest.raises(ConnectorError) as info:
+            connector.connect()
+
+        assert str(info.value).startswith(f"SQLite database '{uri}' does not exist.")
+        assert "hunter2" not in str(info.value)
 
     @pytest.mark.parametrize(
         ("uri", "password"),
