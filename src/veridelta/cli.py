@@ -532,7 +532,8 @@ def mcp(args: argparse.Namespace) -> int:
     Returns:
         int: `EXIT_MATCH` once the host disconnects or Ctrl-C stops the server,
             and `EXIT_ERROR` when it cannot start, such as without the `mcp`
-            extra.
+            extra, or when a reader's credential variable has a shape the
+            server cannot mask.
     """
     try:
         settings = Settings(

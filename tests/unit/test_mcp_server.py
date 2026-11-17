@@ -8,6 +8,7 @@ test sees what an agent's host sees: the tool list, the structured result, and
 whether a call failed.
 """
 
+import base64
 import functools
 import getpass
 import glob
@@ -59,7 +60,12 @@ from veridelta.config import load_config, load_config_with_hook
 from veridelta.connectors import base, database
 from veridelta.connectors import duckdb as duckdb_connector
 from veridelta.connectors.database import sqlite_path
-from veridelta.connectors.duckdb import DuckDBPushdownSession, beside, sandboxed
+from veridelta.connectors.duckdb import (
+    MOTHERDUCK_TOKEN_VARIABLES,
+    DuckDBPushdownSession,
+    beside,
+    sandboxed,
+)
 from veridelta.connectors.lakehouse import (
     CheckedDeltaTable,
     DeltaLakeConnector,
@@ -254,6 +260,22 @@ def _in_the_first_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     directory, as on the command line, so a test that runs elsewhere says so.
     """
     monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset each credential variable a reader takes from the server's environment.
+
+    The server masks each such value in every answer, and refuses one it
+    cannot mask, so a value from the machine the suite runs on would change
+    what a test sees.
+    """
+    for name in (
+        *mcp_server._ENVIRONMENT_SLOTS,
+        *mcp_server._TOKEN_FILE_VARIABLES,
+        mcp_server._KEY_JSON_VARIABLE,
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _write(folder: Path, text: str, name: str = "veridelta.yaml") -> Path:
@@ -7087,6 +7109,18 @@ class TestEnvironmentReferences:
                 {"V_PASSWORD": "p@ss/w#rd+%9 Q7ledger"},
                 id="database-password",
             ),
+            pytest.param(
+                "  path: s3://lake/a.csv\n",
+                {
+                    "AWS_ACCESS_KEY_ID": "AKIAQ7ZX3LEDGER9READER",
+                    "AWS_SECRET_ACCESS_KEY": "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCY",
+                    "AWS_SESSION_TOKEN": "IQoJb3JpZ2luX2VjEJr//////////wEaCXVz",
+                    "AZURE_STORAGE_ACCOUNT_KEY": "bGVkZ2VyLWFjY291bnQta2V5LW9mLTMyLWJ5dGVzISE=",
+                    "AZURE_CLIENT_SECRET": "Mk18Q~ab.cd_ef-gh+ij/kl=Zq9x7Pw",
+                    "MOTHERDUCK_TOKEN": "eyJhbGciOiJIUzI1NiJ9.Q7ledger.sig",
+                },
+                id="reader-environment",
+            ),
         ],
     )
     def test_no_tool_returns_any_part_of_a_value_from_the_environment(
@@ -7153,6 +7187,329 @@ class TestEnvironmentReferences:
                     windows = {folded[i : i + 6] for i in range(len(folded) - 5)}
                     assert not any(window in text for window in windows), (tool, value)
                     assert value.encode().hex(" ") not in text, (tool, value)
+
+
+_SLOT_VALUES: dict[str, str] = {
+    "token": "IQoJb3JpZ2luX2VjEJr+Q7/ledger.tok_en~x-9=",
+    "account key": base64.b64encode(b"ledger-account-key-of-32-bytes!!").decode(),
+    "login": "svc.ledger-reader@corpQ7",
+    "sas": "sv=2024-01-01&sp=rl&sig=QmFzZTY0U2lnbmF0dXJl%2BXyZ%2F9%3D",
+}
+"""A value of 20 or more characters in the shape of each slot a variable can have."""
+
+_UNMASKABLE = [
+    pytest.param("AWS_SESSION_TOKEN", "ab cd", id="token-with-a-space"),
+    pytest.param("AZURE_STORAGE_ACCOUNT_KEY", "azKEY*xx", id="account-key"),
+    pytest.param("MOTHERDUCK_TOKEN", "abc", id="short-token"),
+    pytest.param("AWS_ACCESS_KEY_ID", "-x", id="login"),
+    pytest.param("AZURE_STORAGE_SAS_TOKEN", "foo=1", id="sas"),
+    pytest.param("AWS_SSE_CUSTOMER_KEY_BASE64", "QUJD=", id="base64-not-canonical"),
+    pytest.param("AWS_SECRET_ACCESS_KEY", "abc\udcffdef", id="outside-utf-8"),
+]
+"""A reader's credential variable, each with a value of a shape the server cannot mask."""
+
+
+def _echoes(value: str) -> str:
+    """Write a value in each form a reader or a service can echo it in."""
+    encoded = quote(value, safe="")
+    return " ".join(
+        (
+            value,
+            value.upper(),
+            encoded,
+            encoded.replace("~", "%7E"),
+            value.encode().hex(" "),
+            f"<Token-0>{value}</Token-0>",
+        )
+    )
+
+
+def _describe(tmp_path: Path) -> CallToolResult:
+    """Describe the source of the configuration in `tmp_path`, on a server that allows row values."""
+    return _call(
+        Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",)),
+        {"path": "veridelta.yaml", "side": "source"},
+        tool="describe_schema",
+    )
+
+
+class TestEnvironmentCredentials:
+    """Validate the masking of the credentials a reader takes from the server's environment.
+
+    A reader such as object_store or deltalake reads `AWS_SESSION_TOKEN` and its
+    like on its own, with no `${NAME}` in the configuration, and a service can
+    repeat such a value in an error.
+    """
+
+    def test_the_list_follows_the_option_slots(self) -> None:
+        """Ensure each AWS, Azure, or Google storage option is listed as its variable."""
+        slots = mcp_server._ENVIRONMENT_SLOTS
+
+        for keys, slot in mcp_server._OPTION_SLOTS:
+            for key in keys:
+                if key.startswith(("aws_", "azure_", "google_")):
+                    assert slots[key.upper()] == slot, key
+        assert set(MOTHERDUCK_TOKEN_VARIABLES) <= set(slots)
+        assert not set(mcp_server._TOKEN_FILE_VARIABLES) & set(slots)
+
+    @pytest.mark.parametrize(
+        ("name", "slot"),
+        [pytest.param(name, slot, id=name) for name, slot in mcp_server._ENVIRONMENT_SLOTS.items()],
+    )
+    def test_it_masks_each_variable_a_reader_takes(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        engine_calls: list[MagicMock],
+        name: str,
+        slot: str,
+    ) -> None:
+        """Ensure each listed variable is masked in every form an echo can take.
+
+        The configuration names no variable, as a reader takes the value from
+        the server's environment on its own.
+        """
+        value = _SLOT_VALUES[slot]
+        monkeypatch.setenv(name, value)
+        for mock in engine_calls:
+            mock.side_effect = ConnectorError(f"echo: {_echoes(value)}", quotes_data=True)
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+        settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",))
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+                await client.call_tool("run_comparison", {"path": "veridelta.yaml"}),
+                await client.call_tool(
+                    "validate_config", {"path": "veridelta.yaml", "schemas": True}
+                ),
+            ]
+
+        assert len(value) >= 20
+        for result in _with_client(settings, work):
+            shown = _shown(result)
+            assert "echo: ***" in shown
+            assert "<Token-0>***</Token-0>" in shown
+            assert not _holds_a_form(shown, value)
+
+    @pytest.mark.parametrize(("name", "value"), _UNMASKABLE)
+    def test_it_will_not_start_on_a_value_it_cannot_mask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
+        """Ensure a listed variable of a shape the server cannot mask stops it, naming the variable.
+
+        The refusal holds no three characters in a row of the value.
+        """
+        monkeypatch.setenv(name, value)
+
+        with pytest.raises(ConfigError, match=f"the environment variable {name} must be") as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value).replace(name, "")
+        assert not any(value[i : i + 3] in message for i in range(len(value) - 2))
+
+    def test_it_ignores_an_empty_or_unlisted_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure an empty credential and a variable outside the list neither stop nor mask.
+
+        A region is no credential, and masking every such setting would hide
+        ordinary text in every answer.
+        """
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "")
+        monkeypatch.setenv("AWS_REGION", "us-east-1-zz")
+        mocker.patch.object(
+            DiffEngine, "read_schema", side_effect=ConnectorError("region us-east-1-zz")
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert "ConnectorError: region us-east-1-zz" in _text(result)
+
+    def test_it_masks_the_fields_of_a_service_account_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a Google key's id, echoed on its own, is masked, and the key's whole text too."""
+        key_id = "3f9c2a7e1b5d4c8a9e0f1a2b3c4d5e6f7a8b9c0d"
+        key = json.dumps(
+            {
+                "type": "service_account",
+                "private_key_id": key_id,
+                "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANQ7ledger\n"
+                "-----END PRIVATE KEY-----\n",
+                "client_email": "reader@project.iam.gserviceaccount.com",
+            }
+        )
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_KEY", key)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"unknown key {key_id}; key {key}", quotes_data=True),
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert "ConnectorError: unknown key ***; key ***" in _text(result)
+        assert not _holds_a_form(_shown(result), key_id)
+        assert "MIIEvQIBADANQ7ledger" not in _shown(result)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param("not json at all", id="text"),
+            pytest.param('["private_key_id", "3f9c2a7e1b5d"]', id="list"),
+            pytest.param('{"private_key_id": "abc", "private_key": 12345}', id="short-or-no-text"),
+        ],
+    )
+    def test_it_starts_on_any_service_account_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
+    ) -> None:
+        """Ensure a key that is no JSON object, or whose fields are short or not text, starts it.
+
+        object_store's error for such a key quotes none of it, so the server
+        records the whole text and refuses nothing.
+        """
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_KEY", key)
+
+        assert mcp_server._environment_values(os.environ) == {key}
+        assert _tools(Settings((tmp_path,)))
+
+    def test_it_masks_a_rotated_token_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a token file is read at each call, so a rotated token is masked too.
+
+        A projected token file rotates about hourly, so the token the server
+        read as it started is not the one a reader sends an hour later.
+        """
+        token_file = tmp_path / "token"
+        tokens = [
+            "eyJhbGciOiJSUzI1NiJ9.Zmlyc3Q.c2lnbmF0dXJl",
+            "eyJhbGciOiJSUzI1NiJ9.bmV4dA.c2lnbmVk",
+        ]
+        token_file.write_text(tokens[0] + "\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+
+        def echo_the_file(*_: object) -> None:
+            raise ConnectorError(f"rejected {token_file.read_text().strip()}", quotes_data=True)
+
+        mocker.patch.object(DiffEngine, "read_schema", side_effect=echo_the_file)
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+        settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=("lake",))
+
+        async def work(client: Client) -> list[CallToolResult]:
+            first = await client.call_tool(
+                "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+            )
+            token_file.write_text(tokens[1], encoding="utf-8")
+            second = await client.call_tool(
+                "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+            )
+            return [first, second]
+
+        results = _with_client(settings, work)
+
+        for result, token in zip(results, tokens, strict=True):
+            assert "ConnectorError: rejected ***" in _text(result)
+            assert not _holds_a_form(_shown(result), token)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param(None, id="missing"),
+            pytest.param(b"A" * (64 * 1024 + 1), id="larger-than-64-kib"),
+            pytest.param(b"eyJhbGci\xffOiJSUzI1NiJ9", id="outside-utf-8"),
+            pytest.param(b"not a token at all", id="outside-the-token-shape"),
+            pytest.param(b"abc", id="three-characters"),
+        ],
+    )
+    def test_it_starts_on_a_token_file_that_holds_no_token(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes | None
+    ) -> None:
+        """Ensure a token file the server cannot read as a token starts it and records nothing."""
+        token_file = tmp_path / "token"
+        if content is not None:
+            token_file.write_bytes(content)
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", str(token_file))
+
+        assert mcp_server._token_file_values(os.environ) == set()
+        assert _tools(Settings((tmp_path,)))
+
+    def test_it_reads_a_token_file_of_64_kib(self, tmp_path: Path) -> None:
+        """Ensure a token file of exactly 64 KiB is read, since only a larger one is skipped."""
+        token_file = tmp_path / "token"
+        token_file.write_bytes(b"A" * (64 * 1024))
+
+        values = mcp_server._token_file_values({"AZURE_FEDERATED_TOKEN_FILE": str(token_file)})
+
+        assert values == {"A" * (64 * 1024)}
+
+    @pytest.mark.parametrize(
+        "element",
+        [
+            "Token-0",
+            "token-12",
+            "AWSAccessKeyId",
+            "CanonicalRequest",
+            "canonicalrequestbytes",
+            "StringToSign",
+            "STRINGTOSIGNBYTES",
+            "SignatureProvided",
+        ],
+    )
+    def test_it_blanks_each_element_s3_repeats_a_credential_in(self, element: str) -> None:
+        """Ensure each element's content is blanked, in any case, and the text around it kept."""
+        text = f"<Error><{element}>derived\nsecret</{element}><Code>X</Code></Error>"
+
+        assert mcp_server._without_echoed_credentials(text) == (
+            f"<Error><{element}>***</{element}><Code>X</Code></Error>"
+        )
+
+    def test_it_blanks_an_element_cut_at_the_end(self) -> None:
+        """Ensure an element a message cuts before it closes is blanked to the end."""
+        text = "<Code>InvalidToken</Code><Token-0>IQoJb3JpZ2luX2VjEJr"
+
+        assert mcp_server._without_echoed_credentials(text) == (
+            "<Code>InvalidToken</Code><Token-0>***"
+        )
+
+    def test_it_blanks_each_of_two_elements(self) -> None:
+        """Ensure two elements in one message are each blanked, and nothing between them."""
+        text = "<AWSAccessKeyId>AKIAQ7</AWSAccessKeyId> and <Token-1>tok</Token-1>"
+
+        assert mcp_server._without_echoed_credentials(text) == (
+            "<AWSAccessKeyId>***</AWSAccessKeyId> and <Token-1>***</Token-1>"
+        )
+
+    def test_it_keeps_the_elements_that_repeat_no_credential(self) -> None:
+        """Ensure an S3 error's code, message, and request ids come back as written."""
+        text = (
+            "<Error><Code>AccessDenied</Code><Message>Access Denied</Message>"
+            "<RequestId>4442587FB7D0A2F9</RequestId><HostId>aG9zdA==</HostId></Error>"
+        )
+
+        assert mcp_server._without_echoed_credentials(text) == text
+
+    def test_it_blanks_a_token_it_never_saw(self, tmp_path: Path, mocker: MockerFixture) -> None:
+        """Ensure a token a reader found on its own is blanked where S3 repeats it.
+
+        Nothing is recorded, as for a token from a profile or an instance role.
+        """
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError("<Token-0>derivedtoken</Token-0>", quotes_data=True),
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert "ConnectorError: <Token-0>***</Token-0>" in _text(result)
+        assert "derivedtoken" not in _shown(result)
 
 
 class TestReadRows:

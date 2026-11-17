@@ -82,10 +82,12 @@ duckdb: Any = optional_module("duckdb")
 _DUCKDB_EXTRA = missing_extra("duckdb", "Reading a DuckDB file")
 _UNCONNECTED = "DuckDB connector is not connected. Call connect() first."
 _SESSION_UNCONNECTED = "DuckDB pushdown session is not connected. Call connect() first."
-_TOKEN_VARIABLES: Final = ("MOTHERDUCK_TOKEN", "motherduck_token")
+MOTHERDUCK_TOKEN_VARIABLES: Final = ("MOTHERDUCK_TOKEN", "motherduck_token")
 """Environment variables a MotherDuck token is read from, in order.
 
-MotherDuck's own documentation spells the variable in lowercase.
+MotherDuck's own documentation spells the variable in lowercase. `veridelta
+mcp` masks the value of each in its answers, since the connector sends it to
+MotherDuck with no `${NAME}` in the configuration.
 """
 
 _READ_STATEMENT_KINDS: Final = ("SELECT", "PRAGMA", "EXPLAIN", "CALL", "MULTI")
@@ -472,7 +474,7 @@ def _token(config: DuckDBConfig) -> str | None:
     if not config.is_motherduck:
         return None
     token = config.motherduck_token or next(
-        (os.environ[name] for name in _TOKEN_VARIABLES if os.environ.get(name)), None
+        (os.environ[name] for name in MOTHERDUCK_TOKEN_VARIABLES if os.environ.get(name)), None
     )
     if not token:
         # Without one, MotherDuck opens a browser sign-in, which a CI job never finishes.

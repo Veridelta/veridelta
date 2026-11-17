@@ -21,7 +21,7 @@ from polars.exceptions import PanicException
 from pytest_mock import MockerFixture
 
 from tests.otlp_collector import running_collector
-from veridelta import __version__
+from veridelta import __version__, mcp_server
 from veridelta.cli import (  # pyright: ignore[reportPrivateUsage]
     _verbose_logging,
     build_parser,
@@ -59,6 +59,21 @@ def recorded_run(mocker: MockerFixture) -> MagicMock:
         MagicMock: The mock, which a test reads to check what `run` passed.
     """
     return mocker.patch("veridelta.cli.collect_provenance", return_value=_RUN_RECORD)
+
+
+@pytest.fixture(autouse=True)
+def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset each credential variable a reader takes from `veridelta mcp`'s environment.
+
+    The server refuses to start on a value it cannot mask, so a value from the
+    machine the suite runs on would change what a test sees.
+    """
+    for name in (
+        *mcp_server._ENVIRONMENT_SLOTS,
+        *mcp_server._TOKEN_FILE_VARIABLES,
+        mcp_server._KEY_JSON_VARIABLE,
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def _acted_on(text: str) -> list[str]:
@@ -1423,6 +1438,43 @@ class TestMCPCommand:
 
         serve.assert_called_once_with(Settings((tmp_path,)))
         mock_exit.assert_called_once_with(0)
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            pytest.param("AWS_SESSION_TOKEN", "ab cd", id="token-with-a-space"),
+            pytest.param("AZURE_STORAGE_ACCOUNT_KEY", "azKEY*xx", id="account-key"),
+            pytest.param("MOTHERDUCK_TOKEN", "abc", id="short-token"),
+            pytest.param("AWS_ACCESS_KEY_ID", "-x", id="login"),
+            pytest.param("AZURE_STORAGE_SAS_TOKEN", "foo=1", id="sas"),
+            pytest.param("AWS_SSE_CUSTOMER_KEY_BASE64", "QUJD=", id="base64-not-canonical"),
+            pytest.param("AWS_SECRET_ACCESS_KEY", "abc\udcffdef", id="outside-utf-8"),
+        ],
+    )
+    def test_it_will_not_start_on_a_credential_it_cannot_mask(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        capsys: pytest.CaptureFixture[str],
+        name: str,
+        value: str,
+    ) -> None:
+        """Ensure a reader's credential variable of a shape the server cannot mask stops it.
+
+        The command exits 3 and names the variable on stderr, never its value.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv(name, value)
+        mock_exit = mocker.patch("veridelta.cli.sys.exit")
+        mocker.patch("veridelta.cli.sys.argv", ["veridelta", "mcp", "--root", str(tmp_path)])
+
+        main()
+
+        captured = capsys.readouterr()
+        mock_exit.assert_called_once_with(3)
+        assert f"the environment variable {name} must be" in captured.err
+        assert captured.out == ""
 
 
 _SNOWFLAKE_SIDE = (
