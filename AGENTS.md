@@ -112,5 +112,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [The MCP server takes a ${NAME} only as the whole value of a credential setting](decisions/mcp-takes-environment-values-only-in-credential-settings.md)
 - [The MCP server masks the credentials its readers take from its environment](decisions/mcp-masks-reader-credentials-from-its-environment.md)
 - [The lockfile covers only the Pythons CI tests, and not Emscripten](decisions/lock-covers-the-tested-pythons.md)
+- [The MCP server holds the endpoints its readers take from its environment to the allowed hosts](decisions/mcp-holds-environment-endpoints-to-the-allowed-hosts.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.

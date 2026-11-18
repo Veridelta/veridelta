@@ -23,7 +23,7 @@ Then run a comparison whose verdict you already know, and confirm the new releas
 
 ## 0.43.0
 
-Twelve things change:
+Thirteen things change:
 
 - `DiffSummary` carries `threshold`, the configuration's threshold the verdict was held to, so `veridelta run --json` prints one more key, and the Markdown summary's JSON comment holds it too. A script that compares the JSON's keys exactly sees one more.
 - The HTML report's tables change shape. One columns table replaces the column-level drift and rules applied tables, the metric cards become a bar of the rows with its counts, and the disclosure under the mismatched values lists the changed rows side by side, one cell per compared column with both values, in place of the `<column>_source`, `<column>_target`, and `<column>_is_match` columns. The mismatched values table is unchanged. A script that reads the report's tables reads the mismatched values, or the JSON summary.
@@ -52,6 +52,7 @@ Twelve things change:
     `veridelta.mcp_server.environment_values` is removed, since the server now masks the values it expanded as it loaded the file. `veridelta.mcp_server.check_configuration` no longer takes `secrets`. A direct Python call to it masks nothing, since the server masks values only inside a tool call.
 - `veridelta validate --allow-missing-env` now warns about an unset `${NAME}` that comes before a malformed reference, such as `${}`, in the same `source` or `target` block. Before, it printed only the error. `load_config` with `unset_env` adds that name to the list before it raises, too. `veridelta run` is unchanged.
 - `veridelta mcp` does not start when a credential variable a reader takes from its environment lacks the shape a `${NAME}` in the same setting needs. The error names the variable. That refuses a dummy of 1 to 3 characters, a secret key with a space or a `\r`, a legacy Azure client secret with `[` or `@`, an account key that is not base64 as an encoder writes it, a SAS token with an unknown parameter, and a byte outside UTF-8. Correct the value, or leave the variable out of the `env` the host starts the server with. [The MCP server](agents.md#mcp-server) lists the variables.
+- `veridelta mcp` now holds each endpoint a reader takes from its environment to the rules a configured endpoint meets: a host given with `--allow-host`, `https://`, and no path. A local MinIO, LocalStack, or Azurite reached over plain HTTP through `AWS_ENDPOINT_URL`, `AWS_ENDPOINT`, a profile's `endpoint_url`, `AZURE_ENDPOINT`, `AZURE_STORAGE_ENDPOINT`, or `AZURE_STORAGE_USE_EMULATOR` now fails on the server. So does a store reached through `GOOGLE_BASE_URL` or `BIGQUERY_EMULATOR_HOST`. An HTTPS endpoint from the environment, such as R2, a sovereign cloud's `AZURE_AUTHORITY_HOST`, or a production MinIO, needs its host given with `--allow-host`. A MotherDuck side refuses a `motherduck_*` variable other than the token, `attach_mode`, `saas_mode`, and `session_name`. Serve the store over HTTPS and give its host with `--allow-host`, or read it with `veridelta run`; see [the MCP server](agents.md#mcp-server).
 
 ## 0.42.0
 
