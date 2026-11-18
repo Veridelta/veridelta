@@ -302,19 +302,15 @@ def test_polars_echoes_the_proxy_login_without_the_mask(
         assert holds == _POLARS_ECHOES_PROXY, shown
 
 
-_CUT_CASES: Final = [
-    pytest.param("cut-proxy-login-polars", f"'{_PROXY_LOGIN}'", id="hash"),
-    pytest.param("scheme-cut-proxy-login-polars", "'proxyuser9:Pr0x:'", id="no-scheme"),
-]
-"""Each case of a cut proxy login, with the head of it Polars writes back without the check."""
+_CUT_CASES: Final = ["cut-proxy-login-polars", "scheme-cut-proxy-login-polars"]
+"""Each case of a proxy login that a client cuts."""
 
 
-@pytest.mark.parametrize(("case", "head"), _CUT_CASES)
+@pytest.mark.parametrize("case", _CUT_CASES)
 def test_it_refuses_a_proxy_login_no_client_can_parse(
-    tmp_path: Path, refusing_store: int, case: str, head: str
+    tmp_path: Path, refusing_store: int, case: str
 ) -> None:
     """Ensure a proxy login that a client cuts stops the server, naming only the variable."""
-    del head
     (shown,) = _in_a_child(case, tmp_path, refusing_store)
 
     assert shown.startswith("refused: "), shown
@@ -323,19 +319,27 @@ def test_it_refuses_a_proxy_login_no_client_can_parse(
     assert not _holds(shown, _PROXY_PASSWORD), shown
 
 
-@pytest.mark.parametrize(("case", "head"), _CUT_CASES)
+@pytest.mark.parametrize(
+    ("case", "head", "echoes"),
+    [
+        pytest.param(
+            "cut-proxy-login-polars", f"'{_PROXY_LOGIN}'", _POLARS_ECHOES_PROXY, id="hash"
+        ),
+        pytest.param("scheme-cut-proxy-login-polars", "'proxyuser9:Pr0x:'", True, id="no-scheme"),
+    ],
+)
 def test_polars_echoes_a_cut_proxy_login_without_the_check(
-    tmp_path: Path, refusing_store: int, case: str, head: str
+    tmp_path: Path, refusing_store: int, case: str, head: str, echoes: bool
 ) -> None:
-    """Ensure Polars writes the head of a cut proxy login back from 2.0.0 on, which no mask matches.
+    """Ensure Polars writes the head of a cut proxy login back, which no mask matches.
 
     urllib3 ends the authority at the `#`, or at the `/` of a `://` that
     follows no scheme, and botocore passes its parse error on, with the user
-    and the password up to that character. Before 2.0.0 the error names only
-    the store.
+    and the password up to that character. Before 2.0.0, Polars writes back
+    the head cut at a `://`, and for a `#` its error names only the store.
     """
     answers = _in_a_child(case, tmp_path, refusing_store, control=True)
 
     for shown in answers:
         assert not shown.startswith("refused: "), shown
-        assert (head in shown) == _POLARS_ECHOES_PROXY, shown
+        assert (head in shown) == echoes, shown
