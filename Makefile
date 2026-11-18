@@ -38,7 +38,7 @@ eval-agent:
 
 postgres:
 	@test -n "$$VERIDELTA_POSTGRES_URI" || { echo "Set VERIDELTA_POSTGRES_URI to a Postgres server the tests may create tables on."; exit 1; }
-	VERIDELTA_PARITY_BACKEND=postgres uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py tests/integration/test_parity_fuzz.py tests/integration/test_postgres_pushdown.py --no-cov
+	VERIDELTA_PARITY_BACKEND=postgres uv run pytest tests/integration/test_pushdown_parity.py tests/integration/test_seeded_drift.py tests/integration/test_parity_fuzz.py tests/integration/test_postgres_pushdown.py tests/integration/test_mcp_password_servers.py --no-cov
 
 sqlserver:
 	@test -n "$$VERIDELTA_MSSQL_URI" || { echo "Set VERIDELTA_MSSQL_URI to a SQL Server the tests may create tables on."; exit 1; }
@@ -50,7 +50,7 @@ live:
 
 databases:
 	@test -n "$$VERIDELTA_MYSQL_URI$$VERIDELTA_MARIADB_URI$$VERIDELTA_MSSQL_URI$$VERIDELTA_CLICKHOUSE_URI" || { echo "Set VERIDELTA_MYSQL_URI, VERIDELTA_MARIADB_URI, VERIDELTA_MSSQL_URI, or VERIDELTA_CLICKHOUSE_URI to a server the tests may create tables on."; exit 1; }
-	uv run --group databases pytest tests/integration/test_database_servers.py --no-cov
+	uv run --group databases pytest tests/integration/test_database_servers.py tests/integration/test_mcp_password_servers.py --no-cov
 
 accessibility:
 	VERIDELTA_ACCESSIBILITY=1 uv run --group accessibility pytest tests/accessibility --no-cov
