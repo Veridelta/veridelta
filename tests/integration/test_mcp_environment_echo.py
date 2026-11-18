@@ -6,7 +6,8 @@
 Real Polars and real deltalake read a side from a store on this machine that
 answers every request as S3 answers one it refuses: with an error that repeats
 the session token, the access key id, and the request it could not verify. A
-token request to Azure's authority gets its form body back. The configuration
+token request to Azure's authority gets its form body back, and a Unity Catalog
+request gets its bearer token back, in a workspace's JSON error. The configuration
 names no `${NAME}`: each reader takes its credentials from the server's
 environment on its own, or from a credentials file it finds there. A control
 turns the server's record of the environment and its blanking of S3's elements
@@ -14,6 +15,7 @@ off, and shows each probe does echo the value, where its reader repeats the
 error's body.
 """
 
+import json
 import multiprocessing
 import os
 import socket
@@ -41,13 +43,18 @@ pytestmark = [pytest.mark.integration]
 
 
 class _Echo(BaseHTTPRequestHandler):
-    """Refuse every request, repeating what it was sent as S3 or Azure's authority would."""
+    """Refuse every request, repeating what it was sent as S3, Azure, or Unity Catalog would."""
 
     def _refuse(self) -> None:
         """Answer 403 with the text the request's credentials would come back in."""
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode() if length else ""
-        if "/oauth2" in self.path:
+        if "/unity-catalog/" in self.path:
+            authorization = self.headers.get("Authorization") or ""
+            text = json.dumps(
+                {"error_code": "PERMISSION_DENIED", "message": f"Invalid token {authorization}"}
+            )
+        elif "/oauth2" in self.path:
             text = f"<Error><Code>invalid_client</Code><Message>{body}</Message></Error>"
         else:
             signed = self.headers.get("Authorization") or ""
@@ -115,6 +122,9 @@ _CLIENT_ID = "0e2f7c1a-3b9d-4e58-9a0c-7d6e5f4a3b2c"
 _TENANT_ID = "6f1c2a9e-3b7d-4e58-9a0c-1b2c3d4e5f6a"
 _CLIENT_SECRET = "Mk18Q~ab.cd_ef-gh+ij/kl=Zq9x7Pw"
 _FEDERATED_TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJsZWRnZXIifQ.c2lnbmF0dXJlTGVkZ2VyUTc"
+_DATABRICKS_TOKEN = "dapi7f3c9a1e5b2d4f6a8c0e1b3d5f7a9c2e4b"
+_UNITY_TABLE: Final = "main.default.t"
+"""The `catalog.schema.table` a `uc://` case reads, which is the host the server allows."""
 
 
 def _s3(endpoint: str) -> dict[str, str]:
@@ -188,6 +198,19 @@ def _federated(file_name: str) -> Callable[[Path, str], dict[str, str]]:
     return environment
 
 
+def _unity(token_name: str) -> Callable[[Path, str], dict[str, str]]:
+    """Send Unity Catalog's requests to the echo store, over HTTP, with a token under `token_name`."""
+
+    def environment(_: Path, endpoint: str) -> dict[str, str]:
+        return {
+            "DATABRICKS_HOST": endpoint,
+            "UNITY_ALLOW_HTTP_URL": "true",
+            token_name: _DATABRICKS_TOKEN,
+        }
+
+    return environment
+
+
 _CASES: dict[str, _Case] = {
     "polars-keys": _Case(
         "s3", False, _keys("AWS_SESSION_TOKEN"), (_KEY_ID, _SESSION_TOKEN), _POLARS_ECHOES_S3
@@ -211,6 +234,14 @@ _CASES: dict[str, _Case] = {
     ),
     "polars-federated-mixed-case": _Case(
         "az", False, _federated("AZURE_Federated_Token_File"), (_FEDERATED_TOKEN,)
+    ),
+    "deltalake-unity-token": _Case("uc", True, _unity("DATABRICKS_TOKEN"), (_DATABRICKS_TOKEN,)),
+    "deltalake-unity-access-token": _Case(
+        "uc", True, _unity("UNITY_ACCESS_TOKEN"), (_DATABRICKS_TOKEN,)
+    ),
+    # deltalake's Unity Catalog reader reads any case after `DATABRICKS_` too.
+    "deltalake-unity-mixed-case": _Case(
+        "uc", True, _unity("DATABRICKS_Token"), (_DATABRICKS_TOKEN,)
     ),
 }
 """Each reader and the credentials it takes from the environment, by name."""
@@ -281,7 +312,7 @@ def _answers(name: str, folder: str, endpoint: str, closed: int, control: bool) 
     case, root = _CASES[name], Path(folder)
     os.chdir(root)
     for variable in list(os.environ):
-        if variable.upper().startswith(("AWS_", "AZURE_", "GOOGLE_")):
+        if variable.upper().startswith(("AWS_", "AZURE_", "GOOGLE_", "UNITY_", "DATABRICKS_")):
             del os.environ[variable]
     dead, bypass = f"http://127.0.0.1:{closed}", "127.0.0.1,localhost"
     os.environ.update(
@@ -309,9 +340,10 @@ def _answers(name: str, folder: str, endpoint: str, closed: int, control: bool) 
         setattr(mcp_server, "_environment_values", lambda _: set())  # noqa: B010 - the child patches as monkeypatch would
         setattr(mcp_server, "_token_file_values", lambda _: set())  # noqa: B010 - as above
         setattr(mcp_server, "_without_echoed_credentials", lambda text: text)  # noqa: B010 - as above
-    bucket = f"bkt-{name}"
+    bucket = _UNITY_TABLE if case.scheme == "uc" else f"bkt-{name}"
     if case.delta:
-        source = f"  type: delta\n  table_uri: {case.scheme}://{bucket}/t\n"
+        table = bucket if case.scheme == "uc" else f"{bucket}/t"
+        source = f"  type: delta\n  table_uri: {case.scheme}://{table}\n"
     else:
         source = f"  path: {case.scheme}://{bucket}/a.parquet\n"
     (root / "b.csv").write_text("id\n1\n", encoding="utf-8")
