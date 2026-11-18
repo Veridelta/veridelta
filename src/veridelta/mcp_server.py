@@ -2215,15 +2215,44 @@ _READER_ONLY_VARIABLES: Final[Mapping[str, _Slot]] = {
             "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
             "ALIBABA_CLOUD_SECURITY_TOKEN",
             "OSS_ACCESS_KEY_SECRET",
+            "OSS_SESSION_TOKEN",
+            "TENCENTCLOUD_SECRET_KEY",
+            "TKE_SECRET_KEY",
+            "TENCENTCLOUD_TOKEN",
+            "TENCENTCLOUD_SECURITY_TOKEN",
+            "QCLOUD_SECRET_TOKEN",
+            "HUAWEI_CLOUD_SECRET_ACCESS_KEY",
+            "HUAWEI_CLOUD_SECURITY_TOKEN",
+            "AZURE_STORAGE_BEARER_TOKEN",
+            "SYSTEM_ACCESSTOKEN",
+            "UNITY_ACCESS_TOKEN",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_ACCESS_TOKEN",
+            "UNITY_CLIENT_SECRET",
+            "DATABRICKS_CLIENT_SECRET",
             *MOTHERDUCK_TOKEN_VARIABLES,
         ),
         "token",
     ),
     "AZURE_STORAGE_MASTER_KEY": "account key",
+    "AZBLOB_ACCOUNT_KEY": "account key",
     "AWS_SSE_CUSTOMER_KEY_BASE64": "account key",
-    "AZURE_AUTHORITY_ID": "login",
-    "AZURE_STORAGE_AUTHORITY_ID": "login",
-    "ALIBABA_CLOUD_ACCESS_KEY_ID": "login",
+    **dict.fromkeys(
+        (
+            "AZURE_AUTHORITY_ID",
+            "AZURE_STORAGE_AUTHORITY_ID",
+            "ARM_CLIENT_ID",
+            "ARM_TENANT_ID",
+            "ALIBABA_CLOUD_ACCESS_KEY_ID",
+            "OSS_ACCESS_KEY_ID",
+            "TENCENTCLOUD_SECRET_ID",
+            "TKE_SECRET_ID",
+            "HUAWEI_CLOUD_ACCESS_KEY_ID",
+            "UNITY_CLIENT_ID",
+            "DATABRICKS_CLIENT_ID",
+        ),
+        "login",
+    ),
 }
 """The environment variables a reader takes a credential from that no storage option names.
 
@@ -2238,8 +2267,6 @@ Each name, its reader, and the evidence that the reader sends its value:
   in object_store, deltalake, and libarrow.
 - `GOOGLE_BEARER_TOKEN`: object_store. Probed, and echoed by a fake store.
 - `HF_TOKEN`: Polars, for an `hf://` location, a scheme in `_SERVICE_SCHEMES`.
-- `ALIBABA_CLOUD_ACCESS_KEY_SECRET`, `ALIBABA_CLOUD_SECURITY_TOKEN`, and
-  `OSS_ACCESS_KEY_SECRET`: named in deltalake's binary, not probed.
 - Each name in `MOTHERDUCK_TOKEN_VARIABLES`: Veridelta's DuckDB connector.
 - `AZURE_STORAGE_MASTER_KEY`: object_store's alias of the account key.
 - `AWS_SSE_CUSTOMER_KEY_BASE64`: object_store. Probed, and echoed with
@@ -2247,12 +2274,46 @@ Each name, its reader, and the evidence that the reader sends its value:
   key nothing.
 - `AZURE_AUTHORITY_ID` and `AZURE_STORAGE_AUTHORITY_ID`: object_store's
   aliases of the tenant id.
-- `ALIBABA_CLOUD_ACCESS_KEY_ID`: named in deltalake's binary, not probed.
+- `UNITY_ACCESS_TOKEN` and its aliases `DATABRICKS_TOKEN` and
+  `DATABRICKS_ACCESS_TOKEN`: deltalake's Unity Catalog reader, at a `uc://`
+  table. Probed, sent as a bearer token to the workspace `DATABRICKS_HOST`
+  names, and echoed in the reader's error, which quotes the workspace's.
+- `UNITY_CLIENT_ID`, `UNITY_CLIENT_SECRET`, and their aliases
+  `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`: the same reader.
+  Probed, and sent in the form body of its request to the workspace's token
+  service.
+
+deltalake's OpenDAL stores, at an `opendal+` scheme, read the rest. Each
+store needs an `opendal.` storage option, such as `opendal.endpoint`, which
+the server refuses, so no configuration reaches them on the server yet. They
+are listed so that the mask does not rest on that refusal. A secret key
+takes the token slot, as `aws_secret_access_key` does.
+
+- `ALIBABA_CLOUD_ACCESS_KEY_ID`, `ALIBABA_CLOUD_ACCESS_KEY_SECRET`,
+  `ALIBABA_CLOUD_SECURITY_TOKEN`, and their aliases `OSS_ACCESS_KEY_ID`,
+  `OSS_ACCESS_KEY_SECRET`, and `OSS_SESSION_TOKEN`: the OSS store. Probed,
+  and sent in each request's headers.
+- `TENCENTCLOUD_SECRET_ID`, `TENCENTCLOUD_SECRET_KEY`, and
+  `TENCENTCLOUD_TOKEN`, their aliases `TKE_SECRET_ID`, `TKE_SECRET_KEY`,
+  `TENCENTCLOUD_SECURITY_TOKEN`, and `QCLOUD_SECRET_TOKEN`: the COS store.
+  Probed, and sent in each request's headers.
+- `HUAWEI_CLOUD_ACCESS_KEY_ID`, `HUAWEI_CLOUD_SECRET_ACCESS_KEY`, and
+  `HUAWEI_CLOUD_SECURITY_TOKEN`: the OBS store. Probed, and sent in each
+  request's headers.
+- `AZBLOB_ACCOUNT_KEY` and `AZURE_STORAGE_BEARER_TOKEN`: the Azure store,
+  which signs with the key. Probed, and the token sent as a bearer token.
+- `SYSTEM_ACCESSTOKEN`, `ARM_CLIENT_ID`, and `ARM_TENANT_ID`: the Azure
+  store's sign-in from Azure Pipelines. Probed, and the token sent to the
+  host `SYSTEM_OIDCREQUESTURI` names. The ids go to Microsoft Entra ID.
 
 Some names are left out. ConnectorX reads none of `PGPASSWORD`, `MYSQL_PWD`,
 `MSSQL_PASSWORD`, and `SQLCMDPASSWORD`, as its binary and a probe show.
 Veridelta passes the Snowflake and Databricks connectors every setting as an
-argument, so neither reads a `SNOWFLAKE_` or `DATABRICKS_` variable.
+argument, so neither reads a `SNOWFLAKE_` or `DATABRICKS_` variable. The
+Unity Catalog reader also reads the authority id, object id, managed identity
+resource id, and federated token file under `UNITY_` and `DATABRICKS_`, but a
+probe shows it sends none of them: it signs in only with a token or a client
+secret.
 `AZURE_CLIENT_CERTIFICATE_PASSWORD` unlocks a file on this machine and is
 never sent."""
 
@@ -2274,11 +2335,14 @@ that a reader sends its value to a service, and with the slot whose shape
 makes an echo the text the mask matches. Never record a prefix, since
 `AWS_ALLOW_HTTP=true` would then mask `true` in every answer."""
 
-_CASELESS_PREFIXES: Final = ("AWS_", "AZURE_", "GOOGLE_")
-"""The prefixes after which object_store's `from_env` ignores a name's case.
+_CASELESS_PREFIXES: Final = ("AWS_", "AZURE_", "GOOGLE_", "UNITY_", "DATABRICKS_")
+"""The prefixes after which a reader's `from_env` ignores a name's case.
 
-It matches the prefix as written, then reads the whole name in lower case,
-so it reads `AZURE_Client_Secret` as the option `azure_client_secret`."""
+object_store matches the prefix as written, then reads the whole name in
+lower case, so it reads `AZURE_Client_Secret` as the option
+`azure_client_secret`. deltalake's Unity Catalog reader does the same after
+`UNITY_` and `DATABRICKS_`, so it sends the value of `DATABRICKS_Token`, as a
+probe showed."""
 
 _KEY_JSON_VARIABLE: Final = "GOOGLE_SERVICE_ACCOUNT_KEY"
 """The environment variable object_store reads a Google service account key from, as JSON."""
@@ -2290,8 +2354,17 @@ _TOKEN_FILE_VARIABLES: Final = (
     "AWS_WEB_IDENTITY_TOKEN_FILE",
     "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
     "AZURE_FEDERATED_TOKEN_FILE",
+    "ALIBABA_CLOUD_OIDC_TOKEN_FILE",
+    "TENCENTCLOUD_WEB_IDENTITY_TOKEN_FILE",
+    "TKE_IDENTITY_TOKEN_FILE",
 )
-"""The environment variables that name a file a reader reads a token from."""
+"""The environment variables that name a file a reader reads a token from.
+
+deltalake's OpenDAL OSS store sends the token in `ALIBABA_CLOUD_OIDC_TOKEN_FILE`'s
+file to Alibaba Cloud's STS in a URL's query, which a probe's STS echoed. Its
+COS store sends the token in the other two names' file to Tencent Cloud's
+STS, as its binary shows, not probed. Neither store is reached on the
+server yet, as `_READER_ONLY_VARIABLES` says."""
 
 _LOGIN_IN_URL: Final = re.compile(r"://([^/?#]*)@([^/?#\s]*)")
 """A URL's login and the host after it.
