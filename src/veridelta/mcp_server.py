@@ -2179,8 +2179,9 @@ ConnectorX, percent-encoded into the uri by `connection_uri`, and only for a
 reader in `_PASSWORD_READERS`. A Snowflake password or passphrase reaches
 only `snowflake.connector.connect`. The corpus tests drive each of those
 readers with a wrong password of every character class, against a service
-that refuses it and against one that writes its whole request back, and no
-answer holds 4 characters in a row of it. The mask matches no escaped form
+that refuses it, and no answer holds 4 characters in a row of it. They drive
+ClickHouse, whose host an agent chooses and whose error repeats a refusal
+whole, against a service that writes its request back too. The mask matches no escaped form
 of a value, such as doubled quotes, backslashes, JSON, ODBC braces, libpq
 quoting, or base64, and no cut of one, because no reader writes a password
 in such a form. A reader that did would leave `_PASSWORD_READERS`, or its
