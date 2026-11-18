@@ -66,9 +66,6 @@ _SEPARATORS: Final = (
 )
 """Every class of character a password can hold that a reader could quote or encode."""
 
-_URI_UNSAFE: Final = frozenset("@/?#\\ \t\n")
-"""The characters Trino's decoded uri cannot hold in its login, which its host check refuses."""
-
 _LETTERS: Final = "QZXJVKWqzxjvkw"
 """Letters that no English word in fixed text runs together, two at a time."""
 
@@ -87,14 +84,13 @@ def _joined(separators: tuple[str, ...], length: int | None = None) -> str:
 
 CORPUS: Final[tuple[tuple[str, str], ...]] = (
     ("every-class", _joined(_SEPARATORS)),
-    ("uri-safe", _joined(tuple(s for s in _SEPARATORS if not set(s) & _URI_UNSAFE))),
     ("long", _joined(_SEPARATORS, 300)),
     ("backslash-heavy", "Qz\\Xv\\\\Kj\\nWq\\tZp\\'Jx\\\"Vb\\u00e9Qk\\x41Zw\\0Xj\\"),
 )
 """Each wrong password a reader is driven with, by id.
 
-`uri-safe` leaves out what Trino's host check refuses, and `long` runs to 300
-characters, so a reader that cuts a password would leave a piece of it."""
+`long` runs to 300 characters, so a reader that cuts a password would leave a
+piece of it."""
 
 _JSON_ESCAPES: Final = re.compile(r'(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))+')
 """A run of JSON escapes, decoded together so a surrogate pair reads as one character."""

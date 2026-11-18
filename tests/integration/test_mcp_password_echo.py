@@ -8,9 +8,13 @@ key's passphrase from a `${NAME}` as free text, and masks it only as written
 and in a few encodings. Here each reader that can receive one is driven,
 through the MCP client, with each wrong password of `password_corpus.CORPUS`,
 against a fake server on this machine that answers as the real one refuses a
-sign-in. No answer may hold any piece of the password, in any form. A control
-has the Postgres fake write the password back in each escaped form, and shows
-the check finds each one.
+sign-in. Each HTTP service is driven twice: once as it refuses a sign-in, and
+once as a service that writes its whole request back in the refusal, as an
+echo or debug endpoint on an allowed host would. No answer may hold any piece
+of the password, in any form. A control has the Postgres fake write the
+password back in each escaped form, and shows the check finds each one.
+Another shows why Trino's reader takes no password from the environment: it
+sends one as basic auth, and repeats a service's whole refusal.
 
 Each call waits out ConnectorX's pool, about 30 seconds, so every call runs
 in a thread of its own, at once.
@@ -59,14 +63,9 @@ _TOOLS: Final[tuple[tuple[str, dict[str, Any]], ...]] = (
 
 _SENDS_NOTHING: Final = {
     "oracle": "no Oracle Client in CI",
-    "trino-http": "basic auth refused over http",
     "snowflake-passphrase": "the key is decrypted on this machine",
 }
 """The readers that send a fake nothing, and why, so a widening shows in review."""
-
-_READS_NO_QUERY: Final = frozenset({"validate_config", "describe_schema"})
-"""The tools that read a side's columns only from a `table`, so a Trino side's `query`
-reaches its reader only through `run_comparison`."""
 
 _LONGEST_WAIT: Final = 120
 """The seconds a fake waits for a reader's next bytes before it gives up."""
@@ -77,7 +76,8 @@ class _Recording:
     """What a fake received, and the text its error repeats, shared by its handlers."""
 
     message: Callable[[bytes], str]
-    """The text of the fake's refusal, given what the reader sent as its password."""
+    """The text of the fake's refusal, given what the reader sent as its password,
+    or its whole request to an HTTP fake."""
 
     received: list[bytes] = field(default_factory=list)
     """Each chunk of bytes a reader sent, in order."""
@@ -240,10 +240,9 @@ class _Http(BaseHTTPRequestHandler):
         """Record the request, then answer with the service's refusal."""
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
-        self.server.recording.received.append(
-            f"{self.command} {self.path}\n{self.headers}".encode() + body
-        )
-        data = self.server.recording.message(body).encode()
+        request = f"{self.command} {self.path}\n{self.headers}".encode() + body
+        self.server.recording.received.append(request)
+        data = self.server.recording.message(request).encode()
         self.send_response(self.status)
         self.send_header("Content-Type", self.content_type)
         self.send_header("Content-Length", str(len(data)))
@@ -277,7 +276,8 @@ class _Reader:
     """The fake's handler, or None for a reader that has no fake."""
 
     message: Callable[[bytes], str]
-    """The text the fake refuses with, given what the reader sent as its password."""
+    """The text the fake refuses with, given what the reader sent as its password,
+    or its whole request to an HTTP fake."""
 
     uri: str | None = None
     """A database side's `uri`, with the fake's port to fill in, or None for Snowflake."""
@@ -317,6 +317,17 @@ def _fixed(text: str) -> Callable[[bytes], str]:
     return lambda _: text
 
 
+def _echoed(text: str) -> Callable[[bytes], str]:
+    """Refuse with `text`, then the whole request, as an echo or debug endpoint writes it."""
+    return lambda request: f"{text} The request was:\n{request.decode('utf-8', 'replace')}"
+
+
+_CLICKHOUSE_REFUSAL: Final = (
+    "Code: 516. DB::Exception: u: Authentication failed: password is incorrect, or "
+    "there is no user with such name. (AUTHENTICATION_FAILED)"
+)
+"""The text ClickHouse refuses a wrong password with."""
+
 _TRINO_READ: Final = "  query: select 1 as id\n"
 """A Trino side reads through a query, since the server refuses a Trino table."""
 
@@ -334,25 +345,13 @@ _READERS: Final[dict[str, _Reader]] = {
     ),
     "mysql": _Reader(_MySQL, _fixed(""), "mysql://u@127.0.0.1:{port}/x"),
     "mssql": _Reader(_Tds, _fixed(""), "mssql://u@127.0.0.1:{port}/x"),
-    "clickhouse": _Reader(
-        _Http,
-        _fixed(
-            "Code: 516. DB::Exception: u: Authentication failed: password is incorrect, or "
-            "there is no user with such name. (AUTHENTICATION_FAILED)"
-        ),
-        "clickhouse://u@127.0.0.1:{port}/x",
-    ),
-    "trino-http": _Reader(
-        _Http, _fixed("Unauthorized"), "trino://u@127.0.0.1:{port}/c", _TRINO_READ
-    ),
-    "trino-https": _Reader(
-        _Http,
-        _fixed("Unauthorized"),
-        "trino+https://u@127.0.0.1:{port}/c?verify=false",
-        _TRINO_READ,
-        tls=True,
+    "clickhouse": _Reader(_Http, _fixed(_CLICKHOUSE_REFUSAL), "clickhouse://u@127.0.0.1:{port}/x"),
+    "clickhouse-echo": _Reader(
+        _Http, _echoed(_CLICKHOUSE_REFUSAL), "clickhouse://u@127.0.0.1:{port}/x"
     ),
     "oracle": _Reader(None, _fixed(""), "oracle://u@127.0.0.1:{port}/svc"),
+    # The driver sends a password only to the account's host under snowflakecomputing.com,
+    # never to another service an agent names, so it has no echoing variant.
     "snowflake-password": _Reader(
         _Snowflake,
         _fixed(
@@ -374,9 +373,6 @@ _READERS: Final[dict[str, _Reader]] = {
 }
 """Each reader that can receive a password from the server's environment, by name."""
 
-_URI_SAFE: Final = frozenset({"trino-http", "trino-https"})
-"""The readers driven with the `uri-safe` password only, since Trino's host check refuses the rest."""
-
 
 @dataclass(frozen=True)
 class _Case:
@@ -391,10 +387,7 @@ class _Case:
 def _cases() -> list[_Case]:
     """Pair each reader with each password it is driven with, under its own variable."""
     pairs = [
-        (reader, password_id, password)
-        for reader in _READERS
-        for password_id, password in CORPUS
-        if (password_id == "uri-safe") == (reader in _URI_SAFE)
+        (reader, password_id, password) for reader in _READERS for password_id, password in CORPUS
     ]
     return [
         _Case(reader, password_id, password, f"V_PW_{number}")
@@ -550,12 +543,12 @@ def test_no_reader_repeats_any_piece_of_a_password(
 
     Each case's fake must also have received bytes from its reader, so the
     reader got past reading its configuration, unless `_SENDS_NOTHING` says
-    why it sends nothing, or the tool reads a Trino side's `query` not at all.
+    why it sends nothing. An echoing fake's answer must hold the request it
+    wrote back, with the header that carries the password masked.
     """
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
     _encrypted_key(tmp_path)
-    tls = _certificate(tmp_path)
     cases = _cases()
     with ExitStack() as stack:
         tasks: list[tuple[str, str, dict[str, Any]]] = []
@@ -564,7 +557,7 @@ def test_no_reader_repeats_any_piece_of_a_password(
             monkeypatch.setenv(case.variable, case.password)
             reader = _READERS[case.reader]
             for tool, arguments in _TOOLS:
-                port, recording = stack.enter_context(_fake(reader, tls))
+                port, recording = stack.enter_context(_fake(reader, None))
                 snowflake_ports[f"acct{port}"] = port
                 path = f"{case.variable}-{tool}.yaml"
                 (tmp_path / path).write_text(
@@ -580,8 +573,10 @@ def test_no_reader_repeats_any_piece_of_a_password(
         where = f"{case.reader}, {case.password_id}, {tool}"
         found = holds_piece(answer, case.password)
         assert found is None, f"{where}: the answer holds {found}: {answer}"
-        reads = _READERS[case.reader].read != _TRINO_READ or tool not in _READS_NO_QUERY
-        assert bool(recording.received) is (case.reader not in _SENDS_NOTHING and reads), where
+        assert bool(recording.received) is (case.reader not in _SENDS_NOTHING), where
+        if case.reader.endswith("-echo"):
+            # The refusal came back with the request in it, the password's header masked.
+            assert "x-clickhouse-key: ***" in answer.casefold(), f"{where}: {answer}"
 
 
 def test_the_corpus_drives_every_password_reader() -> None:
@@ -636,3 +631,33 @@ def test_the_check_finds_each_escaped_echo(
         assert holds_piece(answer, password) is not None, form
     assert "password authentication failed: ***" in received
     assert holds_piece(received, password) is None
+
+
+def test_the_trino_reader_repeats_a_password_a_service_writes_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_reader_credentials: None
+) -> None:
+    """Ensure the reason Trino's reader takes no password from the environment still holds.
+
+    The reader sends the password as basic auth, in base64, which the mask
+    does not match, and its error repeats the whole body of a refusal. So a
+    service that writes its request headers back hands the password over.
+    The password is written in the file here, since the server refuses one
+    from its environment for Trino.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
+    password = "QzXj-Vk_Wq.Zx"
+    trino = _Reader(
+        _Http,
+        _echoed("Unauthorized."),
+        "trino+https://u@127.0.0.1:{port}/c?verify=false",
+        _TRINO_READ,
+        credential=f"  password: {password}\n",
+        tls=True,
+    )
+    with _fake(trino, _certificate(tmp_path)) as (port, recording):
+        (tmp_path / "trino.yaml").write_text(trino.configuration(port, "unused"), encoding="utf-8")
+        (answer,) = _run_all([("trino.yaml", "run_comparison", {})], _settings(tmp_path, {}))
+
+    assert recording.received
+    assert holds_piece(answer, password) == "the password basic auth, as written"

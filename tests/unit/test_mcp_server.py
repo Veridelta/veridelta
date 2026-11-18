@@ -7113,6 +7113,8 @@ class TestEnvironmentReferences:
             "duckdb://u@db.internal/x",
             "snowflake://u@db.internal/x",
             "redshift-iam://u@db.internal/x",
+            "trino://u@db.internal/x",
+            "trino+https://u@db.internal/x?verify=false",
         ],
     )
     @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
@@ -7151,6 +7153,48 @@ class TestEnvironmentReferences:
         folded = password.casefold()
         assert not any(folded[i : i + 6] in shown for i in range(len(folded) - 5))
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "trino://u:${V_PASSWORD}@db.internal/x",
+            "trino+https://u:${V_PASSWORD}@db.internal/x?verify=false",
+            "mariadb://u:${V_PASSWORD}@db.internal/x",
+        ],
+    )
+    @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
+    def test_it_refuses_a_uri_password_from_the_environment_for_an_unprobed_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str, is_set: bool
+    ) -> None:
+        """Ensure a `${NAME}` uri password reaches only a reader a test shows never repeats it.
+
+        Trino's reader sends it as basic auth, in base64 the mask does not
+        match, and repeats a service's whole refusal, which can hold the header.
+        """
+        password = "Hunter2-Secret.Pass_word"
+        if is_set:
+            monkeypatch.setenv("V_PASSWORD", password)
+        else:
+            monkeypatch.delenv("V_PASSWORD", raising=False)
+        _with_source(tmp_path, f'  type: database\n  uri: "{uri}"\n  query: select 1 as id\n')
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS),
+            {"path": "veridelta.yaml", "allow_missing_env": not is_set},
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert report["errors"][0].startswith(
+            "On veridelta mcp, source -> uri cannot take ${V_PASSWORD} for this uri."
+        )
+        assert report["findings"][0]["locations"] == [{"path": ["source", "uri"]}]
+        shown = _shown(result).casefold()
+        encoded = base64.b64encode(f"u:{password}".encode()).decode().casefold()
+        folded = password.casefold()
+        assert not any(folded[i : i + 6] in shown for i in range(len(folded) - 5))
+        assert encoded not in shown
+
     _PROBED_URIS = (
         "postgres://u@db.internal/x",
         "postgresql://u@db.internal/x",
@@ -7161,7 +7205,6 @@ class TestEnvironmentReferences:
         "mssql://u@db.internal/x",
         "oracle://u@db.internal/svc",
         "clickhouse://u@db.internal/x",
-        "trino://u@db.internal/x",
     )
     """A uri for each reader in `_PASSWORD_READERS`, in each form ConnectorX reads it by."""
 

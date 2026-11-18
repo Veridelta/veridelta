@@ -2174,15 +2174,17 @@ _FIELD_SLOTS: Final[Mapping[tuple[str, str | int], _Slot]] = {
 """The model fields, by block type, that may take a `${NAME}` on the server.
 
 A password or a passphrase takes free text, since no reader repeats one. A
-database password reaches only ConnectorX, percent-encoded into the uri by
-`connection_uri`, and only for a reader in `_PASSWORD_READERS`. A Snowflake
-password or passphrase reaches only `snowflake.connector.connect`. The
-corpus tests drive each of those readers with a wrong password of every
-character class, and no answer holds 4 characters in a row of it. The mask
-matches no escaped form of a value, such as doubled quotes, backslashes,
-JSON, ODBC braces, or libpq quoting, and no cut of one, because no reader
-writes a password in such a form. A reader that did would leave
-`_PASSWORD_READERS`, or its password would get a shape in `_shape_needed`.
+database password, from the `password` setting or the uri, reaches only
+ConnectorX, percent-encoded into the uri by `connection_uri`, and only for a
+reader in `_PASSWORD_READERS`. A Snowflake password or passphrase reaches
+only `snowflake.connector.connect`. The corpus tests drive each of those
+readers with a wrong password of every character class, against a service
+that refuses it and against one that writes its whole request back, and no
+answer holds 4 characters in a row of it. The mask matches no escaped form
+of a value, such as doubled quotes, backslashes, JSON, ODBC braces, libpq
+quoting, or base64, and no cut of one, because no reader writes a password
+in such a form. A reader that did would leave `_PASSWORD_READERS`, or its
+password would get a shape in `_shape_needed`.
 
 A token keeps `_TOKEN`'s shape, as a storage option's does, which costs a
 real token nothing. Snowflake can echo the `user`, a login name whose shape
@@ -2190,10 +2192,10 @@ real token nothing. Snowflake can echo the `user`, a login name whose shape
 so an echo is the text the mask matches."""
 
 _PASSWORD_READERS: Final = frozenset(
-    {"postgres", "postgresql", "mysql", "mssql", "oracle", "clickhouse", "trino"}
+    {"postgres", "postgresql", "mysql", "mssql", "oracle", "clickhouse"}
 )
 """The ConnectorX readers, by the name `connectorx_url` gives, that may take a
-database `password` from a `${NAME}` on the server.
+database password from a `${NAME}` on the server, in `password` or in the uri.
 
 `connectorx_url` drops a `+suffix` and reads `redshift` as `postgresql`, so
 Redshift is here as `postgresql`, and `redshift-iam` is not. What each reader
@@ -2204,12 +2206,17 @@ sends, and what its error says:
 - mysql: a scramble only. The driver refuses `mysql_clear_password`. ERR 1045
   names the user, never the password.
 - mssql: tiberius sends LOGIN7, and the error is "Timed out in bb8".
-- clickhouse: the `x-clickhouse-key` header. The server says "Authentication
-  failed".
-- trino: basic auth, only over https. The reqwest error leaves out the
-  userinfo.
+- clickhouse: the `x-clickhouse-key` header, percent-encoded as
+  `connection_uri` wrote it, which the mask matches. The server says
+  "Authentication failed", and the error repeats the whole body of a refusal,
+  so a service that writes the header back shows only the mask.
 - oracle: ODPI-C. The error is DPI-1047 when there is no client, and
   ORA-01017 is fixed text. CI does not reach Oracle's network path.
+
+Trino is not here. Its reader sends the user and password as basic auth,
+base64 the mask does not match, to whatever host and port the uri names, and
+its error repeats the whole body of a refusal. So a service on an allowed
+host that writes its request headers back would hand the password over.
 
 tests/integration/test_mcp_password_echo.py and
 tests/integration/test_mcp_password_servers.py are the proof. A reader joins
@@ -2673,23 +2680,25 @@ def _load_checked(
     `password` into the file's path, which the system resolves, so a message
     could repeat the value with a `/` changed or a `..` folded away. So a
     `${NAME}` in the `password` of a SQLite side is refused too. So is one in
-    the `password` of any other side whose reader is not in
-    `_PASSWORD_READERS`, since no test shows that reader never repeats it.
+    the `password`, or the uri's password, of any other side whose reader is
+    not in `_PASSWORD_READERS`, since no test shows that reader never repeats
+    it.
 
     Raises:
         ConfigError: If a reference stands outside a credential setting, or in
             the `password` of a SQLite side. Also if it stands in the
-            `password` of a database side whose reader no test has probed.
+            `password`, or the uri's password, of a database side whose reader
+            no test has probed.
     """
-    references: list[Reference] = []
+    references: list[tuple[Reference, bool]] = []
 
     def check_and_keep(reference: Reference, match: re.Match[str]) -> None:
         _record_and_check(reference, match)
-        references.append(reference)
+        references.append((reference, _slot(reference, match) in ("secret", "uri password")))
 
     loaded = load_config_with_hook(resolved, unset_env=unset, on_reference=check_and_keep)
     sides = {"source": loaded[1], "target": loaded[2]}
-    for reference in references:
+    for reference, password in references:
         side = sides.get(str(reference.path[0]))
         if (
             reference.path[1:] == ("password",)
@@ -2704,17 +2713,17 @@ def _load_checked(
                 locations=(ConfigLocation(path=reference.path),),
             )
         elif (
-            reference.path[1:] == ("password",)
+            password
             and isinstance(side, DatabaseConfig)
             and connectorx_url(side).scheme not in _PASSWORD_READERS
         ):
+            where = " -> ".join(str(step) for step in reference.path)
             raise ConfigError(
-                f"On veridelta mcp, {reference.path[0]} -> password cannot take "
-                f"${{{reference.name}}} for this uri. A test shows that no reader of a "
-                "PostgreSQL, Redshift, MySQL, SQL Server, Oracle, ClickHouse, or Trino uri "
-                "repeats a password, so the server takes one from its environment only for "
-                "those. Use one of their schemes, such as mysql:// for MariaDB, or run the "
-                "configuration with veridelta run.",
+                f"On veridelta mcp, {where} cannot take ${{{reference.name}}} for this uri. A "
+                "test shows that no reader of a PostgreSQL, Redshift, MySQL, SQL Server, Oracle, "
+                "or ClickHouse uri repeats a password, so the server takes one from its "
+                "environment only for those. Use one of their schemes, such as mysql:// for "
+                "MariaDB, or run the configuration with veridelta run.",
                 locations=(ConfigLocation(path=reference.path),),
             )
     return loaded

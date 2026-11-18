@@ -41,9 +41,6 @@ _SERVERS: Final = {
 }
 """Each server under test, by the variable that holds its URI."""
 
-_PASSWORDS: Final = [(name, value) for name, value in CORPUS if name != "uri-safe"]
-"""Each wrong password a server is signed in to with. `uri-safe` is for Trino alone."""
-
 
 def _without_password(uri: str) -> str:
     """Return the URI with its user, host, and query as written, and no password."""
@@ -84,7 +81,7 @@ def test_no_server_repeats_any_piece_of_a_wrong_password(
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
     paths = []
-    for number, (_, password) in enumerate(_PASSWORDS, start=1):
+    for number, (_, password) in enumerate(CORPUS, start=1):
         variable = f"V_PW_{number}"
         monkeypatch.setenv(variable, password)
         path = f"{variable}.yaml"
@@ -102,7 +99,7 @@ def test_no_server_repeats_any_piece_of_a_wrong_password(
     with ThreadPoolExecutor(max_workers=len(paths)) as pool:
         answers = list(pool.map(lambda path: _answer(settings, path), paths))
 
-    for (password_id, password), answer in zip(_PASSWORDS, answers, strict=True):
+    for (password_id, password), answer in zip(CORPUS, answers, strict=True):
         found = holds_piece(answer, password)
         assert found is None, f"{server}, {password_id}: the answer holds {found}: {answer}"
         assert '"valid": false' in answer, f"{server}, {password_id}: {answer}"
