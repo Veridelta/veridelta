@@ -16,6 +16,7 @@ error's body.
 
 import multiprocessing
 import os
+import socket
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -235,6 +236,13 @@ _TOOLS: list[tuple[str, dict[str, Any]]] = [
 """Each tool that reads a side, with the arguments it needs beside the path."""
 
 
+def _closed_port() -> int:
+    """Return a local port nothing listens on, so a request sent there fails at once."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 @pytest.fixture
 def echo_store() -> Iterator[str]:
     """Run the echo store on a free local port until the test ends.
@@ -260,11 +268,13 @@ def _holds_a_form(shown: str, value: str) -> bool:
     return any(form in text for form in forms for text in texts)
 
 
-def _answers(name: str, folder: str, endpoint: str, control: bool) -> list[str]:
+def _answers(name: str, folder: str, endpoint: str, closed: int, control: bool) -> list[str]:
     """Set a case's environment, call each tool that reads the side, and return each answer.
 
     This runs in a child process. It leaves each reader only the credentials
-    the case gives, and reaches the store with no proxy. With `control`, the
+    the case gives. Every proxy points at a closed port on this machine, and
+    only this machine bypasses them, so the store is reached directly and a
+    request that would leave this machine fails at once. With `control`, the
     server neither records its environment or token files nor blanks S3's
     elements.
     """
@@ -273,10 +283,28 @@ def _answers(name: str, folder: str, endpoint: str, control: bool) -> list[str]:
     for variable in list(os.environ):
         if variable.upper().startswith(("AWS_", "AZURE_", "GOOGLE_")):
             del os.environ[variable]
+    dead, bypass = f"http://127.0.0.1:{closed}", "127.0.0.1,localhost"
     os.environ.update(
-        {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"},
+        {
+            **dict.fromkeys(
+                (
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "ALL_PROXY",
+                    "http_proxy",
+                    "https_proxy",
+                    "all_proxy",
+                ),
+                dead,
+            ),
+            "NO_PROXY": bypass,
+            "no_proxy": bypass,
+        },
         **case.environment(root, endpoint),
     )
+    # This test is about masking: its store serves plain HTTP on loopback, which the endpoint
+    # rule refuses, and that rule has its own tests in test_mcp_environment_endpoints.py.
+    setattr(mcp_server, "_refuse_environment_endpoints", lambda *_: None)  # noqa: B010 - the child patches as monkeypatch would
     if control:
         setattr(mcp_server, "_environment_values", lambda _: set())  # noqa: B010 - the child patches as monkeypatch would
         setattr(mcp_server, "_token_file_values", lambda _: set())  # noqa: B010 - as above
@@ -317,7 +345,7 @@ def _in_a_child(name: str, folder: Path, endpoint: str, *, control: bool = False
     each case reads in a process of its own.
     """
     with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
-        return pool.submit(_answers, name, str(folder), endpoint, control).result()
+        return pool.submit(_answers, name, str(folder), endpoint, _closed_port(), control).result()
 
 
 @pytest.mark.parametrize("name", _NAMES)

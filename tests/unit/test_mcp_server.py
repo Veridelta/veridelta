@@ -9138,3 +9138,433 @@ class TestSdkBinding:
 
         built.assert_called_once_with(settings)
         built.return_value.run.assert_called_once_with(transport="stdio")
+
+
+_ENDPOINT_SIDES: Mapping[str, tuple[str, ...]] = {
+    "s3": ("  path: s3://lake/a.parquet\n", "  type: delta\n  table_uri: s3://lake/t\n"),
+    "azure": ("  path: az://lake/a.parquet\n", "  type: delta\n  table_uri: abfss://lake/t\n"),
+    "gcs": ("  path: gs://lake/a.parquet\n",),
+    "bigquery": ("  type: bigquery\n  project: analytics\n  table: sales.orders\n",),
+}
+"""For each store, the sides whose reader takes an endpoint from its variables."""
+
+_STORE_TITLES: Mapping[str, str] = {
+    "s3": "S3",
+    "azure": "Azure",
+    "gcs": "Google Cloud Storage",
+    "bigquery": "BigQuery",
+}
+"""How a refusal names each store."""
+
+_ENVIRONMENT_ENDPOINT_HOSTS = ("lake", "minio.internal", "h", "xy12345.snowflakecomputing.com")
+"""The hosts the environment endpoint tests' server allows."""
+
+_ENDPOINT_VALUES = (
+    ("http://minio.internal:9000", "names its endpoint by a scheme other than https", "plain-http"),
+    (
+        "https://leak-probe.example:9000",
+        "names an endpoint whose host is not given with --allow-host",
+        "host-not-allowed",
+    ),
+    (
+        "https://minio.internal:9000/other",
+        "holds a path, a query, or a fragment after its host",
+        "path",
+    ),
+    ("https://minio.internal:9000/", None, "allowed"),
+)
+"""Each endpoint a variable can name, how its refusal reads, or None where the side is read, and its id."""
+
+_ENVIRONMENT_ENDPOINT_CASES = [
+    pytest.param(name, store, side, value, refusal, id=f"{name}-{store}{index}-{value_id}")
+    for name, store in mcp_server._ENVIRONMENT_ENDPOINTS.items()
+    for index, side in enumerate(_ENDPOINT_SIDES[store])
+    for value, refusal, value_id in _ENDPOINT_VALUES
+]
+"""Each variable, a side of its store, and each endpoint it can name."""
+
+
+def _endpoint_settings() -> Settings:
+    """Return the settings of the environment endpoint tests' server, which reads under the working folder."""
+    return Settings((Path.cwd(),), allowed_hosts=_ENVIRONMENT_ENDPOINT_HOSTS)
+
+
+def _read_stubbed(mocker: MockerFixture) -> MagicMock:
+    """Stub each reader a side reaches, and return the stub of the schema read, which records each call."""
+    mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+    return mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+
+
+def _describe_refused(root: Path, source: str) -> str:
+    """Describe the source `source` names, through the function and through a tool, and return the refusal.
+
+    Both refuse with the same message, which the tool's answer holds.
+    """
+    _with_source(root, source)
+    settings = _endpoint_settings()
+    with pytest.raises(ConfigError) as refused:
+        describe_side(settings, "veridelta.yaml", "source")
+    result = _call(settings, {"path": "veridelta.yaml", "side": "source"}, "describe_schema")
+    assert result.is_error
+    assert str(refused.value) in _text(result)
+    return str(refused.value)
+
+
+def _describe_read(root: Path, source: str, read: MagicMock) -> None:
+    """Describe the source `source` names, through the function and through a tool, and ensure both read it."""
+    _with_source(root, source)
+    settings = _endpoint_settings()
+
+    report = describe_side(settings, "veridelta.yaml", "source")
+    result = _call(settings, {"path": "veridelta.yaml", "side": "source"}, "describe_schema")
+
+    assert report["columns"] == {"id": "Int64"}
+    assert not result.is_error, _text(result)
+    assert read.call_count == 2
+
+
+class TestEnvironmentEndpoints:
+    """Validate the rule that holds each endpoint a reader takes from the server's environment to the allowed hosts.
+
+    A reader takes an endpoint from the server's environment when the
+    configuration names none, so each must meet the rules a storage option's
+    endpoint meets: a host given with --allow-host, no path, and HTTPS.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "store", "source", "value", "refusal"), _ENVIRONMENT_ENDPOINT_CASES
+    )
+    def test_it_holds_each_variable_to_the_endpoint_rules(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        store: str,
+        source: str,
+        value: str,
+        refusal: str | None,
+    ) -> None:
+        """Ensure each variable reaches a reader only as an allowed host over HTTPS, with no path.
+
+        The refusal names the variable, and never its value or its host.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        if refusal is None:
+            _describe_read(tmp_path, source, read)
+            return
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(f"The source side reads {_STORE_TITLES[store]}, and ")
+        assert refusal in message
+        assert f"the server's environment variable {name}" in message
+        assert "leak-probe.example" not in message
+        assert "minio.internal" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", ["aws_endpoint_url", "AWS_Endpoint_Url"])
+    def test_it_reads_a_name_in_any_case(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure a variable is matched in any case, as deltalake reads one.
+
+        Windows holds every name in upper case, so the message is compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "http://minio.internal:9000")
+
+        message = _describe_refused(tmp_path, "  type: delta\n  table_uri: s3://lake/t\n")
+
+        assert f"the server's environment variable {name}".casefold() in message.casefold()
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("source", "environment"),
+        [
+            pytest.param("  path: a.csv\n", {"AWS_ENDPOINT_URL": "http://x.example"}, id="local"),
+            pytest.param(
+                "  path: s3://lake/a.parquet\n",
+                {
+                    "AZURE_ENDPOINT": "http://x.example",
+                    "BIGQUERY_EMULATOR_HOST": "http://x.example",
+                },
+                id="other-stores",
+            ),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: xy12345\n",
+                {
+                    **dict.fromkeys(mcp_server._ENVIRONMENT_ENDPOINTS, "http://x.example"),
+                    mcp_server._EMULATOR_SWITCH: "true",
+                    "MOTHERDUCK_HOST": "x.example",
+                },
+                id="snowflake",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: w.duckdb\n  table: t\n",
+                {"AWS_ENDPOINT_URL": "http://x.example", "MOTHERDUCK_HOST": "x.example"},
+                id="duckdb-file",
+            ),
+        ],
+    )
+    def test_it_checks_only_the_variables_of_the_side_s_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        environment: dict[str, str],
+    ) -> None:
+        """Ensure a variable that no reader of a side takes leaves the side as it was."""
+        read = _read_stubbed(mocker)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        with duckdb.connect(str(tmp_path / "w.duckdb")) as connection:
+            connection.execute("CREATE TABLE t AS SELECT 1 AS id")
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        ("source", "name", "store"),
+        [
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://lake/t/metadata/v1.metadata.json\n",
+                "AWS_ENDPOINT_URL",
+                "S3",
+                id="iceberg",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://h/t\n",
+                "AZURE_ENDPOINT",
+                "an object store",
+                id="hdfs",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://lake/t\n"
+                "  storage_options: {aws_endpoint_url: 'https://minio.internal:9000'}\n",
+                "AWS_ENDPOINT_URL",
+                "S3",
+                id="configured-endpoint",
+            ),
+        ],
+    )
+    def test_it_checks_every_side_that_could_take_the_variable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        store: str,
+    ) -> None:
+        """Ensure an Iceberg table, a location of no known store, and a side with its own endpoint are checked.
+
+        The check runs even when the configuration names its own endpoint,
+        which a reader may prefer, since that is simpler and only stricter.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "http://minio.internal:9000")
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(f"The source side reads {store}, and the server's environment")
+        assert "scheme other than https" in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("value", ["true", "On", "1", " YES "])
+    def test_it_refuses_the_emulator_switch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, value: str
+    ) -> None:
+        """Ensure the switch that sends a reader to Azurite over plain HTTP is refused on an Azure side."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._EMULATOR_SWITCH, value)
+
+        message = _describe_refused(tmp_path, "  path: az://lake/a.parquet\n")
+
+        assert message.startswith("The source side reads Azure, and the server's environment")
+        assert "Azurite emulator over plain HTTP" in message
+        assert mcp_server._EMULATOR_SWITCH.casefold() in message.casefold()
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("value", "source"),
+        [
+            pytest.param("false", "  path: az://lake/a.parquet\n", id="false"),
+            pytest.param("0", "  path: az://lake/a.parquet\n", id="zero"),
+            pytest.param("off", "  path: az://lake/a.parquet\n", id="off"),
+            pytest.param("true", "  path: s3://lake/a.parquet\n", id="on-an-s3-side"),
+        ],
+    )
+    def test_it_reads_with_the_switch_off_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure the switch turned off, or on a side that does not read Azure, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._EMULATOR_SWITCH, value)
+
+        _describe_read(tmp_path, source, read)
+
+    def test_it_passes_over_an_empty_value(self) -> None:
+        """Ensure an empty variable, which no reader takes, is passed over.
+
+        Windows removes a variable set to the empty text, so the environment is passed in.
+        """
+        config = SourceConfig(path="az://lake/a.parquet")
+        environ = {"AZURE_ENDPOINT": "", mcp_server._EMULATOR_SWITCH: ""}
+
+        mcp_server._refuse_environment_endpoints(_endpoint_settings(), "source", config, environ)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["MOTHERDUCK_HOST", "motherduck_port", "motherduck_use_tls", "Motherduck_Region_Host"],
+    )
+    def test_it_refuses_a_motherduck_setting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure a MotherDuck side refuses a setting the extension reads from the environment."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "127.0.0.1")
+
+        message = _describe_refused(
+            tmp_path, "  type: duckdb\n  database: 'md:sales'\n  table: t\n"
+        )
+
+        assert message.startswith("The source side reads MotherDuck, and the server's environment")
+        assert f"variable {name}".casefold() in message.casefold()
+        assert "127.0.0.1" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "name", ["MOTHERDUCK_TOKEN", "motherduck_token", "motherduck_saas_mode"]
+    )
+    def test_it_reads_a_motherduck_side_with_its_token_or_an_option(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure the token, and an option a tool passes on, leave a MotherDuck side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "Q7mdTokenTokenTokenQ7")
+
+        _describe_read(tmp_path, "  type: duckdb\n  database: 'md:sales'\n  table: t\n", read)
+
+    @pytest.mark.parametrize("profile", ["ledgerprofile", None])
+    def test_it_refuses_the_endpoint_of_the_aws_profile(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        profile: str | None,
+    ) -> None:
+        """Ensure the endpoint_url of the profile the environment selects is held to the rules.
+
+        The message names neither the profile nor the endpoint.
+        """
+        read = _read_stubbed(mocker)
+        section = "default" if profile is None else f"profile {profile}"
+        config = tmp_path / "aws-config"
+        config.write_text(
+            f"[{section}]\nendpoint_url = http://leak-probe.example:9000\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        if profile is not None:
+            monkeypatch.setenv("AWS_PROFILE", profile)
+
+        message = _describe_refused(tmp_path, "  path: s3://lake/a.parquet\n")
+
+        assert message.startswith(
+            "The source side reads S3, and the endpoint_url of the AWS profile"
+        )
+        assert "not given with --allow-host" in message
+        assert "ledgerprofile" not in message
+        assert "leak-probe" not in message
+        assert "9000" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("text", "profile"),
+        [
+            pytest.param(
+                "[profile ledgerprofile]\nendpoint_url = https://minio.internal:9000\n",
+                "ledgerprofile",
+                id="allowed",
+            ),
+            pytest.param(
+                "[default]\nservices = lake\n\n[services lake]\n"
+                "s3 =\n  endpoint_url = http://leak-probe.example:9000\n",
+                None,
+                id="services",
+            ),
+            pytest.param(
+                "[default]\nendpoint_url = http://leak-probe.example:9000\n",
+                "missing",
+                id="missing-profile",
+            ),
+            pytest.param(
+                "[default\nendpoint_url = http://leak-probe.example:9000\n", None, id="malformed"
+            ),
+            pytest.param("[default]\nregion = us-east-1\n", None, id="no-endpoint"),
+        ],
+    )
+    def test_it_reads_with_a_profile_whose_endpoint_polars_does_not_take(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        text: str,
+        profile: str | None,
+    ) -> None:
+        """Ensure an allowed endpoint, a services section, a missing profile, or a bad file leaves the side read.
+
+        Polars reads no `[services]` section, and reads no endpoint from a
+        profile that is missing or a file it cannot parse.
+        """
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        config.write_text(text, encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        if profile is not None:
+            monkeypatch.setenv("AWS_PROFILE", profile)
+
+        _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
+
+    def test_it_reads_no_profile_without_boto3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the profile is not read when boto3 is missing, since Polars then reads none."""
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        config.write_text("[default]\nendpoint_url = http://leak-probe.example:9000\n")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name, *args: None if name == "boto3" else find_spec(name, *args),
+        )
+
+        _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
+
+    def test_validate_config_checks_them_only_with_schemas(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine_calls: list[MagicMock]
+    ) -> None:
+        """Ensure validate_config refuses such an endpoint when it reads the schemas, and only then."""
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "http://minio.internal:9000")
+        _with_source(tmp_path, "  path: s3://lake/a.parquet\n")
+        settings = _endpoint_settings()
+        for mock in engine_calls:
+            mock.return_value = []
+
+        with pytest.raises(ConfigError, match="AWS_ENDPOINT_URL names its endpoint by a scheme"):
+            check_configuration(settings, "veridelta.yaml", schemas=True)
+        refused = _call(settings, {"path": "veridelta.yaml", "schemas": True})
+        report = check_configuration(settings, "veridelta.yaml")
+
+        assert refused.is_error
+        assert "AWS_ENDPOINT_URL names its endpoint by a scheme" in _text(refused)
+        assert report["valid"]
