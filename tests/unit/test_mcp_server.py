@@ -9278,7 +9278,7 @@ class TestSdkBinding:
 _ENDPOINT_SIDES: Mapping[str, tuple[str, ...]] = {
     "s3": ("  path: s3://lake/a.parquet\n", "  type: delta\n  table_uri: s3://lake/t\n"),
     "azure": ("  path: az://lake/a.parquet\n", "  type: delta\n  table_uri: abfss://lake/t\n"),
-    "gcs": ("  path: gs://lake/a.parquet\n",),
+    "gcs": ("  path: gs://lake/a.parquet\n", "  type: delta\n  table_uri: gs://lake/t\n"),
     "bigquery": ("  type: bigquery\n  project: analytics\n  table: sales.orders\n",),
 }
 """For each store, the sides whose reader takes an endpoint from its variables."""
@@ -9607,6 +9607,193 @@ class TestEnvironmentEndpoints:
         monkeypatch.setenv(mcp_server._EMULATOR_SWITCH, value)
 
         _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        ("name", "store", "source"),
+        [
+            pytest.param(name, store, side, id=f"{name}-{store}{index}")
+            for name, store in mcp_server._CERTIFICATE_SWITCHES.items()
+            for index, side in enumerate(_ENDPOINT_SIDES[store])
+        ],
+    )
+    @pytest.mark.parametrize("value", ["true", "On", "1", " YES "])
+    def test_it_refuses_a_switch_that_turns_off_certificate_checks(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        store: str,
+        source: str,
+        value: str,
+    ) -> None:
+        """Ensure a switch that lets a proxy read the credentials over HTTPS is refused on a side of its store."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(f"The source side reads {_STORE_TITLES[store]}, and the server's")
+        assert f"variable {name} turns off a reader's check of the certificate" in message
+        read.assert_not_called()
+
+    def test_it_refuses_a_certificate_switch_in_any_case(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the unprefixed switch is matched in any case, as deltalake reads every name in lower case."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv("allow_invalid_certificates", "true")
+
+        message = _describe_refused(tmp_path, "  type: delta\n  table_uri: s3://lake/t\n")
+
+        assert "variable allow_invalid_certificates turns off" in message.casefold()
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("name", "value", "source"),
+        [
+            pytest.param(
+                "AWS_ALLOW_INVALID_CERTIFICATES", "false", "  path: s3://lake/a.parquet\n", id="off"
+            ),
+            pytest.param(
+                "ALLOW_INVALID_CERTIFICATES", "true", "  path: az://lake/a.parquet\n", id="azure"
+            ),
+            pytest.param(
+                "AZURE_ALLOW_INVALID_CERTIFICATES",
+                "true",
+                "  path: gs://lake/a.parquet\n",
+                id="gcs",
+            ),
+        ],
+    )
+    def test_it_reads_with_a_certificate_switch_off_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure a switch turned off, or one no reader of the side's store takes, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["gcs"])
+    @pytest.mark.parametrize(
+        "name",
+        [*sorted(mcp_server._SERVICE_ACCOUNT_FILES), mcp_server._KEY_JSON_VARIABLE],
+    )
+    @pytest.mark.parametrize(("base_url", "refusal", "value_id"), _ENDPOINT_VALUES)
+    def test_it_holds_a_service_account_s_base_url_to_the_endpoint_rules(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        base_url: str,
+        refusal: str | None,
+        value_id: str,
+    ) -> None:
+        """Ensure the gcs_base_url of a service account key, in a file or in the variable, is held to the rules.
+
+        The refusal names the variable, and never the key file's path or the base URL.
+        """
+        read = _read_stubbed(mocker)
+        key = json.dumps({"type": "service_account", "gcs_base_url": base_url})
+        if name == mcp_server._KEY_JSON_VARIABLE:
+            monkeypatch.setenv(name, key)
+        else:
+            path = tmp_path / "secret-folder" / "service-account.json"
+            path.parent.mkdir()
+            path.write_text(key, encoding="utf-8")
+            monkeypatch.setenv(name, str(path))
+
+        if refusal is None:
+            _describe_read(tmp_path, source, read)
+            return
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(
+            f"The source side reads Google Cloud Storage, and the server's environment variable "
+            f"{name} gives a service account key whose gcs_base_url "
+        ), value_id
+        assert refusal in message
+        assert "minio.internal" not in message
+        assert "leak-probe.example" not in message
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("name", "key"),
+        [
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", None, id="missing-file"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT_PATH", b"\xff\xfe", id="not-utf-8"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b"{", id="not-json"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'["gcs_base_url"]', id="not-an-object"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'{"gcs_base_url": 1}', id="not-text"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'{"gcs_base_url": ""}', id="empty"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'{"type": "service_account"}', id="none"),
+            pytest.param(mcp_server._KEY_JSON_VARIABLE, b"{", id="key-not-json"),
+        ],
+    )
+    def test_it_reads_with_a_service_account_key_that_names_no_base_url(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        key: bytes | None,
+    ) -> None:
+        """Ensure a key that names no base URL, or that object_store cannot read, leaves the side read.
+
+        object_store fails before any request on a key it cannot read.
+        """
+        read = _read_stubbed(mocker)
+        path = tmp_path / "service-account.json"
+        if name == mcp_server._KEY_JSON_VARIABLE:
+            monkeypatch.setenv(name, (key or b"").decode())
+        else:
+            if key is not None:
+                path.write_bytes(key)
+            monkeypatch.setenv(name, str(path))
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: gs://lake/t\n", read)
+
+    def test_it_refuses_a_service_account_key_that_is_not_a_regular_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a key file the server cannot read without taking it from the reader is refused.
+
+        A named pipe gives its text to the first process that reads it, so
+        the server cannot check it. A folder stands in for one, since Windows
+        has none.
+        """
+        read = _read_stubbed(mocker)
+        folder = tmp_path / "secret-folder"
+        folder.mkdir()
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT", str(folder))
+
+        message = _describe_refused(tmp_path, "  type: delta\n  table_uri: gs://lake/t\n")
+
+        assert "variable GOOGLE_SERVICE_ACCOUNT names a key file that is not a regular" in message
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    def test_it_reads_a_service_account_key_only_for_google_cloud_storage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a key's base URL is not checked on a side whose reader reads no Google Cloud Storage."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(
+            mcp_server._KEY_JSON_VARIABLE, json.dumps({"gcs_base_url": "http://x.example"})
+        )
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT", str(tmp_path))
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: s3://lake/t\n", read)
 
     def test_it_passes_over_an_empty_value(self) -> None:
         """Ensure an empty variable, which no reader takes, is passed over.

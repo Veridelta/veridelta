@@ -28,7 +28,12 @@ def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
         *mcp_server._TOKEN_FILE_VARIABLES,
         mcp_server._KEY_JSON_VARIABLE,
     }
-    endpoints = {*mcp_server._ENVIRONMENT_ENDPOINTS, mcp_server._EMULATOR_SWITCH}
+    endpoints = {
+        *mcp_server._ENVIRONMENT_ENDPOINTS,
+        mcp_server._EMULATOR_SWITCH,
+        *mcp_server._CERTIFICATE_SWITCHES,
+        *mcp_server._SERVICE_ACCOUNT_FILES,
+    }
     for name in list(os.environ):
         if (
             mcp_server._name_as_read(name) in left_out

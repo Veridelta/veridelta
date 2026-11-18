@@ -2201,6 +2201,9 @@ _ENVIRONMENT_ENDPOINTS: Final[Mapping[str, str]] = {
     "AWS_ENDPOINT": "s3",
     "AWS_ENDPOINT_URL": "s3",
     "AWS_ENDPOINT_URL_S3": "s3",
+    "AWS_S3_ENDPOINT": "s3",
+    "ENDPOINT": "s3",
+    "ENDPOINT_URL": "s3",
     "AZURE_ENDPOINT": "azure",
     "AZURE_STORAGE_ENDPOINT": "azure",
     "AZURE_AUTHORITY_HOST": "azure",
@@ -2219,6 +2222,17 @@ endpoint meets. Each name, its reader, and the probe that found it:
 - `AWS_ENDPOINT`, `AWS_ENDPOINT_URL`, and `AWS_ENDPOINT_URL_S3`: Polars 2.1.0
   reads all three over HTTP with no switch, and Polars 1.39.3 the first two.
   deltalake 1.6.6 reads all three, in any case, once `AWS_ALLOW_HTTP` is set.
+- `ENDPOINT` and `ENDPOINT_URL`: deltalake 1.6.6 reads every variable of the
+  environment, in lower case and with no prefix, as an S3 option, so it
+  takes either name, in any case, as the endpoint of an `s3://` table. A
+  probe received a list request signed with the configuration's `${NAME}`
+  keys over HTTP, with `ALLOW_HTTP` or `AWS_ALLOW_HTTP` set. Polars 2.1.0
+  read neither.
+- `AWS_S3_ENDPOINT`: deltalake's OpenDAL S3 store, at an `opendal+s3://`
+  table, reads it, and `AWS_ENDPOINT` and `AWS_ENDPOINT_URL` too, over HTTP
+  with no switch. A probe received a list request signed with the
+  environment's keys. It reads each name in upper case only, and neither
+  deltalake's own S3 store nor Polars 2.1.0 read this one.
 - `AZURE_ENDPOINT` and `AZURE_STORAGE_ENDPOINT`: Polars and deltalake.
 - `AZURE_AUTHORITY_HOST` and `AZURE_STORAGE_AUTHORITY_HOST`: Polars and
   deltalake POST the client secret there to sign in. The secret can come from
@@ -2252,8 +2266,8 @@ Some names are left out, each for its reason:
   back. The platform sets them to plain-HTTP link-local addresses.
 - `GOOGLE_CLOUD_UNIVERSE_DOMAIN`: always reached over HTTPS, and checked
   against the credentials' universe.
-- `S3_ENDPOINT` and `AWS_S3_ENDPOINT`: no reader on the server reads them,
-  as a probe of each shows.
+- `S3_ENDPOINT`: no reader on the server reads it, as a probe of Polars,
+  deltalake, and deltalake's OpenDAL S3 store shows.
 - `DUCKDB_S3_ENDPOINT`: httpfs is never loaded on the server.
 - `SF_OCSP_RESPONSE_CACHE_SERVER_URL`: it carries no credential.
 - `TNS_ADMIN`: it names a folder on this machine, not a host.
@@ -2261,6 +2275,10 @@ Some names are left out, each for its reason:
   `repo_id is empty` before any request, and the `repo_id` storage option
   that would fill it is not one a tool passes on. Polars sent no request to
   it in a probe.
+- The endpoint variables of deltalake's other OpenDAL stores, such as
+  `AZBLOB_ENDPOINT`, `OSS_ENDPOINT`, and `HF_ENDPOINT`: in a probe, each of
+  those stores refused its table before any request, or sent none to the
+  variable, at an `opendal+` location with no storage option.
 - PyArrow reads `AWS_ENDPOINT_URL` only in `FileSystem.from_uri`, which
   Veridelta never calls. Its S3 file system sent no request to
   `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_S3`, or a profile's `endpoint_url`
@@ -2284,7 +2302,34 @@ It replaces even a checked `azure_storage_endpoint`, as probes of Polars
 entry, since it does nothing without the switch."""
 
 _SWITCH_OFF: Final = frozenset({"", "0", "false", "off", "no"})
-"""The values of `_EMULATOR_SWITCH` that leave it off, compared after `.strip().lower()`."""
+"""The values of a switch, such as `_EMULATOR_SWITCH`, that leave it off, compared after `.strip().lower()`."""
+
+_CERTIFICATE_SWITCHES: Final[Mapping[str, str]] = {
+    "AWS_ALLOW_INVALID_CERTIFICATES": "s3",
+    "ALLOW_INVALID_CERTIFICATES": "s3",
+    "AZURE_ALLOW_INVALID_CERTIFICATES": "azure",
+    "GOOGLE_ALLOW_INVALID_CERTIFICATES": "gcs",
+}
+"""The environment variables that turn off a reader's check of an endpoint's certificate, in upper case, each with its store.
+
+deltalake 1.6.6 reads each, so a proxy, or anyone else on the route, reads
+the credentials and the rows over HTTPS too. A probe through a proxy that
+`HTTPS_PROXY` named, which answered with a certificate nothing trusts,
+decrypted a request signed with the side's keys at each store. deltalake
+reads the unprefixed name on an S3 side only, since it reads every variable
+there with no prefix, and its Azure and Google Cloud Storage stores read only
+`AZURE_` and `GOOGLE_` names. Polars 2.1.0 read none of them."""
+
+_SERVICE_ACCOUNT_FILES: Final = frozenset({"GOOGLE_SERVICE_ACCOUNT", "GOOGLE_SERVICE_ACCOUNT_PATH"})
+"""The environment variables that name a Google service account key file, in upper case.
+
+object_store takes a `gcs_base_url` from such a key, as from the JSON of
+`_KEY_JSON_VARIABLE`, and sends every request of a Google Cloud Storage side
+there. deltalake 1.6.6 read the base URL from a key that either variable
+named, or that `GOOGLE_SERVICE_ACCOUNT_KEY` held, and sent a list request to
+it over HTTP, as a probe showed. It reads no key that
+`GOOGLE_APPLICATION_CREDENTIALS` names this way, and Polars 2.1.0 signs in
+through Google's own library, which reads no base URL."""
 
 _MOTHERDUCK_TOKEN_NAMES: Final = frozenset(name.casefold() for name in MOTHERDUCK_TOKEN_VARIABLES)
 """The MotherDuck token variables, in casefold, which name a credential rather than a setting."""
@@ -2389,16 +2434,18 @@ def _refuse_environment_endpoints(
 
     A reader of a side's store takes an endpoint from the variables in
     `_ENVIRONMENT_ENDPOINTS`, and Polars from the AWS profile's
-    `endpoint_url`, whether or not the configuration names its own. Each is
-    held to the rules a storage option's endpoint meets: no path, a host given
-    with --allow-host, and a scheme of `https://` only. The Azure emulator
-    switch and a MotherDuck setting other than the token and the options a
-    tool passes on are refused outright. A name is matched in any case, as
-    deltalake reads one. The message names the variable as it is set, and
-    never its value or the profile's name.
+    `endpoint_url`, and deltalake from the `gcs_base_url` of a service account
+    key, whether or not the configuration names its own. Each is held to the
+    rules a storage option's endpoint meets: no path, a host given with
+    --allow-host, and a scheme of `https://` only. The Azure emulator switch,
+    a switch in `_CERTIFICATE_SWITCHES`, and a MotherDuck setting other than
+    the token and the options a tool passes on are refused outright. A name
+    is matched in any case, as deltalake reads one. The message names the
+    variable as it is set, and never its value, a key file's path, or the
+    profile's name.
 
     Raises:
-        ConfigError: If such an endpoint, the switch, or such a setting applies to the side.
+        ConfigError: If such an endpoint, a switch, or such a setting applies to the side.
     """
     families = _store(config)
     if not families:
@@ -2420,8 +2467,10 @@ def _refuse_environment_variable(
     """Refuse one variable of the server's environment that sends a side's reader elsewhere.
 
     Raises:
-        ConfigError: If the variable is the emulator switch, turned on, an
-            endpoint that is not allowed, or a MotherDuck setting.
+        ConfigError: If the variable is the emulator switch or a certificate
+            switch, turned on, an endpoint that is not allowed, a service
+            account key whose `gcs_base_url` is not allowed, or a MotherDuck
+            setting.
     """
     upper = name.upper()
     if "azure" in families and upper == _EMULATOR_SWITCH:
@@ -2432,6 +2481,14 @@ def _refuse_environment_variable(
                 "endpoint the configuration names. Ask the person who started the server to "
                 "leave it out of the server's environment."
             )
+    elif _CERTIFICATE_SWITCHES.get(upper) in families:
+        if value.strip().lower() not in _SWITCH_OFF:
+            raise ConfigError(
+                f"The {side} side reads {store}, and the server's environment variable {name} "
+                "turns off a reader's check of the certificate an endpoint presents, so a proxy, "
+                "or anyone else on the route, could read the credentials and the rows. Ask the "
+                "person who started the server to leave it out of the server's environment."
+            )
     elif _ENVIRONMENT_ENDPOINTS.get(upper) in families:
         _refuse_endpoint(
             settings,
@@ -2439,6 +2496,15 @@ def _refuse_environment_variable(
             value,
             plain_without_scheme=upper in _PLAIN_WITHOUT_SCHEME,
         )
+    elif "gcs" in families and (upper in _SERVICE_ACCOUNT_FILES or upper == _KEY_JSON_VARIABLE):
+        opening = f"The {side} side reads {store}, and the server's environment variable {name}"
+        base_url = _service_account_base_url(opening, upper in _SERVICE_ACCOUNT_FILES, value)
+        if base_url is not None:
+            _refuse_endpoint(
+                settings,
+                f"{opening} gives a service account key whose gcs_base_url",
+                base_url,
+            )
     elif "motherduck" in families and _motherduck_setting(name):
         raise ConfigError(
             f"The {side} side reads MotherDuck, and the server's environment variable {name} "
@@ -2446,6 +2512,43 @@ def _refuse_environment_variable(
             "motherduck_host, choose the host the extension connects to. Ask the person who "
             "started the server to leave it out of the server's environment."
         )
+
+
+def _service_account_base_url(opening: str, named: bool, value: str) -> str | None:
+    """Return the `gcs_base_url` of the Google service account key a variable holds, or the file it names.
+
+    With `named`, the value is the key file's path. A file that does not
+    exist or cannot be read, or a key that is not a JSON object with a text
+    `gcs_base_url`, gives None, since object_store then fails before any
+    request. Any file but a regular one is refused: a named pipe gives its
+    text once, to the first process that reads it, so the server cannot
+    check what a reader would take from it.
+
+    Raises:
+        ConfigError: If the variable names a file other than a regular one.
+    """
+    if named:
+        try:
+            if not stat.S_ISREG(os.stat(value).st_mode):
+                raise ConfigError(
+                    f"{opening} names a key file that is not a regular file, such as a named "
+                    "pipe, so the server cannot check the gcs_base_url a reader would take from "
+                    "it. Ask the person who started the server to name a regular file, or to "
+                    "leave it out of the server's environment."
+                )
+            # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe swapped in after the
+            # check without waiting for a writer, which then reads as no key.
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+            with open(os.open(value, flags), "rb") as file:
+                value = file.read().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+    try:
+        key = json.loads(value)
+    except ValueError:
+        return None
+    base_url = cast("dict[str, object]", key).get("gcs_base_url") if isinstance(key, dict) else None
+    return base_url if isinstance(base_url, str) and base_url else None
 
 
 def _motherduck_setting(name: str) -> bool:

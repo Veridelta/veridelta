@@ -5,8 +5,8 @@
 
 Real Polars, real deltalake, and PyArrow under PyIceberg read a side whose
 configuration names no endpoint, while the server's environment names a store
-on this machine over plain HTTP, through a variable, an AWS profile, or the
-Azure emulator switch. The store counts every request it receives. Each case
+on this machine over plain HTTP, through a variable, an AWS profile, a
+Google service account key, or the Azure emulator switch. The store counts every request it receives. Each case
 expects the tool to refuse the side, naming the variable, before any request
 reaches the store. A control turns the rule off and shows the reader does
 reach the store, for the cases proven on every release CI runs.
@@ -167,8 +167,10 @@ def _google(_: Path, endpoint: str) -> dict[str, str]:
     return {"GOOGLE_BASE_URL": endpoint}
 
 
-def _service_account(folder: Path) -> str:
+def _service_account(folder: Path, **extra: object) -> str:
     """Write a service account key with a new RSA key, from which PyArrow signs its own bearer token.
+
+    `extra` adds fields to the key, such as object_store's `gcs_base_url`.
 
     Returns:
         str: The key file's path.
@@ -190,11 +192,34 @@ def _service_account(folder: Path) -> str:
                 "client_email": "reader@probe.iam.gserviceaccount.com",
                 "client_id": "1",
                 "token_uri": "https://oauth2.googleapis.com/token",
+                **extra,
             }
         ),
         encoding="utf-8",
     )
     return str(path)
+
+
+def _unprefixed(_: Path, endpoint: str) -> dict[str, str]:
+    """Name the store with no AWS_ prefix, which deltalake reads as an S3 option, with plain HTTP allowed."""
+    return {
+        "ENDPOINT_URL": endpoint,
+        "ALLOW_HTTP": "true",
+        "AWS_ACCESS_KEY_ID": _KEY_ID,
+        "AWS_SECRET_ACCESS_KEY": _SECRET_KEY,
+    }
+
+
+def _key_with_base_url(name: str) -> Callable[[Path, str], dict[str, str]]:
+    """Give deltalake a service account key whose gcs_base_url is the store, in a file `name` names or in `name`."""
+
+    def environment(folder: Path, endpoint: str) -> dict[str, str]:
+        path = _service_account(folder, gcs_base_url=endpoint, disable_oauth=True)
+        if name == "GOOGLE_SERVICE_ACCOUNT_KEY":
+            return {name: Path(path).read_text(encoding="utf-8")}
+        return {name: path}
+
+    return environment
 
 
 def _gcs_emulator(name: str) -> Callable[[Path, str], dict[str, str]]:
@@ -270,6 +295,30 @@ _CASES: dict[str, _Case] = {
     "delta-lowercase": _Case(
         "  type: delta\n  table_uri: s3://lake/t\n", _delta, "aws_endpoint_url", delta=True
     ),
+    "delta-unprefixed": _Case(
+        "  type: delta\n  table_uri: s3://lake/t\n",
+        _unprefixed,
+        "variable endpoint_url names",
+        delta=True,
+    ),
+    "delta-opendal-s3": _Case(
+        "  type: delta\n  table_uri: opendal+s3://lake/t\n",
+        _s3("AWS_S3_ENDPOINT"),
+        "aws_s3_endpoint",
+        delta=True,
+    ),
+    "delta-service-account": _Case(
+        "  type: delta\n  table_uri: gs://lake/t\n",
+        _key_with_base_url("GOOGLE_SERVICE_ACCOUNT"),
+        "variable google_service_account gives",
+        delta=True,
+    ),
+    "delta-service-account-key": _Case(
+        "  type: delta\n  table_uri: gs://lake/t\n",
+        _key_with_base_url("GOOGLE_SERVICE_ACCOUNT_KEY"),
+        "variable google_service_account_key gives",
+        delta=True,
+    ),
     "azure-storage-endpoint": _Case(
         "  path: az://lake/a.parquet\n", _azure_endpoint, "azure_storage_endpoint"
     ),
@@ -309,6 +358,11 @@ _CASES: dict[str, _Case] = {
 _CONTROLLED: Final = (
     "aws-endpoint-url",
     "aws-profile",
+    "delta-lowercase",
+    "delta-unprefixed",
+    "delta-opendal-s3",
+    "delta-service-account",
+    "delta-service-account-key",
     "azure-authority",
     "iceberg-gcs-emulator",
     "iceberg-here-gcs-files",
@@ -316,12 +370,17 @@ _CONTROLLED: Final = (
 """The cases whose reader reaches the store without the rule on every release CI runs.
 
 Each Polars case was probed on Polars 1.39.3, the floor, and on 2.x. The
-Iceberg cases read through PyArrow, whatever the Polars release. The Delta
-Lake case has no control, since deltalake's listing hangs against a store on
-this machine once the rule is off."""
+Delta Lake and Iceberg cases read through deltalake and PyArrow, whatever
+the Polars release. A Delta Lake case answers once the store refuses its
+listing, since the store runs in another process and the walk of the log is
+skipped."""
 
 _GOOGLE_CASES: Final = ("iceberg-gcs-emulator", "iceberg-here-gcs-files")
 """The cases whose reader sends the store a bearer token it signs with the service account key."""
+
+
+_SIGNED_CASES: Final = ("delta-lowercase", "delta-unprefixed", "delta-opendal-s3")
+"""The cases whose reader signs its requests to the store with the environment's AWS keys."""
 
 
 def _closed_port() -> int:
@@ -441,7 +500,8 @@ def test_each_reader_reaches_the_store_without_the_rule(
     """Ensure each controlled reader does send its requests to the store once the rule is off.
 
     The Azure sign-in posts the configuration's client secret there in
-    clear, and PyArrow sends Google Cloud Storage a bearer token.
+    clear, PyArrow sends Google Cloud Storage a bearer token, and deltalake
+    signs its S3 requests with the environment's keys.
     """
     endpoint = f"http://127.0.0.1:{store.server_port}"
 
@@ -455,6 +515,8 @@ def test_each_reader_reaches_the_store_without_the_rule(
         )
     if name in _GOOGLE_CASES:
         assert any(request.authorization.startswith("Bearer ") for request in store.requests)
+    if name in _SIGNED_CASES:
+        assert any(_KEY_ID in request.authorization for request in store.requests)
 
 
 def test_boto3_is_installed() -> None:
