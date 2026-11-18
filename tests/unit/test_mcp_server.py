@@ -8421,17 +8421,65 @@ class TestEnvironmentUrlLogins:
         assert not any("://" in form for form in mcp_server._url_login_values(name, value))
 
     @pytest.mark.parametrize(
-        "value",
-        ["http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128", "http://u:@proxy:1"],
-        ids=["login-with-odd-characters", "empty-password"],
+        ("name", "value"),
+        [
+            pytest.param(
+                "HTTPS_PROXY", "http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128", id="odd-login"
+            ),
+            pytest.param("HTTPS_PROXY", "http://u:@proxy:1", id="empty-password"),
+            pytest.param("HTTPS_PROXY", "http://u:Pr0x%2FyPass9@proxy:3128/", id="encoded-login"),
+            pytest.param("HTTPS_PROXY", "http://proxy.internal:3128/a?b#c", id="proxy-with-a-path"),
+            pytest.param("VD_SOME_URL", "http://u:Pr0x/yPass9@h:1", id="cut-login-outside-a-proxy"),
+        ],
     )
     def test_it_starts_whatever_shape_a_url_login_has(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
     ) -> None:
-        """Ensure a URL login is never refused, since any variable can hold a URL."""
-        monkeypatch.setenv("HTTPS_PROXY", value)
+        """Ensure a URL login is refused only in a proxy no client can use.
+
+        Any variable can hold a URL, and outside a proxy variable the server
+        cannot tell what reads it.
+        """
+        monkeypatch.setenv(name, value)
 
         build_server(Settings((tmp_path,)))
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            pytest.param("HTTPS_PROXY", "http://proxyuser9:Pr0x/yPass9@127.0.0.1:3128", id="slash"),
+            pytest.param("HTTPS_PROXY", "http://proxyuser9:Pr0x?yPass9@127.0.0.1:3128", id="query"),
+            pytest.param("HTTPS_PROXY", "http://proxyuser9:Pr0x#yPass9@127.0.0.1:3128", id="hash"),
+            pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:Pr0x\\yPass9@127.0.0.1:3128", id="backslash"
+            ),
+            pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:Pr0x@yP/ass9@127.0.0.1:3128", id="at-then-slash"
+            ),
+            pytest.param("ALL_PROXY", "socks5h://proxyuser9:Pr0x/yPass9@proxy:1080", id="socks"),
+            pytest.param("ALL_PROXY", " proxyuser9:Pr0x/yPass9@proxy:3128 ", id="bare"),
+        ],
+    )
+    def test_it_will_not_start_on_a_proxy_login_no_client_can_parse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
+        """Ensure a proxy login with an unencoded `/`, `?`, `#`, or backslash stops the server.
+
+        urllib3 ends the authority at that character, and writes back the
+        user and the head of the password, or takes a piece of the password
+        for the host, so no mask could match what comes back. The refusal
+        names the variable and holds no part of the login.
+        """
+        monkeypatch.setenv(name, value)
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert f"the environment variable {name} must hold no '@' after a '/'" in message
+        assert "Percent-encode" in message
+        for part in ("proxyuser9", "Pr0x", "yPass9", "ass9", "127.0.0.1", "proxy:"):
+            assert part not in message
 
 
 class TestReadRows:

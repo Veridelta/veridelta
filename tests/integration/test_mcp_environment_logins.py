@@ -7,7 +7,9 @@ Real Polars and real deltalake read a side from a store on this machine that
 refuses every request and repeats none of it. The store's endpoint, in
 `AWS_ENDPOINT_URL`, holds a login, which each reader writes back in its error.
 A proxy URL with a login, whose port no socket can open, is written back by
-the client that signs Polars in through an AWS profile. The configuration
+the client that signs Polars in through an AWS profile. A proxy login with an
+unencoded `#` is cut where that client ends the URL's authority, so the server
+refuses to start on it. The configuration
 names no `${NAME}`. A control turns the server's record of its environment
 off, and shows each probe does echo the login.
 """
@@ -30,6 +32,7 @@ from mcp.types import CallToolResult
 from packaging.version import Version
 
 from veridelta import mcp_server
+from veridelta.exceptions import ConfigError
 from veridelta.mcp_server import Settings, build_server
 
 pytestmark = [pytest.mark.integration]
@@ -86,6 +89,9 @@ _PROXY_LOGIN: Final = "proxyuser9:Pr0xyPass9"
 _PROXY_PASSWORD: Final = "Pr0xyPass9"
 """The password in the proxy's URL."""
 
+_CUT_PROXY_URL: Final = f"http://{_PROXY_LOGIN}#corp@127.0.0.1:99999"
+"""A proxy URL whose password holds an unencoded `#`, which ends the URL's authority."""
+
 _KEY_ID: Final = "AKIAQ7ZX3LOGIN9READ"
 _SECRET_KEY: Final = "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCYx"
 _BASE_KEY_ID: Final = "AKIAQ7ZX3PROXY9BASE"
@@ -110,7 +116,9 @@ def _endpoint(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
     )
 
 
-def _proxy(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
+def _proxy(
+    folder: Path, port: int, url: str = f"http://{_PROXY_LOGIN}@127.0.0.1:99999"
+) -> tuple[dict[str, str], str, str]:
     """Sign in through an AWS profile that assumes a role, through a proxy with a login."""
     del port
     config = folder / "aws-config"
@@ -128,11 +136,16 @@ def _proxy(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
             "AWS_PROFILE": "reader",
             "AWS_EC2_METADATA_DISABLED": "true",
             # The port is out of range, so no socket opens.
-            "HTTPS_PROXY": f"http://{_PROXY_LOGIN}@127.0.0.1:99999",
+            "HTTPS_PROXY": url,
         },
         "lake",
         "lake",
     )
+
+
+def _cut_proxy(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
+    """Sign in as `_proxy` does, through a proxy whose login an unencoded `#` cuts."""
+    return _proxy(folder, port, _CUT_PROXY_URL)
 
 
 _TOOLS: list[tuple[str, dict[str, Any]]] = [
@@ -145,6 +158,7 @@ _CASES: Final = {
     "endpoint-login-polars": (_endpoint, False),
     "endpoint-login-deltalake": (_endpoint, True),
     "proxy-login-polars": (_proxy, False),
+    "cut-proxy-login-polars": (_cut_proxy, False),
 }
 """Each case's environment and whether it reads a Delta Lake table, by name."""
 
@@ -179,7 +193,8 @@ def _answers(name: str, folder: str, port: int, control: bool) -> list[str]:
 
     This runs in a child process. It leaves each reader only the credentials,
     endpoint, and proxy the case gives. With `control`, the server records
-    nothing from its environment.
+    nothing from its environment. A server that refuses to start answers its
+    refusal, once.
     """
     environment, delta = _CASES[name]
     root = Path(folder)
@@ -207,8 +222,13 @@ def _answers(name: str, folder: str, port: int, control: bool) -> list[str]:
     )
     settings = Settings((root,), allow_row_values=True, allowed_hosts=tuple({bucket, host}))
 
+    try:
+        server = build_server(settings)
+    except ConfigError as error:
+        return [f"refused: {error}"]
+
     async def session() -> list[CallToolResult]:
-        async with Client(build_server(settings)) as client:
+        async with Client(server) as client:
             return [
                 await client.call_tool(tool, {"path": "veridelta.yaml", **arguments})
                 for tool, arguments in _TOOLS
@@ -268,3 +288,29 @@ def test_polars_echoes_the_proxy_login_without_the_mask(
     for shown in answers:
         holds = _PROXY_LOGIN in shown and _PROXY_PASSWORD in shown
         assert holds == _POLARS_ECHOES_PROXY, shown
+
+
+def test_it_refuses_a_proxy_login_no_client_can_parse(tmp_path: Path, refusing_store: int) -> None:
+    """Ensure a proxy login with an unencoded `#` stops the server, naming only the variable."""
+    (shown,) = _in_a_child("cut-proxy-login-polars", tmp_path, refusing_store)
+
+    assert shown.startswith("refused: "), shown
+    assert "environment variable HTTPS_PROXY must hold no '@'" in shown
+    assert not _holds(shown, "proxyuser9"), shown
+    assert not _holds(shown, _PROXY_PASSWORD), shown
+
+
+def test_polars_echoes_a_cut_proxy_login_without_the_check(
+    tmp_path: Path, refusing_store: int
+) -> None:
+    """Ensure Polars writes the head of a cut proxy login back from 2.0.0 on, which no mask matches.
+
+    urllib3 ends the authority at the `#`, and botocore passes its parse
+    error on, with the user and the password up to the `#`. Before 2.0.0 the
+    error names only the store.
+    """
+    answers = _in_a_child("cut-proxy-login-polars", tmp_path, refusing_store, control=True)
+
+    for shown in answers:
+        assert not shown.startswith("refused: "), shown
+        assert (f"'{_PROXY_LOGIN}'" in shown) == _POLARS_ECHOES_PROXY, shown

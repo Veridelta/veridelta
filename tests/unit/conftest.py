@@ -17,12 +17,13 @@ def _no_url_logins(monkeypatch: pytest.MonkeyPatch) -> None:
     The MCP server masks a URL login from any variable in every answer, so a
     variable on the machine the suite runs on, such as a Git setting in
     `GIT_CONFIG_VALUE_2` or a proxy with a login on a CI runner, would change
-    what a test sees. Git refuses to run when a `GIT_CONFIG_VALUE_n` that
+    what a test sees. A proxy whose login no client can parse would stop the
+    server from starting. Git refuses to run when a `GIT_CONFIG_VALUE_n` that
     `GIT_CONFIG_COUNT` counts is unset, so the count goes too, and Git then
     reads none of those settings.
     """
     for name, value in list(os.environ.items()):
-        if mcp_server._url_login_values(name, value):
+        if mcp_server._url_login_values(name, value) or mcp_server._cut_proxy_login(name, value):
             monkeypatch.delenv(name)
             if name.upper().startswith("GIT_CONFIG_VALUE_"):
                 monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)

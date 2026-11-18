@@ -2318,9 +2318,9 @@ def _url_login_values(name: str, value: str) -> set[str]:
     decoded, as a Basic Proxy-Authorization header. So each login is recorded with the host
     after it, followed by its `@`, its password as written and decoded, and that Basic
     credential. The user alone is never recorded, since no probed reader writes it without the
-    rest, and a user such as `admin` would hide the word in every answer. Nothing is refused,
-    since any variable can hold a URL. A value with no `://` is read as a login only in a
-    proxy variable.
+    rest, and a user such as `admin` would hide the word in every answer. Nothing is refused
+    here, since any variable can hold a URL; `_cut_proxy_login` refuses the one proxy login no
+    client can parse. A value with no `://` is read as a login only in a proxy variable.
     """
     logins = [(found[1], found[2]) for found in _LOGIN_IN_URL.finditer(value)]
     if not logins and name.lower().endswith(_PROXY_SUFFIX):
@@ -2346,6 +2346,31 @@ def _url_login_values(name: str, value: str) -> set[str]:
             )
         )
     return {form for form in values if len(form) >= _SHORTEST_MASKED}
+
+
+_PROXY_CUT: Final = re.compile(r"[/?#\\]")
+"""Each character urllib3 ends a URL's authority at: `/`, `?`, `#`, and a backslash.
+
+A WHATWG URL parser, as reqwest uses, reads a backslash in an HTTP URL as a `/` too."""
+
+
+def _cut_proxy_login(name: str, value: str) -> bool:
+    """Say whether a proxy variable's URL holds an `@` after its first `/`, `?`, `#`, or backslash.
+
+    Such a login holds one of these characters unencoded. urllib3, behind requests and
+    botocore, ends the authority at that character, and its parse error writes back the
+    user and the head of the password. After an earlier `@`, it takes a piece of the
+    password for the host, and botocore writes back the rest. No mask matches such a piece,
+    and no client can use the proxy, so the server refuses it. A proxy URL whose path holds
+    an `@` is refused too, since a client sends no path to a proxy.
+    """
+    if not name.lower().endswith(_PROXY_SUFFIX):
+        return False
+    written = value.strip()
+    _, scheme, rest = written.partition("://")
+    after = rest if scheme else written
+    cut = _PROXY_CUT.search(after)
+    return cut is not None and "@" in after[cut.end() :]
 
 
 _LONGEST_TOKEN_FILE: Final = 64 * 1024
@@ -2617,16 +2642,26 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     Google key is recorded whole, and each field of it that a service can echo
     on its own too. Its JSON is never refused, since object_store's errors for
     it quote none of its text. Each URL login in any variable is recorded by
-    `_url_login_values`, and never refused.
+    `_url_login_values`. A URL login is refused only in a proxy variable whose
+    login no client can parse, by `_cut_proxy_login`.
 
     Raises:
-        ConfigError: If a variable's value lacks its slot's shape. The message
-            names the variable as it is set, never the value.
+        ConfigError: If a variable's value lacks its slot's shape, or a proxy
+            variable's login holds an unencoded `/`, `?`, `#`, or backslash.
+            The message names the variable as it is set, never the value.
     """
     values: set[str] = set()
     for name, value in environ.items():
         if not value:
             continue
+        if _cut_proxy_login(name, value):
+            raise ConfigError(
+                f"On veridelta mcp, the environment variable {name} must hold no '@' after a "
+                "'/', '?', '#', or '\\' in its proxy URL. No client can use such a proxy, and one "
+                "writes part of its login back in an error, which the server cannot mask. "
+                "Percent-encode these characters, and '@', in the proxy's user and password, "
+                "such as '/' as %2F and '@' as %40."
+            )
         values.update(_url_login_values(name, value))
         read_as = _name_as_read(name)
         if read_as == _KEY_JSON_VARIABLE:
