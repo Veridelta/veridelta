@@ -2227,12 +2227,14 @@ endpoint meets. Each name, its reader, and the probe that found it:
   takes either name, in any case, as the endpoint of an `s3://` table. A
   probe received a list request signed with the configuration's `${NAME}`
   keys over HTTP, with `ALLOW_HTTP` or `AWS_ALLOW_HTTP` set. Polars 1.39.3
-  and 2.1.0 read neither.
+  and 2.1.0 read neither, and nor does PyArrow under an Iceberg side, so
+  `_DELTA_LAKE_ONLY` holds both.
 - `AWS_S3_ENDPOINT`: deltalake's OpenDAL S3 store, at an `opendal+s3://`
   table, reads it, and `AWS_ENDPOINT` and `AWS_ENDPOINT_URL` too, over HTTP
   with no switch. A probe received a list request signed with the
   environment's keys. It reads each name in upper case only. Neither
-  deltalake's own S3 store nor Polars 1.39.3 or 2.1.0 read this one.
+  deltalake's own S3 store, Polars 1.39.3 or 2.1.0, nor PyArrow read this
+  one, so `_DELTA_LAKE_ONLY` holds it.
 - `AZURE_ENDPOINT` and `AZURE_STORAGE_ENDPOINT`: Polars and deltalake.
 - `AZURE_AUTHORITY_HOST` and `AZURE_STORAGE_AUTHORITY_HOST`: Polars and
   deltalake POST the client secret there to sign in. The secret can come from
@@ -2319,7 +2321,10 @@ decrypted a request signed with the side's keys at each store. deltalake
 reads the unprefixed name on an S3 side only, since it reads every variable
 there with no prefix, and its Azure and Google Cloud Storage stores read only
 `AZURE_` and `GOOGLE_` names. Polars 1.39.3 and 2.1.0 took none of them,
-in a probe of the S3 and Azure switches on each."""
+in a probe of the S3 and Azure switches on each, and of the unprefixed and
+Google switches on 2.1.0. Nor did PyArrow's S3 file system, under an Iceberg
+side. So `_DELTA_LAKE_ONLY` holds the unprefixed name, which an unrelated
+tool may set, and each prefixed name applies to every side of its store."""
 
 _SERVICE_ACCOUNT_FILES: Final = frozenset({"GOOGLE_SERVICE_ACCOUNT", "GOOGLE_SERVICE_ACCOUNT_PATH"})
 """The environment variables that name a Google service account key file, in upper case.
@@ -2330,7 +2335,54 @@ there. deltalake 1.6.6 read the base URL from a key that either variable
 named, or that `GOOGLE_SERVICE_ACCOUNT_KEY` held, and sent a list request to
 it over HTTP, as a probe showed. It reads no key that
 `GOOGLE_APPLICATION_CREDENTIALS` names this way. Polars 1.39.3 and 2.1.0
-sign in through Google's own library, which reads no base URL."""
+read the base URL of such a key too, on a side with `skip_signature`, as a
+probe showed. Otherwise they sign in through Google's own library, which
+reads no base URL. PyArrow, under an Iceberg side, sent nothing to it in a
+probe, and an Iceberg side is checked for it all the same, as for every
+object store's variables."""
+
+_DELTA_LAKE_ONLY: Final = frozenset(
+    {
+        "ENDPOINT",
+        "ENDPOINT_URL",
+        "AWS_S3_ENDPOINT",
+        "ALLOW_INVALID_CERTIFICATES",
+        "REGION",
+        "DEFAULT_REGION",
+    }
+)
+"""The variables, in upper case, that only deltalake reads, so only a Delta Lake side is checked for them.
+
+An unrelated tool may set such a name, and Polars 1.39.3 and 2.1.0 and
+PyArrow under an Iceberg side took none of them in a probe. So a Polars
+side or an Iceberg side reads as before with any of them set."""
+
+_ENVIRONMENT_REGIONS: Final = frozenset(
+    {"AWS_REGION", "AWS_DEFAULT_REGION", "REGION", "DEFAULT_REGION"}
+)
+"""The environment variables a reader writes into an S3 host, in upper case.
+
+Each is held to `_REGION`, as a region storage option is, since a value
+such as `x@127.0.0.1:9000/` makes the host's authority another machine.
+Polars 1.39.3 and 2.1.0 build `https://s3.{region}.amazonaws.com` from
+`AWS_REGION` or `AWS_DEFAULT_REGION`, and a probe received their TLS
+handshakes at such a value's address. deltalake 1.6.6 did the same from
+all four names, in any case, since it reads every variable with no prefix
+as an S3 option. Polars 2.1.0 also reads the AWS profile's `region`, which
+`_refuse_environment_endpoints` checks. PyArrow, under an Iceberg side,
+refused a region that is no DNS name before any request. `S3_REGION` and
+`AWS_S3_REGION` moved no reader in a probe, and DuckDB's httpfs, which
+reads `S3_REGION`, is never loaded on the server."""
+
+_ACCOUNT_VARIABLE: Final = "AZURE_STORAGE_ACCOUNT_NAME"
+"""The environment variable a reader writes into an Azure host, as in `{account}.blob.core.windows.net`.
+
+It is held to the rule an `azure_storage_account_name` storage option
+meets: an account given with --allow-host. Polars 1.39.3 and 2.1.0 and
+deltalake 1.6.6 read it, after `AZURE_`, in any case, for a side such as
+`az://lake/a.parquet`. A probe received their TLS handshakes at the address
+of `x@127.0.0.1:9000/`. No reader moved for `AZURE_STORAGE_ACCOUNT`,
+`AZURE_ACCOUNT_NAME`, `ACCOUNT_NAME`, or `AZBLOB_ACCOUNT_NAME`."""
 
 _MOTHERDUCK_TOKEN_NAMES: Final = frozenset(name.casefold() for name in MOTHERDUCK_TOKEN_VARIABLES)
 """The MotherDuck token variables, in casefold, which name a credential rather than a setting."""
@@ -2366,10 +2418,10 @@ _ANY_STORE_NAME: Final = "a location the server cannot tie to one object store"
 """How a refusal names the stores of `_ANY_STORE`, which the side's location does not tell."""
 
 _PROFILE_SUBJECT: Final = (
-    "the endpoint_url of the AWS profile the server's environment selects, in "
+    "the {setting} of the AWS profile the server's environment selects, in "
     "AWS_CONFIG_FILE or ~/.aws/config, which Polars reads"
 )
-"""How a refusal names the endpoint of the AWS profile, without the profile's name."""
+"""How a refusal names a setting of the AWS profile, such as its endpoint_url, without the profile's name."""
 
 
 def _store(config: SourceRef) -> frozenset[str]:
@@ -2404,28 +2456,26 @@ def _store(config: SourceRef) -> frozenset[str]:
     return _ANY_STORE if _location_destinations(config) else frozenset()
 
 
-def _profile_endpoint() -> str | None:
-    """Return the `endpoint_url` of the AWS profile the environment selects, as Polars reads it, or None.
+def _profile() -> Mapping[str, object]:
+    """Return the settings of the AWS profile the environment selects, as Polars reads them, or none.
 
-    Polars reads it through boto3, so with boto3 missing it reads none. A
-    `[services]` section is not read, since no reader reads one. A profile
-    that is missing or a file that does not parse fails Polars the same way,
-    and it reads nothing.
+    Polars reads its `endpoint_url` and its `region` through boto3, so with
+    boto3 missing it reads none. A `[services]` section is not read, since no
+    reader reads one. A profile that is missing or a file that does not
+    parse fails Polars the same way, and it reads nothing.
     """
     if importlib.util.find_spec("boto3") is None:
-        return None
+        return {}
     import botocore.exceptions  # pyright: ignore[reportMissingTypeStubs] - botocore ships no types
     import botocore.session  # pyright: ignore[reportMissingTypeStubs] - as above
 
     try:
-        scoped = cast(
+        return cast(
             "Mapping[str, object]",
             botocore.session.Session().get_scoped_config(),
         )
     except botocore.exceptions.BotoCoreError:
-        return None
-    endpoint = scoped.get("endpoint_url")
-    return str(endpoint) if endpoint else None
+        return {}
 
 
 def _refuse_environment_endpoints(
@@ -2438,28 +2488,38 @@ def _refuse_environment_endpoints(
     `endpoint_url`, and deltalake from the `gcs_base_url` of a service account
     key, whether or not the configuration names its own. Each is held to the
     rules a storage option's endpoint meets: no path, a host given with
-    --allow-host, and a scheme of `https://` only. The Azure emulator switch,
+    --allow-host, and a scheme of `https://` only. A region in
+    `_ENVIRONMENT_REGIONS` or the profile's `region` must match `_REGION`,
+    and the account `_ACCOUNT_VARIABLE` names must be given with
+    --allow-host, as their storage options must. The Azure emulator switch,
     a switch in `_CERTIFICATE_SWITCHES`, and a MotherDuck setting other than
-    the token and the options a tool passes on are refused outright. A name
-    is matched in any case, as deltalake reads one. The message names the
-    variable as it is set, and never its value, a key file's path, or the
-    profile's name.
+    the token and the options a tool passes on are refused outright. A
+    variable in `_DELTA_LAKE_ONLY` is checked on a Delta Lake side only. A
+    name is matched in any case, as deltalake reads one. The message names
+    the variable as it is set, and never its value, a key file's path, or
+    the profile's name.
 
     Raises:
-        ConfigError: If such an endpoint, a switch, or such a setting applies to the side.
+        ConfigError: If such an endpoint, a region, an account, a switch, or
+            such a setting applies to the side.
     """
     families = _store(config)
     if not families:
         return
     store = _ANY_STORE_NAME if families == _ANY_STORE else _STORE_NAMES[min(families)]
+    delta = isinstance(config, DeltaLakeConfig)
     for name in sorted(environ):
         value = environ[name]
-        if value:
+        if value and (delta or name.upper() not in _DELTA_LAKE_ONLY):
             _refuse_environment_variable(settings, side, families, store, name, value)
-    if "s3" in families and (endpoint := _profile_endpoint()):
-        _refuse_endpoint(
-            settings, f"The {side} side reads {store}, and {_PROFILE_SUBJECT}", endpoint
-        )
+    if "s3" not in families:
+        return
+    profile = _profile()
+    opening = f"The {side} side reads {store}, and {_PROFILE_SUBJECT}"
+    if endpoint := profile.get("endpoint_url"):
+        _refuse_endpoint(settings, opening.format(setting="endpoint_url"), str(endpoint))
+    if (region := profile.get("region")) and _REGION.fullmatch(str(region)) is None:
+        raise ConfigError(_region_refusal(opening.format(setting="region")))
 
 
 def _refuse_environment_variable(
@@ -2469,11 +2529,14 @@ def _refuse_environment_variable(
 
     Raises:
         ConfigError: If the variable is the emulator switch or a certificate
-            switch, turned on, an endpoint that is not allowed, a service
+            switch, turned on, an endpoint that is not allowed, a region
+            outside `_REGION`, an account that is not allowed, a service
             account key whose `gcs_base_url` is not allowed, or a MotherDuck
             setting.
     """
     upper = name.upper()
+    opening = f"The {side} side reads {store}, and the server's environment variable {name}"
+    _refuse_host_name(settings, families, opening, upper, value)
     if "azure" in families and upper == _EMULATOR_SWITCH:
         if value.strip().lower() not in _SWITCH_OFF:
             raise ConfigError(
@@ -2485,20 +2548,16 @@ def _refuse_environment_variable(
     elif _CERTIFICATE_SWITCHES.get(upper) in families:
         if value.strip().lower() not in _SWITCH_OFF:
             raise ConfigError(
-                f"The {side} side reads {store}, and the server's environment variable {name} "
-                "turns off a reader's check of the certificate an endpoint presents, so a proxy, "
-                "or anyone else on the route, could read the credentials and the rows. Ask the "
-                "person who started the server to leave it out of the server's environment."
+                f"{opening} turns off a reader's check of the certificate an endpoint presents, "
+                "so a proxy, or anyone else on the route, could read the credentials and the "
+                "rows. Ask the person who started the server to leave it out of the server's "
+                "environment."
             )
     elif _ENVIRONMENT_ENDPOINTS.get(upper) in families:
         _refuse_endpoint(
-            settings,
-            f"The {side} side reads {store}, and the server's environment variable {name}",
-            value,
-            plain_without_scheme=upper in _PLAIN_WITHOUT_SCHEME,
+            settings, opening, value, plain_without_scheme=upper in _PLAIN_WITHOUT_SCHEME
         )
     elif "gcs" in families and (upper in _SERVICE_ACCOUNT_FILES or upper == _KEY_JSON_VARIABLE):
-        opening = f"The {side} side reads {store}, and the server's environment variable {name}"
         base_url = _service_account_base_url(opening, upper in _SERVICE_ACCOUNT_FILES, value)
         if base_url is not None:
             _refuse_endpoint(
@@ -2513,6 +2572,46 @@ def _refuse_environment_variable(
             "motherduck_host, choose the host the extension connects to. Ask the person who "
             "started the server to leave it out of the server's environment."
         )
+
+
+def _refuse_host_name(
+    settings: Settings, families: frozenset[str], opening: str, upper: str, value: str
+) -> None:
+    """Refuse a region or an account from the server's environment that a reader writes into its host.
+
+    A region must match `_REGION`, and an account must be given with
+    --allow-host, as their storage options must. `opening` names the side,
+    its store, and the variable, and `upper` is the variable's name in upper
+    case.
+
+    Raises:
+        ConfigError: If the variable is a region of the side's store outside
+            `_REGION`, or an account of it that is not allowed.
+    """
+    if "s3" in families and upper in _ENVIRONMENT_REGIONS and _REGION.fullmatch(value) is None:
+        raise ConfigError(_region_refusal(opening))
+    if (
+        "azure" in families
+        and upper == _ACCOUNT_VARIABLE
+        and not _allowed_host(settings, _endpoint_host(value))
+    ):
+        raise ConfigError(
+            f"{opening} names a storage account that is not given with --allow-host, or is not "
+            "written as DNS labels with at most a port. A reader sends this side's requests and "
+            "credentials to that account's host. Ask the person who started the server to add "
+            "the account's name with --allow-host, or to leave the variable out of the "
+            "server's environment."
+        )
+
+
+def _region_refusal(opening: str) -> str:
+    """Say why a region from the server's environment is refused, after `opening`, which names where it comes from."""
+    return (
+        f"{opening} is not a region of letters, digits, and hyphens, such as us-east-1. A "
+        "reader writes it into the host it connects to, so it could send this side's requests "
+        "and credentials to a host not given with --allow-host. Ask the person who started the "
+        "server to correct it, or to leave it out of the server's environment."
+    )
 
 
 def _service_account_base_url(opening: str, named: bool, value: str) -> str | None:

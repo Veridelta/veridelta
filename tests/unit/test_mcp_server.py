@@ -9310,13 +9310,32 @@ _ENDPOINT_VALUES = (
 )
 """Each endpoint a variable can name, how its refusal reads, or None where the side is read, and its id."""
 
+
+def _sides_reading(name: str, store: str) -> list[tuple[int, str]]:
+    """Return each side of `store` whose reader takes `name`, with its index in `_ENDPOINT_SIDES`.
+
+    Only deltalake reads a name in `_DELTA_LAKE_ONLY`, so only a Delta Lake side does.
+    """
+    return [
+        (index, side)
+        for index, side in enumerate(_ENDPOINT_SIDES[store])
+        if name not in mcp_server._DELTA_LAKE_ONLY or "type: delta" in side
+    ]
+
+
 _ENVIRONMENT_ENDPOINT_CASES = [
     pytest.param(name, store, side, value, refusal, id=f"{name}-{store}{index}-{value_id}")
     for name, store in mcp_server._ENVIRONMENT_ENDPOINTS.items()
-    for index, side in enumerate(_ENDPOINT_SIDES[store])
+    for index, side in _sides_reading(name, store)
     for value, refusal, value_id in _ENDPOINT_VALUES
 ]
-"""Each variable, a side of its store, and each endpoint it can name."""
+"""Each variable, a side of its store whose reader takes it, and each endpoint it can name."""
+
+_ICEBERG_S3 = "  type: iceberg\n  table_uri: s3://lake/t/metadata/v1.metadata.json\n"
+"""An Iceberg side in S3, which PyArrow reads on the server."""
+
+_MOVED_HOST = "x@leak-probe.example:9000/"
+"""A region or an account that moves a reader's host to `leak-probe.example`, as in `s3.x@leak-probe.example:9000/.amazonaws.com`."""
 
 
 def _endpoint_settings() -> Settings:
@@ -9613,7 +9632,7 @@ class TestEnvironmentEndpoints:
         [
             pytest.param(name, store, side, id=f"{name}-{store}{index}")
             for name, store in mcp_server._CERTIFICATE_SWITCHES.items()
-            for index, side in enumerate(_ENDPOINT_SIDES[store])
+            for index, side in _sides_reading(name, store)
         ],
     )
     @pytest.mark.parametrize("value", ["true", "On", "1", " YES "])
@@ -9933,6 +9952,195 @@ class TestEnvironmentEndpoints:
         )
 
         _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._DELTA_LAKE_ONLY))
+    @pytest.mark.parametrize(
+        "source",
+        ["  path: s3://lake/a.parquet\n", _ICEBERG_S3, "  path: hdfs://h/a.parquet\n"],
+        ids=["polars", "iceberg", "polars-any-store"],
+    )
+    def test_it_reads_a_side_no_reader_of_which_takes_a_delta_lake_name(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        source: str,
+    ) -> None:
+        """Ensure a name only deltalake reads leaves a Polars or an Iceberg side read, whatever it holds.
+
+        Probes of Polars 1.39.3 and 2.1.0, and of PyArrow under an Iceberg
+        side, sent nothing to these endpoints, kept checking certificates, and
+        built no host from these regions. An unrelated tool may set such a name.
+        """
+        read = _read_stubbed(mocker)
+        value = "true" if "CERTIFICATES" in name else f"http://{_MOVED_HOST}"
+        monkeypatch.setenv(name, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        ("name", "source"),
+        [
+            pytest.param(name, side, id=f"{name}-{index}")
+            for name in sorted(mcp_server._ENVIRONMENT_REGIONS)
+            for index, side in _sides_reading(name, "s3")
+        ]
+        + [
+            pytest.param("AWS_REGION", _ICEBERG_S3, id="AWS_REGION-iceberg"),
+            pytest.param("region", _ENDPOINT_SIDES["s3"][1], id="lowercase"),
+            pytest.param("Aws_Default_Region", _ENDPOINT_SIDES["s3"][1], id="mixed-case"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "value", [_MOVED_HOST, "us-east-1.leak-probe.example", "us east 1", "us-east-1\n"]
+    )
+    def test_it_refuses_a_region_that_could_move_the_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        source: str,
+        value: str,
+    ) -> None:
+        """Ensure a region from the environment is held to the shape a region storage option meets.
+
+        Polars and deltalake write it into the host they connect to, as
+        `s3.{region}.amazonaws.com`, so an `@` or a `/` in it moves the
+        request, and the configuration's credentials, to another machine.
+        The refusal names the variable, and never its value.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        store = mcp_server._ANY_STORE_NAME if "iceberg" in source else "S3"
+        assert message.startswith(f"The source side reads {store}, and the server's environment")
+        assert f"variable {name} is not a region".casefold() in message.casefold()
+        assert "leak-probe" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._ENVIRONMENT_REGIONS))
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["s3"])
+    def test_it_reads_with_a_region_of_letters_digits_and_hyphens(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        source: str,
+    ) -> None:
+        """Ensure a region in its usual shape leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "us-east-1")
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        "source",
+        [*_ENDPOINT_SIDES["azure"], *_ENDPOINT_SIDES["gcs"], _ENDPOINT_SIDES["bigquery"][0]],
+    )
+    def test_it_checks_a_region_only_on_an_s3_side(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+    ) -> None:
+        """Ensure a region no reader of the side's store writes into a host leaves the side read."""
+        read = _read_stubbed(mocker)
+        for name in mcp_server._ENVIRONMENT_REGIONS:
+            monkeypatch.setenv(name, _MOVED_HOST)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize("profile", ["ledgerprofile", None])
+    def test_it_refuses_the_region_of_the_aws_profile(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        profile: str | None,
+    ) -> None:
+        """Ensure the region of the profile the environment selects is held to a region's shape.
+
+        Polars 2.1.0 writes it into the host it connects to. The message
+        names neither the profile nor the region.
+        """
+        read = _read_stubbed(mocker)
+        section = "default" if profile is None else f"profile {profile}"
+        config = tmp_path / "aws-config"
+        config.write_text(f"[{section}]\nregion = {_MOVED_HOST}\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        if profile is not None:
+            monkeypatch.setenv("AWS_PROFILE", profile)
+
+        message = _describe_refused(tmp_path, "  path: s3://lake/a.parquet\n")
+
+        assert message.startswith("The source side reads S3, and the region of the AWS profile")
+        assert "is not a region of letters, digits, and hyphens" in message
+        assert "ledgerprofile" not in message
+        assert "leak-probe" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["azure"])
+    @pytest.mark.parametrize("name", [mcp_server._ACCOUNT_VARIABLE, "AZURE_Storage_Account_Name"])
+    @pytest.mark.parametrize("value", [_MOVED_HOST, "acct", "lake.evil/", "lake:1/x"])
+    def test_it_refuses_an_account_not_given_with_allow_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        value: str,
+    ) -> None:
+        """Ensure the Azure account from the environment is held to the rule an account storage option meets.
+
+        Polars and deltalake connect to `{account}.blob.core.windows.net`, so
+        an account the operator never named, or an `@` in it, sends the
+        side's requests and credentials elsewhere. The refusal names the
+        variable, and never its value. Windows holds every name in upper
+        case, so the message is compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith("The source side reads Azure, and the server's environment")
+        assert f"variable {name} names a storage account".casefold() in message.casefold()
+        assert "not given with --allow-host" in message
+        assert "leak-probe" not in message
+        assert "acct" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("value", "source"),
+        [
+            *(
+                pytest.param("lake", side, id=f"allowed-{index}")
+                for index, side in enumerate(_ENDPOINT_SIDES["azure"])
+            ),
+            pytest.param(_MOVED_HOST, "  path: s3://lake/a.parquet\n", id="s3"),
+            pytest.param(_MOVED_HOST, "  path: gs://lake/a.parquet\n", id="gcs"),
+        ],
+    )
+    def test_it_reads_with_an_allowed_account_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure an account given with --allow-host, or one on a side that reads no Azure, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._ACCOUNT_VARIABLE, value)
+
+        _describe_read(tmp_path, source, read)
 
     def test_validate_config_checks_them_only_with_schemas(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine_calls: list[MagicMock]

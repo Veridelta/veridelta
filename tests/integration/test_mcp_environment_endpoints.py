@@ -6,10 +6,13 @@
 Real Polars, real deltalake, and PyArrow under PyIceberg read a side whose
 configuration names no endpoint, while the server's environment names a store
 on this machine over plain HTTP, through a variable, an AWS profile, a
-Google service account key, or the Azure emulator switch. The store counts every request it receives. Each case
-expects the tool to refuse the side, naming the variable, before any request
-reaches the store. A control turns the rule off and shows the reader does
-reach the store, for the cases proven on every release CI runs.
+Google service account key, or the Azure emulator switch. A region or an
+Azure account such as `x@127.0.0.1:port/` moves a reader's HTTPS host to the
+store too. The store counts every request it receives, and every TLS
+handshake. Each case expects the tool to refuse the side, naming the
+variable, before anything reaches the store. A control turns the rule off
+and shows the reader does reach the store, for the cases proven on every
+release CI runs.
 """
 
 import importlib.util
@@ -87,13 +90,38 @@ class _Counter(BaseHTTPRequestHandler):
         """Keep request lines out of the test output."""
 
 
+_TLS_HANDSHAKE: Final = b"\x16"
+"""The first byte of a TLS handshake, which a reader sends to a host it reaches over HTTPS."""
+
+
 class _CountingServer(ThreadingHTTPServer):
-    """A store on this machine that keeps every request it receives."""
+    """A store on this machine that keeps every request it receives, and counts every TLS handshake."""
 
     def __init__(self) -> None:
         """Listen on a free local port."""
         super().__init__(("127.0.0.1", 0), _Counter)
         self.requests: list[_Request] = []
+        self.handshakes = 0
+
+    def verify_request(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
+    ) -> bool:
+        """Count a connection that opens with a TLS handshake, and close it at once.
+
+        A reader that a region or an account sends here speaks HTTPS, which
+        this store does not, and would otherwise wait for an answer.
+        """
+        connection = cast("socket.socket", request)
+        connection.settimeout(5)
+        try:
+            first = connection.recv(1, socket.MSG_PEEK)
+        except OSError:
+            return False
+        connection.settimeout(None)
+        if first == _TLS_HANDSHAKE:
+            self.handshakes += 1
+            return False
+        return True
 
 
 @dataclass(frozen=True)
@@ -198,6 +226,49 @@ def _service_account(folder: Path, **extra: object) -> str:
         encoding="utf-8",
     )
     return str(path)
+
+
+def _moved(endpoint: str) -> str:
+    """Return a region or an account that moves a reader's host to the store, as `s3.x@127.0.0.1:port/.amazonaws.com` does."""
+    return f"x@{endpoint.removeprefix('http://')}/"
+
+
+def _region(name: str) -> Callable[[Path, str], dict[str, str]]:
+    """Give the S3 readers a key pair, and a region under `name` that moves their host to the store.
+
+    `AWS_REGION` is unset unless it is `name`, since a reader prefers it to the others.
+    """
+
+    def environment(_: Path, endpoint: str) -> dict[str, str]:
+        return {
+            "AWS_REGION": "",
+            name: _moved(endpoint),
+            "AWS_ACCESS_KEY_ID": _KEY_ID,
+            "AWS_SECRET_ACCESS_KEY": _SECRET_KEY,
+        }
+
+    return environment
+
+
+def _profile_region(folder: Path, endpoint: str) -> dict[str, str]:
+    """Name a region that moves the host to the store in the AWS profile the environment selects."""
+    config = folder / "aws-config"
+    config.write_text(f"[profile p]\nregion = {_moved(endpoint)}\n", encoding="utf-8")
+    return {
+        "AWS_REGION": "",
+        "AWS_CONFIG_FILE": str(config),
+        "AWS_PROFILE": "p",
+        "AWS_ACCESS_KEY_ID": _KEY_ID,
+        "AWS_SECRET_ACCESS_KEY": _SECRET_KEY,
+    }
+
+
+def _account(_: Path, endpoint: str) -> dict[str, str]:
+    """Give the Azure readers an account key, and an account that moves their host to the store."""
+    return {
+        "AZURE_STORAGE_ACCOUNT_NAME": _moved(endpoint),
+        "AZURE_STORAGE_ACCOUNT_KEY": _ACCOUNT_KEY,
+    }
 
 
 def _unprefixed(_: Path, endpoint: str) -> dict[str, str]:
@@ -320,7 +391,10 @@ _CASES: dict[str, _Case] = {
         delta=True,
     ),
     "azure-storage-endpoint": _Case(
-        "  path: az://lake/a.parquet\n", _azure_endpoint, "azure_storage_endpoint"
+        "  path: az://lake/a.parquet\n",
+        _azure_endpoint,
+        "azure_storage_endpoint",
+        hosts=("lake", "acct"),
     ),
     "azure-emulator": _Case(
         f"  path: az://lake/a.parquet\n{_STORAGE_OPTIONS}"
@@ -352,6 +426,36 @@ _CASES: dict[str, _Case] = {
         _here_with_gcs_files,
         "cloud_storage_testbench_endpoint",
     ),
+    "aws-region": _Case(_S3_FILE, _region("AWS_REGION"), "variable aws_region is not a region"),
+    "aws-default-region": _Case(
+        _S3_FILE, _region("AWS_DEFAULT_REGION"), "variable aws_default_region is not a region"
+    ),
+    "aws-profile-region": _Case(
+        _S3_FILE, _profile_region, "the region of the aws profile the server's environment"
+    ),
+    "delta-region": _Case(
+        "  type: delta\n  table_uri: s3://lake/t\n",
+        _region("AWS_REGION"),
+        "variable aws_region is not a region",
+        delta=True,
+    ),
+    "delta-region-unprefixed": _Case(
+        "  type: delta\n  table_uri: s3://lake/t\n",
+        _region("REGION"),
+        "variable region is not a region",
+        delta=True,
+    ),
+    "azure-account": _Case(
+        "  path: az://lake/a.parquet\n",
+        _account,
+        "variable azure_storage_account_name names a storage account",
+    ),
+    "delta-azure-account": _Case(
+        "  type: delta\n  table_uri: az://lake/t\n",
+        _account,
+        "variable azure_storage_account_name names a storage account",
+        delta=True,
+    ),
 }
 """Each reader, the environment that names the store, and the name its refusal gives, by case."""
 
@@ -366,6 +470,12 @@ _CONTROLLED: Final = (
     "azure-authority",
     "iceberg-gcs-emulator",
     "iceberg-here-gcs-files",
+    "aws-region",
+    "aws-default-region",
+    "delta-region",
+    "delta-region-unprefixed",
+    "azure-account",
+    "delta-azure-account",
 )
 """The cases whose reader reaches the store without the rule on every release CI runs.
 
@@ -373,7 +483,8 @@ Each Polars case was probed on Polars 1.39.3, the floor, and on 2.x. The
 Delta Lake and Iceberg cases read through deltalake and PyArrow, whatever
 the Polars release. A Delta Lake case answers once the store refuses its
 listing, since the store runs in another process and the walk of the log is
-skipped."""
+skipped. Polars 1.39.3 reads no region from the AWS profile, so that case
+has no control."""
 
 _GOOGLE_CASES: Final = ("iceberg-gcs-emulator", "iceberg-here-gcs-files")
 """The cases whose reader sends the store a bearer token it signs with the service account key."""
@@ -419,8 +530,11 @@ def _answer(name: str, folder: str, endpoint: str, closed: int, control: bool) -
     case, root = _CASES[name], Path(folder)
     os.chdir(root)
     for variable in list(os.environ):
-        if variable.upper().startswith(
-            ("AWS_", "AZURE_", "GOOGLE_", "GCE_", "CLOUD_STORAGE_", "BIGQUERY_", "MOTHERDUCK_")
+        if (
+            variable.upper().startswith(
+                ("AWS_", "AZURE_", "GOOGLE_", "GCE_", "CLOUD_STORAGE_", "BIGQUERY_", "MOTHERDUCK_")
+            )
+            or variable.upper() in mcp_server._DELTA_LAKE_ONLY
         ):
             del os.environ[variable]
     dead = f"http://127.0.0.1:{closed}"
@@ -437,11 +551,16 @@ def _answer(name: str, folder: str, endpoint: str, closed: int, control: bool) -
             "no_proxy": bypass,
             "AWS_REGION": "us-east-1",
             "AWS_EC2_METADATA_DISABLED": "true",
+            # Polars 2.x retries a request that fails to connect, which only slows a control.
+            "POLARS_CLOUD_MAX_RETRIES": "0",
             "AWS_CONFIG_FILE": str(root / "no-aws-config"),
             "AWS_SHARED_CREDENTIALS_FILE": str(root / "no-aws-credentials"),
         },
-        **case.environment(root, endpoint),
+        **(environment := case.environment(root, endpoint)),
     )
+    for variable in (name for name, value in environment.items() if not value):
+        # An empty value unsets the variable, as Windows does with one.
+        del os.environ[variable]
     if control:
         setattr(mcp_server, "_refuse_environment_endpoints", lambda *_: None)  # noqa: B010 - the child patches as monkeypatch would
     if case.delta:
@@ -491,6 +610,7 @@ def test_no_reader_reaches_an_endpoint_from_the_environment(
     assert _CASES[name].named in text.casefold(), text
     assert str(store.server_port) not in text
     assert store.requests == []
+    assert store.handshakes == 0
 
 
 @pytest.mark.parametrize("name", _CONTROLLED)
@@ -501,13 +621,14 @@ def test_each_reader_reaches_the_store_without_the_rule(
 
     The Azure sign-in posts the configuration's client secret there in
     clear, PyArrow sends Google Cloud Storage a bearer token, and deltalake
-    signs its S3 requests with the environment's keys.
+    signs its S3 requests with the environment's keys. A reader that a region
+    or an account moves opens a TLS handshake there.
     """
     endpoint = f"http://127.0.0.1:{store.server_port}"
 
     _in_a_child(name, tmp_path, endpoint, control=True)
 
-    assert store.requests
+    assert store.requests or store.handshakes
     if name == "azure-authority":
         assert any(
             request.method == "POST" and _CLIENT_SECRET in unquote_plus(request.body)
