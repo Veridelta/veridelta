@@ -7802,6 +7802,136 @@ class TestEnvironmentCredentials:
 
         assert "ConnectorError: region us-east-1-zz" in _text(result)
 
+    @pytest.mark.parametrize(
+        ("name", "slot"),
+        [
+            pytest.param("OSS_ACCESS_KEY_ID", "login", id="oss-access-key-id"),
+            pytest.param("OSS_ACCESS_KEY_SECRET", "token", id="oss-access-key-secret"),
+            pytest.param("OSS_SESSION_TOKEN", "token", id="oss-session-token"),
+            pytest.param("ALIBABA_CLOUD_ACCESS_KEY_ID", "login", id="alibaba-access-key-id"),
+            pytest.param("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "token", id="alibaba-secret"),
+            pytest.param("ALIBABA_CLOUD_SECURITY_TOKEN", "token", id="alibaba-security-token"),
+            pytest.param("TENCENTCLOUD_SECRET_ID", "login", id="tencent-secret-id"),
+            pytest.param("TKE_SECRET_ID", "login", id="tke-secret-id"),
+            pytest.param("TENCENTCLOUD_SECRET_KEY", "token", id="tencent-secret-key"),
+            pytest.param("TKE_SECRET_KEY", "token", id="tke-secret-key"),
+            pytest.param("TENCENTCLOUD_TOKEN", "token", id="tencent-token"),
+            pytest.param("TENCENTCLOUD_SECURITY_TOKEN", "token", id="tencent-security-token"),
+            pytest.param("QCLOUD_SECRET_TOKEN", "token", id="qcloud-secret-token"),
+            pytest.param("HUAWEI_CLOUD_ACCESS_KEY_ID", "login", id="huawei-access-key-id"),
+            pytest.param("HUAWEI_CLOUD_SECRET_ACCESS_KEY", "token", id="huawei-secret"),
+            pytest.param("HUAWEI_CLOUD_SECURITY_TOKEN", "token", id="huawei-security-token"),
+            pytest.param("AZBLOB_ACCOUNT_KEY", "account key", id="azblob-account-key"),
+            pytest.param("AZURE_STORAGE_BEARER_TOKEN", "token", id="azure-bearer-token"),
+            pytest.param("SYSTEM_ACCESSTOKEN", "token", id="azure-pipelines-token"),
+            pytest.param("ARM_CLIENT_ID", "login", id="arm-client-id"),
+            pytest.param("ARM_TENANT_ID", "login", id="arm-tenant-id"),
+        ],
+    )
+    def test_it_masks_each_credential_an_opendal_store_reads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        slot: str,
+    ) -> None:
+        """Ensure each credential deltalake's OpenDAL stores read from the environment is masked.
+
+        The OSS, COS, OBS, and Azure stores send these values in a request's
+        headers or to a token service, as a probe of each store showed.
+        """
+        value = _SLOT_VALUES[slot]
+        monkeypatch.setenv(name, value)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"echo: {_echoes(value)}", quotes_data=True),
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert mcp_server._ENVIRONMENT_SLOTS[name] == slot
+        assert "echo: ***" in _shown(result)
+        assert not _holds_a_form(_shown(result), value)
+
+    @pytest.mark.parametrize(
+        ("name", "slot"),
+        [
+            pytest.param("UNITY_ACCESS_TOKEN", "token", id="unity-access-token"),
+            pytest.param("DATABRICKS_TOKEN", "token", id="databricks-token"),
+            pytest.param("DATABRICKS_ACCESS_TOKEN", "token", id="databricks-access-token"),
+            pytest.param("UNITY_CLIENT_SECRET", "token", id="unity-client-secret"),
+            pytest.param("DATABRICKS_CLIENT_SECRET", "token", id="databricks-client-secret"),
+            pytest.param("UNITY_CLIENT_ID", "login", id="unity-client-id"),
+            pytest.param("DATABRICKS_CLIENT_ID", "login", id="databricks-client-id"),
+        ],
+    )
+    def test_it_masks_each_credential_the_unity_catalog_reader_reads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        slot: str,
+    ) -> None:
+        """Ensure each credential deltalake's Unity Catalog reader reads from the environment is masked.
+
+        At a `uc://` table, the reader sends the token as a bearer token to the
+        workspace, which can echo it, and the client id and secret to the
+        workspace's token service, as a probe showed.
+        """
+        value = _SLOT_VALUES[slot]
+        monkeypatch.setenv(name, value)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"PERMISSION_DENIED: {_echoes(value)}", quotes_data=True),
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert mcp_server._ENVIRONMENT_SLOTS[name] == slot
+        assert "PERMISSION_DENIED: ***" in _shown(result)
+        assert not _holds_a_form(_shown(result), value)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+            "AZURE_FEDERATED_TOKEN_FILE",
+            "ALIBABA_CLOUD_OIDC_TOKEN_FILE",
+            "TENCENTCLOUD_WEB_IDENTITY_TOKEN_FILE",
+            "TKE_IDENTITY_TOKEN_FILE",
+        ],
+    )
+    def test_it_masks_the_token_each_token_file_holds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure the token in the file each token file variable names is masked.
+
+        deltalake's OSS store sends the token in `ALIBABA_CLOUD_OIDC_TOKEN_FILE`'s
+        file in the query of its request to STS, which an STS error can echo.
+        """
+        token_file = tmp_path / "token"
+        token = "eyJhbGciOiJSUzI1NiJ9.b2lkYw.c2lnbmF0dXJl"
+        token_file.write_text(token + "\n", encoding="utf-8")
+        monkeypatch.setenv(name, str(token_file))
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"rejected OIDCToken={token}", quotes_data=True),
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert "ConnectorError: rejected OIDCToken=***" in _text(result)
+        assert not _holds_a_form(_shown(result), token)
+
     @pytest.mark.skipif(
         sys.platform == "win32",
         reason="Windows holds each environment variable's name in upper case, so no reader "
@@ -7815,6 +7945,9 @@ class TestEnvironmentCredentials:
             pytest.param("AWS_Session_Token", "token", id="aws-session-token"),
             pytest.param("GOOGLE_bearer_token", "token", id="google-bearer-token"),
             pytest.param("AZURE_Storage_Account_Key", "account key", id="azure-account-key"),
+            pytest.param("DATABRICKS_Token", "token", id="databricks-token"),
+            pytest.param("UNITY_access_token", "token", id="unity-access-token"),
+            pytest.param("DATABRICKS_Client_Id", "login", id="databricks-client-id"),
         ],
     )
     def test_it_masks_a_variable_in_any_case_after_its_prefix(
@@ -7825,10 +7958,12 @@ class TestEnvironmentCredentials:
         name: str,
         slot: str,
     ) -> None:
-        """Ensure a name in mixed case after `AWS_`, `AZURE_`, or `GOOGLE_` is masked.
+        """Ensure a name in mixed case after one of `_CASELESS_PREFIXES` is masked.
 
         object_store matches the prefix as written and reads the rest of the
         name in any case, so it sends the value of `AZURE_Client_Secret`.
+        deltalake's Unity Catalog reader does the same after `UNITY_` and
+        `DATABRICKS_`, so it sends the value of `DATABRICKS_Token`.
         """
         value = _SLOT_VALUES[slot]
         monkeypatch.setenv(name, value)
