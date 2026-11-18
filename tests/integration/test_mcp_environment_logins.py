@@ -355,21 +355,29 @@ def test_no_sign_in_login_comes_back(
         assert not _holds(shown, password), shown
 
 
-@pytest.mark.parametrize(("case", "login", "password"), _SIGN_IN_CASES)
+@pytest.mark.parametrize(
+    ("case", "login", "password", "echoes"),
+    [
+        pytest.param(*case.values, _POLARS_ECHOES_PROXY if case.id == "proxy" else True, id=case.id)
+        for case in _SIGN_IN_CASES
+    ],
+)
 def test_polars_echoes_the_sign_in_login_without_the_mask(
-    tmp_path: Path, refusing_store: int, case: str, login: str, password: str
+    tmp_path: Path, refusing_store: int, case: str, login: str, password: str, echoes: bool
 ) -> None:
-    """Ensure Polars writes the login back exactly from 2.0.0 on, as the probe found.
+    """Ensure Polars writes the login back exactly where the probe found it does.
 
-    botocore writes a proxy it cannot reach back as `http:` and the value, and
-    an STS endpoint it cannot connect to back as written. Before 2.0.0 the
-    error names only the store, so the control holds no login.
+    botocore writes a proxy it cannot parse back as `http:` and the value, and
+    an STS endpoint it cannot connect to back as written. Polars 1.39.3, the
+    floor, does so for a scheme-relative proxy and STS endpoint too. For a
+    proxy with a scheme, its error names only the store, so the control
+    holds no login there before 2.0.0.
     """
     answers = _in_a_child(case, tmp_path, refusing_store, control=True)
 
     for shown in answers:
         holds = login in shown and password in shown
-        assert holds == _POLARS_ECHOES_PROXY, shown
+        assert holds == echoes, shown
 
 
 _CUT_CASES: Final = [
@@ -402,7 +410,7 @@ def test_it_refuses_a_url_login_a_client_cuts(
             "cut-proxy-login-polars", f"'{_PROXY_LOGIN}'", _POLARS_ECHOES_PROXY, id="hash"
         ),
         pytest.param("scheme-cut-proxy-login-polars", "'proxyuser9:Pr0x:'", True, id="no-scheme"),
-        pytest.param("cut-sts-login-polars", "'Q7st'", _POLARS_ECHOES_PROXY, id="sts"),
+        pytest.param("cut-sts-login-polars", "'Q7st'", True, id="sts"),
     ],
 )
 def test_polars_echoes_a_cut_login_without_the_check(
@@ -414,8 +422,8 @@ def test_polars_echoes_a_cut_login_without_the_check(
     follows no scheme, and botocore passes its parse error on, with the user
     and the password up to that character. For the STS endpoint, botocore
     writes the head of the password as a port it could not read. Before
-    2.0.0, Polars writes back the head cut at a `://`, and for a `#` or an
-    STS endpoint its error names only the store.
+    2.0.0, Polars writes back the head cut at a `://` or in an STS endpoint,
+    and for a `#` its error names only the store.
     """
     answers = _in_a_child(case, tmp_path, refusing_store, control=True)
 
