@@ -8362,6 +8362,7 @@ class TestEnvironmentUrlLogins:
             "NO_PROXY": "a,b",
             "AWS_ENDPOINT_URL": "https://minio.internal",
             "VD_NOTE": "ab:Q7proxypass@proxy.internal:3128",
+            "VD_EMPTY_LOGIN": "https://@minio.internal/bucket",
         }
 
         assert mcp_server._environment_values(environ) == set()

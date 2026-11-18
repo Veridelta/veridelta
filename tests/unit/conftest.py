@@ -15,12 +15,17 @@ def _no_url_logins(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unset each variable that holds a URL login, whatever its name.
 
     The MCP server masks a URL login from any variable in every answer, so a
-    variable on the machine the suite runs on, such as a Git setting or a
-    proxy with a login on a CI runner, would change what a test sees.
+    variable on the machine the suite runs on, such as a Git setting in
+    `GIT_CONFIG_VALUE_2` or a proxy with a login on a CI runner, would change
+    what a test sees. Git refuses to run when a `GIT_CONFIG_VALUE_n` that
+    `GIT_CONFIG_COUNT` counts is unset, so the count goes too, and Git then
+    reads none of those settings.
     """
     for name, value in list(os.environ.items()):
         if mcp_server._url_login_values(name, value):
             monkeypatch.delenv(name)
+            if name.upper().startswith("GIT_CONFIG_VALUE_"):
+                monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
 
 
 @pytest.fixture(autouse=True)
