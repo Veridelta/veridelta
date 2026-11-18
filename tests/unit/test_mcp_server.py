@@ -9326,31 +9326,50 @@ class TestEnvironmentEndpoints:
 
         _describe_read(tmp_path, source, read)
 
+    def test_it_reads_an_https_location_whatever_the_environment_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file at an https location is read, whatever endpoint the environment names.
+
+        Polars reads such a file with its own HTTP client, at the host the
+        location names, and a probe found it takes no endpoint from the
+        environment or from the AWS profile.
+        """
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        config.write_text("[default]\nendpoint_url = http://x.example\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        for name in mcp_server._ENVIRONMENT_ENDPOINTS:
+            monkeypatch.setenv(name, "http://x.example")
+        monkeypatch.setenv(mcp_server._EMULATOR_SWITCH, "true")
+
+        _describe_read(tmp_path, "  path: https://minio.internal/a.csv\n", read)
+
     @pytest.mark.parametrize(
         ("source", "name", "store"),
         [
             pytest.param(
                 "  type: iceberg\n  table_uri: s3://lake/t/metadata/v1.metadata.json\n",
                 "AWS_ENDPOINT_URL",
-                "an object store",
+                mcp_server._ANY_STORE_NAME,
                 id="iceberg",
             ),
             pytest.param(
                 "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n",
                 "CLOUD_STORAGE_EMULATOR_ENDPOINT",
-                "an object store",
+                mcp_server._ANY_STORE_NAME,
                 id="iceberg-gcs",
             ),
             pytest.param(
                 "  type: iceberg\n  table_uri: t/metadata/v1.metadata.json\n",
                 "CLOUD_STORAGE_TESTBENCH_ENDPOINT",
-                "an object store",
+                mcp_server._ANY_STORE_NAME,
                 id="iceberg-here",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: hdfs://h/t\n",
                 "AZURE_ENDPOINT",
-                "an object store",
+                mcp_server._ANY_STORE_NAME,
                 id="hdfs",
             ),
             pytest.param(
@@ -9402,7 +9421,7 @@ class TestEnvironmentEndpoints:
             tmp_path, "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n"
         )
 
-        assert message.startswith("The source side reads an object store, and the server's")
+        assert message.startswith(f"The source side reads {mcp_server._ANY_STORE_NAME}, and the")
         assert f"variable {name} names its endpoint with no scheme" in message
         assert "minio.internal" not in message
         read.assert_not_called()

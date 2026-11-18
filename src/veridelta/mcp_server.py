@@ -2296,8 +2296,16 @@ _STORE_SCHEMES: Final[Mapping[str, frozenset[str]]] = {
     **dict.fromkeys(("s3", "s3a", "s3n"), frozenset({"s3"})),
     **dict.fromkeys(("az", "azure", "abfs", "abfss", "adl", "wasb", "wasbs"), frozenset({"azure"})),
     **dict.fromkeys(("gs", "gcs"), frozenset({"gcs"})),
+    **dict.fromkeys(("http", "https"), frozenset[str]()),
 }
-"""The stores a location's scheme, in lowercase, reaches."""
+"""The stores a location's scheme, in lowercase, reaches.
+
+An `http` or `https` location reaches none. Polars reads one with its own
+HTTP client, at the host the location names, and deltalake knows neither
+scheme. In a probe of Polars 1.39.3 and 2.1.0 and deltalake 1.6.6, no read
+of such a location sent a request to a store that every variable in
+`_ENVIRONMENT_ENDPOINTS` and a profile's `endpoint_url` named, even at a host
+such as `acct.blob.core.windows.net` or `lake.s3.amazonaws.com`."""
 
 _STORE_NAMES: Final[Mapping[str, str]] = {
     "s3": "S3",
@@ -2307,6 +2315,9 @@ _STORE_NAMES: Final[Mapping[str, str]] = {
     "motherduck": "MotherDuck",
 }
 """How a refusal names each store."""
+
+_ANY_STORE_NAME: Final = "a location the server cannot tie to one object store"
+"""How a refusal names the stores of `_ANY_STORE`, which the side's location does not tell."""
 
 _PROFILE_SUBJECT: Final = (
     "the endpoint_url of the AWS profile the server's environment selects, in "
@@ -2321,9 +2332,10 @@ def _store(config: SourceRef) -> frozenset[str]:
     A BigQuery side reads BigQuery, and a MotherDuck side MotherDuck. An
     Iceberg table names every object store, wherever its metadata lies, since
     the metadata, not the table's own location, names the files a scan opens.
-    A location's scheme names its store, matched in ASCII. Any other location
-    on another machine, such as `hdfs`, `opendal+s3`, or `https`, names every
-    object store, since the server cannot tell which a reader takes it to.
+    A location's scheme names its store, matched in ASCII, and an `http` or
+    `https` location names none, as `_STORE_SCHEMES` says. Any other location
+    on another machine, such as `hdfs` or `opendal+s3`, names every object
+    store, since the server cannot tell which a reader takes it to.
     A database, a Snowflake, a Databricks, or a local side names none.
     """
     if isinstance(config, BigQueryConfig):
@@ -2391,7 +2403,7 @@ def _refuse_environment_endpoints(
     families = _store(config)
     if not families:
         return
-    store = "an object store" if families == _ANY_STORE else _STORE_NAMES[min(families)]
+    store = _ANY_STORE_NAME if families == _ANY_STORE else _STORE_NAMES[min(families)]
     for name in sorted(environ):
         value = environ[name]
         if value:
