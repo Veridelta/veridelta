@@ -6645,6 +6645,58 @@ class TestEnvironmentReferences:
                 id="short-password",
             ),
             pytest.param(
+                "  type: snowflake\n  account: xy12345\n  user: ${KEY}\n"
+                "  password: Q7longpass\n  warehouse: WH\n  database: DB\n"
+                "  schema_name: PUBLIC\n  table: ORDERS\n",
+                {"KEY": "bob"},
+                "the value of ${KEY} in source -> user must be at least 4 characters",
+                id="short-snowflake-user",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://${KEY}:${PW}@db.internal/sales"\n'
+                "  table: orders\n",
+                {"KEY": "sa", "PW": "Q7longpass"},
+                "the value of ${KEY} in source -> uri must be at least 4 characters",
+                id="short-uri-user",
+            ),
+            pytest.param(
+                "  path: s3://lake/a.csv\n"
+                "  options: {storage_options: {aws_access_key_id: '${KEY}'}}\n",
+                {"KEY": "kQz"},
+                "the value of ${KEY} in source -> options -> storage_options -> "
+                "aws_access_key_id must be at least 4 characters",
+                id="short-access-key-id",
+            ),
+            pytest.param(
+                "  path: s3://lake/a.csv\n"
+                "  options: {storage_options: {azure_tenant_id: '${KEY}'}}\n",
+                {"KEY": "ab"},
+                "the value of ${KEY} in source -> options -> storage_options -> "
+                "azure_tenant_id must be at least 4 characters",
+                id="short-tenant-id",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token="'${KEY}'"),
+                {"KEY": "sv="},
+                "the value of ${KEY} in source -> storage_options -> adls.sas-token must be "
+                "at least 4 characters",
+                id="short-sas",
+            ),
+            *(
+                pytest.param(
+                    _ICEBERG_SAS.format(token="'${KEY}'"),
+                    {"KEY": value},
+                    "the value of ${KEY} in source -> storage_options -> adls.sas-token must be "
+                    "an Azure SAS token whose sig holds at least 4 characters once decoded",
+                    id=f"sas-with-{name}-signature",
+                )
+                for name, value in (
+                    ("a-short", "sv=2022-11-02&sig=ab"),
+                    ("an-empty", "sv=2022-11-02&sig="),
+                    ("an-encoded-short", "sv=2022-11-02&sig=%41%42"),
+                )
+            ),
+            pytest.param(
                 "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
                 "  table: orders\n  password: ${KEY}\n",
                 {"KEY": "Hunter2\udcffSecretPass"},
@@ -6796,7 +6848,8 @@ class TestEnvironmentReferences:
         else:
             assert result.is_error is True
         assert f"On veridelta mcp, {refusal}" in shown
-        for value in environment.values():
+        # A value of 1 to 3 characters is ordinary text, such as `sa` in `message`.
+        for value in (value for value in environment.values() if len(value) >= 4):
             assert not _holds_a_form(shown, value)
         for mock in engine_calls:
             mock.assert_not_called()
@@ -7016,17 +7069,17 @@ class TestEnvironmentReferences:
         assert result.structured_content is not None
         assert result.structured_content["valid"] is True
 
-    def test_it_takes_a_short_login_and_leaves_it_unmasked(
+    def test_it_masks_a_login_of_four_characters(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
-        """Ensure a login name of 3 characters loads, and is too short to mask.
+        """Ensure a login name of 4 characters, the shortest one taken, loads and is masked.
 
-        A login name is an identifier a service may echo, not a secret, and a
-        mask that short would hide ordinary text in every answer.
+        A service may echo a login name, so the server takes only one long
+        enough to mask.
         """
-        monkeypatch.setenv("KID", "kQz")
+        monkeypatch.setenv("KID", "kQz7")
         mocker.patch.object(
-            DiffEngine, "read_schema", side_effect=ConfigError("The access key id kQz is unknown.")
+            DiffEngine, "read_schema", side_effect=ConfigError("The access key id kQz7 is unknown.")
         )
         _with_source(
             tmp_path,
@@ -7041,7 +7094,58 @@ class TestEnvironmentReferences:
 
         assert checked.structured_content is not None
         assert checked.structured_content["valid"] is True
-        assert "The access key id kQz is unknown." in _text(described)
+        assert "***" in _text(described)
+        assert "kQz7" not in _shown(described)
+
+    @pytest.mark.parametrize(
+        ("source", "short"),
+        [
+            pytest.param(
+                "  type: snowflake\n  account: xy12345\n  user: ${KEY}\n"
+                "  password: Q7longpass\n  warehouse: WH\n  database: DB\n"
+                "  schema_name: PUBLIC\n  table: ORDERS\n",
+                True,
+                id="snowflake-user",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://${KEY}:Q7longpass@db.internal/sales"\n'
+                "  table: orders\n",
+                True,
+                id="uri-user",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+                "  table: orders\n  password: ${KEY}\n",
+                False,
+                id="password",
+            ),
+        ],
+    )
+    def test_it_tells_to_write_a_short_login_in_the_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        short: bool,
+    ) -> None:
+        """Ensure a login of 1 to 3 characters is refused with a hint to write it in the file.
+
+        A login that short is no secret, so the file can hold it. A password
+        cannot move into the file, so its refusal gives no such hint. No side
+        is read.
+        """
+        monkeypatch.setenv("KEY", "sa")
+        read_schema = mocker.patch.object(DiffEngine, "read_schema")
+        _with_source(tmp_path, source)
+        settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=_REFERENCE_HOSTS)
+
+        result = _call(settings, {"path": "veridelta.yaml", "side": "source"}, "describe_schema")
+
+        assert result.is_error is True
+        assert "must be at least 4 characters" in _text(result)
+        assert ("write it in the file in place of ${KEY}" in _text(result)) is short
+        read_schema.assert_not_called()
 
     def test_it_masks_a_snowflake_user_a_driver_writes_in_lowercase(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -7541,6 +7645,9 @@ _UNMASKABLE = [
     pytest.param("AZURE_STORAGE_SAS_TOKEN", "foo=1", id="sas"),
     pytest.param("AWS_SSE_CUSTOMER_KEY_BASE64", "QUJD=", id="base64-not-canonical"),
     pytest.param("AWS_SECRET_ACCESS_KEY", "abc\udcffdef", id="outside-utf-8"),
+    pytest.param("AWS_ACCESS_KEY_ID", "kQz", id="short-login"),
+    pytest.param("AZURE_TENANT_ID", "ab", id="short-tenant"),
+    pytest.param("AZURE_STORAGE_SAS_TOKEN", "sv=", id="short-sas"),
 ]
 """A reader's credential variable, each with a value of a shape the server cannot mask."""
 
@@ -7645,6 +7752,25 @@ class TestEnvironmentCredentials:
 
         message = str(error.value).replace(name, "")
         assert not any(value[i : i + 3] in message for i in range(len(value) - 2))
+
+    def test_it_will_not_start_on_a_sas_signature_too_short_to_mask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a SAS token whose `sig` is too short to mask stops the server, naming the variable.
+
+        The server masks the `sig` on its own, as the Azure SDK writes a
+        token's parameters back sorted, so a short one would go unmasked.
+        """
+        monkeypatch.setenv("AZURE_STORAGE_SAS_TOKEN", "sv=2024-01-01&sig=ab")
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert "the environment variable AZURE_STORAGE_SAS_TOKEN must be" in message
+        assert "whose sig holds at least 4" in message
+        assert "2024-01-01" not in message
+        assert "=ab" not in message
 
     def test_it_ignores_an_empty_or_unlisted_variable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -8049,6 +8175,262 @@ class TestEnvironmentCredentials:
 
         assert "ConnectorError: <Token-0>***</Token-0>" in _text(result)
         assert "derivedtoken" not in _shown(result)
+
+
+def _basic(login: bytes) -> str:
+    """Write a login as the Basic credential a proxy receives, in base64."""
+    return base64.b64encode(login).decode()
+
+
+_URL_LOGIN_VALUES = [
+    pytest.param(
+        "AWS_ENDPOINT_URL",
+        "https://svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="aws-endpoint",
+    ),
+    pytest.param(
+        "AZURE_STORAGE_ENDPOINT",
+        "https://svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="azure-endpoint",
+    ),
+    pytest.param(
+        "HTTPS_PROXY",
+        "http://ab:Q7proxypass@proxy.internal:3128",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="proxy-with-a-short-user",
+    ),
+    pytest.param(
+        "https_proxy",
+        "http://ab:Q7proxypass@proxy.internal:3128",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="proxy-in-lowercase",
+    ),
+    pytest.param(
+        "ALL_PROXY",
+        "socks5h://ab:Q7proxypass@proxy.internal:1080",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="socks-proxy",
+    ),
+    pytest.param(
+        "all_proxy",
+        "ab:Q7proxypass@proxy.internal:3128",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="proxy-with-no-scheme",
+    ),
+    pytest.param(
+        "VD_SOME_URL",
+        "https://svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="any-variable",
+    ),
+]
+"""A variable that holds a URL login, with the login and its password as written."""
+
+_ODD_LOGINS = [
+    pytest.param("X", "http://a@b:c@d@host/x", id="at-signs-in-the-login"),
+    pytest.param(
+        "HTTPS_PROXY", "http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128", id="domain-and-space"
+    ),
+    pytest.param(
+        "X",
+        "https://u:tok3n%40x@pypi.internal/simple https://v:Other9pw@b/simple",
+        id="two-urls",
+    ),
+    pytest.param("all_proxy", "http://u:p%ffass@h", id="password-outside-utf-8"),
+    pytest.param("X", "http://u:p@h", id="short-login"),
+    pytest.param("X", "http://u@h", id="short-user-alone"),
+]
+"""Variables whose URL login a parser splits in a way that is easy to get wrong."""
+
+
+class TestEnvironmentUrlLogins:
+    """Validate the masking of each URL login in the server's environment.
+
+    A reader writes an endpoint back whole in an error, a client writes back a
+    proxy URL it cannot parse, and a proxy receives the login as a Basic
+    credential, so the server masks each such form, from any variable.
+    """
+
+    @pytest.mark.parametrize(("name", "value", "login", "password"), _URL_LOGIN_VALUES)
+    def test_it_masks_each_url_login_in_the_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        engine_calls: list[MagicMock],
+        name: str,
+        value: str,
+        login: str,
+        password: str,
+    ) -> None:
+        """Ensure each form of a URL login a reader or a proxy can repeat is masked, in any case.
+
+        The side is a local file, and each engine call fails with an echo of
+        the login, as a reader, a client, and a proxy write it.
+        """
+        monkeypatch.setenv(name, value)
+        url = value if "://" in value else f"http://{value}"
+        user, _, _ = login.partition(":")
+        decoded = unquote(password)
+        basic = _basic(unquote(user).encode() + b":" + decoded.encode())
+        echo = " ".join(
+            (
+                f"Error performing GET {url}/bkt/a.parquet?X-Amz-Signature=abc",
+                f"Failed to parse: {value}",
+                f"http://{value}",
+                decoded,
+                quote(decoded, safe=""),
+                f"Proxy-Authorization: Basic {basic}",
+            )
+        )
+        for mock in engine_calls:
+            mock.side_effect = ConnectorError(f"{echo} {echo.upper()}", quotes_data=True)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _with_source(tmp_path, "  path: a.csv\n")
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+                await client.call_tool("run_comparison", {"path": "veridelta.yaml"}),
+                await client.call_tool(
+                    "validate_config", {"path": "veridelta.yaml", "schemas": True}
+                ),
+            ]
+
+        host = value.rpartition("@")[2]
+        for result in _with_client(settings, work):
+            shown = _shown(result)
+            folded = shown.casefold()
+            for form in (f"{login}@{host}", f"{login}@", password, decoded, basic):
+                assert form.casefold() not in folded, form
+            assert quote(decoded, safe="").casefold() not in folded
+            assert "***" in shown
+            assert "://" in shown
+            assert "x-amz-signature" not in folded
+
+    def test_it_masks_no_user_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a URL login's user, and a column of 1 to 3 characters, come back as written.
+
+        No reader writes a user without the rest of its login, and masking a
+        user such as `admin` would hide the word in every answer.
+        """
+        monkeypatch.setenv("HTTPS_PROXY", "http://svc-reader:Q7proxypass@proxy.internal:3128")
+        (tmp_path / "a.csv").write_text("id,ab\n1,2\n", encoding="utf-8")
+        _with_source(tmp_path, "  path: a.csv\n")
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        described = _call(
+            settings, {"path": "veridelta.yaml", "side": "source"}, tool="describe_schema"
+        )
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError("access denied for svc-reader", quotes_data=True),
+        )
+        failed = _call(
+            settings, {"path": "veridelta.yaml", "side": "source"}, tool="describe_schema"
+        )
+
+        assert described.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", "ab": "Int64"},
+        }
+        assert "ConnectorError: access denied for svc-reader" in _text(failed)
+
+    def test_it_records_nothing_without_a_url_login(self) -> None:
+        """Ensure a URL with no login, an email address, and a login outside a proxy go unrecorded.
+
+        A value with no `://` holds a login only in a proxy variable, which a
+        client reads as HTTP.
+        """
+        environ = {
+            "HTTPS_PROXY": "http://proxy.internal:3128",
+            "GIT_AUTHOR_EMAIL": "ann@x.com",
+            "NO_PROXY": "a,b",
+            "AWS_ENDPOINT_URL": "https://minio.internal",
+            "VD_NOTE": "ab:Q7proxypass@proxy.internal:3128",
+        }
+
+        assert mcp_server._environment_values(environ) == set()
+
+    def test_it_reads_each_login_as_a_url_parser_splits_it(self) -> None:
+        """Ensure a login runs to the last `@` before the path, and each short form is dropped."""
+        assert mcp_server._url_login_values("X", "http://a@b:c@d@host/x") == {
+            "a@b:c@d@host",
+            "a@b:c@d@",
+            _basic(b"a@b:c@d"),
+        }
+        assert {
+            "DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128",
+            "p@ss w0rd!",
+            _basic(b"DOMAIN\\jdoe:p@ss w0rd!"),
+        } <= mcp_server._url_login_values(
+            "HTTPS_PROXY", "http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128"
+        )
+        assert {
+            "u:tok3n%40x@pypi.internal",
+            "tok3n%40x",
+            "tok3n@x",
+            "v:Other9pw@b",
+            "Other9pw",
+        } <= mcp_server._url_login_values(
+            "X", "https://u:tok3n%40x@pypi.internal/simple https://v:Other9pw@b/simple"
+        )
+        assert mcp_server._url_login_values("X", "http://u:p@h") == {
+            "u:p@h",
+            "u:p@",
+            _basic(b"u:p"),
+        }
+        assert mcp_server._url_login_values("X", "http://u@h") == {_basic(b"u:")}
+
+    def test_it_builds_a_mask_for_a_password_outside_utf_8(self) -> None:
+        """Ensure a password whose bytes are no UTF-8 once decoded still gives a mask."""
+        values = mcp_server._url_login_values("all_proxy", "http://u:p%ffass@h")
+        pattern = mcp_server._mask_pattern(frozenset(values))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+
+        assert _basic(b"u:p\xffass") in values
+        assert pattern is not None
+        assert pattern.sub("***", "proxy said p%FFass") == "proxy said ***"
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            *(pytest.param(*case.values[:2], id=case.id) for case in _URL_LOGIN_VALUES),
+            *_ODD_LOGINS,
+        ],
+    )
+    def test_no_recorded_form_holds_a_scheme(self, name: str, value: str) -> None:
+        """Ensure no recorded form holds `://`, which `without_queries` finds a URL by.
+
+        A mask that hid a `://` would keep each URL's query in the answer.
+        """
+        assert not any("://" in form for form in mcp_server._url_login_values(name, value))
+
+    @pytest.mark.parametrize(
+        "value",
+        ["http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128", "http://u:@proxy:1"],
+        ids=["login-with-odd-characters", "empty-password"],
+    )
+    def test_it_starts_whatever_shape_a_url_login_has(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        """Ensure a URL login is never refused, since any variable can hold a URL."""
+        monkeypatch.setenv("HTTPS_PROXY", value)
+
+        build_server(Settings((tmp_path,)))
 
 
 class TestReadRows:

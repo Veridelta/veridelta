@@ -39,7 +39,8 @@ Twelve things change:
     - A `${NAME}` in a `path` or a `table_uri`, such as `s3://${LAKE_BUCKET}/...`, in a Snowflake `account`, `role`, or `private_key_path`, in a reader option, or in a `query`.
     - A whole `uri: ${DATABASE_URL}`, or a host, port, database, or query in a `uri` from the environment.
     - A `${NAME}` with other text around it in a credential setting, such as a SAS token written as `"?${SAS}"`.
-    - A `password`, `private_key_passphrase`, token, account key, or `uri` password of 1 to 3 characters.
+    - A value of 1 to 3 characters in any credential setting: a `password`, a token, an account key, a Snowflake `user`, an access key id, a client id, a tenant id, a SAS token, or a `uri` user or password. Write a login this short in the file.
+    - A SAS token whose `sig` holds fewer than 4 characters once decoded, or none.
     - A `uri` user or password with a character other than a letter, a digit, `.`, `_`, `~`, and `-`. That refuses `!`, `$`, and `*` too, which need no encoding. Move such a password into the side's `password` setting.
     - A `uri` user of more than 32 characters. Write it in the file, or put a token in the side's `password` setting.
     - A Snowflake `user`, an access key id, a client id, or a tenant id with a character other than a letter, a digit, `.`, `_`, `@`, and `-`, or that does not start with a letter or a digit.
@@ -51,7 +52,7 @@ Twelve things change:
 
     `veridelta.mcp_server.environment_values` is removed, since the server now masks the values it expanded as it loaded the file. `veridelta.mcp_server.check_configuration` no longer takes `secrets`. A direct Python call to it masks nothing, since the server masks values only inside a tool call.
 - `veridelta validate --allow-missing-env` now warns about an unset `${NAME}` that comes before a malformed reference, such as `${}`, in the same `source` or `target` block. Before, it printed only the error. `load_config` with `unset_env` adds that name to the list before it raises, too. `veridelta run` is unchanged.
-- `veridelta mcp` does not start when a credential variable a reader takes from its environment lacks the shape a `${NAME}` in the same setting needs. The error names the variable. That refuses a dummy of 1 to 3 characters, a secret key with a space or a `\r`, a legacy Azure client secret with `[` or `@`, an account key that is not base64 as an encoder writes it, a SAS token with an unknown parameter, and a byte outside UTF-8. Correct the value, or leave the variable out of the `env` the host starts the server with. [The MCP server](agents.md#mcp-server) lists the variables.
+- `veridelta mcp` does not start when a credential variable a reader takes from its environment lacks the shape a `${NAME}` in the same setting needs. The error names the variable. That refuses a dummy of 1 to 3 characters, such as `AWS_ACCESS_KEY_ID=foo`, a SAS token whose `sig` holds fewer than 4 characters, a secret key with a space or a `\r`, a legacy Azure client secret with `[` or `@`, an account key that is not base64 as an encoder writes it, a SAS token with an unknown parameter, and a byte outside UTF-8. Correct the value, or leave the variable out of the `env` the host starts the server with. [The MCP server](agents.md#mcp-server) lists the variables.
 
 ## 0.42.0
 

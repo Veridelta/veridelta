@@ -47,7 +47,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import SplitResult, parse_qsl, quote, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qsl, quote, unquote, unquote_to_bytes, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -313,7 +313,9 @@ _LOGIN_OPTIONS: Final = frozenset(
 
 A service can echo such an id, as AWS does in a signature error. A value
 in `_LOGIN_NAME`'s shape reads the same raw, encoded, and decoded, so an
-echo is the text the mask matches, in any case."""
+echo is the text the mask matches, in any case. A login of 1 to 3
+characters is refused, since a service writes it back and the mask cannot
+hide one that short."""
 
 _SAS_OPTIONS: Final = frozenset(
     {"adls.sas-token", "azure_storage_sas_token", "azure_storage_sas_key", "sas_token", "sas_key"}
@@ -324,7 +326,8 @@ The Azure SDK quotes a signed request's URL, with the token's parameters
 sorted. A token in the shape `_is_sas_token` checks holds only parameters
 the mask finds one by one: the server masks the whole token, and the
 `sig` parameter as written, decoded, and encoded, and leaves out each
-URL's query."""
+URL's query. The token, and its `sig` once decoded, need 4 or more
+characters each."""
 
 _SWITCH_OPTIONS: Final = frozenset({"aws_skip_signature", "skip_signature", "s3.anonymous"})
 """Storage option keys, in lowercase, that turn signing off."""
@@ -449,7 +452,12 @@ _SHORTEST_MASKED: Final = 4
 """The fewest characters an environment value needs to be masked in a tool's answer.
 
 A shorter value, such as a flag or a small number, would mask ordinary text
-throughout the answer, and holds no secret worth the loss."""
+throughout the answer, and holds no secret worth the loss. So every credential
+slot refuses a value below it. A service, or `DatabaseConfig.redacted_uri`,
+writes a login back, so no slot is exempt."""
+
+_TOO_SHORT: Final = f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
+"""What a credential of 1 to 3 characters needs, in every slot."""
 
 _R = TypeVar("_R")
 
@@ -2178,7 +2186,9 @@ masks it in its own errors, so no reader echoes one. A token still keeps
 `_TOKEN`'s shape, as a storage option's does, which costs a real token
 nothing. Snowflake can echo the `user`, a login name whose shape
 `_LOGIN_NAME` holds to text that reads the same raw, encoded, and decoded,
-so an echo is the text the mask matches."""
+so an echo is the text the mask matches. A login of 1 to 3 characters is
+refused, since PostgreSQL and `redacted_uri` write the user back, and the
+mask cannot hide one that short."""
 
 _OPTION_SLOTS: Final[tuple[tuple[frozenset[str], _Slot], ...]] = (
     (_SECRET_OPTIONS, "token"),
@@ -2282,6 +2292,61 @@ _TOKEN_FILE_VARIABLES: Final = (
     "AZURE_FEDERATED_TOKEN_FILE",
 )
 """The environment variables that name a file a reader reads a token from."""
+
+_LOGIN_IN_URL: Final = re.compile(r"://([^/?#]*)@([^/?#\s]*)")
+"""A URL's login and the host after it.
+
+The login runs to the last `@` before the first `/`, `?`, or `#`, as urlsplit, object_store,
+and botocore split it, so it can hold a space. The match starts only at a `://`, so a long
+value is read in linear time, and no recorded form holds the `://` that `without_queries`
+finds a URL by."""
+
+_BARE_PROXY_LOGIN: Final = re.compile(r"([^/?#]*)@([^/?#\s]*)")
+"""A proxy written with no scheme, as in user:pass@proxy:3128, which reqwest, curl, and
+Python read as HTTP."""
+
+_PROXY_SUFFIX: Final = "_proxy"
+"""The end of each name Python reads a proxy from, in any case, such as HTTPS_PROXY or all_proxy."""
+
+
+def _url_login_values(name: str, value: str) -> set[str]:
+    """Return what a reader or a proxy can repeat of each URL login in a variable, to be masked.
+
+    object_store, behind Polars and deltalake, and botocore write an endpoint back whole, as
+    written. requests, botocore, and google-auth write a proxy URL they cannot parse back whole,
+    and botocore writes a socks proxy as http:// and the value. reqwest sends a proxy's login,
+    decoded, as a Basic Proxy-Authorization header. So each login is recorded with the host
+    after it, followed by its `@`, its password as written and decoded, and that Basic
+    credential. The user alone is never recorded, since no probed reader writes it without the
+    rest, and a user such as `admin` would hide the word in every answer. Nothing is refused,
+    since any variable can hold a URL. A value with no `://` is read as a login only in a
+    proxy variable.
+    """
+    logins = [(found[1], found[2]) for found in _LOGIN_IN_URL.finditer(value)]
+    if not logins and name.lower().endswith(_PROXY_SUFFIX):
+        bare = _BARE_PROXY_LOGIN.match(value.strip())
+        logins = [] if bare is None else [(bare[1], bare[2])]
+    values: set[str] = set()
+    for login, host in logins:
+        if not login:
+            continue
+        user, _, password = login.partition(":")
+        raw = (
+            unquote_to_bytes(user.encode(errors="surrogateescape"))
+            + b":"
+            + unquote_to_bytes(password.encode(errors="surrogateescape"))
+        )
+        values.update(
+            (
+                f"{login}@{host}",
+                f"{login}@",
+                password,
+                unquote(password, errors="surrogateescape"),
+                base64.b64encode(raw).decode(),
+            )
+        )
+    return {form for form in values if len(form) >= _SHORTEST_MASKED}
+
 
 _LONGEST_TOKEN_FILE: Final = 64 * 1024
 """The most bytes of a token file the server reads. A larger file holds no token."""
@@ -2441,8 +2506,8 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
             "text in UTF-8, since a driver cannot send other bytes as text, and a reader can "
             "repeat them in forms no mask matches"
         )
-    if slot in ("secret", "token", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
-        return f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
+    if len(value) < _SHORTEST_MASKED:
+        return _TOO_SHORT
     if slot == "token" and _TOKEN.fullmatch(value) is None:
         return (
             "a key or a token of letters, digits, '+', '/', '=', '.', '_', '~', and '-' only, "
@@ -2461,6 +2526,11 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
         return (
             "an Azure SAS token: name=value parameters joined by '&', such as sv=...&sig=..., "
             "each named once"
+        )
+    if slot == "sas" and _short_signature(value):
+        return (
+            f"an Azure SAS token whose sig holds at least {_SHORTEST_MASKED} characters once "
+            "decoded, since the server masks the sig on its own and a shorter one cannot be masked"
         )
     return None
 
@@ -2498,10 +2568,12 @@ def _check_reference(reference: Reference, match: re.Match[str]) -> None:
         )
     needed = None if reference.value is None else _shape_needed(slot, reference.value)
     if needed is not None:
-        raise ConfigError(
-            f"On veridelta mcp, the value of {named} in {where} must be {needed}.",
-            locations=locations,
-        )
+        refusal = f"On veridelta mcp, the value of {named} in {where} must be {needed}."
+        if needed == _TOO_SHORT and slot in ("login", "uri user"):
+            refusal += (
+                f" A login this short is no secret, so write it in the file in place of {named}."
+            )
+        raise ConfigError(refusal, locations=locations)
 
 
 _RECORDED: ContextVar[set[str] | None] = ContextVar("_RECORDED", default=None)
@@ -2544,7 +2616,8 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     `AZURE_Client_Secret` is masked and checked as object_store reads it. A
     Google key is recorded whole, and each field of it that a service can echo
     on its own too. Its JSON is never refused, since object_store's errors for
-    it quote none of its text.
+    it quote none of its text. Each URL login in any variable is recorded by
+    `_url_login_values`, and never refused.
 
     Raises:
         ConfigError: If a variable's value lacks its slot's shape. The message
@@ -2554,6 +2627,7 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     for name, value in environ.items():
         if not value:
             continue
+        values.update(_url_login_values(name, value))
         read_as = _name_as_read(name)
         if read_as == _KEY_JSON_VARIABLE:
             values.update(_key_json_values(value))
@@ -3030,6 +3104,15 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
         for name, _, written in parameters
         if name == "sig"
         for form in (written, unquote(written), quote(unquote(written), safe=""))
+    )
+
+
+def _short_signature(value: str) -> bool:
+    """Say whether a SAS token's `sig` holds fewer than `_SHORTEST_MASKED` characters once decoded, or none."""
+    parameters = (part.partition("=") for part in value.removeprefix("?").split("&"))
+    return any(
+        name == "sig" and len(unquote(written)) < _SHORTEST_MASKED
+        for name, _, written in parameters
     )
 
 

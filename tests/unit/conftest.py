@@ -11,6 +11,19 @@ from veridelta import mcp_server
 
 
 @pytest.fixture(autouse=True)
+def _no_url_logins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset each variable that holds a URL login, whatever its name.
+
+    The MCP server masks a URL login from any variable in every answer, so a
+    variable on the machine the suite runs on, such as a Git setting or a
+    proxy with a login on a CI runner, would change what a test sees.
+    """
+    for name, value in list(os.environ.items()):
+        if mcp_server._url_login_values(name, value):
+            monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
 def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unset each credential variable a reader takes from the MCP server's environment, in any spelling.
 
