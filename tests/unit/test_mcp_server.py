@@ -8367,6 +8367,20 @@ _URL_LOGIN_VALUES = [
         "Q7pa%2Bss",
         id="any-variable",
     ),
+    pytest.param(
+        "HTTPS_PROXY",
+        "//proxyuser9:Pr0xyPass9@proxy.internal:3128",
+        "proxyuser9:Pr0xyPass9",
+        "Pr0xyPass9",
+        id="scheme-relative-proxy",
+    ),
+    pytest.param(
+        "AWS_ENDPOINT_URL_STS",
+        " //svc-reader:Q7pa%2Bss@sts.internal:9000 ",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="scheme-relative-endpoint",
+    ),
 ]
 """A variable that holds a URL login, with the login and its password as written."""
 
@@ -8412,7 +8426,10 @@ class TestEnvironmentUrlLogins:
         the login, as a reader, a client, and a proxy write it.
         """
         monkeypatch.setenv(name, value)
-        url = value if "://" in value else f"http://{value}"
+        value = value.strip()
+        url = (
+            value if "://" in value else f"http:{value}" if value[:2] == "//" else f"http://{value}"
+        )
         user, _, _ = login.partition(":")
         decoded = unquote(password)
         basic = _basic(unquote(user).encode() + b":" + decoded.encode())
@@ -8498,6 +8515,9 @@ class TestEnvironmentUrlLogins:
             "AWS_ENDPOINT_URL": "https://minio.internal",
             "VD_NOTE": "ab:Q7proxypass@proxy.internal:3128",
             "VD_EMPTY_LOGIN": "https://@minio.internal/bucket",
+            "http_proxy": "//proxy.internal:3128",
+            "AWS_ENDPOINT_URL_STS": "//sts.internal/",
+            "VD_NO_AUTHORITY": "///a/b",
         }
 
         assert mcp_server._environment_values(environ) == set()
@@ -8531,6 +8551,13 @@ class TestEnvironmentUrlLogins:
             _basic(b"u:p"),
         }
         assert mcp_server._url_login_values("X", "http://u@h") == {_basic(b"u:")}
+        for name in ("HTTPS_PROXY", "AWS_ENDPOINT_URL_STS"):
+            assert mcp_server._url_login_values(name, " //u:pw12@h:1 ") == {
+                "u:pw12@h:1",
+                "u:pw12@",
+                "pw12",
+                _basic(b"u:pw12"),
+            }
 
     def test_it_builds_a_mask_for_a_password_outside_utf_8(self) -> None:
         """Ensure a password whose bytes are no UTF-8 once decoded still gives a mask."""
@@ -8564,16 +8591,24 @@ class TestEnvironmentUrlLogins:
             pytest.param("HTTPS_PROXY", "http://u:@proxy:1", id="empty-password"),
             pytest.param("HTTPS_PROXY", "http://u:Pr0x%2FyPass9@proxy:3128/", id="encoded-login"),
             pytest.param("HTTPS_PROXY", "http://proxy.internal:3128/a?b#c", id="proxy-with-a-path"),
-            pytest.param("VD_SOME_URL", "http://u:Pr0x/yPass9@h:1", id="cut-login-outside-a-proxy"),
+            pytest.param(
+                "HTTPS_PROXY", "//proxyuser9:Pr0xyPass9@proxy.internal:3128", id="scheme-relative"
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://u:Pr0xyPass9@a.internal/simple https://v:Other9pw@b.internal/simple",
+                id="two-urls-with-paths",
+            ),
+            pytest.param("VD_NOTE", "see notes/ann@x.com", id="no-url"),
         ],
     )
     def test_it_starts_whatever_shape_a_url_login_has(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
     ) -> None:
-        """Ensure a URL login is refused only in a proxy no client can use.
+        """Ensure a URL login is refused only where a client cuts it.
 
-        Any variable can hold a URL, and outside a proxy variable the server
-        cannot tell what reads it.
+        A scheme-relative proxy is one botocore and requests read as HTTP, and
+        a variable can hold several URLs, each with a path of its own.
         """
         monkeypatch.setenv(name, value)
 
@@ -8599,17 +8634,51 @@ class TestEnvironmentUrlLogins:
                 id="bare-with-a-scheme-cut",
             ),
             pytest.param("HTTP_PROXY", "9px://proxyuser9:Pr0x@yPass9@proxy:3128", id="no-scheme"),
+            pytest.param(
+                "HTTPS_PROXY", "//proxyuser9:Pr0x/yPass9@127.0.0.1:3128", id="scheme-relative-proxy"
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "https://proxyuser9:Pr0x/yPass9@127.0.0.1:9000",
+                id="sts-endpoint",
+            ),
+            pytest.param(
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                "http://proxyuser9:Pr0x?yPass9@127.0.0.1/creds",
+                id="container-credentials",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL", "http://proxyuser9:Pr0x#yPass9@127.0.0.1:9000", id="endpoint"
+            ),
+            pytest.param(
+                "AZURE_AUTHORITY_HOST",
+                " //proxyuser9:Pr0x\\yPass9@127.0.0.1 ",
+                id="scheme-relative-endpoint",
+            ),
+            pytest.param(
+                "VD_SOME_URL",
+                "https://proxyuser9:wJal+rXUtn/yPass9==@127.0.0.1:9000",
+                id="base64-password-in-any-variable",
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://127.0.0.1/simple https://proxyuser9:Pr0x/yPass9@127.0.0.1/simple",
+                id="second-url",
+            ),
+            pytest.param("VD_SOME_URL", "https://cdn.example/npm/pkg@3/x.js", id="at-in-a-path"),
         ],
     )
-    def test_it_will_not_start_on_a_proxy_login_no_client_can_parse(
+    def test_it_will_not_start_on_a_url_login_a_client_cuts(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
     ) -> None:
-        """Ensure a proxy login with an unencoded `/`, `?`, `#`, or backslash stops the server.
+        """Ensure a URL login with an unencoded `/`, `?`, `#`, or backslash stops the server, in any variable.
 
         urllib3 ends the authority at that character, and writes back the
         user and the head of the password, or takes a piece of the password
-        for the host, so no mask could match what comes back. The refusal
-        names the variable and holds no part of the login.
+        for the host, so no mask could match what comes back. botocore reads
+        an endpoint, such as `AWS_ENDPOINT_URL_STS`, as it reads a proxy. The
+        server cannot tell such a login from an `@` in a path, so it refuses
+        both. The refusal names the variable and holds no part of the login.
         """
         monkeypatch.setenv(name, value)
 

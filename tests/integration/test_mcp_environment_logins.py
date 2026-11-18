@@ -10,12 +10,16 @@ A proxy URL with a login, whose port no socket can open, is written back by
 the client that signs Polars in through an AWS profile. A proxy login with an
 unencoded `#`, or a `://` after a login written with no scheme, is cut where
 that client ends the URL's authority, so the server refuses to start on it.
+The same client reads the STS endpoint, which a login with an unencoded `/`
+holds the same way. A scheme-relative proxy or STS endpoint, which starts
+with `//`, keeps its login whole, and is masked.
 The configuration names no `${NAME}`. A control turns the server's record of its environment
 off, and shows each probe does echo the login.
 """
 
 import multiprocessing
 import os
+import socket
 import threading
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor
@@ -98,6 +102,21 @@ _SCHEME_CUT_PROXY_URL: Final = "proxyuser9:Pr0x://yPass9@127.0.0.1:99999"
 The text before the `://` is no scheme, so botocore puts `http://` before the
 value, and urllib3 ends the authority at the `/`."""
 
+_RELATIVE_PROXY_URL: Final = f"//{_PROXY_LOGIN}@127.0.0.1:99999"
+"""A scheme-relative proxy URL, which botocore and requests read as `http:` and the value."""
+
+_STS_LOGIN: Final = "stsuser9:Q7stsPass9"
+"""The login in the STS endpoint."""
+
+_STS_PASSWORD: Final = "Q7stsPass9"
+"""The password in the STS endpoint."""
+
+_CUT_STS_URL: Final = "http://stsuser9:Q7st/sPass9@127.0.0.1:{port}"
+"""An STS endpoint whose password holds an unencoded `/`, as a base64 secret can."""
+
+_RELATIVE_STS_URL: Final = f"//{_STS_LOGIN}@127.0.0.1:{{port}}"
+"""A scheme-relative STS endpoint, which botocore writes back whole when it cannot connect to it."""
+
 _KEY_ID: Final = "AKIAQ7ZX3LOGIN9READ"
 _SECRET_KEY: Final = "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCYx"
 _BASE_KEY_ID: Final = "AKIAQ7ZX3PROXY9BASE"
@@ -127,6 +146,16 @@ def _proxy(
 ) -> tuple[dict[str, str], str, str]:
     """Sign in through an AWS profile that assumes a role, through a proxy with a login."""
     del port
+    # The port is out of range, so no socket opens.
+    return _profile(folder, {"HTTPS_PROXY": url})
+
+
+def _profile(folder: Path, variables: dict[str, str]) -> tuple[dict[str, str], str, str]:
+    """Sign in through an AWS profile that assumes a role, with each of `variables` set too.
+
+    From 2.0.0 on, Polars assumes the role through botocore, which reads the
+    proxy and the STS endpoint.
+    """
     config = folder / "aws-config"
     config.write_text(
         "[profile reader]\nrole_arn = arn:aws:iam::123456789012:role/ledger-reader\n"
@@ -141,8 +170,7 @@ def _proxy(
             "AWS_SHARED_CREDENTIALS_FILE": str(folder / "no-credentials"),
             "AWS_PROFILE": "reader",
             "AWS_EC2_METADATA_DISABLED": "true",
-            # The port is out of range, so no socket opens.
-            "HTTPS_PROXY": url,
+            **variables,
         },
         "lake",
         "lake",
@@ -159,6 +187,28 @@ def _scheme_cut_proxy(folder: Path, port: int) -> tuple[dict[str, str], str, str
     return _proxy(folder, port, _SCHEME_CUT_PROXY_URL)
 
 
+def _relative_proxy(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
+    """Sign in as `_proxy` does, through a scheme-relative proxy with a login."""
+    return _proxy(folder, port, _RELATIVE_PROXY_URL)
+
+
+def _cut_sts(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
+    """Sign in through an AWS profile, at an STS endpoint whose login an unencoded `/` cuts."""
+    return _profile(folder, {"AWS_ENDPOINT_URL_STS": _CUT_STS_URL.format(port=port)})
+
+
+def _relative_sts(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
+    """Sign in through an AWS profile, at a scheme-relative STS endpoint with a login.
+
+    Nothing listens on the endpoint's port, so botocore cannot connect to it.
+    """
+    del port
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed = probe.getsockname()[1]
+    return _profile(folder, {"AWS_ENDPOINT_URL_STS": _RELATIVE_STS_URL.format(port=closed)})
+
+
 _TOOLS: list[tuple[str, dict[str, Any]]] = [
     ("describe_schema", {"side": "source"}),
     ("validate_config", {"schemas": True}),
@@ -171,6 +221,9 @@ _CASES: Final = {
     "proxy-login-polars": (_proxy, False),
     "cut-proxy-login-polars": (_cut_proxy, False),
     "scheme-cut-proxy-login-polars": (_scheme_cut_proxy, False),
+    "relative-proxy-login-polars": (_relative_proxy, False),
+    "cut-sts-login-polars": (_cut_sts, False),
+    "relative-sts-login-polars": (_relative_sts, False),
 }
 """Each case's environment and whether it reads a Delta Lake table, by name."""
 
@@ -281,42 +334,65 @@ def test_each_reader_echoes_the_endpoint_login_without_the_mask(
         assert f"{_LOGIN}@" in shown, shown
 
 
-def test_no_proxy_login_comes_back(tmp_path: Path, refusing_store: int) -> None:
-    """Ensure each answer holds no form of the proxy's login."""
-    for shown in _in_a_child("proxy-login-polars", tmp_path, refusing_store):
-        assert not _holds(shown, _PROXY_LOGIN), shown
-        assert not _holds(shown, _PROXY_PASSWORD), shown
+_SIGN_IN_CASES: Final = [
+    pytest.param("proxy-login-polars", _PROXY_LOGIN, _PROXY_PASSWORD, id="proxy"),
+    pytest.param(
+        "relative-proxy-login-polars", _PROXY_LOGIN, _PROXY_PASSWORD, id="scheme-relative-proxy"
+    ),
+    pytest.param("relative-sts-login-polars", _STS_LOGIN, _STS_PASSWORD, id="scheme-relative-sts"),
+]
+"""Each case of a login botocore reads as Polars signs in, with the login and its password."""
 
 
-def test_polars_echoes_the_proxy_login_without_the_mask(
-    tmp_path: Path, refusing_store: int
+@pytest.mark.parametrize(("case", "login", "password"), _SIGN_IN_CASES)
+def test_no_sign_in_login_comes_back(
+    tmp_path: Path, refusing_store: int, case: str, login: str, password: str
 ) -> None:
-    """Ensure Polars writes the proxy's login back exactly from 2.0.0 on, as the probe found.
+    """Ensure each answer holds no form of the proxy's or the STS endpoint's login."""
+    for shown in _in_a_child(case, tmp_path, refusing_store):
+        assert not shown.startswith("refused: "), shown
+        assert not _holds(shown, login), shown
+        assert not _holds(shown, password), shown
 
-    Before 2.0.0 its error names only the store, so the control holds no login.
+
+@pytest.mark.parametrize(("case", "login", "password"), _SIGN_IN_CASES)
+def test_polars_echoes_the_sign_in_login_without_the_mask(
+    tmp_path: Path, refusing_store: int, case: str, login: str, password: str
+) -> None:
+    """Ensure Polars writes the login back exactly from 2.0.0 on, as the probe found.
+
+    botocore writes a proxy it cannot reach back as `http:` and the value, and
+    an STS endpoint it cannot connect to back as written. Before 2.0.0 the
+    error names only the store, so the control holds no login.
     """
-    answers = _in_a_child("proxy-login-polars", tmp_path, refusing_store, control=True)
+    answers = _in_a_child(case, tmp_path, refusing_store, control=True)
 
     for shown in answers:
-        holds = _PROXY_LOGIN in shown and _PROXY_PASSWORD in shown
+        holds = login in shown and password in shown
         assert holds == _POLARS_ECHOES_PROXY, shown
 
 
-_CUT_CASES: Final = ["cut-proxy-login-polars", "scheme-cut-proxy-login-polars"]
-"""Each case of a proxy login that a client cuts."""
+_CUT_CASES: Final = [
+    pytest.param("cut-proxy-login-polars", "HTTPS_PROXY", "proxyuser9", "Pr0x", id="hash"),
+    pytest.param(
+        "scheme-cut-proxy-login-polars", "HTTPS_PROXY", "proxyuser9", "Pr0x", id="no-scheme"
+    ),
+    pytest.param("cut-sts-login-polars", "AWS_ENDPOINT_URL_STS", "stsuser9", "Q7st", id="sts"),
+]
+"""Each case of a login that a client cuts, with its variable, its user, and the head of its password."""
 
 
-@pytest.mark.parametrize("case", _CUT_CASES)
-def test_it_refuses_a_proxy_login_no_client_can_parse(
-    tmp_path: Path, refusing_store: int, case: str
+@pytest.mark.parametrize(("case", "variable", "user", "head"), _CUT_CASES)
+def test_it_refuses_a_url_login_a_client_cuts(
+    tmp_path: Path, refusing_store: int, case: str, variable: str, user: str, head: str
 ) -> None:
-    """Ensure a proxy login that a client cuts stops the server, naming only the variable."""
+    """Ensure a proxy or an STS login that a client cuts stops the server, naming only the variable."""
     (shown,) = _in_a_child(case, tmp_path, refusing_store)
 
     assert shown.startswith("refused: "), shown
-    assert "environment variable HTTPS_PROXY must hold no '@'" in shown
-    assert not _holds(shown, "proxyuser9"), shown
-    assert not _holds(shown, _PROXY_PASSWORD), shown
+    assert f"environment variable {variable} must hold no '@'" in shown
+    assert not _holds(shown, user), shown
+    assert not _holds(shown, head), shown
 
 
 @pytest.mark.parametrize(
@@ -326,17 +402,20 @@ def test_it_refuses_a_proxy_login_no_client_can_parse(
             "cut-proxy-login-polars", f"'{_PROXY_LOGIN}'", _POLARS_ECHOES_PROXY, id="hash"
         ),
         pytest.param("scheme-cut-proxy-login-polars", "'proxyuser9:Pr0x:'", True, id="no-scheme"),
+        pytest.param("cut-sts-login-polars", "'Q7st'", _POLARS_ECHOES_PROXY, id="sts"),
     ],
 )
-def test_polars_echoes_a_cut_proxy_login_without_the_check(
+def test_polars_echoes_a_cut_login_without_the_check(
     tmp_path: Path, refusing_store: int, case: str, head: str, echoes: bool
 ) -> None:
-    """Ensure Polars writes the head of a cut proxy login back, which no mask matches.
+    """Ensure Polars writes the head of a cut login back, which no mask matches.
 
     urllib3 ends the authority at the `#`, or at the `/` of a `://` that
     follows no scheme, and botocore passes its parse error on, with the user
-    and the password up to that character. Before 2.0.0, Polars writes back
-    the head cut at a `://`, and for a `#` its error names only the store.
+    and the password up to that character. For the STS endpoint, botocore
+    writes the head of the password as a port it could not read. Before
+    2.0.0, Polars writes back the head cut at a `://`, and for a `#` or an
+    STS endpoint its error names only the store.
     """
     answers = _in_a_child(case, tmp_path, refusing_store, control=True)
 

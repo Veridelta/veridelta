@@ -24,6 +24,7 @@ import functools
 import glob
 import importlib
 import inspect
+import itertools
 import json
 import logging
 import os
@@ -2374,9 +2375,11 @@ and botocore split it, so it can hold a space. The match starts only at a `://`,
 value is read in linear time, and no recorded form holds the `://` that `without_queries`
 finds a URL by."""
 
-_BARE_PROXY_LOGIN: Final = re.compile(r"([^/?#]*)@([^/?#\s]*)")
-"""A proxy written with no scheme, as in user:pass@proxy:3128, which reqwest, curl, and
-Python read as HTTP."""
+_LOGIN_AT_START: Final = re.compile(r"([^/?#]*)@([^/?#\s]*)")
+"""A login and the host after it, at the start of the text it is matched at.
+
+It reads a proxy written with no scheme, as in user:pass@proxy:3128, which reqwest, curl,
+and Python read as HTTP, and a scheme-relative URL after its leading `//`."""
 
 _PROXY_SUFFIX: Final = "_proxy"
 """The end of each name Python reads a proxy from, in any case, such as HTTPS_PROXY or all_proxy."""
@@ -2384,9 +2387,13 @@ _PROXY_SUFFIX: Final = "_proxy"
 _SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 """A URL's scheme and the `://` after it, as RFC 3986 and urllib3 read a scheme.
 
-A proxy value whose text before its first `://` is no scheme, as in user:pa://ss@proxy, has
+A proxy value that starts with neither a scheme nor `//`, as in user:pa://ss@proxy, has
 none. botocore puts http:// before such a value, so urllib3 reads its authority from its
-first character."""
+first character. botocore and requests put http: before a value that starts with `//`, a
+scheme-relative URL, whose authority starts after the `//`."""
+
+_URL_START: Final = re.compile(rf"(?:^|(?<=\s)){_SCHEME.pattern}|^//")
+"""Where a URL's authority starts in a variable: after a scheme at the start or after a space, or after a leading `//`."""
 
 
 def _url_login_values(name: str, value: str) -> set[str]:
@@ -2399,15 +2406,18 @@ def _url_login_values(name: str, value: str) -> set[str]:
     after it, followed by its `@`, its password as written and decoded, and that Basic
     credential. The user alone is never recorded, since no probed reader writes it without the
     rest, and a user such as `admin` would hide the word in every answer. Nothing is refused
-    here, since any variable can hold a URL; `_cut_proxy_login` refuses the one proxy login no
-    client can parse. A proxy variable's value that starts with no `_SCHEME` is read as a
-    login with no scheme, as clients read it.
+    here, since any variable can hold a URL; `_cut_url_login` refuses a login a client cuts.
+    A value that starts with `//`, in any variable, is a scheme-relative URL, whose login
+    follows the `//`. A proxy variable's value that starts with neither `//` nor a
+    `_SCHEME` is read as a login with no scheme, as clients read it.
     """
-    if name.lower().endswith(_PROXY_SUFFIX) and not _SCHEME.match(value.strip()):
-        bare = _BARE_PROXY_LOGIN.match(value.strip())
-        logins = [] if bare is None else [(bare[1], bare[2])]
-    else:
-        logins = [(found[1], found[2]) for found in _LOGIN_IN_URL.finditer(value)]
+    written = value.strip()
+    relative = written.startswith("//")
+    bare = not relative and name.lower().endswith(_PROXY_SUFFIX) and not _SCHEME.match(written)
+    leading = _LOGIN_AT_START.match(written, 2 if relative else 0) if relative or bare else None
+    logins = [] if leading is None else [(leading[1], leading[2])]
+    if not bare:
+        logins += [(found[1], found[2]) for found in _LOGIN_IN_URL.finditer(value)]
     values: set[str] = set()
     for login, host in logins:
         if not login:
@@ -2430,30 +2440,43 @@ def _url_login_values(name: str, value: str) -> set[str]:
     return {form for form in values if len(form) >= _SHORTEST_MASKED}
 
 
-_PROXY_CUT: Final = re.compile(r"[/?#\\]")
+_AUTHORITY_END: Final = re.compile(r"[/?#\\]")
 """Each character urllib3 ends a URL's authority at: `/`, `?`, `#`, and a backslash.
 
-A WHATWG URL parser, as reqwest uses, reads a backslash in an HTTP URL as a `/` too."""
+A WHATWG URL parser, as reqwest and object_store use, reads a backslash in an HTTP URL as a
+`/` too."""
 
 
-def _cut_proxy_login(name: str, value: str) -> bool:
-    """Say whether a proxy variable's URL holds an `@` after its first `/`, `?`, `#`, or backslash.
+def _cut_url_login(name: str, value: str) -> bool:
+    """Say whether a variable holds a URL with an `@` after the first `/`, `?`, `#`, or backslash of its authority.
 
-    Such a login holds one of these characters unencoded. urllib3, behind requests and
-    botocore, ends the authority at that character, and its parse error writes back the
-    user and the head of the password. After an earlier `@`, it takes a piece of the
-    password for the host, and botocore writes back the rest. No mask matches such a piece,
-    and no client can use the proxy, so the server refuses it. A proxy URL whose path holds
-    an `@` is refused too, since a client sends no path to a proxy. A value read from the
-    start, since it starts with no `_SCHEME`, counts the `/` of a later `://` as a cut.
+    Such a login holds one of these characters unencoded, as a base64 password can hold a
+    `/`. urllib3, behind requests and botocore, ends the authority at that character, and
+    its parse error writes back the user and the head of the password, or the head alone
+    as a port. After an earlier `@`, a parser takes a piece of the password for the host,
+    and botocore writes back the rest. No mask matches such a piece, so the server refuses
+    the variable. This holds for an endpoint, such as `AWS_ENDPOINT_URL` or
+    `AWS_ENDPOINT_URL_STS`, which botocore reads as Polars signs in, as for a proxy. The
+    server cannot tell which variables a reader reads a URL from, so it holds for a URL in
+    any variable. It cannot tell such a login from an `@` in a URL's path or query
+    either, so that is refused too. A URL starts at a `_SCHEME` at the start of the value
+    or after a space, or at a leading `//`, and runs to the next one. A proxy variable's
+    value is one URL, read from its first character when it starts with neither, so the
+    `/` of a later `://` counts as a cut.
     """
-    if not name.lower().endswith(_PROXY_SUFFIX):
-        return False
     written = value.strip()
-    scheme = _SCHEME.match(written)
-    after = written if scheme is None else written[scheme.end() :]
-    cut = _PROXY_CUT.search(after)
-    return cut is not None and "@" in after[cut.end() :]
+    if name.lower().endswith(_PROXY_SUFFIX):
+        first = _URL_START.match(written)
+        starts = [(0, 0 if first is None else first.end())]
+    else:
+        starts = [found.span() for found in _URL_START.finditer(written)]
+    bounds = [*starts, (len(written), len(written))]
+    for (_, start), (end, _) in itertools.pairwise(bounds):
+        url = written[start:end]
+        cut = _AUTHORITY_END.search(url)
+        if cut is not None and "@" in url[cut.end() :]:
+            return True
+    return False
 
 
 _LONGEST_TOKEN_FILE: Final = 64 * 1024
@@ -2725,25 +2748,25 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     Google key is recorded whole, and each field of it that a service can echo
     on its own too. Its JSON is never refused, since object_store's errors for
     it quote none of its text. Each URL login in any variable is recorded by
-    `_url_login_values`. A URL login is refused only in a proxy variable whose
-    login no client can parse, by `_cut_proxy_login`.
+    `_url_login_values`. A URL login is refused, in any variable, only where
+    a client cuts it, by `_cut_url_login`.
 
     Raises:
-        ConfigError: If a variable's value lacks its slot's shape, or a proxy
-            variable's login holds an unencoded `/`, `?`, `#`, or backslash.
+        ConfigError: If a variable's value lacks its slot's shape, or a URL in
+            it holds an `@` after an unencoded `/`, `?`, `#`, or backslash.
             The message names the variable as it is set, never the value.
     """
     values: set[str] = set()
     for name, value in environ.items():
         if not value:
             continue
-        if _cut_proxy_login(name, value):
+        if _cut_url_login(name, value):
             raise ConfigError(
                 f"On veridelta mcp, the environment variable {name} must hold no '@' after a "
-                "'/', '?', '#', or '\\' in its proxy URL. No client can use such a proxy, and one "
-                "writes part of its login back in an error, which the server cannot mask. "
-                "Percent-encode these characters, and '@', in the proxy's user and password, "
-                "such as '/' as %2F and '@' as %40."
+                "'/', '?', '#', or '\\' in a URL. A client ends a URL's login at the first of "
+                "these, and writes part of the login back in an error, which the server cannot "
+                "mask. Percent-encode these characters, and '@', in the URL's user and password, "
+                "and an '@' in its path or query, such as '/' as %2F and '@' as %40."
             )
         values.update(_url_login_values(name, value))
         read_as = _name_as_read(name)
