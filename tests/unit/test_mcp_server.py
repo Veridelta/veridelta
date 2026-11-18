@@ -9332,8 +9332,20 @@ class TestEnvironmentEndpoints:
             pytest.param(
                 "  type: iceberg\n  table_uri: s3://lake/t/metadata/v1.metadata.json\n",
                 "AWS_ENDPOINT_URL",
-                "S3",
+                "an object store",
                 id="iceberg",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n",
+                "CLOUD_STORAGE_EMULATOR_ENDPOINT",
+                "an object store",
+                id="iceberg-gcs",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: t/metadata/v1.metadata.json\n",
+                "CLOUD_STORAGE_TESTBENCH_ENDPOINT",
+                "an object store",
+                id="iceberg-here",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: hdfs://h/t\n",
@@ -9361,8 +9373,10 @@ class TestEnvironmentEndpoints:
     ) -> None:
         """Ensure an Iceberg table, a location of no known store, and a side with its own endpoint are checked.
 
-        The check runs even when the configuration names its own endpoint,
-        which a reader may prefer, since that is simpler and only stricter.
+        An Iceberg table is checked for every object store, even on this
+        machine, since its metadata names the files a scan opens. The check
+        runs even when the configuration names its own endpoint, which a
+        reader may prefer, since that is simpler and only stricter.
         """
         read = _read_stubbed(mocker)
         monkeypatch.setenv(name, "http://minio.internal:9000")
@@ -9372,6 +9386,35 @@ class TestEnvironmentEndpoints:
         assert message.startswith(f"The source side reads {store}, and the server's environment")
         assert "scheme other than https" in message
         read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._PLAIN_WITHOUT_SCHEME))
+    def test_it_refuses_a_value_with_no_scheme_that_pyarrow_reads_as_http(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure a Google Cloud Storage emulator variable with no scheme is refused, even for an allowed host.
+
+        PyArrow sends its bearer token to such a value over plain HTTP.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "minio.internal:9000")
+
+        message = _describe_refused(
+            tmp_path, "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n"
+        )
+
+        assert message.startswith("The source side reads an object store, and the server's")
+        assert f"variable {name} names its endpoint with no scheme" in message
+        assert "minio.internal" not in message
+        read.assert_not_called()
+
+    def test_it_reads_an_s3_endpoint_with_no_scheme_from_an_allowed_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a variable whose readers send nothing to a value with no scheme is held to the host rule alone."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "minio.internal:9000")
+
+        _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
 
     @pytest.mark.parametrize("value", ["true", "On", "1", " YES "])
     def test_it_refuses_the_emulator_switch(

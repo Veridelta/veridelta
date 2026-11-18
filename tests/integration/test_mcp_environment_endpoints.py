@@ -3,16 +3,17 @@
 
 """Integration tests of the MCP server's rule on the endpoints its readers take from its environment.
 
-Real Polars and real deltalake read a side whose configuration names no
-endpoint, while the server's environment names a store on this machine over
-plain HTTP, through a variable, an AWS profile, or the Azure emulator switch.
-The store counts every request it receives. Each case expects the tool to
-refuse the side, naming the variable, before any request reaches the store. A
-control turns the rule off and shows the reader does reach the store, for the
-cases proven on every Polars release CI runs.
+Real Polars, real deltalake, and PyArrow under PyIceberg read a side whose
+configuration names no endpoint, while the server's environment names a store
+on this machine over plain HTTP, through a variable, an AWS profile, or the
+Azure emulator switch. The store counts every request it receives. Each case
+expects the tool to refuse the side, naming the variable, before any request
+reaches the store. A control turns the rule off and shows the reader does
+reach the store, for the cases proven on every release CI runs.
 """
 
 import importlib.util
+import json
 import multiprocessing
 import os
 import socket
@@ -27,6 +28,8 @@ from urllib.parse import unquote_plus
 
 import anyio
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp import Client
 
 from veridelta import mcp_server
@@ -46,6 +49,7 @@ class _Request:
 
     method: str
     body: str
+    authorization: str
 
 
 class _Counter(BaseHTTPRequestHandler):
@@ -55,7 +59,10 @@ class _Counter(BaseHTTPRequestHandler):
         """Record the request, then answer 403 with no body."""
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode(errors="replace") if length else ""
-        cast("_CountingServer", self.server).requests.append(_Request(self.command, body))
+        authorization = self.headers.get("Authorization") or ""
+        cast("_CountingServer", self.server).requests.append(
+            _Request(self.command, body, authorization)
+        )
         self.send_response(403)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -160,6 +167,93 @@ def _google(_: Path, endpoint: str) -> dict[str, str]:
     return {"GOOGLE_BASE_URL": endpoint}
 
 
+def _service_account(folder: Path) -> str:
+    """Write a service account key with a new RSA key, from which PyArrow signs its own bearer token.
+
+    Returns:
+        str: The key file's path.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    path = folder / "service-account.json"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "probe",
+                "private_key_id": "0" * 40,
+                "private_key": pem,
+                "client_email": "reader@probe.iam.gserviceaccount.com",
+                "client_id": "1",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def _gcs_emulator(name: str) -> Callable[[Path, str], dict[str, str]]:
+    """Give PyArrow a service account key, and the store as Google Cloud Storage's emulator under `name`."""
+
+    def environment(folder: Path, endpoint: str) -> dict[str, str]:
+        return {name: endpoint, "GOOGLE_APPLICATION_CREDENTIALS": _service_account(folder)}
+
+    return environment
+
+
+def _here_with_gcs_files(folder: Path, endpoint: str) -> dict[str, str]:
+    """Write an Iceberg table's metadata on this machine, whose snapshot lists its manifests in Google Cloud Storage."""
+    metadata = folder / "t" / "metadata"
+    metadata.mkdir(parents=True)
+    (metadata / "v1.metadata.json").write_text(
+        json.dumps(
+            {
+                "format-version": 2,
+                "table-uuid": "9c12d441-03fe-4693-9a96-a0705ddf69c1",
+                "location": "gs://lake/t",
+                "last-sequence-number": 1,
+                "last-updated-ms": 1,
+                "last-column-id": 1,
+                "current-schema-id": 0,
+                "schemas": [
+                    {
+                        "type": "struct",
+                        "schema-id": 0,
+                        "fields": [{"id": 1, "name": "id", "required": False, "type": "long"}],
+                    }
+                ],
+                "default-spec-id": 0,
+                "partition-specs": [{"spec-id": 0, "fields": []}],
+                "last-partition-id": 999,
+                "default-sort-order-id": 0,
+                "sort-orders": [{"order-id": 0, "fields": []}],
+                "properties": {},
+                "current-snapshot-id": 1,
+                "snapshots": [
+                    {
+                        "snapshot-id": 1,
+                        "sequence-number": 1,
+                        "timestamp-ms": 1,
+                        "manifest-list": "gs://lake/t/metadata/snap-1.avro",
+                        "summary": {"operation": "append"},
+                        "schema-id": 0,
+                    }
+                ],
+                "snapshot-log": [],
+                "metadata-log": [],
+                "refs": {"main": {"snapshot-id": 1, "type": "branch"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return _gcs_emulator("CLOUD_STORAGE_TESTBENCH_ENDPOINT")(folder, endpoint)
+
+
 _S3_FILE: Final = "  path: s3://lake/a.parquet\n"
 _STORAGE_OPTIONS: Final = "  options:\n    storage_options:\n"
 
@@ -199,15 +293,35 @@ _CASES: dict[str, _Case] = {
         _google,
         "google_base_url",
     ),
+    "iceberg-gcs-emulator": _Case(
+        "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n",
+        _gcs_emulator("CLOUD_STORAGE_EMULATOR_ENDPOINT"),
+        "cloud_storage_emulator_endpoint",
+    ),
+    "iceberg-here-gcs-files": _Case(
+        "  type: iceberg\n  table_uri: t/metadata/v1.metadata.json\n",
+        _here_with_gcs_files,
+        "cloud_storage_testbench_endpoint",
+    ),
 }
 """Each reader, the environment that names the store, and the name its refusal gives, by case."""
 
-_CONTROLLED: Final = ("aws-endpoint-url", "aws-profile", "azure-authority")
-"""The cases whose reader reaches the store without the rule on every Polars release CI runs.
+_CONTROLLED: Final = (
+    "aws-endpoint-url",
+    "aws-profile",
+    "azure-authority",
+    "iceberg-gcs-emulator",
+    "iceberg-here-gcs-files",
+)
+"""The cases whose reader reaches the store without the rule on every release CI runs.
 
-Each was probed on Polars 1.39.3, the floor, and on 2.x. The Delta Lake case
-has no control, since deltalake's listing hangs against a store on this
-machine once the rule is off."""
+Each Polars case was probed on Polars 1.39.3, the floor, and on 2.x. The
+Iceberg cases read through PyArrow, whatever the Polars release. The Delta
+Lake case has no control, since deltalake's listing hangs against a store on
+this machine once the rule is off."""
+
+_GOOGLE_CASES: Final = ("iceberg-gcs-emulator", "iceberg-here-gcs-files")
+"""The cases whose reader sends the store a bearer token it signs with the service account key."""
 
 
 def _closed_port() -> int:
@@ -246,7 +360,9 @@ def _answer(name: str, folder: str, endpoint: str, closed: int, control: bool) -
     case, root = _CASES[name], Path(folder)
     os.chdir(root)
     for variable in list(os.environ):
-        if variable.upper().startswith(("AWS_", "AZURE_", "GOOGLE_", "BIGQUERY_", "MOTHERDUCK_")):
+        if variable.upper().startswith(
+            ("AWS_", "AZURE_", "GOOGLE_", "GCE_", "CLOUD_STORAGE_", "BIGQUERY_", "MOTHERDUCK_")
+        ):
             del os.environ[variable]
     dead = f"http://127.0.0.1:{closed}"
     bypass = "127.0.0.1,localhost"
@@ -324,7 +440,8 @@ def test_each_reader_reaches_the_store_without_the_rule(
 ) -> None:
     """Ensure each controlled reader does send its requests to the store once the rule is off.
 
-    The Azure sign-in posts the configuration's client secret there in clear.
+    The Azure sign-in posts the configuration's client secret there in
+    clear, and PyArrow sends Google Cloud Storage a bearer token.
     """
     endpoint = f"http://127.0.0.1:{store.server_port}"
 
@@ -336,6 +453,8 @@ def test_each_reader_reaches_the_store_without_the_rule(
             request.method == "POST" and _CLIENT_SECRET in unquote_plus(request.body)
             for request in store.requests
         )
+    if name in _GOOGLE_CASES:
+        assert any(request.authorization.startswith("Bearer ") for request in store.requests)
 
 
 def test_boto3_is_installed() -> None:

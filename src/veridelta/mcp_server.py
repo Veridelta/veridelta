@@ -2206,6 +2206,8 @@ _ENVIRONMENT_ENDPOINTS: Final[Mapping[str, str]] = {
     "AZURE_AUTHORITY_HOST": "azure",
     "AZURE_STORAGE_AUTHORITY_HOST": "azure",
     "GOOGLE_BASE_URL": "gcs",
+    "CLOUD_STORAGE_EMULATOR_ENDPOINT": "gcs",
+    "CLOUD_STORAGE_TESTBENCH_ENDPOINT": "gcs",
     "BIGQUERY_EMULATOR_HOST": "bigquery",
 }
 """The environment variables a reader takes an endpoint from, in upper case, each with its store.
@@ -2225,6 +2227,15 @@ endpoint meets. Each name, its reader, and the probe that found it:
   With a `bearer_token`, both read from `storage.googleapis.com` instead. With
   no option, both sign in first: 2.1.0 through Google's default credentials,
   and 1.39.3 through the instance's metadata server.
+- `CLOUD_STORAGE_EMULATOR_ENDPOINT` and `CLOUD_STORAGE_TESTBENCH_ENDPOINT`:
+  PyArrow's Google Cloud Storage file system, which an Iceberg side reads
+  through, sends its bearer token there. The token is an access token, or
+  one it signs with the service account key `GOOGLE_APPLICATION_CREDENTIALS`
+  names. A probe received `GET /storage/v1/b/lake/o/...` with that token
+  over HTTP, for a `gs://` table and for a table on this machine whose
+  metadata names `gs://` files. PyArrow reads each name in upper case only,
+  and a value with no scheme as plain HTTP, so `_PLAIN_WITHOUT_SCHEME`
+  holds both.
 - `BIGQUERY_EMULATOR_HOST`: the BigQuery client makes it the API endpoint of
   a client built with the server's default credentials, as
   `connectors/warehouse.py` builds one. A probe received
@@ -2251,9 +2262,19 @@ Some names are left out, each for its reason:
   that would fill it is not one a tool passes on. Polars sent no request to
   it in a probe.
 - PyArrow reads `AWS_ENDPOINT_URL` only in `FileSystem.from_uri`, which
-  Veridelta never calls.
+  Veridelta never calls. Its S3 file system sent no request to
+  `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_S3`, or a profile's `endpoint_url`
+  in a probe.
 
 A name joins only with a probe, and before the reader that takes it ships."""
+
+_PLAIN_WITHOUT_SCHEME: Final = frozenset(
+    {"CLOUD_STORAGE_EMULATOR_ENDPOINT", "CLOUD_STORAGE_TESTBENCH_ENDPOINT"}
+)
+"""The variables of `_ENVIRONMENT_ENDPOINTS` whose reader takes a value with no scheme as plain HTTP.
+
+PyArrow sent a request over HTTP to `127.0.0.1:port` from either one in a
+probe, so such a value must start with `https://`."""
 
 _EMULATOR_SWITCH: Final = "AZURE_STORAGE_USE_EMULATOR"
 """The environment variable that sends Polars and deltalake to Azurite, over plain HTTP.
@@ -2297,9 +2318,11 @@ _PROFILE_SUBJECT: Final = (
 def _store(config: SourceRef) -> frozenset[str]:
     """Name the stores whose environment variables a side's reader takes an endpoint from.
 
-    A BigQuery side reads BigQuery, and a MotherDuck side MotherDuck. A
-    location's scheme names its store, matched in ASCII. Any other location on
-    another machine, such as `hdfs`, `opendal+s3`, or `https`, names every
+    A BigQuery side reads BigQuery, and a MotherDuck side MotherDuck. An
+    Iceberg table names every object store, wherever its metadata lies, since
+    the metadata, not the table's own location, names the files a scan opens.
+    A location's scheme names its store, matched in ASCII. Any other location
+    on another machine, such as `hdfs`, `opendal+s3`, or `https`, names every
     object store, since the server cannot tell which a reader takes it to.
     A database, a Snowflake, a Databricks, or a local side names none.
     """
@@ -2307,9 +2330,11 @@ def _store(config: SourceRef) -> frozenset[str]:
         return frozenset({"bigquery"})
     if isinstance(config, DuckDBConfig):
         return frozenset({"motherduck"}) if config.is_motherduck else frozenset()
+    if isinstance(config, IcebergConfig):
+        return _ANY_STORE
     if isinstance(config, SourceConfig):
         location = config.path
-    elif isinstance(config, (DeltaLakeConfig, IcebergConfig)):
+    elif isinstance(config, DeltaLakeConfig):
         location = config.table_uri
     else:
         return frozenset()
@@ -2400,6 +2425,7 @@ def _refuse_environment_variable(
             settings,
             f"The {side} side reads {store}, and the server's environment variable {name}",
             value,
+            plain_without_scheme=upper in _PLAIN_WITHOUT_SCHEME,
         )
     elif "motherduck" in families and _motherduck_setting(name):
         raise ConfigError(
@@ -2423,17 +2449,21 @@ def _motherduck_setting(name: str) -> bool:
     )
 
 
-def _refuse_endpoint(settings: Settings, opening: str, value: str) -> None:
+def _refuse_endpoint(
+    settings: Settings, opening: str, value: str, *, plain_without_scheme: bool = False
+) -> None:
     """Refuse an endpoint from the server's environment that a storage option could not name.
 
     The checks run in the order `_refuse_hosts` runs them for a storage
     option: the path, the host, then the scheme. `opening` names the side,
     its store, and where the endpoint comes from, and the message never
-    quotes the value.
+    quotes the value. With `plain_without_scheme`, a value with no scheme is
+    refused too, since its reader takes one as plain HTTP.
 
     Raises:
         ConfigError: If the endpoint holds a path, names a host that is not
-            allowed, or has a scheme other than `https://`.
+            allowed, or has a scheme other than `https://`, or none where
+            `plain_without_scheme` holds.
     """
     if _holds_path(value):
         raise ConfigError(
@@ -2456,6 +2486,13 @@ def _refuse_endpoint(settings: Settings, opening: str, value: str) -> None:
             "the credentials and the rows unencrypted, on this machine too. Ask the person who "
             "started the server to write it as https://host:port, in lowercase, or to leave it "
             "out of the server's environment."
+        )
+    if plain_without_scheme and not _scheme_length(value):
+        raise ConfigError(
+            f"{opening} names its endpoint with no scheme, which its reader takes as plain "
+            "HTTP, so it would send the credentials and the rows unencrypted, on this machine "
+            "too. Ask the person who started the server to write it as https://host:port, in "
+            "lowercase, or to leave it out of the server's environment."
         )
 
 
