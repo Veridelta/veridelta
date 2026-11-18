@@ -2226,13 +2226,13 @@ endpoint meets. Each name, its reader, and the probe that found it:
   environment, in lower case and with no prefix, as an S3 option, so it
   takes either name, in any case, as the endpoint of an `s3://` table. A
   probe received a list request signed with the configuration's `${NAME}`
-  keys over HTTP, with `ALLOW_HTTP` or `AWS_ALLOW_HTTP` set. Polars 2.1.0
-  read neither.
+  keys over HTTP, with `ALLOW_HTTP` or `AWS_ALLOW_HTTP` set. Polars 1.39.3
+  and 2.1.0 read neither.
 - `AWS_S3_ENDPOINT`: deltalake's OpenDAL S3 store, at an `opendal+s3://`
   table, reads it, and `AWS_ENDPOINT` and `AWS_ENDPOINT_URL` too, over HTTP
   with no switch. A probe received a list request signed with the
-  environment's keys. It reads each name in upper case only, and neither
-  deltalake's own S3 store nor Polars 2.1.0 read this one.
+  environment's keys. It reads each name in upper case only. Neither
+  deltalake's own S3 store nor Polars 1.39.3 or 2.1.0 read this one.
 - `AZURE_ENDPOINT` and `AZURE_STORAGE_ENDPOINT`: Polars and deltalake.
 - `AZURE_AUTHORITY_HOST` and `AZURE_STORAGE_AUTHORITY_HOST`: Polars and
   deltalake POST the client secret there to sign in. The secret can come from
@@ -2318,7 +2318,8 @@ the credentials and the rows over HTTPS too. A probe through a proxy that
 decrypted a request signed with the side's keys at each store. deltalake
 reads the unprefixed name on an S3 side only, since it reads every variable
 there with no prefix, and its Azure and Google Cloud Storage stores read only
-`AZURE_` and `GOOGLE_` names. Polars 2.1.0 read none of them."""
+`AZURE_` and `GOOGLE_` names. Polars 1.39.3 and 2.1.0 took none of them,
+in a probe of the S3 and Azure switches on each."""
 
 _SERVICE_ACCOUNT_FILES: Final = frozenset({"GOOGLE_SERVICE_ACCOUNT", "GOOGLE_SERVICE_ACCOUNT_PATH"})
 """The environment variables that name a Google service account key file, in upper case.
@@ -2328,8 +2329,8 @@ object_store takes a `gcs_base_url` from such a key, as from the JSON of
 there. deltalake 1.6.6 read the base URL from a key that either variable
 named, or that `GOOGLE_SERVICE_ACCOUNT_KEY` held, and sent a list request to
 it over HTTP, as a probe showed. It reads no key that
-`GOOGLE_APPLICATION_CREDENTIALS` names this way, and Polars 2.1.0 signs in
-through Google's own library, which reads no base URL."""
+`GOOGLE_APPLICATION_CREDENTIALS` names this way. Polars 1.39.3 and 2.1.0
+sign in through Google's own library, which reads no base URL."""
 
 _MOTHERDUCK_TOKEN_NAMES: Final = frozenset(name.casefold() for name in MOTHERDUCK_TOKEN_VARIABLES)
 """The MotherDuck token variables, in casefold, which name a credential rather than a setting."""
