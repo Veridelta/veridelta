@@ -8,9 +8,9 @@ refuses every request and repeats none of it. The store's endpoint, in
 `AWS_ENDPOINT_URL`, holds a login, which each reader writes back in its error.
 A proxy URL with a login, whose port no socket can open, is written back by
 the client that signs Polars in through an AWS profile. A proxy login with an
-unencoded `#` is cut where that client ends the URL's authority, so the server
-refuses to start on it. The configuration
-names no `${NAME}`. A control turns the server's record of its environment
+unencoded `#`, or a `://` after a login written with no scheme, is cut where
+that client ends the URL's authority, so the server refuses to start on it.
+The configuration names no `${NAME}`. A control turns the server's record of its environment
 off, and shows each probe does echo the login.
 """
 
@@ -92,6 +92,12 @@ _PROXY_PASSWORD: Final = "Pr0xyPass9"
 _CUT_PROXY_URL: Final = f"http://{_PROXY_LOGIN}#corp@127.0.0.1:99999"
 """A proxy URL whose password holds an unencoded `#`, which ends the URL's authority."""
 
+_SCHEME_CUT_PROXY_URL: Final = "proxyuser9:Pr0x://yPass9@127.0.0.1:99999"
+"""A proxy URL with no scheme, whose password holds a `://`.
+
+The text before the `://` is no scheme, so botocore puts `http://` before the
+value, and urllib3 ends the authority at the `/`."""
+
 _KEY_ID: Final = "AKIAQ7ZX3LOGIN9READ"
 _SECRET_KEY: Final = "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCYx"
 _BASE_KEY_ID: Final = "AKIAQ7ZX3PROXY9BASE"
@@ -148,6 +154,11 @@ def _cut_proxy(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
     return _proxy(folder, port, _CUT_PROXY_URL)
 
 
+def _scheme_cut_proxy(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
+    """Sign in as `_proxy` does, through a proxy with no scheme whose password holds a `://`."""
+    return _proxy(folder, port, _SCHEME_CUT_PROXY_URL)
+
+
 _TOOLS: list[tuple[str, dict[str, Any]]] = [
     ("describe_schema", {"side": "source"}),
     ("validate_config", {"schemas": True}),
@@ -159,6 +170,7 @@ _CASES: Final = {
     "endpoint-login-deltalake": (_endpoint, True),
     "proxy-login-polars": (_proxy, False),
     "cut-proxy-login-polars": (_cut_proxy, False),
+    "scheme-cut-proxy-login-polars": (_scheme_cut_proxy, False),
 }
 """Each case's environment and whether it reads a Delta Lake table, by name."""
 
@@ -290,9 +302,20 @@ def test_polars_echoes_the_proxy_login_without_the_mask(
         assert holds == _POLARS_ECHOES_PROXY, shown
 
 
-def test_it_refuses_a_proxy_login_no_client_can_parse(tmp_path: Path, refusing_store: int) -> None:
-    """Ensure a proxy login with an unencoded `#` stops the server, naming only the variable."""
-    (shown,) = _in_a_child("cut-proxy-login-polars", tmp_path, refusing_store)
+_CUT_CASES: Final = [
+    pytest.param("cut-proxy-login-polars", f"'{_PROXY_LOGIN}'", id="hash"),
+    pytest.param("scheme-cut-proxy-login-polars", "'proxyuser9:Pr0x:'", id="no-scheme"),
+]
+"""Each case of a cut proxy login, with the head of it Polars writes back without the check."""
+
+
+@pytest.mark.parametrize(("case", "head"), _CUT_CASES)
+def test_it_refuses_a_proxy_login_no_client_can_parse(
+    tmp_path: Path, refusing_store: int, case: str, head: str
+) -> None:
+    """Ensure a proxy login that a client cuts stops the server, naming only the variable."""
+    del head
+    (shown,) = _in_a_child(case, tmp_path, refusing_store)
 
     assert shown.startswith("refused: "), shown
     assert "environment variable HTTPS_PROXY must hold no '@'" in shown
@@ -300,17 +323,19 @@ def test_it_refuses_a_proxy_login_no_client_can_parse(tmp_path: Path, refusing_s
     assert not _holds(shown, _PROXY_PASSWORD), shown
 
 
+@pytest.mark.parametrize(("case", "head"), _CUT_CASES)
 def test_polars_echoes_a_cut_proxy_login_without_the_check(
-    tmp_path: Path, refusing_store: int
+    tmp_path: Path, refusing_store: int, case: str, head: str
 ) -> None:
     """Ensure Polars writes the head of a cut proxy login back from 2.0.0 on, which no mask matches.
 
-    urllib3 ends the authority at the `#`, and botocore passes its parse
-    error on, with the user and the password up to the `#`. Before 2.0.0 the
-    error names only the store.
+    urllib3 ends the authority at the `#`, or at the `/` of a `://` that
+    follows no scheme, and botocore passes its parse error on, with the user
+    and the password up to that character. Before 2.0.0 the error names only
+    the store.
     """
-    answers = _in_a_child("cut-proxy-login-polars", tmp_path, refusing_store, control=True)
+    answers = _in_a_child(case, tmp_path, refusing_store, control=True)
 
     for shown in answers:
         assert not shown.startswith("refused: "), shown
-        assert (f"'{_PROXY_LOGIN}'" in shown) == _POLARS_ECHOES_PROXY, shown
+        assert (head in shown) == _POLARS_ECHOES_PROXY, shown

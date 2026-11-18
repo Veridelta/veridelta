@@ -2308,6 +2308,13 @@ Python read as HTTP."""
 _PROXY_SUFFIX: Final = "_proxy"
 """The end of each name Python reads a proxy from, in any case, such as HTTPS_PROXY or all_proxy."""
 
+_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+"""A URL's scheme and the `://` after it, as RFC 3986 and urllib3 read a scheme.
+
+A proxy value whose text before its first `://` is no scheme, as in user:pa://ss@proxy, has
+none. botocore puts http:// before such a value, so urllib3 reads its authority from its
+first character."""
+
 
 def _url_login_values(name: str, value: str) -> set[str]:
     """Return what a reader or a proxy can repeat of each URL login in a variable, to be masked.
@@ -2320,12 +2327,14 @@ def _url_login_values(name: str, value: str) -> set[str]:
     credential. The user alone is never recorded, since no probed reader writes it without the
     rest, and a user such as `admin` would hide the word in every answer. Nothing is refused
     here, since any variable can hold a URL; `_cut_proxy_login` refuses the one proxy login no
-    client can parse. A value with no `://` is read as a login only in a proxy variable.
+    client can parse. A proxy variable's value that starts with no `_SCHEME` is read as a
+    login with no scheme, as clients read it.
     """
-    logins = [(found[1], found[2]) for found in _LOGIN_IN_URL.finditer(value)]
-    if not logins and name.lower().endswith(_PROXY_SUFFIX):
+    if name.lower().endswith(_PROXY_SUFFIX) and not _SCHEME.match(value.strip()):
         bare = _BARE_PROXY_LOGIN.match(value.strip())
         logins = [] if bare is None else [(bare[1], bare[2])]
+    else:
+        logins = [(found[1], found[2]) for found in _LOGIN_IN_URL.finditer(value)]
     values: set[str] = set()
     for login, host in logins:
         if not login:
@@ -2362,13 +2371,14 @@ def _cut_proxy_login(name: str, value: str) -> bool:
     user and the head of the password. After an earlier `@`, it takes a piece of the
     password for the host, and botocore writes back the rest. No mask matches such a piece,
     and no client can use the proxy, so the server refuses it. A proxy URL whose path holds
-    an `@` is refused too, since a client sends no path to a proxy.
+    an `@` is refused too, since a client sends no path to a proxy. A value read from the
+    start, since it starts with no `_SCHEME`, counts the `/` of a later `://` as a cut.
     """
     if not name.lower().endswith(_PROXY_SUFFIX):
         return False
     written = value.strip()
-    _, scheme, rest = written.partition("://")
-    after = rest if scheme else written
+    scheme = _SCHEME.match(written)
+    after = written if scheme is None else written[scheme.end() :]
     cut = _PROXY_CUT.search(after)
     return cut is not None and "@" in after[cut.end() :]
 

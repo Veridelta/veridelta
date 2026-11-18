@@ -8458,6 +8458,12 @@ class TestEnvironmentUrlLogins:
             ),
             pytest.param("ALL_PROXY", "socks5h://proxyuser9:Pr0x/yPass9@proxy:1080", id="socks"),
             pytest.param("ALL_PROXY", " proxyuser9:Pr0x/yPass9@proxy:3128 ", id="bare"),
+            pytest.param(
+                "HTTPS_PROXY",
+                "proxyuser9:Pr0x://yPass9@127.0.0.1:3128",
+                id="bare-with-a-scheme-cut",
+            ),
+            pytest.param("HTTP_PROXY", "9px://proxyuser9:Pr0x@yPass9@proxy:3128", id="no-scheme"),
         ],
     )
     def test_it_will_not_start_on_a_proxy_login_no_client_can_parse(
