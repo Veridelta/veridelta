@@ -425,6 +425,7 @@ def _certificate(folder: Path) -> ssl.SSLContext:
         )
     )
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(folder / "fake.pem", folder / "fake.key")
     return context
 
