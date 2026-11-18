@@ -2173,12 +2173,47 @@ _FIELD_SLOTS: Final[Mapping[tuple[str, str | int], _Slot]] = {
 }
 """The model fields, by block type, that may take a `${NAME}` on the server.
 
-A driver sends a password, a passphrase, or a token to its service and
-masks it in its own errors, so no reader echoes one. A token still keeps
-`_TOKEN`'s shape, as a storage option's does, which costs a real token
-nothing. Snowflake can echo the `user`, a login name whose shape
+A password or a passphrase takes free text, since no reader repeats one. A
+database password reaches only ConnectorX, percent-encoded into the uri by
+`connection_uri`, and only for a reader in `_PASSWORD_READERS`. A Snowflake
+password or passphrase reaches only `snowflake.connector.connect`. The
+corpus tests drive each of those readers with a wrong password of every
+character class, and no answer holds 4 characters in a row of it. The mask
+matches no escaped form of a value, such as doubled quotes, backslashes,
+JSON, ODBC braces, or libpq quoting, and no cut of one, because no reader
+writes a password in such a form. A reader that did would leave
+`_PASSWORD_READERS`, or its password would get a shape in `_shape_needed`.
+
+A token keeps `_TOKEN`'s shape, as a storage option's does, which costs a
+real token nothing. Snowflake can echo the `user`, a login name whose shape
 `_LOGIN_NAME` holds to text that reads the same raw, encoded, and decoded,
 so an echo is the text the mask matches."""
+
+_PASSWORD_READERS: Final = frozenset(
+    {"postgres", "postgresql", "mysql", "mssql", "oracle", "clickhouse", "trino"}
+)
+"""The ConnectorX readers, by the name `connectorx_url` gives, that may take a
+database `password` from a `${NAME}` on the server.
+
+`connectorx_url` drops a `+suffix` and reads `redshift` as `postgresql`, so
+Redshift is here as `postgresql`, and `redshift-iam` is not. What each reader
+sends, and what its error says:
+
+- postgres: the raw password, or only a SCRAM or MD5 proof. The server says
+  "password authentication failed for user".
+- mysql: a scramble only. The driver refuses `mysql_clear_password`. ERR 1045
+  names the user, never the password.
+- mssql: tiberius sends LOGIN7, and the error is "Timed out in bb8".
+- clickhouse: the `x-clickhouse-key` header. The server says "Authentication
+  failed".
+- trino: basic auth, only over https. The reqwest error leaves out the
+  userinfo.
+- oracle: ODPI-C. The error is DPI-1047 when there is no client, and
+  ORA-01017 is fixed text. CI does not reach Oracle's network path.
+
+tests/integration/test_mcp_password_echo.py and
+tests/integration/test_mcp_password_servers.py are the proof. A reader joins
+only with a case in the corpus."""
 
 _OPTION_SLOTS: Final[tuple[tuple[frozenset[str], _Slot], ...]] = (
     (_SECRET_OPTIONS, "token"),
@@ -2637,11 +2672,14 @@ def _load_checked(
     A SQLite file has no password. The driver reads a database side's
     `password` into the file's path, which the system resolves, so a message
     could repeat the value with a `/` changed or a `..` folded away. So a
-    `${NAME}` in the `password` of a SQLite side is refused too.
+    `${NAME}` in the `password` of a SQLite side is refused too. So is one in
+    the `password` of any other side whose reader is not in
+    `_PASSWORD_READERS`, since no test shows that reader never repeats it.
 
     Raises:
         ConfigError: If a reference stands outside a credential setting, or in
-            the `password` of a SQLite side.
+            the `password` of a SQLite side. Also if it stands in the
+            `password` of a database side whose reader no test has probed.
     """
     references: list[Reference] = []
 
@@ -2663,6 +2701,20 @@ def _load_checked(
                 f"${{{reference.name}}} for a SQLite file. SQLite has no password, and the "
                 "driver reads this one into the file's path, in forms this server cannot "
                 "mask. Remove the password.",
+                locations=(ConfigLocation(path=reference.path),),
+            )
+        elif (
+            reference.path[1:] == ("password",)
+            and isinstance(side, DatabaseConfig)
+            and connectorx_url(side).scheme not in _PASSWORD_READERS
+        ):
+            raise ConfigError(
+                f"On veridelta mcp, {reference.path[0]} -> password cannot take "
+                f"${{{reference.name}}} for this uri. A test shows that no reader of a "
+                "PostgreSQL, Redshift, MySQL, SQL Server, Oracle, ClickHouse, or Trino uri "
+                "repeats a password, so the server takes one from its environment only for "
+                "those. Use one of their schemes, such as mysql:// for MariaDB, or run the "
+                "configuration with veridelta run.",
                 locations=(ConfigLocation(path=reference.path),),
             )
     return loaded
