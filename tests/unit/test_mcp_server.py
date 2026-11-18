@@ -7720,6 +7720,47 @@ class TestEnvironmentCredentials:
         assert not _holds_a_form(_shown(result), value)
 
     @pytest.mark.parametrize(
+        ("name", "slot"),
+        [
+            pytest.param("UNITY_ACCESS_TOKEN", "token", id="unity-access-token"),
+            pytest.param("DATABRICKS_TOKEN", "token", id="databricks-token"),
+            pytest.param("DATABRICKS_ACCESS_TOKEN", "token", id="databricks-access-token"),
+            pytest.param("UNITY_CLIENT_SECRET", "token", id="unity-client-secret"),
+            pytest.param("DATABRICKS_CLIENT_SECRET", "token", id="databricks-client-secret"),
+            pytest.param("UNITY_CLIENT_ID", "login", id="unity-client-id"),
+            pytest.param("DATABRICKS_CLIENT_ID", "login", id="databricks-client-id"),
+        ],
+    )
+    def test_it_masks_each_credential_the_unity_catalog_reader_reads(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        slot: str,
+    ) -> None:
+        """Ensure each credential deltalake's Unity Catalog reader reads from the environment is masked.
+
+        At a `uc://` table, the reader sends the token as a bearer token to the
+        workspace, which can echo it, and the client id and secret to the
+        workspace's token service, as a probe showed.
+        """
+        value = _SLOT_VALUES[slot]
+        monkeypatch.setenv(name, value)
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"PERMISSION_DENIED: {_echoes(value)}", quotes_data=True),
+        )
+        _with_source(tmp_path, "  path: s3://lake/a.csv\n")
+
+        result = _describe(tmp_path)
+
+        assert mcp_server._ENVIRONMENT_SLOTS[name] == slot
+        assert "PERMISSION_DENIED: ***" in _shown(result)
+        assert not _holds_a_form(_shown(result), value)
+
+    @pytest.mark.parametrize(
         "name",
         [
             "AWS_WEB_IDENTITY_TOKEN_FILE",
@@ -7767,6 +7808,9 @@ class TestEnvironmentCredentials:
             pytest.param("AWS_Session_Token", "token", id="aws-session-token"),
             pytest.param("GOOGLE_bearer_token", "token", id="google-bearer-token"),
             pytest.param("AZURE_Storage_Account_Key", "account key", id="azure-account-key"),
+            pytest.param("DATABRICKS_Token", "token", id="databricks-token"),
+            pytest.param("UNITY_access_token", "token", id="unity-access-token"),
+            pytest.param("DATABRICKS_Client_Id", "login", id="databricks-client-id"),
         ],
     )
     def test_it_masks_a_variable_in_any_case_after_its_prefix(
@@ -7777,10 +7821,12 @@ class TestEnvironmentCredentials:
         name: str,
         slot: str,
     ) -> None:
-        """Ensure a name in mixed case after `AWS_`, `AZURE_`, or `GOOGLE_` is masked.
+        """Ensure a name in mixed case after one of `_CASELESS_PREFIXES` is masked.
 
         object_store matches the prefix as written and reads the rest of the
         name in any case, so it sends the value of `AZURE_Client_Secret`.
+        deltalake's Unity Catalog reader does the same after `UNITY_` and
+        `DATABRICKS_`, so it sends the value of `DATABRICKS_Token`.
         """
         value = _SLOT_VALUES[slot]
         monkeypatch.setenv(name, value)

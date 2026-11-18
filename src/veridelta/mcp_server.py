@@ -2215,6 +2215,11 @@ _READER_ONLY_VARIABLES: Final[Mapping[str, _Slot]] = {
             "HUAWEI_CLOUD_SECURITY_TOKEN",
             "AZURE_STORAGE_BEARER_TOKEN",
             "SYSTEM_ACCESSTOKEN",
+            "UNITY_ACCESS_TOKEN",
+            "DATABRICKS_TOKEN",
+            "DATABRICKS_ACCESS_TOKEN",
+            "UNITY_CLIENT_SECRET",
+            "DATABRICKS_CLIENT_SECRET",
             *MOTHERDUCK_TOKEN_VARIABLES,
         ),
         "token",
@@ -2233,6 +2238,8 @@ _READER_ONLY_VARIABLES: Final[Mapping[str, _Slot]] = {
             "TENCENTCLOUD_SECRET_ID",
             "TKE_SECRET_ID",
             "HUAWEI_CLOUD_ACCESS_KEY_ID",
+            "UNITY_CLIENT_ID",
+            "DATABRICKS_CLIENT_ID",
         ),
         "login",
     ),
@@ -2257,6 +2264,14 @@ Each name, its reader, and the evidence that the reader sends its value:
   key nothing.
 - `AZURE_AUTHORITY_ID` and `AZURE_STORAGE_AUTHORITY_ID`: object_store's
   aliases of the tenant id.
+- `UNITY_ACCESS_TOKEN` and its aliases `DATABRICKS_TOKEN` and
+  `DATABRICKS_ACCESS_TOKEN`: deltalake's Unity Catalog reader, at a `uc://`
+  table. Probed, sent as a bearer token to the workspace `DATABRICKS_HOST`
+  names, and echoed in the reader's error, which quotes the workspace's.
+- `UNITY_CLIENT_ID`, `UNITY_CLIENT_SECRET`, and their aliases
+  `DATABRICKS_CLIENT_ID` and `DATABRICKS_CLIENT_SECRET`: the same reader.
+  Probed, and sent in the form body of its request to the workspace's token
+  service.
 
 deltalake's OpenDAL stores, at an `opendal+` scheme, read the rest. Each
 store needs an `opendal.` storage option, such as `opendal.endpoint`, which
@@ -2284,7 +2299,11 @@ takes the token slot, as `aws_secret_access_key` does.
 Some names are left out. ConnectorX reads none of `PGPASSWORD`, `MYSQL_PWD`,
 `MSSQL_PASSWORD`, and `SQLCMDPASSWORD`, as its binary and a probe show.
 Veridelta passes the Snowflake and Databricks connectors every setting as an
-argument, so neither reads a `SNOWFLAKE_` or `DATABRICKS_` variable.
+argument, so neither reads a `SNOWFLAKE_` or `DATABRICKS_` variable. The
+Unity Catalog reader also reads the authority id, object id, managed identity
+resource id, and federated token file under `UNITY_` and `DATABRICKS_`, but a
+probe shows it sends none of them: it signs in only with a token or a client
+secret.
 `AZURE_CLIENT_CERTIFICATE_PASSWORD` unlocks a file on this machine and is
 never sent."""
 
@@ -2306,11 +2325,14 @@ that a reader sends its value to a service, and with the slot whose shape
 makes an echo the text the mask matches. Never record a prefix, since
 `AWS_ALLOW_HTTP=true` would then mask `true` in every answer."""
 
-_CASELESS_PREFIXES: Final = ("AWS_", "AZURE_", "GOOGLE_")
-"""The prefixes after which object_store's `from_env` ignores a name's case.
+_CASELESS_PREFIXES: Final = ("AWS_", "AZURE_", "GOOGLE_", "UNITY_", "DATABRICKS_")
+"""The prefixes after which a reader's `from_env` ignores a name's case.
 
-It matches the prefix as written, then reads the whole name in lower case,
-so it reads `AZURE_Client_Secret` as the option `azure_client_secret`."""
+object_store matches the prefix as written, then reads the whole name in
+lower case, so it reads `AZURE_Client_Secret` as the option
+`azure_client_secret`. deltalake's Unity Catalog reader does the same after
+`UNITY_` and `DATABRICKS_`, so it sends the value of `DATABRICKS_Token`, as a
+probe showed."""
 
 _KEY_JSON_VARIABLE: Final = "GOOGLE_SERVICE_ACCOUNT_KEY"
 """The environment variable object_store reads a Google service account key from, as JSON."""
