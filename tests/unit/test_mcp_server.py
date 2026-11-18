@@ -7195,6 +7195,52 @@ class TestEnvironmentReferences:
         assert not any(folded[i : i + 6] in shown for i in range(len(folded) - 5))
         assert encoded not in shown
 
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "trino://${V_USER}@db.internal/x",
+            "trino+https://${V_USER}@db.internal/x?verify=false",
+            "mariadb://${V_USER}@db.internal/x",
+        ],
+    )
+    @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
+    def test_it_refuses_a_uri_user_from_the_environment_for_an_unprobed_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str, is_set: bool
+    ) -> None:
+        """Ensure a `${NAME}` uri user reaches only a reader a test has driven.
+
+        Beside a password in the file, Trino's reader sends the user as basic
+        auth too, in base64 the mask does not match, so an agent could name
+        any variable whose value has a user's shape and read it back.
+        """
+        user = "Pa55-word.Secret9"
+        if is_set:
+            monkeypatch.setenv("V_USER", user)
+        else:
+            monkeypatch.delenv("V_USER", raising=False)
+        _with_source(
+            tmp_path,
+            f'  type: database\n  uri: "{uri}"\n  query: select 1 as id\n  password: KnownPw-123\n',
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS),
+            {"path": "veridelta.yaml", "allow_missing_env": not is_set},
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert report["errors"][0].startswith(
+            "On veridelta mcp, source -> uri cannot take ${V_USER} for this uri."
+        )
+        assert report["findings"][0]["locations"] == [{"path": ["source", "uri"]}]
+        shown = _shown(result).casefold()
+        encoded = base64.b64encode(f"{user}:KnownPw-123".encode()).decode().casefold()
+        folded = user.casefold()
+        assert not any(folded[i : i + 6] in shown for i in range(len(folded) - 5))
+        assert encoded not in shown
+
     _PROBED_URIS = (
         "postgres://u@db.internal/x",
         "postgresql://u@db.internal/x",

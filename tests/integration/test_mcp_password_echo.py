@@ -13,13 +13,15 @@ once as a service that writes its whole request back in the refusal, as an
 echo or debug endpoint on an allowed host would. No answer may hold any piece
 of the password, in any form. A control has the Postgres fake write the
 password back in each escaped form, and shows the check finds each one.
-Another shows why Trino's reader takes no password from the environment: it
-sends one as basic auth, and repeats a service's whole refusal.
+Another shows why Trino's reader takes no user or password from the
+environment: it sends both as basic auth, and repeats a service's whole
+refusal.
 
 Each call waits out ConnectorX's pool, about 30 seconds, so every call runs
 in a thread of its own, at once.
 """
 
+import base64
 import datetime
 import ipaddress
 import json
@@ -636,21 +638,21 @@ def test_the_check_finds_each_escaped_echo(
 def test_the_trino_reader_repeats_a_password_a_service_writes_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_reader_credentials: None
 ) -> None:
-    """Ensure the reason Trino's reader takes no password from the environment still holds.
+    """Ensure the reason Trino's reader takes no user or password from the environment still holds.
 
-    The reader sends the password as basic auth, in base64, which the mask
-    does not match, and its error repeats the whole body of a refusal. So a
-    service that writes its request headers back hands the password over.
-    The password is written in the file here, since the server refuses one
+    The reader sends the user and the password as basic auth, in base64, which
+    the mask does not match, and its error repeats the whole body of a
+    refusal. So a service that writes its request headers back hands both
+    over. Both are written in the file here, since the server refuses either
     from its environment for Trino.
     """
     monkeypatch.chdir(tmp_path)
     (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
-    password = "QzXj-Vk_Wq.Zx"
+    user, password = "Vq7-Jx.Wz_Kp", "QzXj-Vk_Wq.Zx"
     trino = _Reader(
         _Http,
         _echoed("Unauthorized."),
-        "trino+https://u@127.0.0.1:{port}/c?verify=false",
+        f"trino+https://{user}@127.0.0.1:{{port}}/c?verify=false",
         _TRINO_READ,
         credential=f"  password: {password}\n",
         tls=True,
@@ -660,4 +662,4 @@ def test_the_trino_reader_repeats_a_password_a_service_writes_back(
         (answer,) = _run_all([("trino.yaml", "run_comparison", {})], _settings(tmp_path, {}))
 
     assert recording.received
-    assert holds_piece(answer, password) == "the password basic auth, as written"
+    assert base64.b64encode(f"{user}:{password}".encode()).decode() in answer

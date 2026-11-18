@@ -2196,7 +2196,7 @@ _PASSWORD_READERS: Final = frozenset(
     {"postgres", "postgresql", "mysql", "mssql", "oracle", "clickhouse"}
 )
 """The ConnectorX readers, by the name `connectorx_url` gives, that may take a
-database password from a `${NAME}` on the server, in `password` or in the uri.
+`${NAME}` on the server, in `password` or as the uri's user or password.
 
 `connectorx_url` drops a `+suffix` and reads `redshift` as `postgresql`, so
 Redshift is here as `postgresql`, and `redshift-iam` is not. What each reader
@@ -2217,7 +2217,8 @@ sends, and what its error says:
 Trino is not here. Its reader sends the user and password as basic auth,
 base64 the mask does not match, to whatever host and port the uri names, and
 its error repeats the whole body of a refusal. So a service on an allowed
-host that writes its request headers back would hand the password over.
+host that writes its request headers back would hand both over, the user
+too when the password is written in the file.
 
 tests/integration/test_mcp_password_echo.py and
 tests/integration/test_mcp_password_servers.py are the proof. A reader joins
@@ -2753,26 +2754,26 @@ def _load_checked(
     A SQLite file has no password. The driver reads a database side's
     `password` into the file's path, which the system resolves, so a message
     could repeat the value with a `/` changed or a `..` folded away. So a
-    `${NAME}` in the `password` of a SQLite side is refused too. So is one in
-    the `password`, or the uri's password, of any other side whose reader is
-    not in `_PASSWORD_READERS`, since no test shows that reader never repeats
-    it.
+    `${NAME}` in the `password` of a SQLite side is refused too. So is any
+    `${NAME}` of any other database side, in `password` or as the uri's user
+    or password, whose reader is not in `_PASSWORD_READERS`, since no test
+    shows that reader never repeats it. Trino's reader sends the user beside
+    the password as basic auth, in base64 the mask does not match.
 
     Raises:
         ConfigError: If a reference stands outside a credential setting, or in
-            the `password` of a SQLite side. Also if it stands in the
-            `password`, or the uri's password, of a database side whose reader
-            no test has probed.
+            the `password` of a SQLite side. Also if it stands anywhere in a
+            database side whose reader no test has probed.
     """
-    references: list[tuple[Reference, bool]] = []
+    references: list[Reference] = []
 
     def check_and_keep(reference: Reference, match: re.Match[str]) -> None:
         _record_and_check(reference, match)
-        references.append((reference, _slot(reference, match) in ("secret", "uri password")))
+        references.append(reference)
 
     loaded = load_config_with_hook(resolved, unset_env=unset, on_reference=check_and_keep)
     sides = {"source": loaded[1], "target": loaded[2]}
-    for reference, password in references:
+    for reference in references:
         side = sides.get(str(reference.path[0]))
         if (
             reference.path[1:] == ("password",)
@@ -2787,17 +2788,16 @@ def _load_checked(
                 locations=(ConfigLocation(path=reference.path),),
             )
         elif (
-            password
-            and isinstance(side, DatabaseConfig)
+            isinstance(side, DatabaseConfig)
             and connectorx_url(side).scheme not in _PASSWORD_READERS
         ):
             where = " -> ".join(str(step) for step in reference.path)
             raise ConfigError(
-                f"On veridelta mcp, {where} cannot take ${{{reference.name}}} for this uri. A "
-                "test shows that no reader of a PostgreSQL, Redshift, MySQL, SQL Server, Oracle, "
-                "or ClickHouse uri repeats a password, so the server takes one from its "
-                "environment only for those. Use one of their schemes, such as mysql:// for "
-                "MariaDB, or run the configuration with veridelta run.",
+                f"On veridelta mcp, {where} cannot take ${{{reference.name}}} for this uri. The "
+                "server takes a user or a password from its environment only for a reader a test "
+                "has driven. Those read a PostgreSQL, Redshift, MySQL, SQL Server, Oracle, or "
+                "ClickHouse uri. Use one of their schemes, such as mysql:// for MariaDB, or run "
+                "the configuration with veridelta run.",
                 locations=(ConfigLocation(path=reference.path),),
             )
     return loaded
