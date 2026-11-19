@@ -111,6 +111,7 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [The MCP server confirms which DuckDB file DuckDB opened](decisions/mcp-confirms-the-duckdb-file-opened.md)
 - [The MCP server takes a ${NAME} only as the whole value of a credential setting](decisions/mcp-takes-environment-values-only-in-credential-settings.md)
 - [The MCP server masks the credentials its readers take from its environment](decisions/mcp-masks-reader-credentials-from-its-environment.md)
+- [The MCP server takes a free-text password from its environment only for a probed reader](decisions/mcp-takes-a-free-text-password-only-for-a-probed-reader.md)
 - [The lockfile covers only the Pythons CI tests, and not Emscripten](decisions/lock-covers-the-tested-pythons.md)
 - [The MCP server refuses a credential too short to mask, and masks each URL login in its environment](decisions/mcp-masks-url-logins-and-refuses-short-logins.md)
 

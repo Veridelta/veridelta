@@ -59,7 +59,7 @@ from veridelta import __version__, mcp_server
 from veridelta.config import load_config, load_config_with_hook
 from veridelta.connectors import base, database
 from veridelta.connectors import duckdb as duckdb_connector
-from veridelta.connectors.database import sqlite_path
+from veridelta.connectors.database import connectorx_url, sqlite_path
 from veridelta.connectors.duckdb import (
     MOTHERDUCK_TOKEN_VARIABLES,
     DuckDBPushdownSession,
@@ -7208,6 +7208,189 @@ class TestEnvironmentReferences:
         windows = {folded[i : i + 6] for i in range(len(folded) - 5)}
         for text in (shown.casefold(), unquote(shown).casefold()):
             assert not any(window in text for window in windows)
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "mariadb://u@db.internal/x",
+            "cockroach://u@db.internal/x",
+            "duckdb://u@db.internal/x",
+            "snowflake://u@db.internal/x",
+            "redshift-iam://u@db.internal/x",
+            "trino://u@db.internal/x",
+            "trino+https://u@db.internal/x?verify=false",
+        ],
+    )
+    @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
+    def test_it_refuses_a_password_from_the_environment_for_an_unprobed_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str, is_set: bool
+    ) -> None:
+        """Ensure a `${NAME}` password reaches only a reader a test shows never repeats it.
+
+        The refusal comes at the load, whether the variable is set or not, and
+        names the setting and the variable, never the value or the scheme.
+        """
+        password = "Hunter2'Secret\\Pass{word}"
+        if is_set:
+            monkeypatch.setenv("V_PASSWORD", password)
+        else:
+            monkeypatch.delenv("V_PASSWORD", raising=False)
+        _with_source(
+            tmp_path,
+            f"  type: database\n  uri: {uri}\n  query: select 1 as id\n"
+            "  password: ${V_PASSWORD}\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS),
+            {"path": "veridelta.yaml", "allow_missing_env": not is_set},
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert report["errors"][0].startswith(
+            "On veridelta mcp, source -> password cannot take ${V_PASSWORD} for this uri."
+        )
+        assert report["findings"][0]["locations"] == [{"path": ["source", "password"]}]
+        shown = _shown(result).casefold()
+        folded = password.casefold()
+        assert not any(folded[i : i + 6] in shown for i in range(len(folded) - 5))
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "trino://u:${V_PASSWORD}@db.internal/x",
+            "trino+https://u:${V_PASSWORD}@db.internal/x?verify=false",
+            "mariadb://u:${V_PASSWORD}@db.internal/x",
+        ],
+    )
+    @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
+    def test_it_refuses_a_uri_password_from_the_environment_for_an_unprobed_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str, is_set: bool
+    ) -> None:
+        """Ensure a `${NAME}` uri password reaches only a reader a test shows never repeats it.
+
+        Trino's reader sends it as basic auth, in base64 the mask does not
+        match, and repeats a service's whole refusal, which can hold the header.
+        """
+        password = "Hunter2-Secret.Pass_word"
+        if is_set:
+            monkeypatch.setenv("V_PASSWORD", password)
+        else:
+            monkeypatch.delenv("V_PASSWORD", raising=False)
+        _with_source(tmp_path, f'  type: database\n  uri: "{uri}"\n  query: select 1 as id\n')
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS),
+            {"path": "veridelta.yaml", "allow_missing_env": not is_set},
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert report["errors"][0].startswith(
+            "On veridelta mcp, source -> uri cannot take ${V_PASSWORD} for this uri."
+        )
+        assert report["findings"][0]["locations"] == [{"path": ["source", "uri"]}]
+        shown = _shown(result).casefold()
+        encoded = base64.b64encode(f"u:{password}".encode()).decode().casefold()
+        folded = password.casefold()
+        assert not any(folded[i : i + 6] in shown for i in range(len(folded) - 5))
+        assert encoded not in shown
+
+    @pytest.mark.parametrize(
+        "uri",
+        [
+            "trino://${V_USER}@db.internal/x",
+            "trino+https://${V_USER}@db.internal/x?verify=false",
+            "mariadb://${V_USER}@db.internal/x",
+        ],
+    )
+    @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
+    def test_it_refuses_a_uri_user_from_the_environment_for_an_unprobed_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str, is_set: bool
+    ) -> None:
+        """Ensure a `${NAME}` uri user reaches only a reader a test has driven.
+
+        Beside a password in the file, Trino's reader sends the user as basic
+        auth too, in base64 the mask does not match, so an agent could name
+        any variable whose value has a user's shape and read it back.
+        """
+        user = "Pa55-word.Secret9"
+        if is_set:
+            monkeypatch.setenv("V_USER", user)
+        else:
+            monkeypatch.delenv("V_USER", raising=False)
+        _with_source(
+            tmp_path,
+            f'  type: database\n  uri: "{uri}"\n  query: select 1 as id\n  password: KnownPw-123\n',
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS),
+            {"path": "veridelta.yaml", "allow_missing_env": not is_set},
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert report["errors"][0].startswith(
+            "On veridelta mcp, source -> uri cannot take ${V_USER} for this uri."
+        )
+        assert report["findings"][0]["locations"] == [{"path": ["source", "uri"]}]
+        shown = _shown(result).casefold()
+        encoded = base64.b64encode(f"{user}:KnownPw-123".encode()).decode().casefold()
+        folded = user.casefold()
+        assert not any(folded[i : i + 6] in shown for i in range(len(folded) - 5))
+        assert encoded not in shown
+
+    _PROBED_URIS = (
+        "postgres://u@db.internal/x",
+        "postgresql://u@db.internal/x",
+        "postgresql+psycopg://u@db.internal/x",
+        "redshift://u@db.internal/x",
+        "xredshift://u@db.internal/x",
+        "mysql://u@db.internal/x",
+        "mssql://u@db.internal/x",
+        "oracle://u@db.internal/svc",
+        "clickhouse://u@db.internal/x",
+    )
+    """A uri for each reader in `_PASSWORD_READERS`, in each form ConnectorX reads it by."""
+
+    @pytest.mark.parametrize("uri", _PROBED_URIS)
+    def test_it_takes_a_password_from_the_environment_for_each_probed_reader(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str
+    ) -> None:
+        """Ensure a `${NAME}` password of any characters loads for each reader a test probes."""
+        monkeypatch.setenv("V_PASSWORD", "Hunter2'Secret\\Pass{word}")
+        _with_source(
+            tmp_path,
+            f"  type: database\n  uri: {uri}\n  query: select 1 as id\n"
+            "  password: ${V_PASSWORD}\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS), {"path": "veridelta.yaml"}
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is True
+        assert not any(
+            location == {"path": ["source", "password"]}
+            for finding in report["findings"]
+            for location in finding["locations"]
+        )
+
+    def test_the_probed_uris_name_every_password_reader(self) -> None:
+        """Ensure the uris above and `_PASSWORD_READERS` name the same readers, so neither drifts."""
+        readers = {
+            connectorx_url(DatabaseConfig(uri=uri, query="select 1", password="x")).scheme
+            for uri in self._PROBED_URIS
+        }
+
+        assert readers == mcp_server._PASSWORD_READERS  # pyright: ignore[reportPrivateUsage]  # the list is private to the server
 
     def test_it_masks_from_its_own_load_and_not_from_a_second_read_of_the_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
