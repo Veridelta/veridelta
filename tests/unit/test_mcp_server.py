@@ -14,6 +14,7 @@ import getpass
 import glob
 import html
 import importlib.util
+import itertools
 import json
 import logging
 import ntpath
@@ -7057,6 +7058,37 @@ class TestEnvironmentReferences:
         assert pattern is not None
         assert pattern.sub("***", "Hunter2%FFSecretPass") == "***"
 
+    @pytest.mark.parametrize("encoded", list(itertools.product((False, True), repeat=3)))
+    def test_it_masks_a_token_with_some_characters_encoded(
+        self, encoded: tuple[bool, bool, bool]
+    ) -> None:
+        """Ensure a token is masked with each of `+`, `/`, and `=` raw or encoded, in every mix.
+
+        An encoder can encode some characters and keep others, as ConnectorX
+        keeps a `+` and encodes a `/` or a `=`, so the whole encoding and the
+        raw text are not the only forms a reader sends.
+        """
+        token = "Qz+Xj/Vk=Wq+Zx/Jv=Kw"
+        pattern = mcp_server._mask_pattern(frozenset({token}))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+        text = token
+        for character, encode in zip("+/=", encoded, strict=True):
+            if encode:
+                text = text.replace(character, quote(character, safe="").lower(), 1)
+                text = text.replace(character, quote(character, safe=""))
+
+        assert pattern is not None
+        assert pattern.sub("***", f"key: {text}.") == "key: ***."
+
+    def test_it_masks_a_password_with_some_characters_encoded(self) -> None:
+        """Ensure a password is masked with each character but a letter or a digit raw or encoded."""
+        password = "p@ss é+%~-"
+        pattern = mcp_server._mask_pattern(frozenset({password}))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+
+        assert pattern is not None
+        assert pattern.sub("***", "p%40ss %C3%A9+%25~%2D") == "***"
+        assert pattern.sub("***", "p@ss%20é%2b%~-") == "***"
+        assert pattern.sub("***", "p@ss é+%~") == "p@ss é+%~"
+
     def test_it_takes_an_empty_credential(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -7363,8 +7395,14 @@ class TestEnvironmentReferences:
     def test_it_takes_a_password_from_the_environment_for_each_probed_reader(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str
     ) -> None:
-        """Ensure a `${NAME}` password of any characters loads for each reader a test probes."""
-        monkeypatch.setenv("V_PASSWORD", "Hunter2'Secret\\Pass{word}")
+        """Ensure a `${NAME}` password of any characters loads for each reader a test probes.
+
+        ClickHouse takes only the characters ConnectorX sends as written, as
+        the test below shows.
+        """
+        clickhouse = uri.startswith("clickhouse")
+        password = "Hunter2'Secret*Pass(word)" if clickhouse else "Hunter2'Secret\\Pass{word}"
+        monkeypatch.setenv("V_PASSWORD", password)
         _with_source(
             tmp_path,
             f"  type: database\n  uri: {uri}\n  query: select 1 as id\n"
@@ -7383,6 +7421,34 @@ class TestEnvironmentReferences:
             for finding in report["findings"]
             for location in finding["locations"]
         )
+
+    @pytest.mark.parametrize("character", ["\\", "{", "@", "/", "=", " ", "é"])
+    def test_it_refuses_a_clickhouse_password_from_the_environment_it_cannot_send(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, character: str
+    ) -> None:
+        """Ensure a ClickHouse `${NAME}` password with a character ConnectorX would encode is refused.
+
+        docs/agents.md says a `password` takes any text except on a ClickHouse
+        side, so the refusal names the characters a ClickHouse password takes,
+        and never the password.
+        """
+        password = f"Hunter2Secret{character}Password"
+        monkeypatch.setenv("V_PASSWORD", password)
+        _with_source(
+            tmp_path,
+            "  type: database\n  uri: clickhouse://u@db.internal/x\n  query: select 1 as id\n"
+            "  password: ${V_PASSWORD}\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS), {"path": "veridelta.yaml"}
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert "A ClickHouse password can hold only" in _text(result)
+        assert password not in _shown(result)
 
     def test_the_probed_uris_name_every_password_reader(self) -> None:
         """Ensure the uris above and `_PASSWORD_READERS` name the same readers, so neither drifts."""

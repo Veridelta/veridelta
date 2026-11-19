@@ -11,13 +11,16 @@ used only when its URI is set, in `VERIDELTA_MYSQL_URI`,
 job set them. Every other run skips these tests. Each read passes the URI's
 password through `password`, so a password holding `@`, `:`, or `/` checks
 the percent-encoding against the real driver. ConnectorX sends a ClickHouse
-password without decoding it, so ClickHouse's own password needs no
-encoding, and one test pins that limit.
+password without decoding it, so Veridelta writes one into the URI as
+written and refuses, before it connects, one with a character ConnectorX
+would encode. Two tests sign in to ClickHouse with every symbol it takes,
+and one checks the refusal.
 """
 
 import os
 import re
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -28,9 +31,10 @@ from uuid import uuid4
 
 import polars as pl
 import pytest
+from pytest_mock import MockerFixture
 
 from veridelta.engine import DiffEngine, LoaderFactory
-from veridelta.exceptions import ConnectorError
+from veridelta.exceptions import ConfigError, ConnectorError
 from veridelta.models import DatabaseConfig, DiffConfig, DiffRule, SourceConfig
 
 pytestmark = [pytest.mark.integration]
@@ -283,6 +287,30 @@ def _create_clickhouse_table(
     return name
 
 
+@contextmanager
+def _clickhouse_user(server: _Server, table: str, password: str) -> Iterator[tuple[str, str, str]]:
+    """Create a ClickHouse user with the password, who may read the table, and drop it after.
+
+    The password goes into the `CREATE USER` statement as a string literal,
+    with each backslash and quote escaped.
+
+    Yields:
+        tuple[str, str, str]: The user's name, the server's host and port, and the database.
+    """
+    parts = urlsplit(server.uri or "")
+    user = f"vd_{uuid4().hex[:12]}"
+    database = parts.path.lstrip("/")
+    literal = password.replace("\\", "\\\\").replace("'", "\\'")
+    client = server.connect()
+    client.command(f"CREATE USER {user} IDENTIFIED BY '{literal}'")
+    try:
+        client.command(f"GRANT SELECT ON {database}.{server.quoted(table)} TO {user}")
+        yield user, parts.netloc.rpartition("@")[2], database
+    finally:
+        client.command(f"DROP USER {user}")
+        client.close()
+
+
 def _types_rows(server: _Server) -> list[list[Any]]:
     """Return a row of values, a row of NULLs, and a second row of values.
 
@@ -501,39 +529,56 @@ class TestDatabaseServers:
         assert password not in str(info.value)
         assert quote(password, safe="") not in str(info.value)
 
-    def test_it_cannot_send_a_clickhouse_password_that_needs_percent_encoding(
-        self, server: _Server, create_table: _CreateTable
+    @pytest.mark.parametrize("form", ["password", "uri"])
+    def test_it_signs_in_to_clickhouse_with_each_symbol_a_password_takes(
+        self, server: _Server, create_table: _CreateTable, form: str
     ) -> None:
-        """Pin the ConnectorX limit the sources guide states for ClickHouse.
+        """Ensure a ClickHouse password with every symbol Veridelta takes signs in.
 
-        ConnectorX passes a ClickHouse URI's password on still percent-encoded,
-        so a password holding `@`, `:`, `/`, or `#` reaches the server encoded
-        and the server refuses it. When ConnectorX decodes it, this read
-        succeeds, this test fails, and the guide needs updating.
+        The password reaches the reader through the `password` setting, or
+        percent-encoded into the URI. It holds a `%2B` too, which reaches
+        ClickHouse as written. Each read returns the table's row.
         """
         if server.scheme != "clickhouse":
-            pytest.skip("The limit is ConnectorX's ClickHouse source's.")
+            pytest.skip("Only a ClickHouse password goes into the URI as written.")
         table = create_table({"id": "Int32"}, [[1]])
-        user = f"vd_{uuid4().hex[:12]}"
+        password = "Vd!$%&'()*+,._~-%2B1"
+        with _clickhouse_user(server, table, password) as (user, host, database):
+            if form == "password":
+                source = DatabaseConfig(
+                    uri=f"clickhouse://{user}@{host}/{database}", password=password, table=table
+                )
+            else:
+                login = f"{user}:{quote(password, safe='')}"
+                source = DatabaseConfig(uri=f"clickhouse://{login}@{host}/{database}", table=table)
+
+            assert LoaderFactory.load(source).collect()["id"].to_list() == [1]
+
+    def test_it_refuses_a_clickhouse_password_it_cannot_send_before_connecting(
+        self, server: _Server, create_table: _CreateTable, mocker: MockerFixture
+    ) -> None:
+        """Ensure a ClickHouse password the reader would send encoded is refused unread.
+
+        The server holds a user with the password `Vd@pass:w/rd#1`, which
+        ConnectorX would send percent-encoded. Veridelta refuses it before
+        any read, and the message holds neither the password nor its encoding.
+        """
+        if server.scheme != "clickhouse":
+            pytest.skip("Only a ClickHouse password goes into the URI as written.")
+        table = create_table({"id": "Int32"}, [[1]])
         password = "Vd@pass:w/rd#1"
-        database = urlsplit(server.uri or "").path.lstrip("/")
-        client = server.connect()
-        client.command(f"CREATE USER {user} IDENTIFIED BY '{password}'")
-        try:
-            client.command(f"GRANT SELECT ON {database}.{server.quoted(table)} TO {user}")
-            host = urlsplit(server.uri or "").netloc.rpartition("@")[2]
+        with _clickhouse_user(server, table, password) as (user, host, database):
+            read = mocker.spy(pl, "read_database_uri")
             source = DatabaseConfig(
                 uri=f"clickhouse://{user}@{host}/{database}", password=password, table=table
             )
 
-            with pytest.raises(ConnectorError, match=re.escape(source.redacted_uri)) as info:
+            with pytest.raises(ConfigError, match="A ClickHouse password can hold only") as info:
                 LoaderFactory.load(source)
 
+            read.assert_not_called()
             assert password not in str(info.value)
             assert quote(password, safe="") not in str(info.value)
-        finally:
-            client.command(f"DROP USER {user}")
-            client.close()
 
     def test_it_refuses_a_decimal_beyond_the_read_precision(
         self, server: _Server, create_table: _CreateTable

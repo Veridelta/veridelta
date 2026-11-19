@@ -1886,8 +1886,9 @@ class DatabaseConfig(BaseModel):
             masked when the config is printed, but kept by `model_dump()`,
             which the connector needs.
         password (str | None): Optional password, percent-encoded into the
-            URI's user information when the connector reads. Left out when the
-            config is printed, but kept by `model_dump()`.
+            URI's user information when the connector reads, or written as it
+            is for ClickHouse, whose reader sends it undecoded. Left out when
+            the config is printed, but kept by `model_dump()`.
         table (str | None): Table or view to read whole, as one to three
             unquoted identifier segments.
         query (str | None): SQL statement to run instead, sent to the database
@@ -1912,7 +1913,10 @@ class DatabaseConfig(BaseModel):
     password: str | None = Field(
         default=None,
         repr=False,
-        description="Optional password, percent-encoded into the URI when the source is read.",
+        description=(
+            "Optional password, put into the URI when the source is read: percent-encoded, "
+            "or as written for ClickHouse."
+        ),
     )
     table: str | None = Field(
         default=None,

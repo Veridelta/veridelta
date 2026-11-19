@@ -613,7 +613,16 @@ def connection_uri(config: DatabaseConfig) -> str:
 
     Returns:
         str: `uri`, with `password` percent-encoded into its login when set.
+            A ClickHouse URI holds its password as written instead, as
+            `_clickhouse_uri` says.
+
+    Raises:
+        ConfigError: If a ClickHouse password holds a character ConnectorX
+            would send percent-encoded.
     """
+    read = _connectorx_parts(config.uri)
+    if _reader(read) == _CLICKHOUSE_SCHEME:
+        return _clickhouse_uri(config, read)
     password = config.password
     if password is None:
         return config.uri
@@ -622,6 +631,50 @@ def connection_uri(config: DatabaseConfig) -> str:
     user, _, host = parts.netloc.rpartition("@")
     netloc = f"{user}:{quote(password, safe='')}@{host}"
     return urlunsplit(parts._replace(netloc=netloc))
+
+
+_CLICKHOUSE_PASSWORD: Final = re.compile(r"[A-Za-z0-9!$%&'()*+,._~-]*")
+"""A ClickHouse password that ConnectorX sends as written.
+
+ConnectorX's URL parser keeps these characters in a URI's password as they
+are, a `%` included, and percent-encodes every other one. ConnectorX then
+sends the password in the `X-ClickHouse-Key` header without decoding it."""
+
+
+def _clickhouse_uri(config: DatabaseConfig, parts: SplitResult) -> str:
+    """Return a ClickHouse URI whose login holds the password as written.
+
+    ConnectorX sends a ClickHouse password without decoding it, so the
+    password goes into the login unencoded: the `password` field as written,
+    or the URI's own password decoded. A password with a character outside
+    `_CLICKHOUSE_PASSWORD` cannot reach ClickHouse whole, so it is refused
+    before any connection.
+
+    Args:
+        config (DatabaseConfig): A database source ConnectorX reads as ClickHouse.
+        parts (SplitResult): Its URI as ConnectorX parses it, with the scheme as written.
+
+    Returns:
+        str: The URI with its password unencoded, or `uri` when there is no password.
+
+    Raises:
+        ConfigError: If the password holds a character outside `_CLICKHOUSE_PASSWORD`.
+    """
+    password = config.password if parts.password is None else unquote(parts.password)
+    if password is None:
+        return config.uri
+    if _CLICKHOUSE_PASSWORD.fullmatch(password) is None:
+        # The message names neither the password nor the character, which is part of it.
+        raise ConfigError(
+            "A ClickHouse password can hold only letters, digits, and the characters "
+            "! $ % & ' ( ) * + , . _ ~ -. ConnectorX sends a ClickHouse password "
+            "percent-encoded as its uri holds it, so ClickHouse refuses one with any other "
+            "character. Give the reading user a password of those characters only."
+        )
+    # The model guarantees a user name whenever `password` is set.
+    login, _, host = parts.netloc.rpartition("@")
+    user = login.partition(":")[0]
+    return urlunsplit(parts._replace(netloc=f"{user}:{password}@{host}"))
 
 
 _CREDENTIAL_PARAMETERS: Final = ("pass", "pwd", "secret", "token", "key")
@@ -661,12 +714,21 @@ def connectorx_url(config: DatabaseConfig) -> SplitResult:
     Returns:
         SplitResult: The URI's parts, with the reader's name for a scheme.
     """
-    uri = connection_uri(config)
+    parts = _connectorx_parts(connection_uri(config))
+    return parts._replace(scheme=_reader(parts))
+
+
+def _connectorx_parts(uri: str) -> SplitResult:
+    """Split `uri` as ConnectorX parses it, with its scheme as written."""
     backend, _, rest = uri.partition(":")
     if "redshift" in backend and "-iam" not in backend:
         uri = f"postgresql:{rest}"
-    parts = urlsplit(uri.strip(_URL_TRIMMED).translate(_URL_REMOVED))
-    return parts._replace(scheme=parts.scheme.split("+")[0])
+    return urlsplit(uri.strip(_URL_TRIMMED).translate(_URL_REMOVED))
+
+
+def _reader(parts: SplitResult) -> str:
+    """Name the reader ConnectorX picks for a URI it parsed: its scheme, up to the first `+`."""
+    return parts.scheme.split("+")[0]
 
 
 def sqlite_path(config: DatabaseConfig) -> str | None:

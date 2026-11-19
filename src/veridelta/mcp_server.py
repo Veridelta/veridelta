@@ -3006,8 +3006,8 @@ _FIELD_SLOTS: Final[Mapping[tuple[str, str | int], _Slot]] = {
 
 A password or a passphrase takes free text, since no reader repeats one. A
 database password, from the `password` setting or the uri, reaches only
-ConnectorX, percent-encoded into the uri by `connection_uri`, and only for a
-reader in `_PASSWORD_READERS`. A Snowflake password or passphrase reaches
+ConnectorX, through the uri `connection_uri` writes, and only for a reader
+in `_PASSWORD_READERS`. A Snowflake password or passphrase reaches
 only `snowflake.connector.connect`. The corpus tests drive each of those
 readers with a wrong password of every character class, against a service
 that refuses it, and no answer holds 4 characters in a row of it. They drive
@@ -3040,10 +3040,12 @@ sends, and what its error says:
 - mysql: a scramble only. The driver refuses `mysql_clear_password`. ERR 1045
   names the user, never the password.
 - mssql: tiberius sends LOGIN7, and the error is "Timed out in bb8".
-- clickhouse: the `x-clickhouse-key` header, percent-encoded as
-  `connection_uri` wrote it, which the mask matches. The server says
+- clickhouse: the `x-clickhouse-key` header, with the password as written,
+  since `connection_uri` writes it unencoded and refuses one with a
+  character ConnectorX would encode. The mask matches it. The server says
   "Authentication failed", and the error repeats the whole body of a refusal,
-  so a service that writes the header back shows only the mask.
+  so a service that writes the header back shows only the mask, even with
+  some characters encoded and others raw.
 - oracle: ODPI-C. The error is DPI-1047 when there is no client, and
   ORA-01017 is fixed text. CI does not reach Oracle's network path.
 
@@ -4239,8 +4241,12 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     A value's forms are its text, its percent-encoding, its form encoding,
     where `~` becomes `%7E`, as object_store writes an OAuth request's body,
     its bytes in hex with a space between each, as S3 writes a request it
-    could not verify, and the `sig` of a SAS token. A byte outside UTF-8 is encoded as it was
-    read, so no value stops the pattern from being built.
+    could not verify, and the `sig` of a SAS token. A value of 4 or more
+    characters is also matched with each character but an ASCII letter or
+    digit raw or percent-encoded, in any mix, by `_partly_encoded`. An encoder
+    can encode some characters and keep others, as ConnectorX keeps a `+` and
+    encodes a `/` or a `=`. A byte outside UTF-8 is encoded as it was read, so
+    no value stops the pattern from being built.
 
     No head of a value is a form. A head would let an agent learn a value one
     character per call, by naming guesses as columns and seeing which come
@@ -4248,7 +4254,7 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
     header, so a head would mask other data for as long as the server runs.
     """
     forms = {
-        form
+        re.escape(form): len(form)
         for value in values
         for form in (
             value,
@@ -4259,12 +4265,36 @@ def _mask_pattern(values: frozenset[str]) -> re.Pattern[str] | None:
         )
         if len(form) >= _SHORTEST_MASKED
     }
+    forms.update(_partly_encoded(value) for value in values if len(value) >= _SHORTEST_MASKED)
     if not forms:
         return None
-    ordered = sorted(forms, key=len, reverse=True)
+    # The longest text an alternative matches goes first.
+    ordered = sorted(forms, key=lambda form: forms[form], reverse=True)
     # Matching in any case can mask more than the value, which is the safe side
     # here, unlike the check of a scheme or a host, which matches ASCII only.
-    return re.compile("|".join(map(re.escape, ordered)), re.IGNORECASE)
+    return re.compile("|".join(ordered), re.IGNORECASE)
+
+
+def _partly_encoded(value: str) -> tuple[str, int]:
+    """Return a pattern of `value` with each character but an ASCII letter or digit raw or percent-encoded.
+
+    Every raw character a match holds is the value's own, in its place, so a
+    match holds or borders a `://` or holds a `?` only where the value does.
+
+    Returns:
+        tuple[str, int]: The pattern, and the length of the longest text it matches.
+    """
+    parts: list[str] = []
+    longest = 0
+    for character in value:
+        if character.isascii() and character.isalnum():
+            parts.append(character)
+            longest += 1
+            continue
+        encoded = "".join(f"%{byte:02X}" for byte in character.encode(errors="surrogateescape"))
+        parts.append(f"(?:{encoded}|{re.escape(character)})")
+        longest += len(encoded)
+    return "".join(parts), longest
 
 
 _ECHOED_CREDENTIAL: Final = re.compile(

@@ -88,7 +88,7 @@ export VERIDELTA_MSSQL_URI='mssql://sa:Veridelta-2026@127.0.0.1:1433/master?encr
 make databases
 ```
 
-A server whose variable is not set is skipped. CI runs the tests against a `mysql:8.4` service, a `mariadb:11.4` service, a SQL Server 2022 service, and a `clickhouse-server:26.8` service on every pull request. Every password there but ClickHouse's holds `@`, `:`, `/`, and `#`, so each read checks that a password reaches the driver intact. ClickHouse's needs no encoding, and a test pins that ConnectorX refuses one that does.
+A server whose variable is not set is skipped. CI runs the tests against a `mysql:8.4` service, a `mariadb:11.4` service, a SQL Server 2022 service, and a `clickhouse-server:26.8` service on every pull request. Every password there but ClickHouse's holds `@`, `:`, `/`, and `#`, so each read checks that a password reaches the driver intact. ConnectorX sends a ClickHouse password without decoding it, so Veridelta refuses one with such a character before it connects. A test signs in to ClickHouse with every symbol Veridelta takes in its password, and another checks the refusal.
 
 ### Accessibility
 
