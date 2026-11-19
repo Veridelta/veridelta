@@ -10429,6 +10429,75 @@ def _describe_read(root: Path, source: str, read: MagicMock) -> None:
     assert read.call_count == 2
 
 
+_WEBHDFS_REFUSAL = "The {} table_uri names a Delta Lake table in WebHDFS."
+"""The start of the refusal of a Delta Lake side in WebHDFS, with the side to fill in."""
+
+
+class TestWebHdfsTables:
+    """Validate the rule that refuses a Delta Lake table in WebHDFS, whose reader does not connect to the URI's host.
+
+    deltalake's WebHDFS reader connects to the namenode its endpoint option
+    names, or to `127.0.0.1:9870` without one, and then to any datanode the
+    namenode names, so the host the server checks is not the one it reaches.
+    """
+
+    @pytest.mark.parametrize(
+        "table_uri",
+        [
+            "webhdfs://h/secret-t",
+            "opendal+webhdfs://h/secret-t",
+            "WebHDFS://h:9870/secret-t",
+            "OPENDAL+WEBHDFS://h/secret-t",
+            " webhdfs://h/secret-t",
+            "web\thdfs://h/secret-t",
+        ],
+        ids=["webhdfs", "opendal", "mixed-case", "upper-case", "leading-space", "tab"],
+    )
+    def test_it_refuses_a_table_in_webhdfs_on_an_allowed_host(
+        self, tmp_path: Path, mocker: MockerFixture, table_uri: str
+    ) -> None:
+        """Ensure a WebHDFS table is refused before it is listed, though its host is given with --allow-host.
+
+        The scheme is read as deltalake reads it, in any case, after leading
+        spaces, and with a tab removed. The refusal names the setting and
+        leaves the URI out.
+        """
+        read = _read_stubbed(mocker)
+
+        message = _describe_refused(
+            tmp_path, f"  type: delta\n  table_uri: {json.dumps(table_uri)}\n"
+        )
+
+        assert message.startswith(_WEBHDFS_REFUSAL.format("source"))
+        assert "secret" not in message
+        read.assert_not_called()
+
+    @_REFERENCE_TOOLS
+    def test_each_tool_refuses_a_table_in_webhdfs(
+        self, tmp_path: Path, mocker: MockerFixture, tool: str, arguments: dict[str, Any]
+    ) -> None:
+        """Ensure each tool that opens a side refuses a WebHDFS target before any reader lists it."""
+        listed = mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+        _remote(tmp_path, "  type: delta\n  table_uri: opendal+webhdfs://h/t\n")
+
+        result = _call(_endpoint_settings(), {"path": "veridelta.yaml", **arguments}, tool)
+
+        assert result.is_error
+        assert _WEBHDFS_REFUSAL.format("target") in _text(result)
+        listed.assert_not_called()
+
+    def test_it_leaves_a_uri_that_does_not_parse_to_the_host_check(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure a WebHDFS URI whose authority does not parse is still refused, by the host check."""
+        read = _read_stubbed(mocker)
+
+        message = _describe_refused(tmp_path, "  type: delta\n  table_uri: 'webhdfs://[::1/t'\n")
+
+        assert message.startswith("The source table_uri does not name its host")
+        read.assert_not_called()
+
+
 class TestEnvironmentEndpoints:
     """Validate the rule that holds each endpoint a reader takes from the server's environment to the allowed hosts.
 
