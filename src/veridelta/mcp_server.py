@@ -2410,16 +2410,17 @@ COS store sends the token in the other two names' file to Tencent Cloud's
 STS, as its binary shows, not probed. Neither store is reached on the
 server yet, as `_READER_ONLY_VARIABLES` says."""
 
-_LOGIN_IN_URL: Final = re.compile(r"://([^/?#]*)@([^/?#\s]*)")
+_LOGIN_IN_URL: Final = re.compile(r"://([^/?#]*)@([^/?#\s,|]*)")
 """A URL's login and the host after it.
 
 The login runs to the last `@` before the first `/`, `?`, or `#`, as urlsplit, object_store,
-and botocore split it, so it can hold a space. The match starts only at a `://`, so a long
+and botocore split it, so it can hold a space. The host ends where the URL can: at whitespace,
+and at a `,` or a `|`, which join the entries of a list such as `GOPROXY`. The match starts only at a `://`, so a long
 value is read in linear time, and no form recorded as written holds the `://` that
 `without_queries` finds a URL by. A password can hold one once decoded, which
 `_environment_values` refuses."""
 
-_LOGIN_AT_START: Final = re.compile(r"([^/?#]*)@([^/?#\s]*)")
+_LOGIN_AT_START: Final = re.compile(r"([^/?#]*)@([^/?#\s,|]*)")
 """A login and the host after it, at the start of the text it is matched at.
 
 It reads a proxy written with no scheme, as in user:pass@proxy:3128, which reqwest, curl,
@@ -2439,11 +2440,11 @@ scheme-relative URL, whose authority starts after the `//`."""
 _URL_START: Final = re.compile(rf"{_SCHEME.pattern}|//")
 """Where a proxy URL's authority starts, matched at the start of its value: after a scheme or a `//`."""
 
-_NEXT_URL: Final = re.compile(rf"(?<=[\s,])(?={_SCHEME.pattern})")
-"""Where a variable that is no proxy starts another URL: at a scheme after whitespace or a `,`.
+_NEXT_URL: Final = re.compile(rf"(?<=[\s,|])(?={_SCHEME.pattern})")
+"""Where a variable that is no proxy starts another URL: at a scheme after whitespace, a `,`, or a `|`.
 
-A variable can hold a list of URLs, such as `GOPROXY`, whose entries a `,` joins, or several
-URLs among other text."""
+A variable can hold a list of URLs, such as `GOPROXY`, whose entries a `,` or a `|` joins, or
+several URLs among other text."""
 
 _SPACE: Final = re.compile(r"\s")
 """Whitespace, where a URL in a variable that is no proxy or endpoint ends once its authority has."""
@@ -2855,12 +2856,15 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     `AZURE_Client_Secret` is masked and checked as object_store reads it. A
     Google key is recorded whole, and each field of it that a service can echo
     on its own too. Its JSON is never refused, since object_store's errors for
-    it quote none of its text. Each URL login in any variable is recorded by
-    `_url_login_values`. A URL login is refused, in any variable, only where
-    a client cuts it, by `_cut_url_login`, or where a form recorded of it
-    meets `_hides_a_url_mark`. Such a mask could hide part of the `://` or
-    the `?` that `without_queries` finds a URL's query by, so each URL's
-    query, a SAS token's `sig` included, would stay in the answer.
+    it quote none of its text, and it is not read for URLs: a compact key with
+    its fields sorted holds a URL that runs to `client_email`'s `@`. Each URL
+    login in any other variable is recorded by `_url_login_values`. A URL
+    login is refused, in any variable, only where a client cuts it, by
+    `_cut_url_login`, or where a form the mask is built from meets
+    `_hides_a_url_mark`: a form recorded of it, or a `sig` that
+    `_sas_signatures` takes from one. Such a mask could hide part of the
+    `://` or the `?` that `without_queries` finds a URL's query by, so each
+    URL's query, a SAS token's `sig` included, would stay in the answer.
 
     Raises:
         ConfigError: If a variable's value lacks its slot's shape, or a URL in
@@ -2872,6 +2876,10 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     for name, value in environ.items():
         if not value:
             continue
+        read_as = _name_as_read(name)
+        if read_as == _KEY_JSON_VARIABLE:
+            values.update(_key_json_values(value))
+            continue
         if _cut_url_login(name, value):
             raise ConfigError(
                 f"On veridelta mcp, the environment variable {name} must hold no '@' after a "
@@ -2881,20 +2889,24 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
                 "and an '@' in its path or query, such as '/' as %2F and '@' as %40."
             )
         logins = _url_login_values(name, value)
-        if any(map(_hides_a_url_mark, logins)):
+        masked = (
+            form
+            for login in logins
+            for form in (login, *_sas_signatures(login))
+            if len(form) >= _SHORTEST_MASKED
+        )
+        if any(map(_hides_a_url_mark, masked)):
             raise ConfigError(
                 f"On veridelta mcp, the environment variable {name} holds a URL login that the "
                 "server would mask in a form that holds '://' or '?', starts with '/', or ends "
-                "with ':' or ':/', such as a password that does once decoded. Such a mask could "
-                "hide part of the '://' or the '?' the server finds a URL's query by, so the "
-                "query would stay in the answer. Choose another password, or leave the variable "
-                "out of the environment the host starts the server with."
+                "with ':' or ':/'. A password can do so once decoded, or a 'sig=' in it, or a "
+                "host that runs into the text after it, such as another URL's scheme. Such a "
+                "mask could hide part of the '://' or the '?' the server finds a URL's query "
+                "by, so the query would stay in the answer. Choose another password, end the "
+                "host with a '/', or leave the variable out of the environment the host starts "
+                "the server with."
             )
         values.update(logins)
-        read_as = _name_as_read(name)
-        if read_as == _KEY_JSON_VARIABLE:
-            values.update(_key_json_values(value))
-            continue
         slot = _ENVIRONMENT_SLOTS.get(read_as)
         if slot is None:
             continue

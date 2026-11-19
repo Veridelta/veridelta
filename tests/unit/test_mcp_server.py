@@ -8252,6 +8252,42 @@ class TestEnvironmentCredentials:
         assert mcp_server._environment_values(os.environ) == {key}
         assert _tools(Settings((tmp_path,)))
 
+    @pytest.mark.parametrize("name", ["GOOGLE_SERVICE_ACCOUNT_KEY", "GOOGLE_Service_Account_Key"])
+    def test_it_starts_on_a_compact_key_with_sorted_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """Ensure a key written compact, with its fields sorted, starts the server and is masked.
+
+        Terraform's `jsonencode` and `jq -cS` write a key so. Its first URL
+        then runs past `client_email`'s `@` with no space to end it, which
+        would read as a cut URL login, so the key's JSON is not read for URLs.
+        """
+        key_id = "3f9c2a7e1b5d4c8a9e0f1a2b3c4d5e6f7a8b9c0d"
+        email = "reader@project.iam.gserviceaccount.com"
+        key = json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "project",
+                "private_key_id": key_id,
+                "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANQ7ledger\n"
+                "-----END PRIVATE KEY-----\n",
+                "client_email": email,
+                "client_id": "104729387462918374652",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/"
+                + quote(email, safe=""),
+                "universe_domain": "googleapis.com",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        monkeypatch.setenv(name, key)
+
+        assert {key, key_id} <= mcp_server._environment_values(os.environ)
+        assert _tools(Settings((tmp_path,)))
+
     def test_it_masks_a_rotated_token_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
@@ -8806,6 +8842,54 @@ class TestEnvironmentUrlLogins:
                 _basic(b"u:pw12"),
             }
 
+    @pytest.mark.parametrize("separator", [",", "|"])
+    def test_it_ends_a_host_at_a_list_separator(self, separator: str) -> None:
+        """Ensure a host ends at a `,` or a `|`, so each entry of a `GOPROXY` list has its login recorded.
+
+        Go joins a `GOPROXY` list's entries with either. A host that ran on
+        would take in the next entry's scheme, and its `:` would end a
+        recorded form, which would stop the server.
+        """
+        value = separator.join(
+            (
+                "https://ci:Tok3nGo99@athens.corp.example",
+                "https://v:Other9pw@b.example",
+                "direct",
+            )
+        )
+
+        assert {
+            "ci:Tok3nGo99@athens.corp.example",
+            "Tok3nGo99",
+            "v:Other9pw@b.example",
+            "Other9pw",
+        } <= mcp_server._url_login_values("GOPROXY", value)
+        assert {
+            "ci:Tok3nGo99@athens.corp.example",
+            "Tok3nGo99",
+        } <= mcp_server._url_login_values(
+            "HTTPS_PROXY", f"ci:Tok3nGo99@athens.corp.example{separator}x"
+        )
+
+    def test_it_says_a_host_can_border_a_url_mark(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the refusal of a host that runs into a scheme does not blame the password alone.
+
+        A `;` does not end a host, so the host takes in the next scheme and
+        its `:`, though the password holds no `://` or `?`.
+        """
+        monkeypatch.setenv(
+            "VD_SOME_URLS", "https://ci:Tok3nGo99@athens.corp.example;https://b.example"
+        )
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert "or a host that runs into the text after it" in message
+        assert "Tok3nGo99" not in message
+
     def test_it_builds_a_mask_for_a_password_outside_utf_8(self) -> None:
         """Ensure a password whose bytes are no UTF-8 once decoded still gives a mask."""
         values = mcp_server._url_login_values("all_proxy", "http://u:p%ffass@h")
@@ -8866,6 +8950,16 @@ class TestEnvironmentUrlLogins:
                 "http://proxyuser9:%3Fsv%3D@127.0.0.1:9000",
                 id="holds-a-question-mark",
             ),
+            pytest.param(
+                "VD_SOME_URL",
+                "https://proxyuser9:sig=%253Fse%253Dxx@127.0.0.1/x",
+                id="sig-that-decodes-to-a-question-mark",
+            ),
+            pytest.param(
+                "HTTPS_PROXY",
+                "http://proxyuser9:sv=1&sig=ps%253A%252F%252Fstore@127.0.0.1:3128",
+                id="sig-that-decodes-to-a-scheme",
+            ),
         ],
     )
     def test_it_will_not_start_on_a_password_that_decodes_to_a_scheme(
@@ -8894,6 +8988,7 @@ class TestEnvironmentUrlLogins:
             "http://proxyuser9:tps:@proxy.internal:3128",
             "http://proxyuser9:%2F%2Fstore@proxy.internal:3128",
             "http://proxyuser9:et%3FX-Amz@proxy.internal:3128",
+            "http://proxyuser9:sig=ps%253A%252F%252Fstore@proxy.internal:3128",
         ],
     )
     def test_each_such_password_would_keep_a_query_without_the_refusal(
@@ -8934,6 +9029,26 @@ class TestEnvironmentUrlLogins:
                 "GOPROXY",
                 "https://proxy.golang.org,https://ci:Tok3nGo99@athens.corp.example,direct",
                 id="list-with-a-login",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://ci:Tok3nGo99@athens.corp.example,https://proxy.golang.org,direct",
+                id="list-whose-first-entry-has-a-login",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://ci:Tok3nGo99@athens.corp.example|https://proxy.golang.org",
+                id="pipe-list-whose-first-entry-has-a-login",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://proxy.golang.org/p|https://ci:Tok3nGo99@athens.corp.example|direct",
+                id="pipe-list-with-a-path-then-a-login",
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://u:Pr0xyPass9@a.internal,https://b.internal/simple",
+                id="comma-list-whose-first-entry-has-a-login",
             ),
             pytest.param(
                 "CI_COMMIT_MESSAGE",
