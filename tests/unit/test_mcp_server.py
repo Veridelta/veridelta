@@ -7397,7 +7397,8 @@ class TestEnvironmentReferences:
     ) -> None:
         """Ensure a `${NAME}` password of any characters loads for each reader a test probes.
 
-        ClickHouse takes only the characters ConnectorX sends as written.
+        ClickHouse takes only the characters ConnectorX sends as written, as
+        the test below shows.
         """
         clickhouse = uri.startswith("clickhouse")
         password = "Hunter2'Secret*Pass(word)" if clickhouse else "Hunter2'Secret\\Pass{word}"
@@ -7420,6 +7421,34 @@ class TestEnvironmentReferences:
             for finding in report["findings"]
             for location in finding["locations"]
         )
+
+    @pytest.mark.parametrize("character", ["\\", "{", "@", "/", "=", " ", "é"])
+    def test_it_refuses_a_clickhouse_password_from_the_environment_it_cannot_send(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, character: str
+    ) -> None:
+        """Ensure a ClickHouse `${NAME}` password with a character ConnectorX would encode is refused.
+
+        docs/agents.md says a `password` takes any text except on a ClickHouse
+        side, so the refusal names the characters a ClickHouse password takes,
+        and never the password.
+        """
+        password = f"Hunter2Secret{character}Password"
+        monkeypatch.setenv("V_PASSWORD", password)
+        _with_source(
+            tmp_path,
+            "  type: database\n  uri: clickhouse://u@db.internal/x\n  query: select 1 as id\n"
+            "  password: ${V_PASSWORD}\n",
+        )
+
+        result = _call(
+            Settings((tmp_path,), allowed_hosts=_REFERENCE_HOSTS), {"path": "veridelta.yaml"}
+        )
+
+        report = result.structured_content
+        assert report is not None
+        assert report["valid"] is False
+        assert "A ClickHouse password can hold only" in _text(result)
+        assert password not in _shown(result)
 
     def test_the_probed_uris_name_every_password_reader(self) -> None:
         """Ensure the uris above and `_PASSWORD_READERS` name the same readers, so neither drifts."""
