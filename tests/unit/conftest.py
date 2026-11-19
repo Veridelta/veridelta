@@ -4,10 +4,14 @@
 """Keep the machine the unit suite runs on out of what its tests see."""
 
 import os
+from collections.abc import Mapping
 
 import pytest
 
 from veridelta import mcp_server
+
+_CURRENT_TEST = "PYTEST_CURRENT_TEST"
+"""The variable pytest names the running test in."""
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +31,24 @@ def _no_url_logins(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.delenv(name)
             if name.upper().startswith("GIT_CONFIG_VALUE_"):
                 monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_current_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `PYTEST_CURRENT_TEST` out of the environment the MCP server reads.
+
+    pytest sets it to the running test's id after every fixture has run, so
+    no fixture can unset it. The server records each URL login in any
+    variable, so a test parametrized by a uri with a login, such as
+    `trino://u:${V_PASSWORD}@db.internal/x`, would see that login masked, or
+    the server refuse to start on it.
+    """
+    read = mcp_server._environment_values
+
+    def without_current_test(environ: Mapping[str, str]) -> set[str]:
+        return read({name: value for name, value in environ.items() if name != _CURRENT_TEST})
+
+    monkeypatch.setattr(mcp_server, "_environment_values", without_current_test)
 
 
 @pytest.fixture(autouse=True)
