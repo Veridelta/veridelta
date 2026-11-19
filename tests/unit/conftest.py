@@ -14,12 +14,13 @@ from veridelta import mcp_server
 
 @pytest.fixture(autouse=True)
 def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Unset each credential, endpoint, region, and account a reader takes from the MCP server's environment.
+    """Unset each credential, endpoint, region, account, and folder a reader takes from the MCP server's environment.
 
     The server masks each credential in every answer, and refuses to start on
     one it cannot mask. It also refuses a side whose reader would take an
-    endpoint, a region, or an account from its environment that is not
-    allowed, including the endpoint or the region of an AWS profile. So a
+    endpoint, a region, an account, or a Hadoop folder from its environment
+    that is not allowed, including the endpoint or the region of an AWS
+    profile. So a
     value from the machine the suite runs on, such as a dummy a shell exports
     or a local MinIO in `~/.aws/config`, would change what a test that builds
     it sees. A name counts in any spelling. AWS_CONFIG_FILE names a file that
@@ -36,6 +37,7 @@ def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
         mcp_server._EMULATOR_SWITCH,
         *mcp_server._CERTIFICATE_SWITCHES,
         *mcp_server._SERVICE_ACCOUNT_FILES,
+        *mcp_server._HADOOP_CONFIGURATION,
         *mcp_server._ENVIRONMENT_REGIONS,
         mcp_server._ACCOUNT_VARIABLE,
         mcp_server._UNIVERSE_VARIABLE,

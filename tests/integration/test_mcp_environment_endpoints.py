@@ -6,12 +6,14 @@
 Real Polars, real deltalake, and PyArrow under PyIceberg read a side whose
 configuration names no endpoint, while the server's environment names a store
 on this machine over plain HTTP, through a variable, an AWS profile, a
-Google service account key, or the Azure emulator switch. A region, an
-Azure account, or a Google universe such as `x@127.0.0.1:port/` moves a
-reader's HTTPS host to the store too, and so does botocore's endpoints.json
-from `AWS_DATA_PATH`. The AWS SDK's client-side monitoring sends its events
-to the store's port over UDP. The store counts every request it receives,
-every TLS handshake, and every datagram. Each case expects the tool to
+Google service account key, a Unity Catalog workspace, or the Azure
+emulator switch. A region, an Azure account, or a Google universe such as
+`x@127.0.0.1:port/` moves a reader's HTTPS host to the store too, and so
+does botocore's endpoints.json from `AWS_DATA_PATH`. Hadoop's configuration
+sends Delta Lake's HDFS reader there, over Hadoop's own RPC. The AWS SDK's
+client-side monitoring sends its events to the store's port over UDP. The
+store counts every connection, request, TLS handshake, and datagram it
+receives. Each case expects the tool to
 refuse the side, naming the variable, before anything reaches the store. A control turns the rule off
 and shows the reader does reach the store, for the cases proven on every
 release CI runs.
@@ -49,6 +51,7 @@ _SESSION_TOKEN: Final = "IQoJb3JpZ2luX2VjEXAMPLESESSIONTOKEN"
 _SECRET_KEY: Final = "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCYx"
 _ACCOUNT_KEY: Final = "a2V5a2V5a2V5a2V5"
 _CLIENT_SECRET: Final = "Mk18Q~ab.cd_ef-gh+ij/kl=Zq9x7Pw"
+_WORKSPACE_TOKEN: Final = "PROBE-WORKSPACE-TOKEN"
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,7 @@ class _CountingServer(ThreadingHTTPServer):
         """
         super().__init__(("127.0.0.1", 0), _Counter)
         self.requests: list[_Request] = []
+        self.connections = 0
         self.handshakes = 0
         self.datagrams: list[bytes] = []
         self._closed = threading.Event()
@@ -145,11 +149,14 @@ class _CountingServer(ThreadingHTTPServer):
     def verify_request(
         self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
     ) -> bool:
-        """Count a connection that opens with a TLS handshake, and close it at once.
+        """Count every connection, and close one that does not open with an HTTP method at once.
 
         A reader that a region or an account sends here speaks HTTPS, which
-        this store does not, and would otherwise wait for an answer.
+        this store does not, and would otherwise wait for an answer. Its TLS
+        handshake is counted too. Delta Lake's HDFS reader speaks Hadoop's
+        RPC, which opens with `hrpc`.
         """
+        self.connections += 1
         connection = cast("socket.socket", request)
         connection.settimeout(5)
         try:
@@ -159,8 +166,7 @@ class _CountingServer(ThreadingHTTPServer):
         connection.settimeout(None)
         if first == _TLS_HANDSHAKE:
             self.handshakes += 1
-            return False
-        return True
+        return first.isupper()
 
 
 @dataclass(frozen=True)
@@ -333,6 +339,39 @@ def _key_with_base_url(name: str) -> Callable[[Path, str], dict[str, str]]:
         if name == "GOOGLE_SERVICE_ACCOUNT_KEY":
             return {name: Path(path).read_text(encoding="utf-8")}
         return {name: path}
+
+    return environment
+
+
+def _unity(_: Path, endpoint: str) -> dict[str, str]:
+    """Name the store as the Unity Catalog workspace, with a token and plain HTTP allowed."""
+    return {
+        "DATABRICKS_HOST": endpoint,
+        "DATABRICKS_TOKEN": _WORKSPACE_TOKEN,
+        "UNITY_ALLOW_HTTP_URL": "true",
+    }
+
+
+def _hadoop(name: str) -> Callable[[Path, str], dict[str, str]]:
+    """Write an hdfs-site.xml that maps the nameservice `lake` to the store, in the folder `name` names.
+
+    `HADOOP_HOME` names the folder above `etc/hadoop`, which holds the file.
+    """
+
+    def environment(folder: Path, endpoint: str) -> dict[str, str]:
+        home = folder / "hadoop"
+        conf = home / "etc" / "hadoop" if name == "HADOOP_HOME" else home
+        conf.mkdir(parents=True)
+        address = endpoint.removeprefix("http://")
+        (conf / "hdfs-site.xml").write_text(
+            "<configuration>"
+            "<property><name>dfs.ha.namenodes.lake</name><value>nn1</value></property>"
+            "<property><name>dfs.namenode.rpc-address.lake.nn1</name>"
+            f"<value>{address}</value></property>"
+            "</configuration>",
+            encoding="utf-8",
+        )
+        return {name: str(home)}
 
     return environment
 
@@ -523,6 +562,33 @@ _CASES: dict[str, _Case] = {
         "azure_authority_host",
         hosts=("lake", "acct"),
     ),
+    "polars-service-account-unprefixed": _Case(
+        f"  path: gs://lake/a.parquet\n{_STORAGE_OPTIONS}      skip_signature: 'true'\n",
+        _key_with_base_url("SERVICE_ACCOUNT"),
+        "variable service_account gives",
+    ),
+    "delta-unity-catalog": _Case(
+        "  type: delta\n  table_uri: uc://main.sales.orders\n",
+        _unity,
+        "variable databricks_host names its endpoint by a scheme other than https",
+        hosts=("main.sales.orders", "127.0.0.1"),
+        delta=True,
+        deadline=20,
+    ),
+    "delta-hadoop-conf-dir": _Case(
+        "  type: delta\n  table_uri: hdfs://lake/t\n",
+        _hadoop("HADOOP_CONF_DIR"),
+        "variable hadoop_conf_dir names a folder of hadoop configuration",
+        delta=True,
+        deadline=20,
+    ),
+    "delta-hadoop-home": _Case(
+        "  type: delta\n  table_uri: hdfs://lake/t\n",
+        _hadoop("HADOOP_HOME"),
+        "variable hadoop_home names a folder of hadoop configuration",
+        delta=True,
+        deadline=20,
+    ),
     "google-base-url": _Case(
         f"  path: gs://lake/a.parquet\n{_STORAGE_OPTIONS}      skip_signature: 'true'\n",
         _google,
@@ -612,6 +678,10 @@ _CONTROLLED: Final = (
     "iceberg-monitoring",
     "iceberg-monitoring-profile",
     "iceberg-universe",
+    "polars-service-account-unprefixed",
+    "delta-unity-catalog",
+    "delta-hadoop-conf-dir",
+    "delta-hadoop-home",
     *(("aws-data-path",) if int(pl.__version__.split(".")[0]) >= 2 else ()),
 )
 """The cases whose reader reaches the store without the rule on every release CI runs.
@@ -633,6 +703,9 @@ _GOOGLE_CASES: Final = ("iceberg-gcs-emulator", "iceberg-here-gcs-files")
 
 _SIGNED_CASES: Final = ("delta-lowercase", "delta-unprefixed", "delta-opendal-s3")
 """The cases whose reader signs its requests to the store with the environment's AWS keys."""
+
+_HADOOP_CASES: Final = ("delta-hadoop-conf-dir", "delta-hadoop-home")
+"""The cases whose reader opens Hadoop's RPC at the store, which names the user, and reads the table there."""
 
 
 def _closed_port() -> int:
@@ -682,9 +755,20 @@ def _answer(name: str, folder: str, endpoint: str, closed: int, control: bool) -
     for variable in list(os.environ):
         if (
             variable.upper().startswith(
-                ("AWS_", "AZURE_", "GOOGLE_", "GCE_", "CLOUD_STORAGE_", "BIGQUERY_", "MOTHERDUCK_")
+                (
+                    "AWS_",
+                    "AZURE_",
+                    "GOOGLE_",
+                    "GCE_",
+                    "CLOUD_STORAGE_",
+                    "BIGQUERY_",
+                    "MOTHERDUCK_",
+                    "DATABRICKS_",
+                    "UNITY_",
+                    "HADOOP_",
+                )
             )
-            or variable.upper() in mcp_server._DELTA_LAKE_ONLY
+            or variable.upper() in mcp_server._DELTA_LAKE_ONLY | mcp_server._SERVICE_ACCOUNT_FILES
         ):
             del os.environ[variable]
     dead = f"http://127.0.0.1:{closed}"
@@ -769,6 +853,7 @@ def test_no_reader_reaches_an_endpoint_from_the_environment(
     assert failed, text
     assert _CASES[name].named in text.casefold(), text
     assert str(store.server_port) not in text
+    assert store.connections == 0
     assert store.requests == []
     assert store.handshakes == 0
     assert store.datagrams == []
@@ -785,13 +870,15 @@ def test_each_reader_reaches_the_store_without_the_rule(
     signs its S3 requests with the environment's keys. A reader that a region,
     an account, a universe, or botocore's endpoints.json moves opens a TLS
     handshake there. PyArrow's S3 file system sends the configuration's
-    session token there over UDP.
+    session token there over UDP. The Unity Catalog reader sends the
+    environment's token there as a bearer token, and Delta Lake's HDFS
+    reader opens Hadoop's RPC there.
     """
     endpoint = f"http://127.0.0.1:{store.server_port}"
 
     _in_a_child(name, tmp_path, endpoint, control=True)
 
-    assert store.requests or store.handshakes or store.datagrams
+    assert store.connections or store.datagrams
     if name in _MONITORED_CASES:
         assert any(_SESSION_TOKEN.encode() in datagram for datagram in store.datagrams)
     if name == "azure-authority":
@@ -803,6 +890,14 @@ def test_each_reader_reaches_the_store_without_the_rule(
         assert any(request.authorization.startswith("Bearer ") for request in store.requests)
     if name in _SIGNED_CASES:
         assert any(_KEY_ID in request.authorization for request in store.requests)
+    if name == "delta-unity-catalog":
+        assert any(
+            request.authorization == f"Bearer {_WORKSPACE_TOKEN}" for request in store.requests
+        )
+    if name == "polars-service-account-unprefixed":
+        assert store.requests
+    if name in _HADOOP_CASES:
+        assert store.connections > len(store.requests) + store.handshakes
 
 
 def test_boto3_is_installed() -> None:

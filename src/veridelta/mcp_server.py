@@ -2212,6 +2212,9 @@ _ENVIRONMENT_ENDPOINTS: Final[Mapping[str, str]] = {
     "CLOUD_STORAGE_EMULATOR_ENDPOINT": "gcs",
     "CLOUD_STORAGE_TESTBENCH_ENDPOINT": "gcs",
     "BIGQUERY_EMULATOR_HOST": "bigquery",
+    "DATABRICKS_HOST": "unity",
+    "DATABRICKS_WORKSPACE_URL": "unity",
+    "UNITY_WORKSPACE_URL": "unity",
 }
 """The environment variables a reader takes an endpoint from, in upper case, each with its store.
 
@@ -2256,6 +2259,12 @@ endpoint meets. Each name, its reader, and the probe that found it:
   a client built with the server's default credentials, as
   `connectors/warehouse.py` builds one. A probe received
   `POST /bigquery/v2/projects/p/jobs` over HTTP.
+- `DATABRICKS_HOST`, `DATABRICKS_WORKSPACE_URL`, and `UNITY_WORKSPACE_URL`:
+  deltalake 1.6.6's Unity Catalog reader, at a `uc://` table, takes the
+  workspace from any of them, in any case after the prefix. A probe
+  received `GET` with `Authorization: Bearer` and the environment's
+  `DATABRICKS_TOKEN` over HTTP, with `UNITY_ALLOW_HTTP_URL` set. The answer
+  names the table's storage location, so the workspace chooses the rows too.
 
 Some names are left out, each for its reason:
 
@@ -2266,6 +2275,16 @@ Some names are left out, each for its reason:
   `GCE_METADATA_HOST`, `GCE_METADATA_IP`, and `GCE_METADATA_ROOT`: a reader
   sends these only the environment's own credentials, and gets credentials
   back. The platform sets them to plain-HTTP link-local addresses.
+- `UNITY_AUTHORITY_HOST`, `UNITY_MSI_ENDPOINT`, and their `DATABRICKS_`
+  aliases: the Unity Catalog reader signs in there only with the
+  environment's own credentials, as at the endpoints above.
+- `UNITY_ALLOW_HTTP_URL`: it lets the Unity Catalog reader take an `http`
+  workspace, which the rule refuses anyway. Without it, the reader refused
+  such a workspace before any request in a probe, and it reads no
+  `DATABRICKS_ALLOW_HTTP_URL`. A workspace with no scheme failed before any
+  request too.
+- `HADOOP_CONF_DIR` and `HADOOP_HOME`: they name a folder, not an endpoint,
+  so `_HADOOP_CONFIGURATION` refuses them on an HDFS side.
 - `GOOGLE_CLOUD_UNIVERSE_DOMAIN`: it names no endpoint, but a host's
   suffix, so `_UNIVERSE_VARIABLE` holds it to the allowed hosts.
 - `AWS_CSM_ENABLED`: it is a switch, which `_MONITORING_SWITCH` refuses.
@@ -2329,17 +2348,22 @@ Google switches on 2.1.0. Nor did PyArrow's S3 file system, under an Iceberg
 side. So `_DELTA_LAKE_ONLY` holds the unprefixed name, which an unrelated
 tool may set, and each prefixed name applies to every side of its store."""
 
-_SERVICE_ACCOUNT_FILES: Final = frozenset({"GOOGLE_SERVICE_ACCOUNT", "GOOGLE_SERVICE_ACCOUNT_PATH"})
+_SERVICE_ACCOUNT_FILES: Final = frozenset(
+    {"GOOGLE_SERVICE_ACCOUNT", "GOOGLE_SERVICE_ACCOUNT_PATH", "SERVICE_ACCOUNT"}
+)
 """The environment variables that name a Google service account key file, in upper case.
 
 object_store takes a `gcs_base_url` from such a key, as from the JSON of
 `_KEY_JSON_VARIABLE`, and sends every request of a Google Cloud Storage side
-there. deltalake 1.6.6 read the base URL from a key that either variable
-named, or that `GOOGLE_SERVICE_ACCOUNT_KEY` held, and sent a list request to
-it over HTTP, as a probe showed. It reads no key that
+there. deltalake 1.6.6 read the base URL from a key that either `GOOGLE_`
+variable named, or that `GOOGLE_SERVICE_ACCOUNT_KEY` held, and sent a list
+request to it over HTTP, as a probe showed. It reads no key that
 `GOOGLE_APPLICATION_CREDENTIALS` names this way. Polars 1.39.3 and 2.1.0
 read the base URL of such a key too, on a side with `skip_signature`, as a
-probe showed. Otherwise they sign in through Google's own library, which
+probe showed. Their object_store also reads `SERVICE_ACCOUNT`, with no
+prefix, as the key file's path: a probe received a `gs://` file's requests
+at such a key's base URL over HTTP. deltalake sent nothing to that one in a
+probe, and a Delta Lake side is checked for it all the same. Otherwise they sign in through Google's own library, which
 reads no base URL. PyArrow, under an Iceberg side, sent nothing to it in a
 probe, and an Iceberg side is checked for it all the same, as for every
 object store's variables."""
@@ -2417,6 +2441,18 @@ such monitoring."""
 _MOTHERDUCK_TOKEN_NAMES: Final = frozenset(name.casefold() for name in MOTHERDUCK_TOKEN_VARIABLES)
 """The MotherDuck token variables, in casefold, which name a credential rather than a setting."""
 
+_HADOOP_CONFIGURATION: Final = frozenset({"HADOOP_CONF_DIR", "HADOOP_HOME"})
+"""The environment variables that name the folder of Hadoop's configuration, in upper case.
+
+deltalake 1.6.6 reads an `hdfs://` or `viewfs://` table through hdfs-native,
+which reads `hdfs-site.xml` and `core-site.xml` from `HADOOP_CONF_DIR`, or
+else from `etc/hadoop` under `HADOOP_HOME`. Either file can map the table's
+host to a namenode at any address, as a nameservice or a mount table. A
+probe accepted its RPC, which names the user, at such an address. An empty
+value names the working folder, the server's first root, so a variable set
+at all is refused on an HDFS side. Reading the files instead would mean
+parsing Hadoop's configuration as hdfs-native does."""
+
 _ANY_STORE: Final = frozenset({"s3", "azure", "gcs"})
 """The stores whose variables apply to a location on another machine of no known store."""
 
@@ -2425,8 +2461,14 @@ _STORE_SCHEMES: Final[Mapping[str, frozenset[str]]] = {
     **dict.fromkeys(("az", "azure", "abfs", "abfss", "adl", "wasb", "wasbs"), frozenset({"azure"})),
     **dict.fromkeys(("gs", "gcs"), frozenset({"gcs"})),
     **dict.fromkeys(("http", "https"), frozenset[str]()),
+    **dict.fromkeys(("hdfs", "viewfs"), frozenset({"hdfs"})),
+    "uc": _ANY_STORE | {"unity"},
 }
 """The stores a location's scheme, in lowercase, reaches.
+
+deltalake reads an `hdfs` or `viewfs` table through hdfs-native, which reads
+no object store's variables. It reads a `uc` table through Unity Catalog,
+whose answer names the table's location in an object store.
 
 An `http` or `https` location reaches none. Polars reads one with its own
 HTTP client, at the host the location names, and deltalake knows neither
@@ -2441,8 +2483,12 @@ _STORE_NAMES: Final[Mapping[str, str]] = {
     "gcs": "Google Cloud Storage",
     "bigquery": "BigQuery",
     "motherduck": "MotherDuck",
+    "unity": "Unity Catalog",
+    "hdfs": "HDFS",
 }
-"""How a refusal names each store."""
+"""How a refusal names each store.
+
+A side that reads Unity Catalog, then an object store, is named by Unity Catalog."""
 
 _ANY_STORE_NAME: Final = "a location the server cannot tie to one object store"
 """How a refusal names the stores of `_ANY_STORE`, which the side's location does not tell."""
@@ -2460,10 +2506,12 @@ def _store(config: SourceRef) -> frozenset[str]:
     A BigQuery side reads BigQuery, and a MotherDuck side MotherDuck. An
     Iceberg table names every object store, wherever its metadata lies, since
     the metadata, not the table's own location, names the files a scan opens.
-    A location's scheme names its store, matched in ASCII, and an `http` or
-    `https` location names none, as `_STORE_SCHEMES` says. Any other location
-    on another machine, such as `hdfs` or `opendal+s3`, names every object
-    store, since the server cannot tell which a reader takes it to.
+    A location's scheme names its store, matched in ASCII, as
+    `_STORE_SCHEMES` says: an `http` or `https` location names none, an
+    `hdfs` or `viewfs` one HDFS, and a `uc` one Unity Catalog and every
+    object store. Any other location on another machine, such as
+    `opendal+s3`, names every object store, since the server cannot tell
+    which a reader takes it to.
     A database, a Snowflake, a Databricks, or a local side names none.
     """
     if isinstance(config, BigQueryConfig):
@@ -2594,10 +2642,10 @@ def _refuse_environment_endpoints(
 
     A reader of a side's store takes an endpoint from the variables in
     `_ENVIRONMENT_ENDPOINTS`, and Polars from the AWS profile's
-    `endpoint_url`, and deltalake from the `gcs_base_url` of a service account
-    key, whether or not the configuration names its own. Each is held to the
-    rules a storage option's endpoint meets: no path, a host given with
-    --allow-host, and a scheme of `https://` only. A region in
+    `endpoint_url`, and deltalake and Polars from the `gcs_base_url` of a
+    service account key, whether or not the configuration names its own.
+    Each is held to the rules a storage option's endpoint meets: no path, a
+    host given with --allow-host, and a scheme of `https://` only. A region in
     `_ENVIRONMENT_REGIONS` or the profile's `region` must match `_REGION`,
     and the account `_ACCOUNT_VARIABLE` names must be given with
     --allow-host, as their storage options must. So must `storage.` and the
@@ -2605,22 +2653,34 @@ def _refuse_environment_endpoints(
     in `_CERTIFICATE_SWITCHES`, the monitoring switch `_MONITORING_SWITCH` or
     a profile's `csm_enabled`, botocore's endpoints from a folder other than
     its own, and a MotherDuck setting other than the token and the options a
-    tool passes on are refused outright. A variable in `_DELTA_LAKE_ONLY` is
-    checked on a Delta Lake side only. A name is matched in any case, as
-    deltalake reads one. The message names the variable as it is set, and
-    never its value, a file's path, or the profile's name.
+    tool passes on are refused outright. So is a variable in
+    `_HADOOP_CONFIGURATION` on an HDFS side, even an empty one. A variable in
+    `_DELTA_LAKE_ONLY` is checked on a Delta Lake side only. A name is
+    matched in any case, as deltalake reads one. The message names the
+    variable as it is set, and never its value, a file's path, or the
+    profile's name.
 
     Raises:
         ConfigError: If such an endpoint, a region, an account, a universe, a
-            switch, or such a setting or file applies to the side.
+            switch, a Hadoop folder, or such a setting or file applies to
+            the side.
     """
     families = _store(config)
     if not families:
         return
-    store = _ANY_STORE_NAME if families == _ANY_STORE else _STORE_NAMES[min(families)]
+    named = families - _ANY_STORE or families
+    store = _ANY_STORE_NAME if named == _ANY_STORE else _STORE_NAMES[min(named)]
     delta = isinstance(config, DeltaLakeConfig)
     for name in sorted(environ):
         value = environ[name]
+        if "hdfs" in families and name.upper() in _HADOOP_CONFIGURATION:
+            raise ConfigError(
+                f"The {side} side reads {store}, and the server's environment variable {name} "
+                "names a folder of Hadoop configuration. Its hdfs-site.xml or core-site.xml can "
+                "send this side's reader to a namenode not given with --allow-host, even when "
+                "the variable is empty. Ask the person who started the server to leave it out "
+                "of the server's environment."
+            )
         if value and (delta or name.upper() not in _DELTA_LAKE_ONLY):
             _refuse_environment_variable(settings, side, families, store, name, value)
     if "s3" not in families:

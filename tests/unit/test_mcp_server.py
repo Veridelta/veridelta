@@ -9463,6 +9463,7 @@ _ENDPOINT_SIDES: Mapping[str, tuple[str, ...]] = {
     "azure": ("  path: az://lake/a.parquet\n", "  type: delta\n  table_uri: abfss://lake/t\n"),
     "gcs": ("  path: gs://lake/a.parquet\n", "  type: delta\n  table_uri: gs://lake/t\n"),
     "bigquery": ("  type: bigquery\n  project: analytics\n  table: sales.orders\n",),
+    "unity": ("  type: delta\n  table_uri: uc://main.sales.orders\n",),
 }
 """For each store, the sides whose reader takes an endpoint from its variables."""
 
@@ -9471,6 +9472,7 @@ _STORE_TITLES: Mapping[str, str] = {
     "azure": "Azure",
     "gcs": "Google Cloud Storage",
     "bigquery": "BigQuery",
+    "unity": "Unity Catalog",
 }
 """How a refusal names each store."""
 
@@ -9480,6 +9482,7 @@ _ENVIRONMENT_ENDPOINT_HOSTS = (
     "h",
     "xy12345.snowflakecomputing.com",
     "storage.universe.example",
+    "main.sales.orders",
 )
 """The hosts the environment endpoint tests' server allows."""
 
@@ -9652,6 +9655,22 @@ class TestEnvironmentEndpoints:
                 {"AWS_ENDPOINT_URL": "http://x.example", "MOTHERDUCK_HOST": "x.example"},
                 id="duckdb-file",
             ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://h/t\n",
+                {
+                    **dict.fromkeys(mcp_server._ENVIRONMENT_ENDPOINTS, "http://x.example"),
+                    mcp_server._EMULATOR_SWITCH: "true",
+                },
+                id="hdfs",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://lake/t\n",
+                {
+                    "DATABRICKS_HOST": "http://x.example",
+                    **dict.fromkeys(mcp_server._HADOOP_CONFIGURATION, "hadoop"),
+                },
+                id="unity-and-hadoop-on-s3",
+            ),
         ],
     )
     def test_it_checks_only_the_variables_of_the_side_s_store(
@@ -9713,10 +9732,16 @@ class TestEnvironmentEndpoints:
                 id="iceberg-here",
             ),
             pytest.param(
-                "  type: delta\n  table_uri: hdfs://h/t\n",
+                "  type: delta\n  table_uri: opendal+s3://h/t\n",
                 "AZURE_ENDPOINT",
                 mcp_server._ANY_STORE_NAME,
-                id="hdfs",
+                id="opendal",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: uc://main.sales.orders\n",
+                "AWS_ENDPOINT_URL",
+                "Unity Catalog",
+                id="unity-catalog-location",
             ),
             pytest.param(
                 "  type: delta\n  table_uri: s3://lake/t\n"
@@ -10015,6 +10040,134 @@ class TestEnvironmentEndpoints:
         environ = {"AZURE_ENDPOINT": "", mcp_server._EMULATOR_SWITCH: ""}
 
         mcp_server._refuse_environment_endpoints(_endpoint_settings(), "source", config, environ)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["DATABRICKS_HOST", "DATABRICKS_WORKSPACE_URL", "UNITY_WORKSPACE_URL", "DATABRICKS_Host"],
+    )
+    @pytest.mark.parametrize(
+        ("value", "refusal"),
+        [
+            pytest.param(
+                "http://main.sales.orders:9000",
+                "names its endpoint by a scheme other than https",
+                id="plain-http",
+            ),
+            pytest.param(
+                "https://leak-probe.example",
+                "names an endpoint whose host is not given with --allow-host",
+                id="host-not-allowed",
+            ),
+        ],
+    )
+    def test_it_holds_the_unity_catalog_workspace_to_the_endpoint_rules(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        value: str,
+        refusal: str,
+    ) -> None:
+        """Ensure the workspace Delta Lake's Unity Catalog reader takes from the environment is checked.
+
+        The reader sends the environment's token to that workspace as a
+        bearer token, and the workspace's answer names the table's location.
+        Windows holds every name in upper case, so the message is compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(
+            tmp_path, "  type: delta\n  table_uri: uc://main.sales.orders\n"
+        )
+
+        assert message.startswith("The source side reads Unity Catalog, and the server's")
+        assert f"variable {name} {refusal}".casefold() in message.casefold()
+        assert "leak-probe.example" not in message
+        read.assert_not_called()
+
+    def test_it_reads_a_unity_catalog_table_from_an_allowed_workspace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a workspace given with --allow-host, over HTTPS, leaves a Unity Catalog table read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://main.sales.orders")
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: uc://main.sales.orders\n", read)
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["gcs"])
+    def test_it_holds_the_unprefixed_service_account_variable_to_the_endpoint_rules(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, source: str
+    ) -> None:
+        """Ensure the key file `SERVICE_ACCOUNT` names is checked, as Polars reads it with no prefix.
+
+        Polars sent a `gs://` file's requests to such a key's `gcs_base_url`
+        over plain HTTP, on a side with `skip_signature`.
+        """
+        read = _read_stubbed(mocker)
+        path = tmp_path / "secret-folder" / "service-account.json"
+        path.parent.mkdir()
+        path.write_text(json.dumps({"gcs_base_url": "http://minio.internal:9000"}), "utf-8")
+        monkeypatch.setenv("SERVICE_ACCOUNT", str(path))
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(
+            "The source side reads Google Cloud Storage, and the server's environment variable "
+            "SERVICE_ACCOUNT gives a service account key whose gcs_base_url names its endpoint "
+            "by a scheme other than https"
+        )
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._HADOOP_CONFIGURATION))
+    @pytest.mark.parametrize("table_uri", ["hdfs://h/t", "viewfs://h/t", "HDFS://h/t"])
+    def test_it_refuses_hadoop_s_configuration_on_an_hdfs_side(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        table_uri: str,
+    ) -> None:
+        """Ensure a folder of Hadoop configuration, which can send Delta Lake's HDFS reader anywhere, is refused.
+
+        Its hdfs-site.xml or core-site.xml can map the table's host to a
+        namenode at any address. The refusal names the variable, never the folder.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, str(tmp_path / "secret-folder"))
+
+        message = _describe_refused(tmp_path, f"  type: delta\n  table_uri: '{table_uri}'\n")
+
+        assert message.startswith(
+            f"The source side reads HDFS, and the server's environment variable {name} names a "
+            "folder of Hadoop configuration."
+        )
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._HADOOP_CONFIGURATION))
+    def test_it_refuses_an_empty_hadoop_variable(self, name: str) -> None:
+        """Ensure a Hadoop variable set to the empty text is refused, since hdfs-native reads the working folder then.
+
+        Windows removes a variable set to the empty text, so the environment is passed in.
+        """
+        config = DeltaLakeConfig(table_uri="hdfs://h/t")
+
+        with pytest.raises(ConfigError, match=f"variable {name} names a folder of Hadoop"):
+            mcp_server._refuse_environment_endpoints(
+                _endpoint_settings(), "source", config, {name: ""}
+            )
+
+    def test_it_reads_an_hdfs_table_with_no_hadoop_configuration(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure an HDFS table whose host is given with --allow-host is read with no Hadoop variable set."""
+        read = _read_stubbed(mocker)
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: hdfs://h/t\n", read)
 
     @pytest.mark.parametrize(
         "name",
