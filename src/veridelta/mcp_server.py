@@ -149,6 +149,19 @@ all the same."""
 _TWICE_DECODED: Final = frozenset({"fs", "opendal+fs"})
 """URI schemes whose path deltalake decodes twice before it reads a table's log."""
 
+_WEBHDFS_SCHEMES: Final = frozenset({"webhdfs", "opendal+webhdfs"})
+"""URI schemes deltalake reads through OpenDAL's WebHDFS store, whose host is not the URI's.
+
+deltalake 1.6.6 takes the store's namenode from its `opendal.endpoint`
+storage option alone, and never from the URI's host. With no option, it
+sends each request to `http://127.0.0.1:9870` over plain HTTP. A probe of
+`webhdfs://lake.example/t` saw a status, a `MKDIRS` write, and a listing
+reach a listener there. The server refuses the option, and even with it, the
+namenode answers a file's read with a redirect to a datanode, which the
+store follows to any host. So `_refuse_webhdfs` refuses the table. No other
+scheme deltalake knows reached a host other than its URI's, or a service's
+own, in the same probe with no storage option."""
+
 _DELTA_LOG_NAME: Final = re.compile(
     r"_last_checkpoint|[0-9]{20}\.(?:json|crc|checkpoint\.parquet"
     r"|checkpoint\.[0-9]{10}\.[0-9]{10}\.parquet"
@@ -2061,10 +2074,12 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     `_refuse_dot_segment` says, and a bucket or a container no capital
     letter, as `_refuse_capital_bucket` says. The same rules hold each
     endpoint a reader takes from the server's environment, by
-    `_refuse_environment_endpoints`. The message names the setting and not
-    the host, which can hold such a value.
+    `_refuse_environment_endpoints`. A Delta Lake table in WebHDFS is
+    refused whatever its host, by `_refuse_webhdfs`. The message names the
+    setting and not the host, which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
+        _refuse_webhdfs(side, config)
         if isinstance(config, DatabaseConfig):
             _refuse_database_uri(side, config)
         for setting, location in _named_locations(config):
@@ -2077,6 +2092,33 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
         for setting, location in _named_locations(config):
             _refuse_capital_bucket(f"The {side} {setting}", location)
         _refuse_capital_option(side, config)
+
+
+def _refuse_webhdfs(side: str, config: SourceRef) -> None:
+    """Refuse a Delta Lake table that deltalake reads through OpenDAL's WebHDFS store.
+
+    The store connects to a namenode it takes from elsewhere than the URI's
+    host, and to the datanodes the namenode names, as `_WEBHDFS_SCHEMES`
+    says, so no check of the URI's host holds it. The scheme is read as
+    `urlsplit` reads it, in lowercase, after leading spaces, and with any tab
+    or line break removed, as deltalake reads it. A URI whose authority does not parse is
+    left to `_refuse_host`. The message names the setting and not the URI,
+    which can hold a `${NAME}` value.
+
+    Raises:
+        ConfigError: If a Delta Lake side's `table_uri` has a scheme in `_WEBHDFS_SCHEMES`.
+    """
+    if not isinstance(config, DeltaLakeConfig):
+        return
+    parts = _split(config.table_uri)
+    if parts is not None and parts.scheme in _WEBHDFS_SCHEMES:
+        raise ConfigError(
+            f"The {side} table_uri names a Delta Lake table in WebHDFS. deltalake's WebHDFS "
+            "reader does not connect to the URI's host: it connects to the namenode its "
+            "endpoint option names, or to this machine without one, and then to any "
+            "datanode the namenode names. So this server cannot hold it to the hosts it "
+            "allows, and a tool does not read it. Read the table with veridelta run instead."
+        )
 
 
 def _refuse_dot_segment(named: str, location: str, shape: re.Pattern[str] = _URL) -> None:

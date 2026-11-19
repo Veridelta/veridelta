@@ -23,7 +23,7 @@ Then run a comparison whose verdict you already know, and confirm the new releas
 
 ## 0.43.0
 
-Fourteen things change:
+Fifteen things change:
 
 - `DiffSummary` carries `threshold`, the configuration's threshold the verdict was held to, so `veridelta run --json` prints one more key, and the Markdown summary's JSON comment holds it too. A script that compares the JSON's keys exactly sees one more.
 - The HTML report's tables change shape. One columns table replaces the column-level drift and rules applied tables, the metric cards become a bar of the rows with its counts, and the disclosure under the mismatched values lists the changed rows side by side, one cell per compared column with both values, in place of the `<column>_source`, `<column>_target`, and `<column>_is_match` columns. The mismatched values table is unchanged. A script that reads the report's tables reads the mismatched values, or the JSON summary.
@@ -71,6 +71,7 @@ Fourteen things change:
     - On a Delta Lake side at an `hdfs://` or `viewfs://` location, `HADOOP_CONF_DIR` or `HADOOP_HOME`, even when empty, since Hadoop's configuration can name any namenode.
 
     An Iceberg side counts as a side of every object store, even with its metadata on this machine. So does a side at a location whose store the server cannot tell from its scheme, such as `opendal+s3://`, and a `uc://` table. A file at an `https://` location is checked for none, since Polars reads it with its own HTTP client. A side whose configuration names its own allowed endpoint, region, or account is checked too. So an unrelated plain-HTTP `AWS_ENDPOINT_URL` in the server's environment refuses an S3 side whose `aws_endpoint_url` is allowed. An HTTPS endpoint from the environment, such as R2, a sovereign cloud's `AZURE_AUTHORITY_HOST`, or a production MinIO, needs its host given with `--allow-host`. Serve the store over HTTPS and give its host with `--allow-host`, or read it with `veridelta run`; see [the MCP server](agents.md#mcp-server).
+- `veridelta mcp` refuses a Delta Lake `table_uri` in WebHDFS, written as `webhdfs://` or `opendal+webhdfs://`, even with its host given with `--allow-host`. deltalake's WebHDFS reader never connects to the URI's host. It connects to port 9870 on the server's own machine over plain HTTP, or to the namenode an `opendal.endpoint` storage option names, and the namenode sends each read to a datanode at any host. Read such a table with `veridelta run`, which reads it as before; see [the MCP server](agents.md#mcp-server).
 
 ## 0.42.0
 
