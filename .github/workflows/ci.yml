@@ -351,8 +351,9 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 30
-      # ConnectorX sends a ClickHouse password without decoding it, so this
-      # one needs no percent-encoding; a test pins the limit with a second user.
+      # ConnectorX sends a ClickHouse password without decoding it, so Veridelta
+      # refuses one with `@`, `:`, `/`, or `#`. Tests sign in as other users with
+      # every symbol a ClickHouse password takes, and check the refusal.
       clickhouse:
         image: clickhouse/clickhouse-server:26.8@sha256:d426d2f612e1e189c90f9a3f8dcd85a03c6851273833817a296bb327e63aa7a7
         env:
