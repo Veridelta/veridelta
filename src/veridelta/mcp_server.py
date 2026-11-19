@@ -24,7 +24,6 @@ import functools
 import glob
 import importlib
 import inspect
-import itertools
 import json
 import logging
 import os
@@ -2416,8 +2415,9 @@ _LOGIN_IN_URL: Final = re.compile(r"://([^/?#]*)@([^/?#\s]*)")
 
 The login runs to the last `@` before the first `/`, `?`, or `#`, as urlsplit, object_store,
 and botocore split it, so it can hold a space. The match starts only at a `://`, so a long
-value is read in linear time, and no recorded form holds the `://` that `without_queries`
-finds a URL by."""
+value is read in linear time, and no form recorded as written holds the `://` that
+`without_queries` finds a URL by. A password can hold one once decoded, which
+`_environment_values` refuses."""
 
 _LOGIN_AT_START: Final = re.compile(r"([^/?#]*)@([^/?#\s]*)")
 """A login and the host after it, at the start of the text it is matched at.
@@ -2436,8 +2436,17 @@ none. botocore puts http:// before such a value, so urllib3 reads its authority 
 first character. botocore and requests put http: before a value that starts with `//`, a
 scheme-relative URL, whose authority starts after the `//`."""
 
-_URL_START: Final = re.compile(rf"(?:^|(?<=\s)){_SCHEME.pattern}|^//")
-"""Where a URL's authority starts in a variable: after a scheme at the start or after a space, or after a leading `//`."""
+_URL_START: Final = re.compile(rf"{_SCHEME.pattern}|//")
+"""Where a proxy URL's authority starts, matched at the start of its value: after a scheme or a `//`."""
+
+_NEXT_URL: Final = re.compile(rf"(?<=[\s,])(?={_SCHEME.pattern})")
+"""Where a variable that is no proxy starts another URL: at a scheme after whitespace or a `,`.
+
+A variable can hold a list of URLs, such as `GOPROXY`, whose entries a `,` joins, or several
+URLs among other text."""
+
+_SPACE: Final = re.compile(r"\s")
+"""Whitespace, where a URL in a variable that is no proxy ends once its authority has."""
 
 
 def _url_login_values(name: str, value: str) -> set[str]:
@@ -2503,22 +2512,30 @@ def _cut_url_login(name: str, value: str) -> bool:
     `AWS_ENDPOINT_URL_STS`, which botocore reads as Polars signs in, as for a proxy. The
     server cannot tell which variables a reader reads a URL from, so it holds for a URL in
     any variable. It cannot tell such a login from an `@` in a URL's path or query
-    either, so that is refused too. A URL starts at a `_SCHEME` at the start of the value
-    or after a space, or at a leading `//`, and runs to the next one. A proxy variable's
-    value is one URL, read from its first character when it starts with neither, so the
-    `/` of a later `://` counts as a cut.
+    either, so that is refused too. In a variable that is no proxy, the value is split at
+    each `_NEXT_URL`, and each piece that holds a `://` holds a URL, whose authority starts
+    after its first `://`, whatever comes before it, such as a quote. A leading `//`
+    starts one too. Once its authority has ended, such a URL ends at whitespace, so an
+    email in the text after it is no cut login. A proxy variable's value is one URL, read
+    from its first character when `_URL_START` does not match there, so the `/` of a
+    later `://` counts as a cut.
     """
     written = value.strip()
-    if name.lower().endswith(_PROXY_SUFFIX):
+    proxy = name.lower().endswith(_PROXY_SUFFIX)
+    if proxy:
         first = _URL_START.match(written)
-        starts = [(0, 0 if first is None else first.end())]
+        urls = [written[0 if first is None else first.end() :]]
     else:
-        starts = [found.span() for found in _URL_START.finditer(written)]
-    bounds = [*starts, (len(written), len(written))]
-    for (_, start), (end, _) in itertools.pairwise(bounds):
-        url = written[start:end]
+        pieces = _NEXT_URL.split(written)
+        urls = [piece[piece.find("://") + 3 :] for piece in pieces if "://" in piece]
+        if written.startswith("//"):
+            urls.append(pieces[0][2:])
+    for url in urls:
         cut = _AUTHORITY_END.search(url)
-        if cut is not None and "@" in url[cut.end() :]:
+        if cut is None:
+            continue
+        rest = url[cut.end() :]
+        if "@" in (rest if proxy else _SPACE.split(rest, maxsplit=1)[0]):
             return True
     return False
 
@@ -2793,12 +2810,16 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     on its own too. Its JSON is never refused, since object_store's errors for
     it quote none of its text. Each URL login in any variable is recorded by
     `_url_login_values`. A URL login is refused, in any variable, only where
-    a client cuts it, by `_cut_url_login`.
+    a client cuts it, by `_cut_url_login`, or where its password, decoded,
+    holds a `://`. Such a mask would hide the `://` that `without_queries`
+    finds a URL by, so each URL's query, a SAS token's `sig` included, would
+    stay in the answer.
 
     Raises:
         ConfigError: If a variable's value lacks its slot's shape, or a URL in
-            it holds an `@` after an unencoded `/`, `?`, `#`, or backslash.
-            The message names the variable as it is set, never the value.
+            it holds an `@` after an unencoded `/`, `?`, `#`, or backslash, or
+            a password that holds `://` once decoded. The message names the
+            variable as it is set, never the value.
     """
     values: set[str] = set()
     for name, value in environ.items():
@@ -2812,7 +2833,16 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
                 "mask. Percent-encode these characters, and '@', in the URL's user and password, "
                 "and an '@' in its path or query, such as '/' as %2F and '@' as %40."
             )
-        values.update(_url_login_values(name, value))
+        logins = _url_login_values(name, value)
+        if any("://" in form for form in logins):
+            raise ConfigError(
+                f"On veridelta mcp, the environment variable {name} holds a URL whose password "
+                "holds '://' once decoded. The server masks such a password in every answer, "
+                "and the mask would hide the '://' it finds a URL by, so a URL's query would "
+                "stay in the answer. Choose another password, or leave the variable out of the "
+                "environment the host starts the server with."
+            )
+        values.update(logins)
         read_as = _name_as_read(name)
         if read_as == _KEY_JSON_VARIABLE:
             values.update(_key_json_values(value))

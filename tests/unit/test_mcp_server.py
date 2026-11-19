@@ -7264,6 +7264,7 @@ class TestEnvironmentReferences:
             "trino+https://u:${V_PASSWORD}@db.internal/x?verify=false",
             "mariadb://u:${V_PASSWORD}@db.internal/x",
         ],
+        ids=["trino", "trino-https", "mariadb"],
     )
     @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
     def test_it_refuses_a_uri_password_from_the_environment_for_an_unprobed_reader(
@@ -8769,6 +8770,39 @@ class TestEnvironmentUrlLogins:
         ("name", "value"),
         [
             pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:ps%3A%2F%2Fstore@127.0.0.1:3128", id="proxy"
+            ),
+            pytest.param(
+                "VD_SOME_URL", "https://proxyuser9:ps:%2f%2Fstore@127.0.0.1/x", id="any-variable"
+            ),
+            pytest.param(
+                "ALL_PROXY", "proxyuser9:ps%3A%2F%2Fstore@127.0.0.1:3128", id="bare-proxy"
+            ),
+        ],
+    )
+    def test_it_will_not_start_on_a_password_that_decodes_to_a_scheme(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
+        """Ensure a URL password that holds `://` once decoded stops the server, naming only the variable.
+
+        The mask of the decoded password would hide the `://` of a URL in an
+        answer, such as `https://store.blob.core.windows.net/...?sig=...`,
+        so `without_queries` would find no URL there and keep its query.
+        """
+        monkeypatch.setenv(name, value)
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert f"the environment variable {name} holds a URL whose password holds '://'" in message
+        for part in ("proxyuser9", "store", "127.0.0.1"):
+            assert part not in message
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            pytest.param(
                 "HTTPS_PROXY", "http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128", id="odd-login"
             ),
             pytest.param("HTTPS_PROXY", "http://u:@proxy:1", id="empty-password"),
@@ -8783,6 +8817,25 @@ class TestEnvironmentUrlLogins:
                 id="two-urls-with-paths",
             ),
             pytest.param("VD_NOTE", "see notes/ann@x.com", id="no-url"),
+            pytest.param(
+                "GOPROXY",
+                "https://proxy.golang.org,https://ci:Tok3nGo99@athens.corp.example,direct",
+                id="list-with-a-login",
+            ),
+            pytest.param(
+                "CI_COMMIT_MESSAGE",
+                "fix: x\n\nSee https://gitlab.example/g/p/-/issues/7\n\n"
+                "Signed-off-by: Ann <ann@example.com>",
+                id="url-then-an-email-on-another-line",
+            ),
+            pytest.param(
+                "VD_NOTE", "see https://ci.example/run/1 by bob@corp.com", id="url-then-prose"
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://a.internal https://ci:Tok3nGo99@b.internal/simple",
+                id="url-with-no-path-then-a-login",
+            ),
         ],
     )
     def test_it_starts_whatever_shape_a_url_login_has(
@@ -8791,7 +8844,9 @@ class TestEnvironmentUrlLogins:
         """Ensure a URL login is refused only where a client cuts it.
 
         A scheme-relative proxy is one botocore and requests read as HTTP, and
-        a variable can hold several URLs, each with a path of its own.
+        a variable can hold several URLs, each with a path of its own. A URL
+        ends at whitespace, or at a `,` before another scheme, so an `@` after
+        it belongs to no login of it.
         """
         monkeypatch.setenv(name, value)
 
@@ -8849,6 +8904,32 @@ class TestEnvironmentUrlLogins:
                 id="second-url",
             ),
             pytest.param("VD_SOME_URL", "https://cdn.example/npm/pkg@3/x.js", id="at-in-a-path"),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                '"http://proxyuser9:Pr0x/yPass9@127.0.0.1:9000"',
+                id="quoted-sts-endpoint",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL", "'http://proxyuser9:Pr0x/yPass9@127.0.0.1'", id="single-quoted"
+            ),
+            pytest.param(
+                "VD_SOME_URL",
+                "url=https://proxyuser9:Pr0x?yPass9@127.0.0.1",
+                id="text-before-a-url",
+            ),
+            pytest.param(
+                "VD_SOME_URL",
+                "https://proxyuser9:Pr0x://yPass9@127.0.0.1",
+                id="scheme-in-a-password",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://proxy.golang.org,https://proxyuser9:Pr0x/yPass9@127.0.0.1,direct",
+                id="list-with-a-cut-login",
+            ),
+            pytest.param(
+                "VD_SOME_URL", "https://proxyuser9:Pr0x y/Pass9@127.0.0.1", id="space-before-a-cut"
+            ),
         ],
     )
     def test_it_will_not_start_on_a_url_login_a_client_cuts(

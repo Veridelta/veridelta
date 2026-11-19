@@ -11,7 +11,7 @@ the client that signs Polars in through an AWS profile. A proxy login with an
 unencoded `#`, or a `://` after a login written with no scheme, is cut where
 that client ends the URL's authority, so the server refuses to start on it.
 The same client reads the STS endpoint, which a login with an unencoded `/`
-holds the same way. A scheme-relative proxy or STS endpoint, which starts
+holds the same way, in quotes too. A scheme-relative proxy or STS endpoint, which starts
 with `//`, keeps its login whole, and is masked.
 The configuration names no `${NAME}`. A control turns the server's record of its environment
 off, and shows each probe does echo the login.
@@ -114,6 +114,9 @@ _STS_PASSWORD: Final = "Q7stsPass9"
 _CUT_STS_URL: Final = "http://stsuser9:Q7st/sPass9@127.0.0.1:{port}"
 """An STS endpoint whose password holds an unencoded `/`, as a base64 secret can."""
 
+_QUOTED_CUT_STS_URL: Final = f'"{_CUT_STS_URL}"'
+"""The cut STS endpoint in quotes, as Docker's `--env-file` keeps them, so no scheme starts the value."""
+
 _RELATIVE_STS_URL: Final = f"//{_STS_LOGIN}@127.0.0.1:{{port}}"
 """A scheme-relative STS endpoint, which botocore writes back whole when it cannot connect to it."""
 
@@ -197,6 +200,11 @@ def _cut_sts(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
     return _profile(folder, {"AWS_ENDPOINT_URL_STS": _CUT_STS_URL.format(port=port)})
 
 
+def _quoted_cut_sts(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
+    """Sign in as `_cut_sts` does, at the same endpoint written in quotes."""
+    return _profile(folder, {"AWS_ENDPOINT_URL_STS": _QUOTED_CUT_STS_URL.format(port=port)})
+
+
 def _relative_sts(folder: Path, port: int) -> tuple[dict[str, str], str, str]:
     """Sign in through an AWS profile, at a scheme-relative STS endpoint with a login.
 
@@ -223,6 +231,7 @@ _CASES: Final = {
     "scheme-cut-proxy-login-polars": (_scheme_cut_proxy, False),
     "relative-proxy-login-polars": (_relative_proxy, False),
     "cut-sts-login-polars": (_cut_sts, False),
+    "quoted-cut-sts-login-polars": (_quoted_cut_sts, False),
     "relative-sts-login-polars": (_relative_sts, False),
 }
 """Each case's environment and whether it reads a Delta Lake table, by name."""
@@ -386,6 +395,9 @@ _CUT_CASES: Final = [
         "scheme-cut-proxy-login-polars", "HTTPS_PROXY", "proxyuser9", "Pr0x", id="no-scheme"
     ),
     pytest.param("cut-sts-login-polars", "AWS_ENDPOINT_URL_STS", "stsuser9", "Q7st", id="sts"),
+    pytest.param(
+        "quoted-cut-sts-login-polars", "AWS_ENDPOINT_URL_STS", "stsuser9", "Q7st", id="quoted-sts"
+    ),
 ]
 """Each case of a login that a client cuts, with its variable, its user, and the head of its password."""
 
@@ -411,6 +423,7 @@ def test_it_refuses_a_url_login_a_client_cuts(
         ),
         pytest.param("scheme-cut-proxy-login-polars", "'proxyuser9:Pr0x:'", True, id="no-scheme"),
         pytest.param("cut-sts-login-polars", "'Q7st'", True, id="sts"),
+        pytest.param("quoted-cut-sts-login-polars", "stsuser9:Q7st/", True, id="quoted-sts"),
     ],
 )
 def test_polars_echoes_a_cut_login_without_the_check(
@@ -421,9 +434,11 @@ def test_polars_echoes_a_cut_login_without_the_check(
     urllib3 ends the authority at the `#`, or at the `/` of a `://` that
     follows no scheme, and botocore passes its parse error on, with the user
     and the password up to that character. For the STS endpoint, botocore
-    writes the head of the password as a port it could not read. Before
-    2.0.0, Polars writes back the head cut at a `://` or in an STS endpoint,
-    and for a `#` its error names only the store.
+    writes the head of the password as a port it could not read. In quotes,
+    the STS endpoint is no valid URL, and botocore writes it back whole, which
+    no mask matches, since no login ends before its `/`. Before 2.0.0, Polars
+    writes back the head cut at a `://` or in an STS endpoint, and for a `#`
+    its error names only the store.
     """
     answers = _in_a_child(case, tmp_path, refusing_store, control=True)
 
