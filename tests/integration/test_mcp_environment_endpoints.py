@@ -11,7 +11,7 @@ emulator switch. A region, an Azure account, or a Google universe such as
 `x@127.0.0.1:port/` moves a reader's HTTPS host to the store too, and so
 does botocore's endpoints.json from `AWS_DATA_PATH`. Hadoop's configuration
 sends Delta Lake's HDFS reader there, over Hadoop's own RPC. The AWS SDK's
-client-side monitoring sends its events to the store's port over UDP. The
+client-side monitoring sends its events to the store's own UDP port. The
 store counts every connection, request, TLS handshake, and datagram it
 receives. Each case expects the tool to
 refuse the side, naming the variable, before anything reaches the store. A control turns the rule off
@@ -105,31 +105,28 @@ _TLS_HANDSHAKE: Final = b"\x16"
 class _CountingServer(ThreadingHTTPServer):
     """A store on this machine that keeps every request and datagram it receives, and counts every TLS handshake."""
 
-    def __init__(self) -> None:
-        """Listen on a free local port, over TCP and over UDP.
+    def __init__(self, *, monitored: bool) -> None:
+        """Listen on a free local port over TCP, and with `monitored` on another over UDP.
 
         The AWS SDK's client-side monitoring sends its events over UDP, to
-        the same port number, so a case names one port for both.
-
-        Raises:
-            OSError: If the port is taken for UDP.
+        `monitor_port`. That port is one the system chooses for UDP, since
+        Windows can refuse a UDP bind to the TCP port's number.
         """
         super().__init__(("127.0.0.1", 0), _Counter)
         self.requests: list[_Request] = []
         self.connections = 0
         self.handshakes = 0
         self.datagrams: list[bytes] = []
+        self.monitor_port = 0
         self._closed = threading.Event()
-        self._monitor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            self._monitor.bind(("127.0.0.1", self.server_port))
-        except OSError:
-            self._monitor.close()
-            super().server_close()
-            raise
-        self._monitor.settimeout(0.05)
-        self._receiver = threading.Thread(target=self._receive, daemon=True)
-        self._receiver.start()
+        self._receiver: threading.Thread | None = None
+        if monitored:
+            self._monitor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._monitor.bind(("127.0.0.1", 0))
+            self.monitor_port = int(self._monitor.getsockname()[1])
+            self._monitor.settimeout(0.05)
+            self._receiver = threading.Thread(target=self._receive, daemon=True)
+            self._receiver.start()
 
     def _receive(self) -> None:
         """Keep every datagram until the store closes."""
@@ -140,11 +137,12 @@ class _CountingServer(ThreadingHTTPServer):
                 continue
 
     def server_close(self) -> None:
-        """Stop listening over TCP and over UDP."""
+        """Stop listening over TCP, and over UDP if the store does."""
         super().server_close()
         self._closed.set()
-        self._receiver.join()
-        self._monitor.close()
+        if self._receiver is not None:
+            self._receiver.join()
+            self._monitor.close()
 
     def verify_request(
         self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
@@ -434,7 +432,7 @@ def _here_with_gcs_files(folder: Path, endpoint: str) -> dict[str, str]:
 
 
 def _monitoring(_: Path, endpoint: str) -> dict[str, str]:
-    """Turn the AWS SDK's client-side monitoring on, with the store's port as its host and port."""
+    """Turn the AWS SDK's client-side monitoring on, with the store's UDP port, which `endpoint` names, as its host and port."""
     return {
         "AWS_CSM_ENABLED": "true",
         "AWS_CSM_HOST": "127.0.0.1",
@@ -446,7 +444,7 @@ def _monitoring(_: Path, endpoint: str) -> dict[str, str]:
 
 
 def _monitoring_profile(folder: Path, endpoint: str) -> dict[str, str]:
-    """Turn client-side monitoring on in the AWS profile, with the store's port as its host and port."""
+    """Turn client-side monitoring on in the AWS profile, with the store's UDP port, which `endpoint` names, as its host and port."""
     config = folder / "aws-config"
     config.write_text(
         "[default]\ncsm_enabled = true\ncsm_host = 127.0.0.1\n"
@@ -716,22 +714,15 @@ def _closed_port() -> int:
 
 
 @pytest.fixture
-def store() -> Iterator[_CountingServer]:
+def store(name: str) -> Iterator[_CountingServer]:
     """Run the counting store on a free local port until the test ends.
 
-    A port taken for UDP is passed over for the next free one.
+    It listens over UDP only for a case in `_MONITORED_CASES`.
 
     Yields:
         _CountingServer: The store, whose `requests` lists what it received.
     """
-    for _ in range(9):
-        try:
-            server = _CountingServer()
-            break
-        except OSError:
-            continue
-    else:
-        server = _CountingServer()
+    server = _CountingServer(monitored=name in _MONITORED_CASES)
     thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
     thread.start()
     try:
@@ -823,6 +814,12 @@ def _answer(name: str, folder: str, endpoint: str, closed: int, control: bool) -
     return anyio.run(session)
 
 
+def _endpoint(name: str, store: _CountingServer) -> str:
+    """Return the store's address that a case's environment names: its UDP port for a monitored case, else its TCP port."""
+    port = store.monitor_port if name in _MONITORED_CASES else store.server_port
+    return f"http://127.0.0.1:{port}"
+
+
 def _in_a_child(
     name: str, folder: Path, endpoint: str, *, control: bool = False
 ) -> tuple[bool, str]:
@@ -846,7 +843,7 @@ def test_no_reader_reaches_an_endpoint_from_the_environment(
     name: str, tmp_path: Path, store: _CountingServer
 ) -> None:
     """Ensure the tool refuses the side, naming the variable, before any request reaches the store."""
-    endpoint = f"http://127.0.0.1:{store.server_port}"
+    endpoint = _endpoint(name, store)
 
     failed, text = _in_a_child(name, tmp_path, endpoint)
 
@@ -874,7 +871,7 @@ def test_each_reader_reaches_the_store_without_the_rule(
     environment's token there as a bearer token, and Delta Lake's HDFS
     reader opens Hadoop's RPC there.
     """
-    endpoint = f"http://127.0.0.1:{store.server_port}"
+    endpoint = _endpoint(name, store)
 
     _in_a_child(name, tmp_path, endpoint, control=True)
 

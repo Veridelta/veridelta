@@ -57,12 +57,12 @@ Thirteen things change:
 
     - On every S3, Azure, or Google Cloud Storage side, an endpoint from `AWS_ENDPOINT_URL`, `AWS_ENDPOINT`, `AWS_ENDPOINT_URL_S3`, a profile's `endpoint_url`, `AZURE_ENDPOINT`, `AZURE_STORAGE_ENDPOINT`, `AZURE_AUTHORITY_HOST`, `AZURE_STORAGE_AUTHORITY_HOST`, `GOOGLE_BASE_URL`, `CLOUD_STORAGE_EMULATOR_ENDPOINT`, or `CLOUD_STORAGE_TESTBENCH_ENDPOINT`. So a local MinIO, LocalStack, or Azurite reached over plain HTTP fails.
     - On a BigQuery side, `BIGQUERY_EMULATOR_HOST`.
-    - On every Google Cloud Storage side, the `gcs_base_url` of a service account key that `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, or `SERVICE_ACCOUNT` gives. Delta Lake reads it, and so does Polars on a side with `skip_signature`.
+    - On every Google Cloud Storage side, the `gcs_base_url` of a service account key that `GOOGLE_SERVICE_ACCOUNT`, `GOOGLE_SERVICE_ACCOUNT_PATH`, `GOOGLE_SERVICE_ACCOUNT_KEY`, or `SERVICE_ACCOUNT` gives. Delta Lake reads it, and so does Polars on a side with `skip_signature`. A key file with a byte outside UTF-8 counts too.
     - On a Delta Lake side only, `ENDPOINT`, `ENDPOINT_URL`, or `AWS_S3_ENDPOINT`, and `ALLOW_INVALID_CERTIFICATES` turned on. No other reader takes these names, so a file or an Iceberg table reads as before with one set.
     - On every side of its store, `AWS_ALLOW_INVALID_CERTIFICATES`, `AZURE_ALLOW_INVALID_CERTIFICATES`, or `GOOGLE_ALLOW_INVALID_CERTIFICATES` turned on, and `AZURE_STORAGE_USE_EMULATOR` on an Azure side.
     - On every S3 side, an `AWS_REGION`, an `AWS_DEFAULT_REGION`, or a profile's `region` other than letters, digits, and hyphens, such as `us-east-1`. On a Delta Lake side, `REGION` and `DEFAULT_REGION` count too.
     - On every Azure side, an `AZURE_STORAGE_ACCOUNT_NAME` not given with `--allow-host`, as an `azure_storage_account_name` must be.
-    - On every Google Cloud Storage side, a `GOOGLE_CLOUD_UNIVERSE_DOMAIN` whose host, `storage.` followed by the universe, is not given with `--allow-host`.
+    - On every Google Cloud Storage side, a `GOOGLE_CLOUD_UNIVERSE_DOMAIN` whose host, `storage.` followed by the universe, is not given with `--allow-host`. On a BigQuery side, the host is `bigquery.` followed by the universe.
     - On every S3 side, `AWS_CSM_ENABLED` turned on, or `csm_enabled` in any profile of the AWS config file. With boto3 installed, also an `endpoints.json` that `AWS_DATA_PATH`, a profile's `data_path`, or `~/.aws/models` gives botocore.
     - On a MotherDuck side, a `motherduck_*` variable other than the token, `attach_mode`, `saas_mode`, and `session_name`.
     - On a Delta Lake side at a `uc://` location, a workspace from `DATABRICKS_HOST`, `DATABRICKS_WORKSPACE_URL`, or `UNITY_WORKSPACE_URL`.

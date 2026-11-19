@@ -511,7 +511,9 @@ class Settings:
             database server, an object store's bucket, or a URL's host, is
             refused before it connects. Defaults to none, so every tool reads
             only data on this machine, MotherDuck, Hugging Face, or BigQuery with
-            the server's own credentials.
+            the server's own credentials, at its own service's hosts. A
+            BigQuery side that `BIGQUERY_EMULATOR_HOST` or a Google universe in
+            the server's environment moves to another host is refused.
     """
 
     roots: tuple[Path, ...]
@@ -2002,7 +2004,9 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None, str]]:
     cannot check the host it sends a reader to. A BigQuery key file is one: its
     `token_uri` names the host the sign-in goes to. Hugging Face, MotherDuck
     with no option that moves it, and BigQuery with the server's own
-    credentials reach their own service's hosts, so they name none. The form
+    credentials reach their own service's hosts, so they name none.
+    `_refuse_environment_endpoints` holds the variables of the server's
+    environment that move them, such as a Google universe. The form
     is how `_refuse_host` says to write the host: a location may have a path,
     and an endpoint, a bucket, an account, or a server may not.
     """
@@ -2412,7 +2416,7 @@ of `x@127.0.0.1:9000/`. No reader moved for `AZURE_STORAGE_ACCOUNT`,
 `AZURE_ACCOUNT_NAME`, `ACCOUNT_NAME`, or `AZBLOB_ACCOUNT_NAME`."""
 
 _UNIVERSE_VARIABLE: Final = "GOOGLE_CLOUD_UNIVERSE_DOMAIN"
-"""The environment variable a reader writes into a Google Cloud Storage host, as in `storage.{universe}`.
+"""The environment variable a reader writes into a Google host, as in `storage.{universe}` or `bigquery.{universe}`.
 
 PyArrow's Google Cloud Storage file system, which an Iceberg side reads
 through, connects to `storage.` and the universe over HTTPS. It sends there
@@ -2420,9 +2424,15 @@ the bearer token it signs with the service account key that
 `GOOGLE_APPLICATION_CREDENTIALS` names, with no check against the key's own
 universe, and reads the table's metadata and rows from that host. A probe
 saw `CONNECT storage.leak-probe.example:443` at a proxy for a key that names
-no universe, and a TLS handshake at the address `x@127.0.0.1:port/` names. So
-`storage.` and the universe must be given with --allow-host, on every side of
-Google Cloud Storage. PyArrow reads the name in upper case only."""
+no universe, and a TLS handshake at the address `x@127.0.0.1:port/` names.
+The BigQuery client makes `https://bigquery.` and the universe its API
+endpoint, as a probe of a client built with the universe set showed. It
+sends each query there with a bearer token. So `_UNIVERSE_HOSTS` names, for
+each store, the host that must be given with --allow-host. PyArrow reads the
+name in upper case only, and the BigQuery client as it is set."""
+
+_UNIVERSE_HOSTS: Final[Mapping[str, str]] = {"gcs": "storage", "bigquery": "bigquery"}
+"""For each store a reader takes the universe for, the label it puts before the universe to form its host."""
 
 _MONITORING_SWITCH: Final = "AWS_CSM_ENABLED"
 """The environment variable that turns on the AWS SDK's client-side monitoring.
@@ -2648,8 +2658,8 @@ def _refuse_environment_endpoints(
     host given with --allow-host, and a scheme of `https://` only. A region in
     `_ENVIRONMENT_REGIONS` or the profile's `region` must match `_REGION`,
     and the account `_ACCOUNT_VARIABLE` names must be given with
-    --allow-host, as their storage options must. So must `storage.` and the
-    universe `_UNIVERSE_VARIABLE` names. The Azure emulator switch, a switch
+    --allow-host, as their storage options must. So must the host that
+    `_UNIVERSE_HOSTS` forms from the universe `_UNIVERSE_VARIABLE` names. The Azure emulator switch, a switch
     in `_CERTIFICATE_SWITCHES`, the monitoring switch `_MONITORING_SWITCH` or
     a profile's `csm_enabled`, botocore's endpoints from a folder other than
     its own, and a MotherDuck setting other than the token and the options a
@@ -2789,8 +2799,9 @@ def _refuse_host_name(
     """Refuse a region, an account, or a universe from the server's environment that a reader writes into its host.
 
     A region must match `_REGION`, and an account must be given with
-    --allow-host, as their storage options must. A universe's storage host,
-    `storage.` and the universe, must be given with --allow-host too.
+    --allow-host, as their storage options must. A universe's host, the
+    side's label in `_UNIVERSE_HOSTS` and the universe, must be given with
+    --allow-host too.
     `opening` names the side, its store, and the variable, and `upper` is the
     variable's name in upper case.
 
@@ -2812,18 +2823,17 @@ def _refuse_host_name(
             "the account's name with --allow-host, or to leave the variable out of the "
             "server's environment."
         )
-    if (
-        "gcs" in families
-        and upper == _UNIVERSE_VARIABLE
-        and not _allowed_host(settings, f"storage.{value}")
-    ):
-        raise ConfigError(
-            f"{opening} names a universe whose storage host, storage. and the universe, is not "
-            "given with --allow-host, or is not written as DNS labels. PyArrow sends this side's "
-            "requests and a bearer token to that host. Ask the person who started the server to "
-            "add the host with --allow-host, or to leave the variable out of the server's "
-            "environment."
-        )
+    if upper != _UNIVERSE_VARIABLE:
+        return
+    for family, label in _UNIVERSE_HOSTS.items():
+        if family in families and not _allowed_host(settings, f"{label}.{value}"):
+            raise ConfigError(
+                f"{opening} names a universe whose host, {label}. and the universe, is not "
+                "given with --allow-host, or is not written as DNS labels. A reader sends this "
+                "side's requests and a bearer token to that host. Ask the person who started the "
+                "server to add the host with --allow-host, or to leave the variable out of the "
+                "server's environment."
+            )
 
 
 def _region_refusal(opening: str) -> str:
@@ -2840,11 +2850,15 @@ def _service_account_base_url(opening: str, named: bool, value: str) -> str | No
     """Return the `gcs_base_url` of the Google service account key a variable holds, or the file it names.
 
     With `named`, the value is the key file's path. A file that does not
-    exist or cannot be read, or a key that is not a JSON object with a text
+    exist or cannot be opened, or a key that is not a JSON object with a text
     `gcs_base_url`, gives None, since object_store then fails before any
-    request. Any file but a regular one is refused: a named pipe gives its
-    text once, to the first process that reads it, so the server cannot
-    check what a reader would take from it.
+    request. A byte outside UTF-8 does not: object_store's parser checks
+    UTF-8 only in the fields it reads, so it still takes the `gcs_base_url`
+    of a key with such a byte in a field it ignores. The file is decoded with
+    `surrogateescape`, so the server reads that `gcs_base_url` too. Any file
+    but a regular one is refused: a named pipe gives its text once, to the
+    first process that reads it, so the server cannot check what a reader
+    would take from it.
 
     Raises:
         ConfigError: If the variable names a file other than a regular one.
@@ -2857,10 +2871,7 @@ def _service_account_base_url(opening: str, named: bool, value: str) -> str | No
             "person who started the server to name a regular file, or to leave it out of the "
             "server's environment.",
         )
-        try:
-            value = (key_file or b"").decode("utf-8")
-        except UnicodeDecodeError:
-            return None
+        value = (key_file or b"").decode("utf-8", errors="surrogateescape")
     try:
         key = json.loads(value)
     except ValueError:

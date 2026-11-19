@@ -9482,6 +9482,7 @@ _ENVIRONMENT_ENDPOINT_HOSTS = (
     "h",
     "xy12345.snowflakecomputing.com",
     "storage.universe.example",
+    "bigquery.bq.example",
     "main.sales.orders",
 )
 """The hosts the environment endpoint tests' server allows."""
@@ -9998,6 +9999,34 @@ class TestEnvironmentEndpoints:
             monkeypatch.setenv(name, str(path))
 
         _describe_read(tmp_path, "  type: delta\n  table_uri: gs://lake/t\n", read)
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["gcs"])
+    def test_it_reads_the_base_url_of_a_key_file_with_a_byte_outside_utf_8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, source: str
+    ) -> None:
+        """Ensure a key file with a byte outside UTF-8 in a field object_store ignores still has its gcs_base_url checked.
+
+        object_store's parser checks UTF-8 only in the fields it reads, so
+        deltalake sent a `gs://` table's request to the `gcs_base_url` of a
+        key whose `project_id` held a Latin-1 byte.
+        """
+        read = _read_stubbed(mocker)
+        key = json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "PROJ",
+                "gcs_base_url": "http://minio.internal",
+            }
+        )
+        path = tmp_path / "service-account.json"
+        path.write_bytes(key.encode().replace(b"PROJ", b"pr\xe9j"))
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT", str(path))
+
+        message = _describe_refused(tmp_path, source)
+
+        assert "GOOGLE_SERVICE_ACCOUNT gives a service account key whose gcs_base_url" in message
+        assert "names its endpoint by a scheme other than https" in message
+        read.assert_not_called()
 
     def test_it_refuses_a_service_account_key_that_is_not_a_regular_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -10754,7 +10783,9 @@ class TestEnvironmentEndpoints:
         _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
 
     @pytest.mark.parametrize(
-        "source", [*_ENDPOINT_SIDES["gcs"], _ICEBERG_GCS], ids=["polars", "delta", "iceberg"]
+        "source",
+        [*_ENDPOINT_SIDES["gcs"], _ICEBERG_GCS, *_ENDPOINT_SIDES["bigquery"]],
+        ids=["polars", "delta", "iceberg", "bigquery"],
     )
     @pytest.mark.parametrize(
         "name", [mcp_server._UNIVERSE_VARIABLE, "google_cloud_universe_domain"]
@@ -10772,10 +10803,11 @@ class TestEnvironmentEndpoints:
         name: str,
         value: str,
     ) -> None:
-        """Ensure a universe whose storage host is not given with --allow-host is refused on a Google Cloud Storage side.
+        """Ensure a universe whose host is not given with --allow-host is refused on a Google Cloud Storage or a BigQuery side.
 
         PyArrow, under an Iceberg side, sends its bearer token to
-        `storage.{universe}`. The refusal names the variable, and never its
+        `storage.{universe}`, and the BigQuery client its queries to
+        `bigquery.{universe}`. The refusal names the variable, and never its
         value. Windows holds every name in upper case, so the message is
         compared in casefold.
         """
@@ -10784,7 +10816,9 @@ class TestEnvironmentEndpoints:
 
         message = _describe_refused(tmp_path, source)
 
-        store = mcp_server._ANY_STORE_NAME if "iceberg" in source else "Google Cloud Storage"
+        store = {"iceberg": mcp_server._ANY_STORE_NAME, "bigquery": "BigQuery"}.get(
+            source.split()[1], "Google Cloud Storage"
+        )
         assert message.startswith(f"The source side reads {store}, and the server's environment")
         assert f"variable {name} names a universe".casefold() in message.casefold()
         assert "leak-probe" not in message
@@ -10797,6 +10831,7 @@ class TestEnvironmentEndpoints:
             pytest.param("universe.example", _ENDPOINT_SIDES["gcs"][0], id="allowed-polars"),
             pytest.param("universe.example", _ENDPOINT_SIDES["gcs"][1], id="allowed-delta"),
             pytest.param("universe.example", _ICEBERG_GCS, id="allowed-iceberg"),
+            pytest.param("bq.example", _ENDPOINT_SIDES["bigquery"][0], id="allowed-bigquery"),
             pytest.param(_MOVED_HOST, "  path: s3://lake/a.parquet\n", id="s3"),
             pytest.param(_MOVED_HOST, "  path: az://lake/a.parquet\n", id="azure"),
         ],
@@ -10809,11 +10844,36 @@ class TestEnvironmentEndpoints:
         value: str,
         source: str,
     ) -> None:
-        """Ensure an allowed universe, or one on a side that reads no Google Cloud Storage, leaves the side read."""
+        """Ensure an allowed universe, or one on a side that reads no Google service, leaves the side read."""
         read = _read_stubbed(mocker)
         monkeypatch.setenv(mcp_server._UNIVERSE_VARIABLE, value)
 
         _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        ("value", "source", "host"),
+        [
+            pytest.param("universe.example", _ENDPOINT_SIDES["bigquery"][0], "bigquery.", id="bq"),
+            pytest.param("bq.example", _ENDPOINT_SIDES["gcs"][0], "storage.", id="gcs"),
+        ],
+    )
+    def test_it_holds_each_store_to_its_own_universe_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+        host: str,
+    ) -> None:
+        """Ensure a universe allowed for one Google service's host is refused on a side of the other."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._UNIVERSE_VARIABLE, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        assert f"names a universe whose host, {host} and the universe, is not given" in message
+        read.assert_not_called()
 
     def test_validate_config_checks_them_only_with_schemas(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine_calls: list[MagicMock]
