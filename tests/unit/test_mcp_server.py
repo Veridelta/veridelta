@@ -10312,3 +10312,1440 @@ class TestSdkBinding:
 
         built.assert_called_once_with(settings)
         built.return_value.run.assert_called_once_with(transport="stdio")
+
+
+_ENDPOINT_SIDES: Mapping[str, tuple[str, ...]] = {
+    "s3": ("  path: s3://lake/a.parquet\n", "  type: delta\n  table_uri: s3://lake/t\n"),
+    "azure": ("  path: az://lake/a.parquet\n", "  type: delta\n  table_uri: abfss://lake/t\n"),
+    "gcs": ("  path: gs://lake/a.parquet\n", "  type: delta\n  table_uri: gs://lake/t\n"),
+    "bigquery": ("  type: bigquery\n  project: analytics\n  table: sales.orders\n",),
+    "unity": ("  type: delta\n  table_uri: uc://main.sales.orders\n",),
+}
+"""For each store, the sides whose reader takes an endpoint from its variables."""
+
+_STORE_TITLES: Mapping[str, str] = {
+    "s3": "S3",
+    "azure": "Azure",
+    "gcs": "Google Cloud Storage",
+    "bigquery": "BigQuery",
+    "unity": "Unity Catalog",
+}
+"""How a refusal names each store."""
+
+_ENVIRONMENT_ENDPOINT_HOSTS = (
+    "lake",
+    "minio.internal",
+    "h",
+    "xy12345.snowflakecomputing.com",
+    "storage.universe.example",
+    "bigquery.bq.example",
+    "main.sales.orders",
+)
+"""The hosts the environment endpoint tests' server allows."""
+
+_ENDPOINT_VALUES = (
+    ("http://minio.internal:9000", "names its endpoint by a scheme other than https", "plain-http"),
+    (
+        "https://leak-probe.example:9000",
+        "names an endpoint whose host is not given with --allow-host",
+        "host-not-allowed",
+    ),
+    (
+        "https://minio.internal:9000/other",
+        "holds a path, a query, or a fragment after its host",
+        "path",
+    ),
+    ("https://minio.internal:9000/", None, "allowed"),
+)
+"""Each endpoint a variable can name, how its refusal reads, or None where the side is read, and its id."""
+
+
+def _sides_reading(name: str, store: str) -> list[tuple[int, str]]:
+    """Return each side of `store` whose reader takes `name`, with its index in `_ENDPOINT_SIDES`.
+
+    Only deltalake reads a name in `_DELTA_LAKE_ONLY`, so only a Delta Lake side does.
+    """
+    return [
+        (index, side)
+        for index, side in enumerate(_ENDPOINT_SIDES[store])
+        if name not in mcp_server._DELTA_LAKE_ONLY or "type: delta" in side
+    ]
+
+
+_ENVIRONMENT_ENDPOINT_CASES = [
+    pytest.param(name, store, side, value, refusal, id=f"{name}-{store}{index}-{value_id}")
+    for name, store in mcp_server._ENVIRONMENT_ENDPOINTS.items()
+    for index, side in _sides_reading(name, store)
+    for value, refusal, value_id in _ENDPOINT_VALUES
+]
+"""Each variable, a side of its store whose reader takes it, and each endpoint it can name."""
+
+_ICEBERG_S3 = "  type: iceberg\n  table_uri: s3://lake/t/metadata/v1.metadata.json\n"
+"""An Iceberg side in S3, which PyArrow reads on the server."""
+
+_ICEBERG_GCS = "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n"
+"""An Iceberg side in Google Cloud Storage, which PyArrow reads on the server."""
+
+_MOVED_HOST = "x@leak-probe.example:9000/"
+"""A region or an account that moves a reader's host to `leak-probe.example`, as in `s3.x@leak-probe.example:9000/.amazonaws.com`."""
+
+
+def _endpoint_settings() -> Settings:
+    """Return the settings of the environment endpoint tests' server, which reads under the working folder."""
+    return Settings((Path.cwd(),), allowed_hosts=_ENVIRONMENT_ENDPOINT_HOSTS)
+
+
+def _read_stubbed(mocker: MockerFixture) -> MagicMock:
+    """Stub each reader a side reaches, and return the stub of the schema read, which records each call."""
+    mocker.patch.object(mcp_server, "_table_files", side_effect=lambda *_: iter(()))
+    return mocker.patch.object(DiffEngine, "read_schema", return_value=pl.Schema({"id": pl.Int64}))
+
+
+def _describe_refused(root: Path, source: str) -> str:
+    """Describe the source `source` names, through the function and through a tool, and return the refusal.
+
+    Both refuse with the same message, which the tool's answer holds.
+    """
+    _with_source(root, source)
+    settings = _endpoint_settings()
+    with pytest.raises(ConfigError) as refused:
+        describe_side(settings, "veridelta.yaml", "source")
+    result = _call(settings, {"path": "veridelta.yaml", "side": "source"}, "describe_schema")
+    assert result.is_error
+    assert str(refused.value) in _text(result)
+    return str(refused.value)
+
+
+def _describe_read(root: Path, source: str, read: MagicMock) -> None:
+    """Describe the source `source` names, through the function and through a tool, and ensure both read it."""
+    _with_source(root, source)
+    settings = _endpoint_settings()
+
+    report = describe_side(settings, "veridelta.yaml", "source")
+    result = _call(settings, {"path": "veridelta.yaml", "side": "source"}, "describe_schema")
+
+    assert report["columns"] == {"id": "Int64"}
+    assert not result.is_error, _text(result)
+    assert read.call_count == 2
+
+
+class TestEnvironmentEndpoints:
+    """Validate the rule that holds each endpoint a reader takes from the server's environment to the allowed hosts.
+
+    A reader takes an endpoint from the server's environment when the
+    configuration names none, so each must meet the rules a storage option's
+    endpoint meets: a host given with --allow-host, no path, and HTTPS.
+    """
+
+    @pytest.mark.parametrize(
+        ("name", "store", "source", "value", "refusal"), _ENVIRONMENT_ENDPOINT_CASES
+    )
+    def test_it_holds_each_variable_to_the_endpoint_rules(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        store: str,
+        source: str,
+        value: str,
+        refusal: str | None,
+    ) -> None:
+        """Ensure each variable reaches a reader only as an allowed host over HTTPS, with no path.
+
+        The refusal names the variable, and never its value or its host.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        if refusal is None:
+            _describe_read(tmp_path, source, read)
+            return
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(f"The source side reads {_STORE_TITLES[store]}, and ")
+        assert refusal in message
+        assert f"the server's environment variable {name}" in message
+        assert "leak-probe.example" not in message
+        assert "minio.internal" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", ["aws_endpoint_url", "AWS_Endpoint_Url"])
+    def test_it_reads_a_name_in_any_case(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure a variable is matched in any case, as deltalake reads one.
+
+        Windows holds every name in upper case, so the message is compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "http://minio.internal:9000")
+
+        message = _describe_refused(tmp_path, "  type: delta\n  table_uri: s3://lake/t\n")
+
+        assert f"the server's environment variable {name}".casefold() in message.casefold()
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("source", "environment"),
+        [
+            pytest.param("  path: a.csv\n", {"AWS_ENDPOINT_URL": "http://x.example"}, id="local"),
+            pytest.param(
+                "  path: s3://lake/a.parquet\n",
+                {
+                    "AZURE_ENDPOINT": "http://x.example",
+                    "BIGQUERY_EMULATOR_HOST": "http://x.example",
+                },
+                id="other-stores",
+            ),
+            pytest.param(
+                f"{_SNOWFLAKE}  account: xy12345\n",
+                {
+                    **dict.fromkeys(mcp_server._ENVIRONMENT_ENDPOINTS, "http://x.example"),
+                    mcp_server._EMULATOR_SWITCH: "true",
+                    "MOTHERDUCK_HOST": "x.example",
+                },
+                id="snowflake",
+            ),
+            pytest.param(
+                "  type: duckdb\n  database: w.duckdb\n  table: t\n",
+                {"AWS_ENDPOINT_URL": "http://x.example", "MOTHERDUCK_HOST": "x.example"},
+                id="duckdb-file",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: hdfs://h/t\n",
+                {
+                    **dict.fromkeys(mcp_server._ENVIRONMENT_ENDPOINTS, "http://x.example"),
+                    mcp_server._EMULATOR_SWITCH: "true",
+                },
+                id="hdfs",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://lake/t\n",
+                {
+                    "DATABRICKS_HOST": "http://x.example",
+                    **dict.fromkeys(mcp_server._HADOOP_CONFIGURATION, "hadoop"),
+                },
+                id="unity-and-hadoop-on-s3",
+            ),
+        ],
+    )
+    def test_it_checks_only_the_variables_of_the_side_s_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        environment: dict[str, str],
+    ) -> None:
+        """Ensure a variable that no reader of a side takes leaves the side as it was."""
+        read = _read_stubbed(mocker)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        with duckdb.connect(str(tmp_path / "w.duckdb")) as connection:
+            connection.execute("CREATE TABLE t AS SELECT 1 AS id")
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+
+        _describe_read(tmp_path, source, read)
+
+    def test_it_reads_an_https_location_whatever_the_environment_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a file at an https location is read, whatever endpoint the environment names.
+
+        Polars reads such a file with its own HTTP client, at the host the
+        location names, and a probe found it takes no endpoint from the
+        environment or from the AWS profile.
+        """
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        config.write_text("[default]\nendpoint_url = http://x.example\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        for name in mcp_server._ENVIRONMENT_ENDPOINTS:
+            monkeypatch.setenv(name, "http://x.example")
+        monkeypatch.setenv(mcp_server._EMULATOR_SWITCH, "true")
+
+        _describe_read(tmp_path, "  path: https://minio.internal/a.csv\n", read)
+
+    @pytest.mark.parametrize(
+        ("source", "name", "store"),
+        [
+            pytest.param(
+                "  type: iceberg\n  table_uri: s3://lake/t/metadata/v1.metadata.json\n",
+                "AWS_ENDPOINT_URL",
+                mcp_server._ANY_STORE_NAME,
+                id="iceberg",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n",
+                "CLOUD_STORAGE_EMULATOR_ENDPOINT",
+                mcp_server._ANY_STORE_NAME,
+                id="iceberg-gcs",
+            ),
+            pytest.param(
+                "  type: iceberg\n  table_uri: t/metadata/v1.metadata.json\n",
+                "CLOUD_STORAGE_TESTBENCH_ENDPOINT",
+                mcp_server._ANY_STORE_NAME,
+                id="iceberg-here",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: opendal+s3://h/t\n",
+                "AZURE_ENDPOINT",
+                mcp_server._ANY_STORE_NAME,
+                id="opendal",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: uc://main.sales.orders\n",
+                "AWS_ENDPOINT_URL",
+                "Unity Catalog",
+                id="unity-catalog-location",
+            ),
+            pytest.param(
+                "  type: delta\n  table_uri: s3://lake/t\n"
+                "  storage_options: {aws_endpoint_url: 'https://minio.internal:9000'}\n",
+                "AWS_ENDPOINT_URL",
+                "S3",
+                id="configured-endpoint",
+            ),
+        ],
+    )
+    def test_it_checks_every_side_that_could_take_the_variable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        store: str,
+    ) -> None:
+        """Ensure an Iceberg table, a location of no known store, and a side with its own endpoint are checked.
+
+        An Iceberg table is checked for every object store, even on this
+        machine, since its metadata names the files a scan opens. The check
+        runs even when the configuration names its own endpoint, which a
+        reader may prefer, since that is simpler and only stricter.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "http://minio.internal:9000")
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(f"The source side reads {store}, and the server's environment")
+        assert "scheme other than https" in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._PLAIN_WITHOUT_SCHEME))
+    def test_it_refuses_a_value_with_no_scheme_that_pyarrow_reads_as_http(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure a Google Cloud Storage emulator variable with no scheme is refused, even for an allowed host.
+
+        PyArrow sends its bearer token to such a value over plain HTTP.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "minio.internal:9000")
+
+        message = _describe_refused(
+            tmp_path, "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n"
+        )
+
+        assert message.startswith(f"The source side reads {mcp_server._ANY_STORE_NAME}, and the")
+        assert f"variable {name} names its endpoint with no scheme" in message
+        assert "minio.internal" not in message
+        read.assert_not_called()
+
+    def test_it_reads_an_s3_endpoint_with_no_scheme_from_an_allowed_host(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a variable whose readers send nothing to a value with no scheme is held to the host rule alone."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "minio.internal:9000")
+
+        _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
+
+    @pytest.mark.parametrize("value", ["true", "On", "1", " YES "])
+    def test_it_refuses_the_emulator_switch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, value: str
+    ) -> None:
+        """Ensure the switch that sends a reader to Azurite over plain HTTP is refused on an Azure side."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._EMULATOR_SWITCH, value)
+
+        message = _describe_refused(tmp_path, "  path: az://lake/a.parquet\n")
+
+        assert message.startswith("The source side reads Azure, and the server's environment")
+        assert "Azurite emulator over plain HTTP" in message
+        assert mcp_server._EMULATOR_SWITCH.casefold() in message.casefold()
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("value", "source"),
+        [
+            pytest.param("false", "  path: az://lake/a.parquet\n", id="false"),
+            pytest.param("0", "  path: az://lake/a.parquet\n", id="zero"),
+            pytest.param("off", "  path: az://lake/a.parquet\n", id="off"),
+            pytest.param("true", "  path: s3://lake/a.parquet\n", id="on-an-s3-side"),
+        ],
+    )
+    def test_it_reads_with_the_switch_off_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure the switch turned off, or on a side that does not read Azure, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._EMULATOR_SWITCH, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        ("name", "store", "source"),
+        [
+            pytest.param(name, store, side, id=f"{name}-{store}{index}")
+            for name, store in mcp_server._CERTIFICATE_SWITCHES.items()
+            for index, side in _sides_reading(name, store)
+        ],
+    )
+    @pytest.mark.parametrize("value", ["true", "On", "1", " YES "])
+    def test_it_refuses_a_switch_that_turns_off_certificate_checks(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        store: str,
+        source: str,
+        value: str,
+    ) -> None:
+        """Ensure a switch that lets a proxy read the credentials over HTTPS is refused on a side of its store."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(f"The source side reads {_STORE_TITLES[store]}, and the server's")
+        assert f"variable {name} turns off a reader's check of the certificate" in message
+        read.assert_not_called()
+
+    def test_it_refuses_a_certificate_switch_in_any_case(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the unprefixed switch is matched in any case, as deltalake reads every name in lower case."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv("allow_invalid_certificates", "true")
+
+        message = _describe_refused(tmp_path, "  type: delta\n  table_uri: s3://lake/t\n")
+
+        assert "variable allow_invalid_certificates turns off" in message.casefold()
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("name", "value", "source"),
+        [
+            pytest.param(
+                "AWS_ALLOW_INVALID_CERTIFICATES", "false", "  path: s3://lake/a.parquet\n", id="off"
+            ),
+            pytest.param(
+                "ALLOW_INVALID_CERTIFICATES", "true", "  path: az://lake/a.parquet\n", id="azure"
+            ),
+            pytest.param(
+                "AZURE_ALLOW_INVALID_CERTIFICATES",
+                "true",
+                "  path: gs://lake/a.parquet\n",
+                id="gcs",
+            ),
+        ],
+    )
+    def test_it_reads_with_a_certificate_switch_off_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure a switch turned off, or one no reader of the side's store takes, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["gcs"])
+    @pytest.mark.parametrize(
+        "name",
+        [*sorted(mcp_server._SERVICE_ACCOUNT_FILES), mcp_server._KEY_JSON_VARIABLE],
+    )
+    @pytest.mark.parametrize(("base_url", "refusal", "value_id"), _ENDPOINT_VALUES)
+    def test_it_holds_a_service_account_s_base_url_to_the_endpoint_rules(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        base_url: str,
+        refusal: str | None,
+        value_id: str,
+    ) -> None:
+        """Ensure the gcs_base_url of a service account key, in a file or in the variable, is held to the rules.
+
+        The refusal names the variable, and never the key file's path or the base URL.
+        """
+        read = _read_stubbed(mocker)
+        key = json.dumps({"type": "service_account", "gcs_base_url": base_url})
+        if name == mcp_server._KEY_JSON_VARIABLE:
+            monkeypatch.setenv(name, key)
+        else:
+            path = tmp_path / "secret-folder" / "service-account.json"
+            path.parent.mkdir()
+            path.write_text(key, encoding="utf-8")
+            monkeypatch.setenv(name, str(path))
+
+        if refusal is None:
+            _describe_read(tmp_path, source, read)
+            return
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(
+            f"The source side reads Google Cloud Storage, and the server's environment variable "
+            f"{name} gives a service account key whose gcs_base_url "
+        ), value_id
+        assert refusal in message
+        assert "minio.internal" not in message
+        assert "leak-probe.example" not in message
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("name", "key"),
+        [
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", None, id="missing-file"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT_PATH", b"\xff\xfe", id="not-utf-8"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b"{", id="not-json"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'["gcs_base_url"]', id="not-an-object"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'{"gcs_base_url": 1}', id="not-text"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'{"gcs_base_url": ""}', id="empty"),
+            pytest.param("GOOGLE_SERVICE_ACCOUNT", b'{"type": "service_account"}', id="none"),
+            pytest.param(mcp_server._KEY_JSON_VARIABLE, b"{", id="key-not-json"),
+        ],
+    )
+    def test_it_reads_with_a_service_account_key_that_names_no_base_url(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        key: bytes | None,
+    ) -> None:
+        """Ensure a key that names no base URL, or that object_store cannot read, leaves the side read.
+
+        object_store fails before any request on a key it cannot read.
+        """
+        read = _read_stubbed(mocker)
+        path = tmp_path / "service-account.json"
+        if name == mcp_server._KEY_JSON_VARIABLE:
+            monkeypatch.setenv(name, (key or b"").decode())
+        else:
+            if key is not None:
+                path.write_bytes(key)
+            monkeypatch.setenv(name, str(path))
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: gs://lake/t\n", read)
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["gcs"])
+    def test_it_reads_the_base_url_of_a_key_file_with_a_byte_outside_utf_8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, source: str
+    ) -> None:
+        """Ensure a key file with a byte outside UTF-8 in a field object_store ignores still has its gcs_base_url checked.
+
+        object_store's parser checks UTF-8 only in the fields it reads, so
+        deltalake sent a `gs://` table's request to the `gcs_base_url` of a
+        key whose `project_id` held a Latin-1 byte.
+        """
+        read = _read_stubbed(mocker)
+        key = json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "PROJ",
+                "gcs_base_url": "http://minio.internal",
+            }
+        )
+        path = tmp_path / "service-account.json"
+        path.write_bytes(key.encode().replace(b"PROJ", b"pr\xe9j"))
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT", str(path))
+
+        message = _describe_refused(tmp_path, source)
+
+        assert "GOOGLE_SERVICE_ACCOUNT gives a service account key whose gcs_base_url" in message
+        assert "names its endpoint by a scheme other than https" in message
+        read.assert_not_called()
+
+    def test_it_refuses_a_service_account_key_that_is_not_a_regular_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a key file the server cannot read without taking it from the reader is refused.
+
+        A named pipe gives its text to the first process that reads it, so
+        the server cannot check it. A folder stands in for one, since Windows
+        has none.
+        """
+        read = _read_stubbed(mocker)
+        folder = tmp_path / "secret-folder"
+        folder.mkdir()
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT", str(folder))
+
+        message = _describe_refused(tmp_path, "  type: delta\n  table_uri: gs://lake/t\n")
+
+        assert "variable GOOGLE_SERVICE_ACCOUNT names a key file that is not a regular" in message
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    def test_it_reads_a_service_account_key_only_for_google_cloud_storage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a key's base URL is not checked on a side whose reader reads no Google Cloud Storage."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(
+            mcp_server._KEY_JSON_VARIABLE, json.dumps({"gcs_base_url": "http://x.example"})
+        )
+        monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT", str(tmp_path))
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: s3://lake/t\n", read)
+
+    def test_it_passes_over_an_empty_value(self) -> None:
+        """Ensure an empty variable, which no reader takes, is passed over.
+
+        Windows removes a variable set to the empty text, so the environment is passed in.
+        """
+        config = SourceConfig(path="az://lake/a.parquet")
+        environ = {"AZURE_ENDPOINT": "", mcp_server._EMULATOR_SWITCH: ""}
+
+        mcp_server._refuse_environment_endpoints(_endpoint_settings(), "source", config, environ)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["DATABRICKS_HOST", "DATABRICKS_WORKSPACE_URL", "UNITY_WORKSPACE_URL", "DATABRICKS_Host"],
+    )
+    @pytest.mark.parametrize(
+        ("value", "refusal"),
+        [
+            pytest.param(
+                "http://main.sales.orders:9000",
+                "names its endpoint by a scheme other than https",
+                id="plain-http",
+            ),
+            pytest.param(
+                "https://leak-probe.example",
+                "names an endpoint whose host is not given with --allow-host",
+                id="host-not-allowed",
+            ),
+        ],
+    )
+    def test_it_holds_the_unity_catalog_workspace_to_the_endpoint_rules(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        value: str,
+        refusal: str,
+    ) -> None:
+        """Ensure the workspace Delta Lake's Unity Catalog reader takes from the environment is checked.
+
+        The reader sends the environment's token to that workspace as a
+        bearer token, and the workspace's answer names the table's location.
+        Windows holds every name in upper case, so the message is compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(
+            tmp_path, "  type: delta\n  table_uri: uc://main.sales.orders\n"
+        )
+
+        assert message.startswith("The source side reads Unity Catalog, and the server's")
+        assert f"variable {name} {refusal}".casefold() in message.casefold()
+        assert "leak-probe.example" not in message
+        read.assert_not_called()
+
+    def test_it_reads_a_unity_catalog_table_from_an_allowed_workspace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a workspace given with --allow-host, over HTTPS, leaves a Unity Catalog table read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv("DATABRICKS_HOST", "https://main.sales.orders")
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: uc://main.sales.orders\n", read)
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["gcs"])
+    def test_it_holds_the_unprefixed_service_account_variable_to_the_endpoint_rules(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, source: str
+    ) -> None:
+        """Ensure the key file `SERVICE_ACCOUNT` names is checked, as Polars reads it with no prefix.
+
+        Polars sent a `gs://` file's requests to such a key's `gcs_base_url`
+        over plain HTTP, on a side with `skip_signature`.
+        """
+        read = _read_stubbed(mocker)
+        path = tmp_path / "secret-folder" / "service-account.json"
+        path.parent.mkdir()
+        path.write_text(json.dumps({"gcs_base_url": "http://minio.internal:9000"}), "utf-8")
+        monkeypatch.setenv("SERVICE_ACCOUNT", str(path))
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith(
+            "The source side reads Google Cloud Storage, and the server's environment variable "
+            "SERVICE_ACCOUNT gives a service account key whose gcs_base_url names its endpoint "
+            "by a scheme other than https"
+        )
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._HADOOP_CONFIGURATION))
+    @pytest.mark.parametrize("table_uri", ["hdfs://h/t", "viewfs://h/t", "HDFS://h/t"])
+    def test_it_refuses_hadoop_s_configuration_on_an_hdfs_side(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        table_uri: str,
+    ) -> None:
+        """Ensure a folder of Hadoop configuration, which can send Delta Lake's HDFS reader anywhere, is refused.
+
+        Its hdfs-site.xml or core-site.xml can map the table's host to a
+        namenode at any address. The refusal names the variable, never the folder.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, str(tmp_path / "secret-folder"))
+
+        message = _describe_refused(tmp_path, f"  type: delta\n  table_uri: '{table_uri}'\n")
+
+        assert message.startswith(
+            f"The source side reads HDFS, and the server's environment variable {name} names a "
+            "folder of Hadoop configuration."
+        )
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._HADOOP_CONFIGURATION))
+    def test_it_refuses_an_empty_hadoop_variable(self, name: str) -> None:
+        """Ensure a Hadoop variable set to the empty text is refused, since hdfs-native reads the working folder then.
+
+        Windows removes a variable set to the empty text, so the environment is passed in.
+        """
+        config = DeltaLakeConfig(table_uri="hdfs://h/t")
+
+        with pytest.raises(ConfigError, match=f"variable {name} names a folder of Hadoop"):
+            mcp_server._refuse_environment_endpoints(
+                _endpoint_settings(), "source", config, {name: ""}
+            )
+
+    def test_it_reads_an_hdfs_table_with_no_hadoop_configuration(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Ensure an HDFS table whose host is given with --allow-host is read with no Hadoop variable set."""
+        read = _read_stubbed(mocker)
+
+        _describe_read(tmp_path, "  type: delta\n  table_uri: hdfs://h/t\n", read)
+
+    @pytest.mark.parametrize(
+        "name",
+        ["MOTHERDUCK_HOST", "motherduck_port", "motherduck_use_tls", "Motherduck_Region_Host"],
+    )
+    def test_it_refuses_a_motherduck_setting(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure a MotherDuck side refuses a setting the extension reads from the environment."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "127.0.0.1")
+
+        message = _describe_refused(
+            tmp_path, "  type: duckdb\n  database: 'md:sales'\n  table: t\n"
+        )
+
+        assert message.startswith("The source side reads MotherDuck, and the server's environment")
+        assert f"variable {name}".casefold() in message.casefold()
+        assert "127.0.0.1" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "name", ["MOTHERDUCK_TOKEN", "motherduck_token", "motherduck_saas_mode"]
+    )
+    def test_it_reads_a_motherduck_side_with_its_token_or_an_option(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure the token, and an option a tool passes on, leave a MotherDuck side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "Q7mdTokenTokenTokenQ7")
+
+        _describe_read(tmp_path, "  type: duckdb\n  database: 'md:sales'\n  table: t\n", read)
+
+    @pytest.mark.parametrize("profile", ["ledgerprofile", None])
+    def test_it_refuses_the_endpoint_of_the_aws_profile(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        profile: str | None,
+    ) -> None:
+        """Ensure the endpoint_url of the profile the environment selects is held to the rules.
+
+        The message names neither the profile nor the endpoint.
+        """
+        read = _read_stubbed(mocker)
+        section = "default" if profile is None else f"profile {profile}"
+        config = tmp_path / "aws-config"
+        config.write_text(
+            f"[{section}]\nendpoint_url = http://leak-probe.example:9000\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        if profile is not None:
+            monkeypatch.setenv("AWS_PROFILE", profile)
+
+        message = _describe_refused(tmp_path, "  path: s3://lake/a.parquet\n")
+
+        assert message.startswith(
+            "The source side reads S3, and the endpoint_url of the AWS profile"
+        )
+        assert "not given with --allow-host" in message
+        assert "ledgerprofile" not in message
+        assert "leak-probe" not in message
+        assert "9000" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("text", "profile"),
+        [
+            pytest.param(
+                "[profile ledgerprofile]\nendpoint_url = https://minio.internal:9000\n",
+                "ledgerprofile",
+                id="allowed",
+            ),
+            pytest.param(
+                "[default]\nservices = lake\n\n[services lake]\n"
+                "s3 =\n  endpoint_url = http://leak-probe.example:9000\n",
+                None,
+                id="services",
+            ),
+            pytest.param(
+                "[default]\nendpoint_url = http://leak-probe.example:9000\n",
+                "missing",
+                id="missing-profile",
+            ),
+            pytest.param(
+                "[default\nendpoint_url = http://leak-probe.example:9000\n", None, id="malformed"
+            ),
+            pytest.param("[default]\nregion = us-east-1\n", None, id="no-endpoint"),
+        ],
+    )
+    def test_it_reads_with_a_profile_whose_endpoint_polars_does_not_take(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        text: str,
+        profile: str | None,
+    ) -> None:
+        """Ensure an allowed endpoint, a services section, a missing profile, or a bad file leaves the side read.
+
+        Polars reads no `[services]` section, and reads no endpoint from a
+        profile that is missing or a file it cannot parse.
+        """
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        config.write_text(text, encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        if profile is not None:
+            monkeypatch.setenv("AWS_PROFILE", profile)
+
+        _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
+
+    def test_it_reads_no_profile_without_boto3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure the profile is not read when boto3 is missing, since Polars then reads none."""
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        config.write_text("[default]\nendpoint_url = http://leak-probe.example:9000\n")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name, *args: None if name == "boto3" else find_spec(name, *args),
+        )
+
+        _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._DELTA_LAKE_ONLY))
+    @pytest.mark.parametrize(
+        "source",
+        ["  path: s3://lake/a.parquet\n", _ICEBERG_S3, "  path: hdfs://h/a.parquet\n"],
+        ids=["polars", "iceberg", "polars-any-store"],
+    )
+    def test_it_reads_a_side_no_reader_of_which_takes_a_delta_lake_name(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        source: str,
+    ) -> None:
+        """Ensure a name only deltalake reads leaves a Polars or an Iceberg side read, whatever it holds.
+
+        Probes of Polars 1.39.3 and 2.1.0, and of PyArrow under an Iceberg
+        side, sent nothing to these endpoints, kept checking certificates, and
+        built no host from these regions. An unrelated tool may set such a name.
+        """
+        read = _read_stubbed(mocker)
+        value = "true" if "CERTIFICATES" in name else f"http://{_MOVED_HOST}"
+        monkeypatch.setenv(name, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        ("name", "source"),
+        [
+            pytest.param(name, side, id=f"{name}-{index}")
+            for name in sorted(mcp_server._ENVIRONMENT_REGIONS)
+            for index, side in _sides_reading(name, "s3")
+        ]
+        + [
+            pytest.param("AWS_REGION", _ICEBERG_S3, id="AWS_REGION-iceberg"),
+            pytest.param("region", _ENDPOINT_SIDES["s3"][1], id="lowercase"),
+            pytest.param("Aws_Default_Region", _ENDPOINT_SIDES["s3"][1], id="mixed-case"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "value", [_MOVED_HOST, "us-east-1.leak-probe.example", "us east 1", "us-east-1\n"]
+    )
+    def test_it_refuses_a_region_that_could_move_the_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        source: str,
+        value: str,
+    ) -> None:
+        """Ensure a region from the environment is held to the shape a region storage option meets.
+
+        Polars and deltalake write it into the host they connect to, as
+        `s3.{region}.amazonaws.com`, so an `@` or a `/` in it moves the
+        request, and the configuration's credentials, to another machine.
+        The refusal names the variable, and never its value.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        store = mcp_server._ANY_STORE_NAME if "iceberg" in source else "S3"
+        assert message.startswith(f"The source side reads {store}, and the server's environment")
+        assert f"variable {name} is not a region".casefold() in message.casefold()
+        assert "leak-probe" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("name", sorted(mcp_server._ENVIRONMENT_REGIONS))
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["s3"])
+    def test_it_reads_with_a_region_of_letters_digits_and_hyphens(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        name: str,
+        source: str,
+    ) -> None:
+        """Ensure a region in its usual shape leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, "us-east-1")
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        "source",
+        [*_ENDPOINT_SIDES["azure"], *_ENDPOINT_SIDES["gcs"], _ENDPOINT_SIDES["bigquery"][0]],
+    )
+    def test_it_checks_a_region_only_on_an_s3_side(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+    ) -> None:
+        """Ensure a region no reader of the side's store writes into a host leaves the side read."""
+        read = _read_stubbed(mocker)
+        for name in mcp_server._ENVIRONMENT_REGIONS:
+            monkeypatch.setenv(name, _MOVED_HOST)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize("profile", ["ledgerprofile", None])
+    def test_it_refuses_the_region_of_the_aws_profile(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        profile: str | None,
+    ) -> None:
+        """Ensure the region of the profile the environment selects is held to a region's shape.
+
+        Polars 2.1.0 writes it into the host it connects to. The message
+        names neither the profile nor the region.
+        """
+        read = _read_stubbed(mocker)
+        section = "default" if profile is None else f"profile {profile}"
+        config = tmp_path / "aws-config"
+        config.write_text(f"[{section}]\nregion = {_MOVED_HOST}\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        if profile is not None:
+            monkeypatch.setenv("AWS_PROFILE", profile)
+
+        message = _describe_refused(tmp_path, "  path: s3://lake/a.parquet\n")
+
+        assert message.startswith("The source side reads S3, and the region of the AWS profile")
+        assert "is not a region of letters, digits, and hyphens" in message
+        assert "ledgerprofile" not in message
+        assert "leak-probe" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("source", _ENDPOINT_SIDES["azure"])
+    @pytest.mark.parametrize("name", [mcp_server._ACCOUNT_VARIABLE, "AZURE_Storage_Account_Name"])
+    @pytest.mark.parametrize("value", [_MOVED_HOST, "acct", "lake.evil/", "lake:1/x"])
+    def test_it_refuses_an_account_not_given_with_allow_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        value: str,
+    ) -> None:
+        """Ensure the Azure account from the environment is held to the rule an account storage option meets.
+
+        Polars and deltalake connect to `{account}.blob.core.windows.net`, so
+        an account the operator never named, or an `@` in it, sends the
+        side's requests and credentials elsewhere. The refusal names the
+        variable, and never its value. Windows holds every name in upper
+        case, so the message is compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        assert message.startswith("The source side reads Azure, and the server's environment")
+        assert f"variable {name} names a storage account".casefold() in message.casefold()
+        assert "not given with --allow-host" in message
+        assert "leak-probe" not in message
+        assert "acct" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("value", "source"),
+        [
+            *(
+                pytest.param("lake", side, id=f"allowed-{index}")
+                for index, side in enumerate(_ENDPOINT_SIDES["azure"])
+            ),
+            pytest.param(_MOVED_HOST, "  path: s3://lake/a.parquet\n", id="s3"),
+            pytest.param(_MOVED_HOST, "  path: gs://lake/a.parquet\n", id="gcs"),
+        ],
+    )
+    def test_it_reads_with_an_allowed_account_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure an account given with --allow-host, or one on a side that reads no Azure, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._ACCOUNT_VARIABLE, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        "source", [*_ENDPOINT_SIDES["s3"], _ICEBERG_S3], ids=["polars", "delta", "iceberg"]
+    )
+    @pytest.mark.parametrize("name", [mcp_server._MONITORING_SWITCH, "aws_csm_enabled"])
+    @pytest.mark.parametrize("value", ["true", "TRUE", " On "])
+    def test_it_refuses_the_monitoring_switch(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        value: str,
+    ) -> None:
+        """Ensure the switch that sends each request's credentials in clear over UDP is refused on an S3 side.
+
+        PyArrow's S3 file system, under an Iceberg side, sends the access key
+        id and the session token to AWS_CSM_HOST with it on. Windows holds
+        every name in upper case, so the message is compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+        monkeypatch.setenv("AWS_CSM_HOST", "leak-probe.example")
+
+        message = _describe_refused(tmp_path, source)
+
+        store = mcp_server._ANY_STORE_NAME if "iceberg" in source else "S3"
+        assert message.startswith(f"The source side reads {store}, and the server's environment")
+        assert (
+            f"variable {name} turns on the AWS SDK's client-side".casefold() in message.casefold()
+        )
+        assert "leak-probe" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("value", "source"),
+        [
+            pytest.param("false", "  path: s3://lake/a.parquet\n", id="off"),
+            pytest.param("0", _ICEBERG_S3, id="zero"),
+            pytest.param("true", "  path: az://lake/a.parquet\n", id="azure"),
+            pytest.param("true", "  path: gs://lake/a.parquet\n", id="gcs"),
+        ],
+    )
+    def test_it_reads_with_the_monitoring_switch_off_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure the switch turned off, or on a side that reads no S3, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._MONITORING_SWITCH, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "[default]\ncsm_enabled = true\ncsm_host = leak-probe.example\n",
+            "[profile ledgerprofile]\nCSM_ENABLED=True\n",
+            "[default]\nregion = us-east-1\n\n[profile other]\n  csm_enabled = on\n",
+        ],
+        ids=["default", "named-in-capitals", "another-profile"],
+    )
+    @pytest.mark.parametrize(
+        "source", ["  path: s3://lake/a.parquet\n", _ICEBERG_S3], ids=["polars", "iceberg"]
+    )
+    def test_it_refuses_monitoring_in_the_aws_config_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        text: str,
+        source: str,
+    ) -> None:
+        """Ensure a profile that turns client-side monitoring on is refused on an S3 side.
+
+        The AWS SDK for C++ under PyArrow reads the profile without boto3.
+        Every profile counts, whichever the environment selects. The message
+        names neither the profile, the file, nor the host.
+        """
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        config.write_text(text, encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+
+        message = _describe_refused(tmp_path, source)
+
+        assert "and the AWS config file the server's environment names" in message
+        assert "sets csm_enabled in a profile" in message
+        assert "ledgerprofile" not in message
+        assert "leak-probe" not in message
+        assert "aws-config" not in message
+        read.assert_not_called()
+
+    def test_it_reads_the_aws_config_file_in_the_home_folder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure `~/.aws/config` is read when AWS_CONFIG_FILE names no file, as the AWS SDK reads it."""
+        read = _read_stubbed(mocker)
+        (tmp_path / ".aws").mkdir()
+        (tmp_path / ".aws" / "config").write_text("[default]\ncsm_enabled = true\n")
+        monkeypatch.delenv("AWS_CONFIG_FILE")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+
+        message = _describe_refused(tmp_path, _ICEBERG_S3)
+
+        assert "sets csm_enabled in a profile" in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("text", "source"),
+        [
+            pytest.param(b"[default]\ncsm_enabled = false\n", _ICEBERG_S3, id="off"),
+            pytest.param(
+                b"[default]\n# csm_enabled = true\ncsm_enabled\n", _ICEBERG_S3, id="comment"
+            ),
+            pytest.param(b"[default]\nregion = us-east-1\n\xff\n", _ICEBERG_S3, id="not-utf-8"),
+            pytest.param(None, _ICEBERG_S3, id="missing"),
+            pytest.param(
+                b"[default]\ncsm_enabled = true\n", "  path: gs://lake/a.parquet\n", id="gcs"
+            ),
+        ],
+    )
+    def test_it_reads_with_a_config_file_that_leaves_monitoring_off(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        text: bytes | None,
+        source: str,
+    ) -> None:
+        """Ensure monitoring off, a comment, a missing file, or a side that reads no S3 leaves the side read."""
+        read = _read_stubbed(mocker)
+        config = tmp_path / "aws-config"
+        if text is not None:
+            config.write_bytes(text)
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+
+        _describe_read(tmp_path, source, read)
+
+    def test_it_reads_the_null_device_as_no_config_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure AWS_CONFIG_FILE set to the null device, which turns every profile off, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv("AWS_CONFIG_FILE", os.devnull)
+
+        _describe_read(tmp_path, _ICEBERG_S3, read)
+
+    def test_it_refuses_a_config_file_that_is_not_a_regular_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure an AWS config file the server cannot read without taking it from the reader is refused.
+
+        A folder stands in for a named pipe, since Windows has none.
+        """
+        read = _read_stubbed(mocker)
+        folder = tmp_path / "secret-folder"
+        folder.mkdir()
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(folder))
+
+        message = _describe_refused(tmp_path, "  path: s3://lake/a.parquet\n")
+
+        assert "~/.aws/config, is not a regular file, such as a named pipe" in message
+        assert "secret-folder" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize("route", ["data-path", "profile", "customer", "unreadable"])
+    @pytest.mark.parametrize(
+        "source", [*_ENDPOINT_SIDES["s3"], _ICEBERG_S3], ids=["polars", "delta", "iceberg"]
+    )
+    def test_it_refuses_endpoints_from_a_folder_other_than_botocore_s(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        route: str,
+        source: str,
+    ) -> None:
+        """Ensure an endpoints.json from a folder other than botocore's own is refused on an S3 side.
+
+        Polars 2.x takes an S3 side's host from the file, so it could send
+        the side's signed requests anywhere. botocore reads the file from
+        AWS_DATA_PATH, the profile's data_path, and `~/.aws/models`. A file it
+        cannot parse counts too. The message never names the folder.
+        """
+        read = _read_stubbed(mocker)
+        folder = tmp_path / "secret-models"
+        folder.mkdir()
+        content = (
+            '{"partitions": [' if route == "unreadable" else '{"partitions": [], "version": 3}'
+        )
+        (folder / "endpoints.json").write_text(content, encoding="utf-8")
+        if route == "profile":
+            config = tmp_path / "aws-config"
+            config.write_text(f"[default]\ndata_path = {folder}\n", encoding="utf-8")
+            monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        elif route == "customer":
+            loader = importlib.import_module("botocore.loaders").Loader
+            monkeypatch.setattr(loader, "CUSTOMER_DATA_PATH", str(folder))
+        else:
+            monkeypatch.setenv("AWS_DATA_PATH", str(folder))
+
+        message = _describe_refused(tmp_path, source)
+
+        assert "and botocore reads its endpoints.json from a folder other than its own" in message
+        assert "secret-models" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("profile", "source"),
+        [
+            pytest.param(None, "  path: s3://lake/a.parquet\n", id="no-endpoints-file"),
+            pytest.param("missing", "  path: s3://lake/a.parquet\n", id="missing-profile"),
+            pytest.param(None, "  path: az://lake/a.parquet\n", id="azure"),
+        ],
+    )
+    def test_it_reads_with_botocore_s_own_endpoints(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        profile: str | None,
+        source: str,
+    ) -> None:
+        """Ensure a data path with no endpoints.json, a missing profile, or a side that reads no S3 leaves the side read.
+
+        Polars fails before any request on a profile that is missing.
+        """
+        read = _read_stubbed(mocker)
+        folder = tmp_path / "models"
+        folder.mkdir()
+        if profile is None:
+            monkeypatch.setenv("AWS_DATA_PATH", str(folder))
+        else:
+            config = tmp_path / "aws-config"
+            config.write_text(f"[default]\ndata_path = {folder}\n", encoding="utf-8")
+            monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+            monkeypatch.setenv("AWS_PROFILE", profile)
+        if "az://" in source or profile is not None:
+            (folder / "endpoints.json").write_text('{"partitions": [], "version": 3}')
+
+        _describe_read(tmp_path, source, read)
+
+    def test_it_reads_no_endpoints_file_without_boto3(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure botocore's data is not read when boto3 is missing, since Polars then reads none."""
+        read = _read_stubbed(mocker)
+        folder = tmp_path / "models"
+        folder.mkdir()
+        (folder / "endpoints.json").write_text('{"partitions": [], "version": 3}')
+        monkeypatch.setenv("AWS_DATA_PATH", str(folder))
+        find_spec = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name, *args: None if name == "boto3" else find_spec(name, *args),
+        )
+
+        _describe_read(tmp_path, "  path: s3://lake/a.parquet\n", read)
+
+    @pytest.mark.parametrize(
+        "source",
+        [*_ENDPOINT_SIDES["gcs"], _ICEBERG_GCS, *_ENDPOINT_SIDES["bigquery"]],
+        ids=["polars", "delta", "iceberg", "bigquery"],
+    )
+    @pytest.mark.parametrize(
+        "name", [mcp_server._UNIVERSE_VARIABLE, "google_cloud_universe_domain"]
+    )
+    @pytest.mark.parametrize(
+        "value",
+        [_MOVED_HOST, "leak-probe.example", "lake", "universe.example:443", "universe.example/"],
+    )
+    def test_it_refuses_a_universe_not_given_with_allow_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        name: str,
+        value: str,
+    ) -> None:
+        """Ensure a universe whose host is not given with --allow-host is refused on a Google Cloud Storage or a BigQuery side.
+
+        PyArrow, under an Iceberg side, sends its bearer token to
+        `storage.{universe}`, and the BigQuery client its queries to
+        `bigquery.{universe}`. The refusal names the variable, and never its
+        value. Windows holds every name in upper case, so the message is
+        compared in casefold.
+        """
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(name, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        store = {"iceberg": mcp_server._ANY_STORE_NAME, "bigquery": "BigQuery"}.get(
+            source.split()[1], "Google Cloud Storage"
+        )
+        assert message.startswith(f"The source side reads {store}, and the server's environment")
+        assert f"variable {name} names a universe".casefold() in message.casefold()
+        assert "leak-probe" not in message
+        assert "universe.example" not in message
+        read.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("value", "source"),
+        [
+            pytest.param("universe.example", _ENDPOINT_SIDES["gcs"][0], id="allowed-polars"),
+            pytest.param("universe.example", _ENDPOINT_SIDES["gcs"][1], id="allowed-delta"),
+            pytest.param("universe.example", _ICEBERG_GCS, id="allowed-iceberg"),
+            pytest.param("bq.example", _ENDPOINT_SIDES["bigquery"][0], id="allowed-bigquery"),
+            pytest.param(_MOVED_HOST, "  path: s3://lake/a.parquet\n", id="s3"),
+            pytest.param(_MOVED_HOST, "  path: az://lake/a.parquet\n", id="azure"),
+        ],
+    )
+    def test_it_reads_with_an_allowed_universe_or_on_another_store(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+    ) -> None:
+        """Ensure an allowed universe, or one on a side that reads no Google service, leaves the side read."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._UNIVERSE_VARIABLE, value)
+
+        _describe_read(tmp_path, source, read)
+
+    @pytest.mark.parametrize(
+        ("value", "source", "host"),
+        [
+            pytest.param("universe.example", _ENDPOINT_SIDES["bigquery"][0], "bigquery.", id="bq"),
+            pytest.param("bq.example", _ENDPOINT_SIDES["gcs"][0], "storage.", id="gcs"),
+        ],
+    )
+    def test_it_holds_each_store_to_its_own_universe_host(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        value: str,
+        source: str,
+        host: str,
+    ) -> None:
+        """Ensure a universe allowed for one Google service's host is refused on a side of the other."""
+        read = _read_stubbed(mocker)
+        monkeypatch.setenv(mcp_server._UNIVERSE_VARIABLE, value)
+
+        message = _describe_refused(tmp_path, source)
+
+        assert f"names a universe whose host, {host} and the universe, is not given" in message
+        read.assert_not_called()
+
+    def test_validate_config_checks_them_only_with_schemas(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine_calls: list[MagicMock]
+    ) -> None:
+        """Ensure validate_config refuses such an endpoint when it reads the schemas, and only then."""
+        monkeypatch.setenv("AWS_ENDPOINT_URL", "http://minio.internal:9000")
+        _with_source(tmp_path, "  path: s3://lake/a.parquet\n")
+        settings = _endpoint_settings()
+        for mock in engine_calls:
+            mock.return_value = []
+
+        with pytest.raises(ConfigError, match="AWS_ENDPOINT_URL names its endpoint by a scheme"):
+            check_configuration(settings, "veridelta.yaml", schemas=True)
+        refused = _call(settings, {"path": "veridelta.yaml", "schemas": True})
+        report = check_configuration(settings, "veridelta.yaml")
+
+        assert refused.is_error
+        assert "AWS_ENDPOINT_URL names its endpoint by a scheme" in _text(refused)
+        assert report["valid"]
