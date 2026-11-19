@@ -48,6 +48,7 @@ Thirteen things change:
     - A SAS token that is not `name=value` parameters joined by `&`, each an Azure SAS parameter named once.
     - A value with a byte outside UTF-8 in any credential setting.
     - A `${NAME}` in the `password` of a SQLite side.
+    - A `${NAME}` in the `password` of a database side, or as its `uri` user or password, when ConnectorX reads the `uri` as none of PostgreSQL, Redshift, MySQL, SQL Server, Oracle, and ClickHouse. That refuses `mariadb://` and `cockroach://`, which ConnectorX cannot read either. Write MariaDB as `mysql://`. It refuses a `trino://` uri too, since the Trino reader sends the user and the password as base64 and repeats a service's whole refusal. Run a Trino configuration that takes its user or password from the environment with `veridelta run`.
 
     `veridelta.mcp_server.environment_values` is removed, since the server now masks the values it expanded as it loaded the file. `veridelta.mcp_server.check_configuration` no longer takes `secrets`. A direct Python call to it masks nothing, since the server masks values only inside a tool call.
 - `veridelta validate --allow-missing-env` now warns about an unset `${NAME}` that comes before a malformed reference, such as `${}`, in the same `source` or `target` block. Before, it printed only the error. `load_config` with `unset_env` adds that name to the list before it raises, too. `veridelta run` is unchanged.
