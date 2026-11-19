@@ -48,7 +48,7 @@ from typing import (
     TypeVar,
     cast,
 )
-from urllib.parse import SplitResult, parse_qsl, quote, unquote, urlsplit
+from urllib.parse import SplitResult, parse_qsl, quote, unquote, unquote_to_bytes, urlsplit
 from urllib.request import url2pathname
 
 import polars as pl
@@ -314,7 +314,9 @@ _LOGIN_OPTIONS: Final = frozenset(
 
 A service can echo such an id, as AWS does in a signature error. A value
 in `_LOGIN_NAME`'s shape reads the same raw, encoded, and decoded, so an
-echo is the text the mask matches, in any case."""
+echo is the text the mask matches, in any case. A login of 1 to 3
+characters is refused, since a service writes it back and the mask cannot
+hide one that short."""
 
 _SAS_OPTIONS: Final = frozenset(
     {"adls.sas-token", "azure_storage_sas_token", "azure_storage_sas_key", "sas_token", "sas_key"}
@@ -325,7 +327,8 @@ The Azure SDK quotes a signed request's URL, with the token's parameters
 sorted. A token in the shape `_is_sas_token` checks holds only parameters
 the mask finds one by one: the server masks the whole token, and the
 `sig` parameter as written, decoded, and encoded, and leaves out each
-URL's query."""
+URL's query. The token, and its `sig` once decoded, need 4 or more
+characters each."""
 
 _SWITCH_OPTIONS: Final = frozenset({"aws_skip_signature", "skip_signature", "s3.anonymous"})
 """Storage option keys, in lowercase, that turn signing off."""
@@ -450,7 +453,12 @@ _SHORTEST_MASKED: Final = 4
 """The fewest characters an environment value needs to be masked in a tool's answer.
 
 A shorter value, such as a flag or a small number, would mask ordinary text
-throughout the answer, and holds no secret worth the loss."""
+throughout the answer, and holds no secret worth the loss. So every credential
+slot refuses a value below it. A service, or `DatabaseConfig.redacted_uri`,
+writes a login back, so no slot is exempt."""
+
+_TOO_SHORT: Final = f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
+"""What a credential of 1 to 3 characters needs, in every slot."""
 
 _R = TypeVar("_R")
 
@@ -2971,7 +2979,9 @@ password would get a shape in `_shape_needed`.
 A token keeps `_TOKEN`'s shape, as a storage option's does, which costs a
 real token nothing. Snowflake can echo the `user`, a login name whose shape
 `_LOGIN_NAME` holds to text that reads the same raw, encoded, and decoded,
-so an echo is the text the mask matches."""
+so an echo is the text the mask matches. A login of 1 to 3 characters is
+refused, since PostgreSQL and `redacted_uri` write the user back, and the
+mask cannot hide one that short."""
 
 _PASSWORD_READERS: Final = frozenset(
     {"postgres", "postgresql", "mysql", "mssql", "oracle", "clickhouse"}
@@ -3181,6 +3191,184 @@ COS store sends the token in the other two names' file to Tencent Cloud's
 STS, as its binary shows, not probed. Neither store is reached on the
 server yet, as `_READER_ONLY_VARIABLES` says."""
 
+_LOGIN_IN_URL: Final = re.compile(r"://([^/?#]*)@([^/?#\s,|]*)")
+"""A URL's login and the host after it.
+
+The login runs to the last `@` before the first `/`, `?`, or `#`, as urlsplit, object_store,
+and botocore split it, so it can hold a space. The host ends where the URL can: at whitespace,
+and at a `,` or a `|`, which join the entries of a list such as `GOPROXY`. The match starts only at a `://`, so a long
+value is read in linear time, and no form recorded as written holds the `://` that
+`without_queries` finds a URL by. A password can hold one once decoded, which
+`_environment_values` refuses."""
+
+_LOGIN_AT_START: Final = re.compile(r"([^/?#]*)@([^/?#\s,|]*)")
+"""A login and the host after it, at the start of the text it is matched at.
+
+It reads a proxy written with no scheme, as in user:pass@proxy:3128, which reqwest, curl,
+and Python read as HTTP, and a scheme-relative URL after its leading `//`."""
+
+_PROXY_SUFFIX: Final = "_proxy"
+"""The end of each name Python reads a proxy from, in any case, such as HTTPS_PROXY or all_proxy."""
+
+_SCHEME: Final = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
+"""A URL's scheme and the `://` after it, as RFC 3986 and urllib3 read a scheme.
+
+A proxy value that starts with neither a scheme nor `//`, as in user:pa://ss@proxy, has
+none. botocore puts http:// before such a value, so urllib3 reads its authority from its
+first character. botocore and requests put http: before a value that starts with `//`, a
+scheme-relative URL, whose authority starts after the `//`."""
+
+_URL_START: Final = re.compile(rf"{_SCHEME.pattern}|//")
+"""Where a proxy URL's authority starts, matched at the start of its value: after a scheme or a `//`."""
+
+_NEXT_URL: Final = re.compile(rf"(?<=[\s,|])(?={_SCHEME.pattern})")
+"""Where a variable that is no proxy starts another URL: at a scheme after whitespace, a `,`, or a `|`.
+
+A variable can hold a list of URLs, such as `GOPROXY`, whose entries a `,` or a `|` joins, or
+several URLs among other text."""
+
+_SPACE: Final = re.compile(r"\s")
+"""Whitespace, where a URL in a variable that is no proxy or endpoint ends once its authority has."""
+
+_ENDPOINT_PREFIX: Final = "aws_endpoint"
+"""The start of each name, in any case, that botocore or object_store reads one endpoint URL from.
+
+That covers `AWS_ENDPOINT`, `AWS_ENDPOINT_URL`, and each `AWS_ENDPOINT_URL_` and a service, such
+as `AWS_ENDPOINT_URL_STS`, which botocore reads as Polars signs in through an AWS profile."""
+
+_AROUND_AN_ENDPOINT: Final = " \t\n\r\x0b\x0c\"'"
+"""The whitespace and the quotes around an endpoint, as Docker's `--env-file` keeps them."""
+
+_ENDPOINT_START: Final = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?[/\\]*")
+"""What comes before an endpoint's login: an optional scheme with its `:`, then any `/` or backslash.
+
+botocore writes an endpoint back whole when it is no valid URL, such as `"//user:pass@host"`
+in quotes, `https:user:pass@host`, or `user:pass@host`, so its login counts after any of these.
+In `user:pass@host`, the user reads as a scheme, so the login recorded is `pass@host`, which
+hides the password in that echo, and the user is not masked alone."""
+
+
+def _endpoint_authority(value: str) -> str:
+    """Return an endpoint from where its login can start, past quotes, whitespace, and `_ENDPOINT_START`."""
+    written = value.strip(_AROUND_AN_ENDPOINT)
+    start = _ENDPOINT_START.match(written)
+    return written[start.end() if start else 0 :]
+
+
+def _url_login_values(name: str, value: str) -> set[str]:
+    """Return what a reader or a proxy can repeat of each URL login in a variable, to be masked.
+
+    object_store, behind Polars and deltalake, and botocore write an endpoint back whole, as
+    written. requests, botocore, and google-auth write a proxy URL they cannot parse back whole,
+    and botocore writes a socks proxy as http:// and the value. reqwest sends a proxy's login,
+    decoded, as a Basic Proxy-Authorization header. So each login is recorded with the host
+    after it, followed by its `@`, its password as written and decoded, and that Basic
+    credential. The user alone is never recorded, since no probed reader writes it without the
+    rest, and a user such as `admin` would hide the word in every answer. Nothing is refused
+    here, since any variable can hold a URL; `_cut_url_login` refuses a login a client cuts.
+    A value that starts with `//`, in any variable, is a scheme-relative URL, whose login
+    follows the `//`. A proxy variable's value that starts with neither `//` nor a
+    `_SCHEME` is read as a login with no scheme, as clients read it. An endpoint variable's
+    value is one URL, whose login starts after `_endpoint_authority`.
+    """
+    written = value.strip()
+    found: list[re.Match[str] | None]
+    if name.lower().startswith(_ENDPOINT_PREFIX):
+        found = [_LOGIN_AT_START.match(_endpoint_authority(written))]
+    elif written.startswith("//"):
+        found = [_LOGIN_AT_START.match(written, 2), *_LOGIN_IN_URL.finditer(value)]
+    elif name.lower().endswith(_PROXY_SUFFIX) and not _SCHEME.match(written):
+        found = [_LOGIN_AT_START.match(written)]
+    else:
+        found = list(_LOGIN_IN_URL.finditer(value))
+    values: set[str] = set()
+    for match in found:
+        if match is None or not match[1]:
+            continue
+        login, host = match[1], match[2]
+        user, _, password = login.partition(":")
+        raw = (
+            unquote_to_bytes(user.encode(errors="surrogateescape"))
+            + b":"
+            + unquote_to_bytes(password.encode(errors="surrogateescape"))
+        )
+        values.update(
+            (
+                f"{login}@{host}",
+                f"{login}@",
+                password,
+                unquote(password, errors="surrogateescape"),
+                base64.b64encode(raw).decode(),
+            )
+        )
+    return {form for form in values if len(form) >= _SHORTEST_MASKED}
+
+
+_AUTHORITY_END: Final = re.compile(r"[/?#\\]")
+"""Each character urllib3 ends a URL's authority at: `/`, `?`, `#`, and a backslash.
+
+A WHATWG URL parser, as reqwest and object_store use, reads a backslash in an HTTP URL as a
+`/` too."""
+
+
+def _cut_url_login(name: str, value: str) -> bool:
+    """Say whether a variable holds a URL with an `@` after the first `/`, `?`, `#`, or backslash of its authority.
+
+    Such a login holds one of these characters unencoded, as a base64 password can hold a
+    `/`. urllib3, behind requests and botocore, ends the authority at that character, and
+    its parse error writes back the user and the head of the password, or the head alone
+    as a port. After an earlier `@`, a parser takes a piece of the password for the host,
+    and botocore writes back the rest. No mask matches such a piece, so the server refuses
+    the variable. This holds for an endpoint, such as `AWS_ENDPOINT_URL` or
+    `AWS_ENDPOINT_URL_STS`, which botocore reads as Polars signs in, as for a proxy. The
+    server cannot tell which variables a reader reads a URL from, so it holds for a URL in
+    any variable. It cannot tell such a login from an `@` in a URL's path or query
+    either, so that is refused too. In a variable that is no proxy, the value is split at
+    each `_NEXT_URL`, and each piece that holds a `://` holds a URL, whose authority starts
+    after its first `://`, whatever comes before it, such as a quote. A leading `//`
+    starts one too. Once its authority has ended, such a URL ends at whitespace, so an
+    email in the text after it is no cut login. A proxy variable's value is one URL, read
+    from its first character when `_URL_START` does not match there, so the `/` of a
+    later `://` counts as a cut, and so does the first `/` of a quoted proxy. An endpoint
+    variable's value is one URL too, read after `_endpoint_authority`. A proxy or an
+    endpoint does not end at whitespace, so an `@` anywhere after its cut counts.
+    """
+    written = value.strip()
+    lowered = name.lower()
+    whole = True
+    if lowered.startswith(_ENDPOINT_PREFIX):
+        urls = [_endpoint_authority(written)]
+    elif lowered.endswith(_PROXY_SUFFIX):
+        first = _URL_START.match(written)
+        urls = [written[0 if first is None else first.end() :]]
+    else:
+        whole = False
+        pieces = _NEXT_URL.split(written)
+        urls = [piece[piece.find("://") + 3 :] for piece in pieces if "://" in piece]
+        if written.startswith("//"):
+            urls.append(pieces[0][2:])
+    for url in urls:
+        cut = _AUTHORITY_END.search(url)
+        if cut is None:
+            continue
+        rest = url[cut.end() :]
+        if "@" in (rest if whole else _SPACE.split(rest, maxsplit=1)[0]):
+            return True
+    return False
+
+
+def _hides_a_url_mark(form: str) -> bool:
+    """Say whether a mask over `form` could hide part of a URL's `://` or its `?`.
+
+    `_mask` runs before `without_queries`, which finds a URL by its `://` and its query by
+    the `?` after it. A form covers part of a `://` when it holds one, ends with `:` or `:/`,
+    or starts with `/`, as a password decoded as `tps:` or `//store` does next to the text
+    of a URL. It covers a `?` when it holds one. Either way the URL's query stays in the
+    answer.
+    """
+    return "://" in form or "?" in form or form.endswith((":", ":/")) or form.startswith("/")
+
+
 _LONGEST_TOKEN_FILE: Final = 64 * 1024
 """The most bytes of a token file the server reads. A larger file holds no token."""
 
@@ -3339,8 +3527,8 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
             "text in UTF-8, since a driver cannot send other bytes as text, and a reader can "
             "repeat them in forms no mask matches"
         )
-    if slot in ("secret", "token", "account key", "uri password") and len(value) < _SHORTEST_MASKED:
-        return f"at least {_SHORTEST_MASKED} characters, since a shorter one cannot be masked"
+    if len(value) < _SHORTEST_MASKED:
+        return _TOO_SHORT
     if slot == "token" and _TOKEN.fullmatch(value) is None:
         return (
             "a key or a token of letters, digits, '+', '/', '=', '.', '_', '~', and '-' only, "
@@ -3359,6 +3547,11 @@ def _shape_needed(slot: _Slot, value: str) -> str | None:
         return (
             "an Azure SAS token: name=value parameters joined by '&', such as sv=...&sig=..., "
             "each named once"
+        )
+    if slot == "sas" and _short_signature(value):
+        return (
+            f"an Azure SAS token whose sig holds at least {_SHORTEST_MASKED} characters once "
+            "decoded, since the server masks the sig on its own and a shorter one cannot be masked"
         )
     return None
 
@@ -3396,10 +3589,12 @@ def _check_reference(reference: Reference, match: re.Match[str]) -> None:
         )
     needed = None if reference.value is None else _shape_needed(slot, reference.value)
     if needed is not None:
-        raise ConfigError(
-            f"On veridelta mcp, the value of {named} in {where} must be {needed}.",
-            locations=locations,
-        )
+        refusal = f"On veridelta mcp, the value of {named} in {where} must be {needed}."
+        if needed == _TOO_SHORT and slot in ("login", "uri user"):
+            refusal += (
+                f" A login this short is no secret, so write it in the file in place of {named}."
+            )
+        raise ConfigError(refusal, locations=locations)
 
 
 _RECORDED: ContextVar[set[str] | None] = ContextVar("_RECORDED", default=None)
@@ -3442,10 +3637,20 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     `AZURE_Client_Secret` is masked and checked as object_store reads it. A
     Google key is recorded whole, and each field of it that a service can echo
     on its own too. Its JSON is never refused, since object_store's errors for
-    it quote none of its text.
+    it quote none of its text, and it is not read for URLs: a compact key with
+    its fields sorted holds a URL that runs to `client_email`'s `@`. Each URL
+    login in any other variable is recorded by `_url_login_values`. A URL
+    login is refused, in any variable, only where a client cuts it, by
+    `_cut_url_login`, or where a form the mask is built from meets
+    `_hides_a_url_mark`: a form recorded of it, or a `sig` that
+    `_sas_signatures` takes from one. Such a mask could hide part of the
+    `://` or the `?` that `without_queries` finds a URL's query by, so each
+    URL's query, a SAS token's `sig` included, would stay in the answer.
 
     Raises:
-        ConfigError: If a variable's value lacks its slot's shape. The message
+        ConfigError: If a variable's value lacks its slot's shape, or a URL in
+            it holds an `@` after an unencoded `/`, `?`, `#`, or backslash, or
+            a login with a form that meets `_hides_a_url_mark`. The message
             names the variable as it is set, never the value.
     """
     values: set[str] = set()
@@ -3456,6 +3661,33 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
         if read_as == _KEY_JSON_VARIABLE:
             values.update(_key_json_values(value))
             continue
+        if _cut_url_login(name, value):
+            raise ConfigError(
+                f"On veridelta mcp, the environment variable {name} must hold no '@' after a "
+                "'/', '?', '#', or '\\' in a URL. A client ends a URL's login at the first of "
+                "these, and writes part of the login back in an error, which the server cannot "
+                "mask. Percent-encode these characters, and '@', in the URL's user and password, "
+                "and an '@' in its path or query, such as '/' as %2F and '@' as %40."
+            )
+        logins = _url_login_values(name, value)
+        masked = (
+            form
+            for login in logins
+            for form in (login, *_sas_signatures(login))
+            if len(form) >= _SHORTEST_MASKED
+        )
+        if any(map(_hides_a_url_mark, masked)):
+            raise ConfigError(
+                f"On veridelta mcp, the environment variable {name} holds a URL login that the "
+                "server would mask in a form that holds '://' or '?', starts with '/', or ends "
+                "with ':' or ':/'. A password can do so once decoded, or a 'sig=' in it, or a "
+                "host that runs into the text after it, such as another URL's scheme. Such a "
+                "mask could hide part of the '://' or the '?' the server finds a URL's query "
+                "by, so the query would stay in the answer. Choose another password, end the "
+                "host with a '/', or leave the variable out of the environment the host starts "
+                "the server with."
+            )
+        values.update(logins)
         slot = _ENVIRONMENT_SLOTS.get(read_as)
         if slot is None:
             continue
@@ -3946,6 +4178,15 @@ def _sas_signatures(value: str) -> tuple[str, ...]:
         for name, _, written in parameters
         if name == "sig"
         for form in (written, unquote(written), quote(unquote(written), safe=""))
+    )
+
+
+def _short_signature(value: str) -> bool:
+    """Say whether a SAS token's `sig` holds fewer than `_SHORTEST_MASKED` characters once decoded, or none."""
+    parameters = (part.partition("=") for part in value.removeprefix("?").split("&"))
+    return any(
+        name == "sig" and len(unquote(written)) < _SHORTEST_MASKED
+        for name, _, written in parameters
     )
 
 

@@ -6645,6 +6645,58 @@ class TestEnvironmentReferences:
                 id="short-password",
             ),
             pytest.param(
+                "  type: snowflake\n  account: xy12345\n  user: ${KEY}\n"
+                "  password: Q7longpass\n  warehouse: WH\n  database: DB\n"
+                "  schema_name: PUBLIC\n  table: ORDERS\n",
+                {"KEY": "bob"},
+                "the value of ${KEY} in source -> user must be at least 4 characters",
+                id="short-snowflake-user",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://${KEY}:${PW}@db.internal/sales"\n'
+                "  table: orders\n",
+                {"KEY": "sa", "PW": "Q7longpass"},
+                "the value of ${KEY} in source -> uri must be at least 4 characters",
+                id="short-uri-user",
+            ),
+            pytest.param(
+                "  path: s3://lake/a.csv\n"
+                "  options: {storage_options: {aws_access_key_id: '${KEY}'}}\n",
+                {"KEY": "kQz"},
+                "the value of ${KEY} in source -> options -> storage_options -> "
+                "aws_access_key_id must be at least 4 characters",
+                id="short-access-key-id",
+            ),
+            pytest.param(
+                "  path: s3://lake/a.csv\n"
+                "  options: {storage_options: {azure_tenant_id: '${KEY}'}}\n",
+                {"KEY": "ab"},
+                "the value of ${KEY} in source -> options -> storage_options -> "
+                "azure_tenant_id must be at least 4 characters",
+                id="short-tenant-id",
+            ),
+            pytest.param(
+                _ICEBERG_SAS.format(token="'${KEY}'"),
+                {"KEY": "sv="},
+                "the value of ${KEY} in source -> storage_options -> adls.sas-token must be "
+                "at least 4 characters",
+                id="short-sas",
+            ),
+            *(
+                pytest.param(
+                    _ICEBERG_SAS.format(token="'${KEY}'"),
+                    {"KEY": value},
+                    "the value of ${KEY} in source -> storage_options -> adls.sas-token must be "
+                    "an Azure SAS token whose sig holds at least 4 characters once decoded",
+                    id=f"sas-with-{name}-signature",
+                )
+                for name, value in (
+                    ("a-short", "sv=2022-11-02&sig=ab"),
+                    ("an-empty", "sv=2022-11-02&sig="),
+                    ("an-encoded-short", "sv=2022-11-02&sig=%41%42"),
+                )
+            ),
+            pytest.param(
                 "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
                 "  table: orders\n  password: ${KEY}\n",
                 {"KEY": "Hunter2\udcffSecretPass"},
@@ -6796,7 +6848,8 @@ class TestEnvironmentReferences:
         else:
             assert result.is_error is True
         assert f"On veridelta mcp, {refusal}" in shown
-        for value in environment.values():
+        # A value of 1 to 3 characters is ordinary text, such as `sa` in `message`.
+        for value in (value for value in environment.values() if len(value) >= 4):
             assert not _holds_a_form(shown, value)
         for mock in engine_calls:
             mock.assert_not_called()
@@ -7016,17 +7069,17 @@ class TestEnvironmentReferences:
         assert result.structured_content is not None
         assert result.structured_content["valid"] is True
 
-    def test_it_takes_a_short_login_and_leaves_it_unmasked(
+    def test_it_masks_a_login_of_four_characters(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
-        """Ensure a login name of 3 characters loads, and is too short to mask.
+        """Ensure a login name of 4 characters, the shortest one taken, loads and is masked.
 
-        A login name is an identifier a service may echo, not a secret, and a
-        mask that short would hide ordinary text in every answer.
+        A service may echo a login name, so the server takes only one long
+        enough to mask.
         """
-        monkeypatch.setenv("KID", "kQz")
+        monkeypatch.setenv("KID", "kQz7")
         mocker.patch.object(
-            DiffEngine, "read_schema", side_effect=ConfigError("The access key id kQz is unknown.")
+            DiffEngine, "read_schema", side_effect=ConfigError("The access key id kQz7 is unknown.")
         )
         _with_source(
             tmp_path,
@@ -7041,7 +7094,58 @@ class TestEnvironmentReferences:
 
         assert checked.structured_content is not None
         assert checked.structured_content["valid"] is True
-        assert "The access key id kQz is unknown." in _text(described)
+        assert "***" in _text(described)
+        assert "kQz7" not in _shown(described)
+
+    @pytest.mark.parametrize(
+        ("source", "short"),
+        [
+            pytest.param(
+                "  type: snowflake\n  account: xy12345\n  user: ${KEY}\n"
+                "  password: Q7longpass\n  warehouse: WH\n  database: DB\n"
+                "  schema_name: PUBLIC\n  table: ORDERS\n",
+                True,
+                id="snowflake-user",
+            ),
+            pytest.param(
+                '  type: database\n  uri: "postgresql://${KEY}:Q7longpass@db.internal/sales"\n'
+                "  table: orders\n",
+                True,
+                id="uri-user",
+            ),
+            pytest.param(
+                "  type: database\n  uri: postgresql://analyst@db.internal/sales\n"
+                "  table: orders\n  password: ${KEY}\n",
+                False,
+                id="password",
+            ),
+        ],
+    )
+    def test_it_tells_to_write_a_short_login_in_the_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mocker: MockerFixture,
+        source: str,
+        short: bool,
+    ) -> None:
+        """Ensure a login of 1 to 3 characters is refused with a hint to write it in the file.
+
+        A login that short is no secret, so the file can hold it. A password
+        cannot move into the file, so its refusal gives no such hint. No side
+        is read.
+        """
+        monkeypatch.setenv("KEY", "sa")
+        read_schema = mocker.patch.object(DiffEngine, "read_schema")
+        _with_source(tmp_path, source)
+        settings = Settings((tmp_path,), allow_row_values=True, allowed_hosts=_REFERENCE_HOSTS)
+
+        result = _call(settings, {"path": "veridelta.yaml", "side": "source"}, "describe_schema")
+
+        assert result.is_error is True
+        assert "must be at least 4 characters" in _text(result)
+        assert ("write it in the file in place of ${KEY}" in _text(result)) is short
+        read_schema.assert_not_called()
 
     def test_it_masks_a_snowflake_user_a_driver_writes_in_lowercase(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -7160,6 +7264,7 @@ class TestEnvironmentReferences:
             "trino+https://u:${V_PASSWORD}@db.internal/x?verify=false",
             "mariadb://u:${V_PASSWORD}@db.internal/x",
         ],
+        ids=["trino", "trino-https", "mariadb"],
     )
     @pytest.mark.parametrize("is_set", [True, False], ids=["set", "unset"])
     def test_it_refuses_a_uri_password_from_the_environment_for_an_unprobed_reader(
@@ -7724,6 +7829,9 @@ _UNMASKABLE = [
     pytest.param("AZURE_STORAGE_SAS_TOKEN", "foo=1", id="sas"),
     pytest.param("AWS_SSE_CUSTOMER_KEY_BASE64", "QUJD=", id="base64-not-canonical"),
     pytest.param("AWS_SECRET_ACCESS_KEY", "abc\udcffdef", id="outside-utf-8"),
+    pytest.param("AWS_ACCESS_KEY_ID", "kQz", id="short-login"),
+    pytest.param("AZURE_TENANT_ID", "ab", id="short-tenant"),
+    pytest.param("AZURE_STORAGE_SAS_TOKEN", "sv=", id="short-sas"),
 ]
 """A reader's credential variable, each with a value of a shape the server cannot mask."""
 
@@ -7828,6 +7936,25 @@ class TestEnvironmentCredentials:
 
         message = str(error.value).replace(name, "")
         assert not any(value[i : i + 3] in message for i in range(len(value) - 2))
+
+    def test_it_will_not_start_on_a_sas_signature_too_short_to_mask(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure a SAS token whose `sig` is too short to mask stops the server, naming the variable.
+
+        The server masks the `sig` on its own, as the Azure SDK writes a
+        token's parameters back sorted, so a short one would go unmasked.
+        """
+        monkeypatch.setenv("AZURE_STORAGE_SAS_TOKEN", "sv=2024-01-01&sig=ab")
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert "the environment variable AZURE_STORAGE_SAS_TOKEN must be" in message
+        assert "whose sig holds at least 4" in message
+        assert "2024-01-01" not in message
+        assert "=ab" not in message
 
     def test_it_ignores_an_empty_or_unlisted_variable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -8125,6 +8252,42 @@ class TestEnvironmentCredentials:
         assert mcp_server._environment_values(os.environ) == {key}
         assert _tools(Settings((tmp_path,)))
 
+    @pytest.mark.parametrize("name", ["GOOGLE_SERVICE_ACCOUNT_KEY", "GOOGLE_Service_Account_Key"])
+    def test_it_starts_on_a_compact_key_with_sorted_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    ) -> None:
+        """Ensure a key written compact, with its fields sorted, starts the server and is masked.
+
+        Terraform's `jsonencode` and `jq -cS` write a key so. Its first URL
+        then runs past `client_email`'s `@` with no space to end it, which
+        would read as a cut URL login, so the key's JSON is not read for URLs.
+        """
+        key_id = "3f9c2a7e1b5d4c8a9e0f1a2b3c4d5e6f7a8b9c0d"
+        email = "reader@project.iam.gserviceaccount.com"
+        key = json.dumps(
+            {
+                "type": "service_account",
+                "project_id": "project",
+                "private_key_id": key_id,
+                "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANQ7ledger\n"
+                "-----END PRIVATE KEY-----\n",
+                "client_email": email,
+                "client_id": "104729387462918374652",
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/"
+                + quote(email, safe=""),
+                "universe_domain": "googleapis.com",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        monkeypatch.setenv(name, key)
+
+        assert {key, key_id} <= mcp_server._environment_values(os.environ)
+        assert _tools(Settings((tmp_path,)))
+
     def test_it_masks_a_rotated_token_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
@@ -8367,6 +8530,699 @@ class TestEnvironmentCredentials:
 
         assert "ConnectorError: <Token-0>***</Token-0>" in _text(result)
         assert "derivedtoken" not in _shown(result)
+
+
+def _basic(login: bytes) -> str:
+    """Write a login as the Basic credential a proxy receives, in base64."""
+    return base64.b64encode(login).decode()
+
+
+_URL_LOGIN_VALUES = [
+    pytest.param(
+        "AWS_ENDPOINT_URL",
+        "https://svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="aws-endpoint",
+    ),
+    pytest.param(
+        "AZURE_STORAGE_ENDPOINT",
+        "https://svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="azure-endpoint",
+    ),
+    pytest.param(
+        "HTTPS_PROXY",
+        "http://ab:Q7proxypass@proxy.internal:3128",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="proxy-with-a-short-user",
+    ),
+    pytest.param(
+        "https_proxy",
+        "http://ab:Q7proxypass@proxy.internal:3128",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="proxy-in-lowercase",
+    ),
+    pytest.param(
+        "ALL_PROXY",
+        "socks5h://ab:Q7proxypass@proxy.internal:1080",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="socks-proxy",
+    ),
+    pytest.param(
+        "all_proxy",
+        "ab:Q7proxypass@proxy.internal:3128",
+        "ab:Q7proxypass",
+        "Q7proxypass",
+        id="proxy-with-no-scheme",
+    ),
+    pytest.param(
+        "VD_SOME_URL",
+        "https://svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="any-variable",
+    ),
+    pytest.param(
+        "HTTPS_PROXY",
+        "//proxyuser9:Pr0xyPass9@proxy.internal:3128",
+        "proxyuser9:Pr0xyPass9",
+        "Pr0xyPass9",
+        id="scheme-relative-proxy",
+    ),
+    pytest.param(
+        "AWS_ENDPOINT_URL_STS",
+        " //svc-reader:Q7pa%2Bss@sts.internal:9000 ",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="scheme-relative-endpoint",
+    ),
+    pytest.param(
+        "AWS_ENDPOINT_URL_STS",
+        '"//svc-reader:Q7pa%2Bss@sts.internal:9000"',
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="quoted-scheme-relative-endpoint",
+    ),
+    pytest.param(
+        "AWS_ENDPOINT_URL_STS",
+        "https:svc-reader:Q7pa%2Bss@sts.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="endpoint-with-a-scheme-and-no-slash",
+    ),
+    pytest.param(
+        "aws_endpoint_url",
+        "http:/svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="endpoint-with-one-slash",
+    ),
+    pytest.param(
+        "AWS_ENDPOINT",
+        "'http:\\\\svc-reader:Q7pa%2Bss@minio.internal:9000'",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="quoted-endpoint-with-backslashes",
+    ),
+]
+"""A variable that holds a URL login, with the login and its password as written."""
+
+_ODD_LOGINS = [
+    pytest.param("X", "http://a@b:c@d@host/x", id="at-signs-in-the-login"),
+    pytest.param(
+        "HTTPS_PROXY", "http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128", id="domain-and-space"
+    ),
+    pytest.param(
+        "X",
+        "https://u:tok3n%40x@pypi.internal/simple https://v:Other9pw@b/simple",
+        id="two-urls",
+    ),
+    pytest.param("all_proxy", "http://u:p%ffass@h", id="password-outside-utf-8"),
+    pytest.param("X", "http://u:p@h", id="short-login"),
+    pytest.param("X", "http://u@h", id="short-user-alone"),
+]
+"""Variables whose URL login a parser splits in a way that is easy to get wrong."""
+
+
+class TestEnvironmentUrlLogins:
+    """Validate the masking of each URL login in the server's environment.
+
+    A reader writes an endpoint back whole in an error, a client writes back a
+    proxy URL it cannot parse, and a proxy receives the login as a Basic
+    credential, so the server masks each such form, from any variable.
+    """
+
+    @pytest.mark.parametrize(("name", "value", "login", "password"), _URL_LOGIN_VALUES)
+    def test_it_masks_each_url_login_in_the_environment(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        engine_calls: list[MagicMock],
+        name: str,
+        value: str,
+        login: str,
+        password: str,
+    ) -> None:
+        """Ensure each form of a URL login a reader or a proxy can repeat is masked, in any case.
+
+        The side is a local file, and each engine call fails with an echo of
+        the login, as a reader, a client, and a proxy write it.
+        """
+        monkeypatch.setenv(name, value)
+        value = value.strip()
+        url = (
+            value if "://" in value else f"http:{value}" if value[:2] == "//" else f"http://{value}"
+        )
+        user, _, _ = login.partition(":")
+        decoded = unquote(password)
+        basic = _basic(unquote(user).encode() + b":" + decoded.encode())
+        echo = " ".join(
+            (
+                f"Error performing GET {url}/bkt/a.parquet?X-Amz-Signature=abc",
+                f"Failed to parse: {value}",
+                f"http://{value}",
+                decoded,
+                quote(decoded, safe=""),
+                f"Proxy-Authorization: Basic {basic}",
+            )
+        )
+        for mock in engine_calls:
+            mock.side_effect = ConnectorError(f"{echo} {echo.upper()}", quotes_data=True)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _with_source(tmp_path, "  path: a.csv\n")
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        async def work(client: Client) -> list[CallToolResult]:
+            return [
+                await client.call_tool(
+                    "describe_schema", {"path": "veridelta.yaml", "side": "source"}
+                ),
+                await client.call_tool("run_comparison", {"path": "veridelta.yaml"}),
+                await client.call_tool(
+                    "validate_config", {"path": "veridelta.yaml", "schemas": True}
+                ),
+            ]
+
+        host = value.rpartition("@")[2]
+        for result in _with_client(settings, work):
+            shown = _shown(result)
+            folded = shown.casefold()
+            for form in (f"{login}@{host}", f"{login}@", password, decoded, basic):
+                assert form.casefold() not in folded, form
+            assert quote(decoded, safe="").casefold() not in folded
+            assert "***" in shown
+            assert "://" in shown
+            assert "x-amz-signature" not in folded
+
+    def test_it_masks_no_user_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        """Ensure a URL login's user, and a column of 1 to 3 characters, come back as written.
+
+        No reader writes a user without the rest of its login, and masking a
+        user such as `admin` would hide the word in every answer.
+        """
+        monkeypatch.setenv("HTTPS_PROXY", "http://svc-reader:Q7proxypass@proxy.internal:3128")
+        (tmp_path / "a.csv").write_text("id,ab\n1,2\n", encoding="utf-8")
+        _with_source(tmp_path, "  path: a.csv\n")
+        settings = Settings((tmp_path,), allow_row_values=True)
+
+        described = _call(
+            settings, {"path": "veridelta.yaml", "side": "source"}, tool="describe_schema"
+        )
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError("access denied for svc-reader", quotes_data=True),
+        )
+        failed = _call(
+            settings, {"path": "veridelta.yaml", "side": "source"}, tool="describe_schema"
+        )
+
+        assert described.structured_content == {
+            "side": "source",
+            "columns": {"id": "Int64", "ab": "Int64"},
+        }
+        assert "ConnectorError: access denied for svc-reader" in _text(failed)
+
+    @pytest.mark.parametrize(
+        "name", ["AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL", "aws_endpoint_url_s3"]
+    )
+    def test_it_masks_the_password_of_an_endpoint_with_no_scheme(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure the password of an endpoint written as user:pass@host is masked where botocore writes it back.
+
+        botocore reads the user as a scheme, finds no host, and writes the
+        endpoint back whole as an invalid one, so the password is masked with
+        the host after it, and the user comes back as written.
+        """
+        value = "svc-reader:Q7pa%2Bss@sts.internal:9000"
+        monkeypatch.setenv(name, value)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _with_source(tmp_path, "  path: a.csv\n")
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"Invalid endpoint: {value}", quotes_data=True),
+        )
+
+        shown = _text(
+            _call(
+                Settings((tmp_path,), allow_row_values=True),
+                {"path": "veridelta.yaml", "side": "source"},
+                tool="describe_schema",
+            )
+        )
+
+        assert "Invalid endpoint: svc-reader:***" in shown
+        assert "Q7pa" not in shown
+
+    def test_it_records_nothing_without_a_url_login(self) -> None:
+        """Ensure a URL with no login, an email address, and a login outside a proxy go unrecorded.
+
+        A value with no `://` holds a login only in a proxy variable, which a
+        client reads as HTTP.
+        """
+        environ = {
+            "HTTPS_PROXY": "http://proxy.internal:3128",
+            "GIT_AUTHOR_EMAIL": "ann@x.com",
+            "NO_PROXY": "a,b",
+            "AWS_ENDPOINT_URL": "https://minio.internal",
+            "VD_NOTE": "ab:Q7proxypass@proxy.internal:3128",
+            "VD_EMPTY_LOGIN": "https://@minio.internal/bucket",
+            "http_proxy": "//proxy.internal:3128",
+            "AWS_ENDPOINT_URL_STS": "//sts.internal/",
+            "VD_NO_AUTHORITY": "///a/b",
+            "AWS_ENDPOINT_URL_S3": '"https://minio.internal:9000"',
+            "AWS_ENDPOINT": "minio.internal:9000",
+        }
+
+        assert mcp_server._environment_values(environ) == set()
+
+    def test_it_reads_each_login_as_a_url_parser_splits_it(self) -> None:
+        """Ensure a login runs to the last `@` before the path, and each short form is dropped."""
+        assert mcp_server._url_login_values("X", "http://a@b:c@d@host/x") == {
+            "a@b:c@d@host",
+            "a@b:c@d@",
+            _basic(b"a@b:c@d"),
+        }
+        assert {
+            "DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128",
+            "p@ss w0rd!",
+            _basic(b"DOMAIN\\jdoe:p@ss w0rd!"),
+        } <= mcp_server._url_login_values(
+            "HTTPS_PROXY", "http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128"
+        )
+        assert {
+            "u:tok3n%40x@pypi.internal",
+            "tok3n%40x",
+            "tok3n@x",
+            "v:Other9pw@b",
+            "Other9pw",
+        } <= mcp_server._url_login_values(
+            "X", "https://u:tok3n%40x@pypi.internal/simple https://v:Other9pw@b/simple"
+        )
+        assert mcp_server._url_login_values("X", "http://u:p@h") == {
+            "u:p@h",
+            "u:p@",
+            _basic(b"u:p"),
+        }
+        assert mcp_server._url_login_values("X", "http://u@h") == {_basic(b"u:")}
+        for name in ("HTTPS_PROXY", "AWS_ENDPOINT_URL_STS"):
+            assert mcp_server._url_login_values(name, " //u:pw12@h:1 ") == {
+                "u:pw12@h:1",
+                "u:pw12@",
+                "pw12",
+                _basic(b"u:pw12"),
+            }
+
+    @pytest.mark.parametrize("separator", [",", "|"])
+    def test_it_ends_a_host_at_a_list_separator(self, separator: str) -> None:
+        """Ensure a host ends at a `,` or a `|`, so each entry of a `GOPROXY` list has its login recorded.
+
+        Go joins a `GOPROXY` list's entries with either. A host that ran on
+        would take in the next entry's scheme, and its `:` would end a
+        recorded form, which would stop the server.
+        """
+        value = separator.join(
+            (
+                "https://ci:Tok3nGo99@athens.corp.example",
+                "https://v:Other9pw@b.example",
+                "direct",
+            )
+        )
+
+        assert {
+            "ci:Tok3nGo99@athens.corp.example",
+            "Tok3nGo99",
+            "v:Other9pw@b.example",
+            "Other9pw",
+        } <= mcp_server._url_login_values("GOPROXY", value)
+        assert {
+            "ci:Tok3nGo99@athens.corp.example",
+            "Tok3nGo99",
+        } <= mcp_server._url_login_values(
+            "HTTPS_PROXY", f"ci:Tok3nGo99@athens.corp.example{separator}x"
+        )
+
+    def test_it_says_a_host_can_border_a_url_mark(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ensure the refusal of a host that runs into a scheme does not blame the password alone.
+
+        A `;` does not end a host, so the host takes in the next scheme and
+        its `:`, though the password holds no `://` or `?`.
+        """
+        monkeypatch.setenv(
+            "VD_SOME_URLS", "https://ci:Tok3nGo99@athens.corp.example;https://b.example"
+        )
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert "or a host that runs into the text after it" in message
+        assert "Tok3nGo99" not in message
+
+    def test_it_builds_a_mask_for_a_password_outside_utf_8(self) -> None:
+        """Ensure a password whose bytes are no UTF-8 once decoded still gives a mask."""
+        values = mcp_server._url_login_values("all_proxy", "http://u:p%ffass@h")
+        pattern = mcp_server._mask_pattern(frozenset(values))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+
+        assert _basic(b"u:p\xffass") in values
+        assert pattern is not None
+        assert pattern.sub("***", "proxy said p%FFass") == "proxy said ***"
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            *(pytest.param(*case.values[:2], id=case.id) for case in _URL_LOGIN_VALUES),
+            *_ODD_LOGINS,
+        ],
+    )
+    def test_no_recorded_form_can_hide_part_of_a_url_mark(self, name: str, value: str) -> None:
+        """Ensure no recorded form holds or borders a `://`, or holds a `?`.
+
+        `without_queries` finds a URL by its `://` and its query by the `?`
+        after it. A mask that hid part of either would keep the query in the
+        answer: a form that ends with `:` or `:/` can cover the start of a
+        `://`, and one that starts with `/` its end.
+        """
+        for form in mcp_server._url_login_values(name, value):
+            assert "://" not in form, form
+            assert "?" not in form, form
+            assert not form.endswith((":", ":/")), form
+            assert not form.startswith("/"), form
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:ps%3A%2F%2Fstore@127.0.0.1:3128", id="proxy"
+            ),
+            pytest.param(
+                "VD_SOME_URL", "https://proxyuser9:ps:%2f%2Fstore@127.0.0.1/x", id="any-variable"
+            ),
+            pytest.param(
+                "ALL_PROXY", "proxyuser9:ps%3A%2F%2Fstore@127.0.0.1:3128", id="bare-proxy"
+            ),
+            pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:tps:@127.0.0.1:3128", id="ends-in-a-colon"
+            ),
+            pytest.param(
+                "HTTPS_PROXY",
+                "http://proxyuser9:tps%3A%2F@127.0.0.1:3128",
+                id="ends-in-a-colon-and-a-slash",
+            ),
+            pytest.param(
+                "HTTPS_PROXY",
+                "http://proxyuser9:%2F%2Fstore@127.0.0.1:3128",
+                id="starts-with-a-slash",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL",
+                "http://proxyuser9:%3Fsv%3D@127.0.0.1:9000",
+                id="holds-a-question-mark",
+            ),
+            pytest.param(
+                "VD_SOME_URL",
+                "https://proxyuser9:sig=%253Fse%253Dxx@127.0.0.1/x",
+                id="sig-that-decodes-to-a-question-mark",
+            ),
+            pytest.param(
+                "HTTPS_PROXY",
+                "http://proxyuser9:sv=1&sig=ps%253A%252F%252Fstore@127.0.0.1:3128",
+                id="sig-that-decodes-to-a-scheme",
+            ),
+        ],
+    )
+    def test_it_will_not_start_on_a_password_that_decodes_to_a_scheme(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
+        """Ensure a URL password whose mask could hide part of a `://` or a `?` stops the server.
+
+        The mask of the decoded password would hide all or part of the `://`
+        of a URL in an answer, such as `https://store.blob.core.windows.net/...?sig=...`,
+        or its `?`, so `without_queries` would find no URL or no query there
+        and keep the query. The refusal names only the variable.
+        """
+        monkeypatch.setenv(name, value)
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert f"the environment variable {name} holds a URL login that the server" in message
+        for part in ("proxyuser9", "store", "127.0.0.1", "tps", "sv%3D"):
+            assert part not in message
+
+    @pytest.mark.parametrize(
+        "proxy",
+        [
+            "http://proxyuser9:tps:@proxy.internal:3128",
+            "http://proxyuser9:%2F%2Fstore@proxy.internal:3128",
+            "http://proxyuser9:et%3FX-Amz@proxy.internal:3128",
+            "http://proxyuser9:sig=ps%253A%252F%252Fstore@proxy.internal:3128",
+        ],
+    )
+    def test_each_such_password_would_keep_a_query_without_the_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, proxy: str
+    ) -> None:
+        """Ensure each refused password does hide part of a URL's mark once masked, so the refusal is needed."""
+        text = "Error performing GET https://store.example/bkt/a.parquet?X-Amz-Signature=abc"
+        monkeypatch.setattr(mcp_server, "_hides_a_url_mark", lambda _: False)
+        recorded = mcp_server._environment_values({"HTTPS_PROXY": proxy})
+        token = mcp_server._RECORDED.set(recorded)
+        try:
+            shown = base.without_queries(mcp_server._mask(text))
+        finally:
+            mcp_server._RECORDED.reset(token)
+
+        assert "signature=abc" in shown.casefold()
+        assert "signature=abc" not in base.without_queries(text).casefold()
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            pytest.param(
+                "HTTPS_PROXY", "http://DOMAIN%5Cjdoe:p@ss w0rd!@proxy:3128", id="odd-login"
+            ),
+            pytest.param("HTTPS_PROXY", "http://u:@proxy:1", id="empty-password"),
+            pytest.param("HTTPS_PROXY", "http://u:Pr0x%2FyPass9@proxy:3128/", id="encoded-login"),
+            pytest.param("HTTPS_PROXY", "http://proxy.internal:3128/a?b#c", id="proxy-with-a-path"),
+            pytest.param(
+                "HTTPS_PROXY", "//proxyuser9:Pr0xyPass9@proxy.internal:3128", id="scheme-relative"
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://u:Pr0xyPass9@a.internal/simple https://v:Other9pw@b.internal/simple",
+                id="two-urls-with-paths",
+            ),
+            pytest.param("VD_NOTE", "see notes/ann@x.com", id="no-url"),
+            pytest.param(
+                "GOPROXY",
+                "https://proxy.golang.org,https://ci:Tok3nGo99@athens.corp.example,direct",
+                id="list-with-a-login",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://ci:Tok3nGo99@athens.corp.example,https://proxy.golang.org,direct",
+                id="list-whose-first-entry-has-a-login",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://ci:Tok3nGo99@athens.corp.example|https://proxy.golang.org",
+                id="pipe-list-whose-first-entry-has-a-login",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://proxy.golang.org/p|https://ci:Tok3nGo99@athens.corp.example|direct",
+                id="pipe-list-with-a-path-then-a-login",
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://u:Pr0xyPass9@a.internal,https://b.internal/simple",
+                id="comma-list-whose-first-entry-has-a-login",
+            ),
+            pytest.param(
+                "CI_COMMIT_MESSAGE",
+                "fix: x\n\nSee https://gitlab.example/g/p/-/issues/7\n\n"
+                "Signed-off-by: Ann <ann@example.com>",
+                id="url-then-an-email-on-another-line",
+            ),
+            pytest.param(
+                "VD_NOTE", "see https://ci.example/run/1 by bob@corp.com", id="url-then-prose"
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://a.internal https://ci:Tok3nGo99@b.internal/simple",
+                id="url-with-no-path-then-a-login",
+            ),
+            pytest.param(
+                "HTTPS_PROXY", '"http://proxy.internal:3128"', id="quoted-proxy-with-no-login"
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL",
+                '"http://proxyuser9:Pr0xyPass9@minio.internal:9000"',
+                id="quoted-endpoint-with-a-login",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "proxyuser9:Pr0xyPass9@sts.internal",
+                id="endpoint-with-no-scheme",
+            ),
+        ],
+    )
+    def test_it_starts_whatever_shape_a_url_login_has(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
+        """Ensure a URL login is refused only where a client cuts it.
+
+        A scheme-relative proxy is one botocore and requests read as HTTP, and
+        a variable can hold several URLs, each with a path of its own. A URL
+        ends at whitespace, or at a `,` before another scheme, so an `@` after
+        it belongs to no login of it.
+        """
+        monkeypatch.setenv(name, value)
+
+        build_server(Settings((tmp_path,)))
+
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [
+            pytest.param("HTTPS_PROXY", "http://proxyuser9:Pr0x/yPass9@127.0.0.1:3128", id="slash"),
+            pytest.param("HTTPS_PROXY", "http://proxyuser9:Pr0x?yPass9@127.0.0.1:3128", id="query"),
+            pytest.param("HTTPS_PROXY", "http://proxyuser9:Pr0x#yPass9@127.0.0.1:3128", id="hash"),
+            pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:Pr0x\\yPass9@127.0.0.1:3128", id="backslash"
+            ),
+            pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:Pr0x@yP/ass9@127.0.0.1:3128", id="at-then-slash"
+            ),
+            pytest.param("ALL_PROXY", "socks5h://proxyuser9:Pr0x/yPass9@proxy:1080", id="socks"),
+            pytest.param("ALL_PROXY", " proxyuser9:Pr0x/yPass9@proxy:3128 ", id="bare"),
+            pytest.param(
+                "HTTPS_PROXY",
+                "proxyuser9:Pr0x://yPass9@127.0.0.1:3128",
+                id="bare-with-a-scheme-cut",
+            ),
+            pytest.param("HTTP_PROXY", "9px://proxyuser9:Pr0x@yPass9@proxy:3128", id="no-scheme"),
+            pytest.param(
+                "HTTPS_PROXY", "//proxyuser9:Pr0x/yPass9@127.0.0.1:3128", id="scheme-relative-proxy"
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "https://proxyuser9:Pr0x/yPass9@127.0.0.1:9000",
+                id="sts-endpoint",
+            ),
+            pytest.param(
+                "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+                "http://proxyuser9:Pr0x?yPass9@127.0.0.1/creds",
+                id="container-credentials",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL", "http://proxyuser9:Pr0x#yPass9@127.0.0.1:9000", id="endpoint"
+            ),
+            pytest.param(
+                "AZURE_AUTHORITY_HOST",
+                " //proxyuser9:Pr0x\\yPass9@127.0.0.1 ",
+                id="scheme-relative-endpoint",
+            ),
+            pytest.param(
+                "VD_SOME_URL",
+                "https://proxyuser9:wJal+rXUtn/yPass9==@127.0.0.1:9000",
+                id="base64-password-in-any-variable",
+            ),
+            pytest.param(
+                "PIP_EXTRA_INDEX_URL",
+                "https://127.0.0.1/simple https://proxyuser9:Pr0x/yPass9@127.0.0.1/simple",
+                id="second-url",
+            ),
+            pytest.param("VD_SOME_URL", "https://cdn.example/npm/pkg@3/x.js", id="at-in-a-path"),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                '"http://proxyuser9:Pr0x/yPass9@127.0.0.1:9000"',
+                id="quoted-sts-endpoint",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL", "'http://proxyuser9:Pr0x/yPass9@127.0.0.1'", id="single-quoted"
+            ),
+            pytest.param(
+                "VD_SOME_URL",
+                "url=https://proxyuser9:Pr0x?yPass9@127.0.0.1",
+                id="text-before-a-url",
+            ),
+            pytest.param(
+                "VD_SOME_URL",
+                "https://proxyuser9:Pr0x://yPass9@127.0.0.1",
+                id="scheme-in-a-password",
+            ),
+            pytest.param(
+                "GOPROXY",
+                "https://proxy.golang.org,https://proxyuser9:Pr0x/yPass9@127.0.0.1,direct",
+                id="list-with-a-cut-login",
+            ),
+            pytest.param(
+                "VD_SOME_URL", "https://proxyuser9:Pr0x y/Pass9@127.0.0.1", id="space-before-a-cut"
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "http://proxyuser9:Pr0x/yPa ss9@127.0.0.1:9000",
+                id="space-after-a-cut-in-an-endpoint",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL",
+                " //proxyuser9:Pr0x/yPa ss9@127.0.0.1 ",
+                id="space-after-a-cut-in-a-scheme-relative-endpoint",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                '"//proxyuser9:Pr0x/yPass9@127.0.0.1"',
+                id="quoted-scheme-relative-endpoint",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "https:proxyuser9:Pr0x/yPass9@127.0.0.1",
+                id="endpoint-with-no-slash",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL",
+                "proxyuser9:Pr0x/yPass9@127.0.0.1",
+                id="endpoint-with-no-scheme",
+            ),
+            pytest.param(
+                "HTTPS_PROXY", '"http://proxyuser9:Pr0xyPass9@127.0.0.1:3128"', id="quoted-proxy"
+            ),
+        ],
+    )
+    def test_it_will_not_start_on_a_url_login_a_client_cuts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
+    ) -> None:
+        """Ensure a URL login with an unencoded `/`, `?`, `#`, or backslash stops the server, in any variable.
+
+        urllib3 ends the authority at that character, and writes back the
+        user and the head of the password, or takes a piece of the password
+        for the host, so no mask could match what comes back. botocore reads
+        an endpoint, such as `AWS_ENDPOINT_URL_STS`, as it reads a proxy. The
+        server cannot tell such a login from an `@` in a path, so it refuses
+        both. The refusal names the variable and holds no part of the login.
+        """
+        monkeypatch.setenv(name, value)
+
+        with pytest.raises(ConfigError) as error:
+            build_server(Settings((tmp_path,)))
+
+        message = str(error.value)
+        assert f"the environment variable {name} must hold no '@' after a '/'" in message
+        assert "Percent-encode" in message
+        for part in ("proxyuser9", "Pr0x", "yPass9", "ass9", "127.0.0.1", "proxy:"):
+            assert part not in message
 
 
 class TestReadRows:
