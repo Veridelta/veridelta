@@ -9062,7 +9062,7 @@ class TestEnvironmentUrlLogins:
                 id="space-after-a-cut-in-an-endpoint",
             ),
             pytest.param(
-                "aws_endpoint_url",
+                "AWS_ENDPOINT_URL",
                 " //proxyuser9:Pr0x/yPa ss9@127.0.0.1 ",
                 id="space-after-a-cut-in-a-scheme-relative-endpoint",
             ),
