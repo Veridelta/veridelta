@@ -280,6 +280,8 @@ module = [
     "pyiceberg.*",
     "connectorx",
     "connectorx.*",
+    "botocore",
+    "botocore.*",
 ]
 ignore_missing_imports = true
 follow_imports = "skip"

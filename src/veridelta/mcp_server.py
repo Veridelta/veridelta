@@ -23,6 +23,7 @@ import base64
 import functools
 import glob
 import importlib
+import importlib.util
 import inspect
 import json
 import logging
@@ -510,7 +511,9 @@ class Settings:
             database server, an object store's bucket, or a URL's host, is
             refused before it connects. Defaults to none, so every tool reads
             only data on this machine, MotherDuck, Hugging Face, or BigQuery with
-            the server's own credentials.
+            the server's own credentials, at its own service's hosts. A
+            BigQuery side that `BIGQUERY_EMULATOR_HOST` or a Google universe in
+            the server's environment moves to another host is refused.
     """
 
     roots: tuple[Path, ...]
@@ -1693,6 +1696,11 @@ def _url_host(url: str, shape: re.Pattern[str] = _URL) -> str:
     return _host(authority) if authority else ""
 
 
+def _endpoint_host(text: str) -> str:
+    """Return the host an endpoint names, with a scheme or without one, or the text whole when it is unclear."""
+    return _url_host(text) if "://" in text else _host(text)
+
+
 def _location_hosts(
     setting: str, location: str, shape: re.Pattern[str] = _URL
 ) -> list[tuple[str, str]]:
@@ -1745,7 +1753,7 @@ def _option_hosts(options: object) -> Iterator[tuple[str, str | None, str]]:
             yield setting, None, _NAME_FORM
         elif name.lower() in _HOST_OPTIONS:
             form = _ENDPOINT_FORM if name.lower() in _ENDPOINT_OPTIONS else _NAME_FORM
-            yield setting, _url_host(text) if "://" in text else _host(text), form
+            yield setting, _endpoint_host(text), form
         elif name.lower() in _REGION_OPTIONS:
             if _REGION.fullmatch(text) is None:
                 yield setting, None, _NAME_FORM
@@ -1898,6 +1906,26 @@ def _scheme_length(text: str) -> int:
     return len(scheme) + len(colon) if special else 0
 
 
+def _holds_path(text: str) -> bool:
+    r"""Say whether an endpoint holds a path, a query, or a fragment after its host and port.
+
+    The value, after its scheme as `_scheme_length` finds it, passes only as
+    `_HOST_AND_PORT`'s shape with nothing after it but a single `/`. Its path
+    starts at the first `/`, `\`, `?`, or `#` after the host and port, where a
+    URL parser ends the authority. Other text after the host, such as a login,
+    is left to the host check.
+    """
+    rest = text[_scheme_length(text) :]
+    written = _HOST_AND_PORT.match(rest)
+    after = "" if written is None else rest[written.end() :]
+    return after not in ("", "/") and after[0] in "/\\?#"
+
+
+def _plain_scheme(text: str) -> bool:
+    """Say whether an endpoint has a scheme, as `_scheme_length` finds one, that is not `https://` in lowercase."""
+    return not text.startswith("https://") and bool(_scheme_length(text))
+
+
 def _refuse_endpoint_path(side: str, config: SourceRef) -> None:
     r"""Refuse a host option whose value holds a path, a query, or a fragment after its host.
 
@@ -1924,10 +1952,7 @@ def _refuse_endpoint_path(side: str, config: SourceRef) -> None:
         ConfigError: If a host option's value holds a path, a query, or a fragment.
     """
     for key, text in _host_option_values(config):
-        rest = text[_scheme_length(text) :]
-        written = _HOST_AND_PORT.match(rest)
-        after = "" if written is None else rest[written.end() :]
-        if after not in ("", "/") and after[0] in "/\\?#":
+        if _holds_path(text):
             if str(key).lower() in _NAME_OPTIONS:
                 raise ConfigError(
                     f"The {side} storage option '{key}' holds a path, a query, or a fragment "
@@ -1963,7 +1988,7 @@ def _refuse_plain_http(side: str, config: SourceRef) -> None:
         ConfigError: If a host option's value has a scheme and does not start with `https://`.
     """
     for key, text in _host_option_values(config):
-        if not text.startswith("https://") and _scheme_length(text):
+        if _plain_scheme(text):
             raise ConfigError(
                 f"The {side} storage option '{key}' names a host by a scheme other than "
                 "https, so a reader could send its credentials and rows unencrypted. A tool "
@@ -1979,7 +2004,9 @@ def _destinations(config: SourceRef) -> list[tuple[str, str | None, str]]:
     cannot check the host it sends a reader to. A BigQuery key file is one: its
     `token_uri` names the host the sign-in goes to. Hugging Face, MotherDuck
     with no option that moves it, and BigQuery with the server's own
-    credentials reach their own service's hosts, so they name none. The form
+    credentials reach their own service's hosts, so they name none.
+    `_refuse_environment_endpoints` holds the variables of the server's
+    environment that move them, such as a Google universe. The form
     is how `_refuse_host` says to write the host: a location may have a path,
     and an endpoint, a bucket, an account, or a server may not.
     """
@@ -2024,8 +2051,10 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
     `_refuse_endpoint_path`, and over plain HTTP, by `_refuse_plain_http`.
     A location on another machine may hold no `.` or `..` segment, as
     `_refuse_dot_segment` says, and a bucket or a container no capital
-    letter, as `_refuse_capital_bucket` says. The message names the setting
-    and not the host, which can hold such a value.
+    letter, as `_refuse_capital_bucket` says. The same rules hold each
+    endpoint a reader takes from the server's environment, by
+    `_refuse_environment_endpoints`. The message names the setting and not
+    the host, which can hold such a value.
     """
     for side, config in (("source", source), ("target", target)):
         if isinstance(config, DatabaseConfig):
@@ -2036,6 +2065,7 @@ def _refuse_hosts(settings: Settings, source: SourceRef, target: SourceRef) -> N
         for setting, host, form in _destinations(config):
             _refuse_host(settings, f"The {side} {setting}", host, form)
         _refuse_plain_http(side, config)
+        _refuse_environment_endpoints(settings, side, config, os.environ)
         for setting, location in _named_locations(config):
             _refuse_capital_bucket(f"The {side} {setting}", location)
         _refuse_capital_option(side, config)
@@ -2145,18 +2175,769 @@ def _refuse_host(
             "it sends a reader to. Leave it out. A credential can come from the server's "
             "environment instead, which the person who started it sets."
         )
-    if host and (not host.isascii() or _HOST.fullmatch(host.lower()) is None):
+    if _allowed_host(settings, host):
+        return
+    if host and not _host_shaped(host):
         raise ConfigError(
             f"{named} does not name its host in the one shape every reader splits alike, so "
             "a tool could check one host and a reader connect to another. Write the host as "
             f"DNS labels or an IP address in ASCII, {form}. Leave out '@', '%', '\\', spaces, "
             "and control characters, other than in a database URI's login."
         )
-    if host.lower() not in settings.allowed_hosts:
+    raise ConfigError(
+        f"{named} names a host this server may not connect to. A tool connects only to "
+        "the hosts the person who started the server names with --allow-host, so read "
+        "data under the roots instead, or ask them to add the host."
+    )
+
+
+def _host_shaped(host: str) -> bool:
+    """Say whether a host is written as an allowed host can be: DNS labels or an IP address, in ASCII."""
+    return host.isascii() and _HOST.fullmatch(host.lower()) is not None
+
+
+def _allowed_host(settings: Settings, host: str) -> bool:
+    """Say whether a host is one the server was started with, written in the one shape every reader splits alike."""
+    return bool(host) and _host_shaped(host) and host.lower() in settings.allowed_hosts
+
+
+_ENVIRONMENT_ENDPOINTS: Final[Mapping[str, str]] = {
+    "AWS_ENDPOINT": "s3",
+    "AWS_ENDPOINT_URL": "s3",
+    "AWS_ENDPOINT_URL_S3": "s3",
+    "AWS_S3_ENDPOINT": "s3",
+    "ENDPOINT": "s3",
+    "ENDPOINT_URL": "s3",
+    "AZURE_ENDPOINT": "azure",
+    "AZURE_STORAGE_ENDPOINT": "azure",
+    "AZURE_AUTHORITY_HOST": "azure",
+    "AZURE_STORAGE_AUTHORITY_HOST": "azure",
+    "GOOGLE_BASE_URL": "gcs",
+    "CLOUD_STORAGE_EMULATOR_ENDPOINT": "gcs",
+    "CLOUD_STORAGE_TESTBENCH_ENDPOINT": "gcs",
+    "BIGQUERY_EMULATOR_HOST": "bigquery",
+    "DATABRICKS_HOST": "unity",
+    "DATABRICKS_WORKSPACE_URL": "unity",
+    "UNITY_WORKSPACE_URL": "unity",
+}
+"""The environment variables a reader takes an endpoint from, in upper case, each with its store.
+
+A reader takes such an endpoint when the configuration names none, so
+`_refuse_environment_endpoints` holds each to the rules a storage option's
+endpoint meets. Each name, its reader, and the probe that found it:
+
+- `AWS_ENDPOINT`, `AWS_ENDPOINT_URL`, and `AWS_ENDPOINT_URL_S3`: Polars 2.1.0
+  reads all three over HTTP with no switch, and Polars 1.39.3 the first two.
+  deltalake 1.6.6 reads all three, in any case, once `AWS_ALLOW_HTTP` is set.
+- `ENDPOINT` and `ENDPOINT_URL`: deltalake 1.6.6 reads every variable of the
+  environment, in lower case and with no prefix, as an S3 option, so it
+  takes either name, in any case, as the endpoint of an `s3://` table. A
+  probe received a list request signed with the configuration's `${NAME}`
+  keys over HTTP, with `ALLOW_HTTP` or `AWS_ALLOW_HTTP` set. Polars 1.39.3
+  and 2.1.0 read neither, and nor does PyArrow under an Iceberg side, so
+  `_DELTA_LAKE_ONLY` holds both.
+- `AWS_S3_ENDPOINT`: deltalake's OpenDAL S3 store, at an `opendal+s3://`
+  table, reads it, and `AWS_ENDPOINT` and `AWS_ENDPOINT_URL` too, over HTTP
+  with no switch. A probe received a list request signed with the
+  environment's keys. It reads each name in upper case only. Neither
+  deltalake's own S3 store, Polars 1.39.3 or 2.1.0, nor PyArrow read this
+  one, so `_DELTA_LAKE_ONLY` holds it.
+- `AZURE_ENDPOINT` and `AZURE_STORAGE_ENDPOINT`: Polars and deltalake.
+- `AZURE_AUTHORITY_HOST` and `AZURE_STORAGE_AUTHORITY_HOST`: Polars and
+  deltalake POST the client secret there to sign in. The secret can come from
+  the configuration's `azure_client_secret: ${NAME}`.
+- `GOOGLE_BASE_URL`: Polars 1.39.3 and 2.1.0 read it with `skip_signature`.
+  With a `bearer_token`, both read from `storage.googleapis.com` instead. With
+  no option, both sign in first: 2.1.0 through Google's default credentials,
+  and 1.39.3 through the instance's metadata server.
+- `CLOUD_STORAGE_EMULATOR_ENDPOINT` and `CLOUD_STORAGE_TESTBENCH_ENDPOINT`:
+  PyArrow's Google Cloud Storage file system, which an Iceberg side reads
+  through, sends its bearer token there. The token is an access token, or
+  one it signs with the service account key `GOOGLE_APPLICATION_CREDENTIALS`
+  names. A probe received `GET /storage/v1/b/lake/o/...` with that token
+  over HTTP, for a `gs://` table and for a table on this machine whose
+  metadata names `gs://` files. PyArrow reads each name in upper case only,
+  and a value with no scheme as plain HTTP, so `_PLAIN_WITHOUT_SCHEME`
+  holds both.
+- `BIGQUERY_EMULATOR_HOST`: the BigQuery client makes it the API endpoint of
+  a client built with the server's default credentials, as
+  `connectors/warehouse.py` builds one. A probe received
+  `POST /bigquery/v2/projects/p/jobs` over HTTP.
+- `DATABRICKS_HOST`, `DATABRICKS_WORKSPACE_URL`, and `UNITY_WORKSPACE_URL`:
+  deltalake 1.6.6's Unity Catalog reader, at a `uc://` table, takes the
+  workspace from any of them, in any case after the prefix. A probe
+  received `GET` with `Authorization: Bearer` and the environment's
+  `DATABRICKS_TOKEN` over HTTP, with `UNITY_ALLOW_HTTP_URL` set. The answer
+  names the table's storage location, so the workspace chooses the rows too.
+
+Some names are left out, each for its reason:
+
+- `AWS_ENDPOINT_URL_STS`, `AWS_METADATA_ENDPOINT`,
+  `AWS_EC2_METADATA_SERVICE_ENDPOINT`, `AWS_CONTAINER_CREDENTIALS_FULL_URI`,
+  `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`, `IDENTITY_ENDPOINT`,
+  `MSI_ENDPOINT`, `AZURE_MSI_ENDPOINT`, `AZURE_FABRIC_TOKEN_SERVICE_URL`,
+  `GCE_METADATA_HOST`, `GCE_METADATA_IP`, and `GCE_METADATA_ROOT`: a reader
+  sends these only the environment's own credentials, and gets credentials
+  back. The platform sets them to plain-HTTP link-local addresses.
+- `UNITY_AUTHORITY_HOST`, `UNITY_MSI_ENDPOINT`, and their `DATABRICKS_`
+  aliases: the Unity Catalog reader signs in there only with the
+  environment's own credentials, as at the endpoints above.
+- `UNITY_ALLOW_HTTP_URL`: it lets the Unity Catalog reader take an `http`
+  workspace, which the rule refuses anyway. Without it, the reader refused
+  such a workspace before any request in a probe, and it reads no
+  `DATABRICKS_ALLOW_HTTP_URL`. A workspace with no scheme failed before any
+  request too.
+- `HADOOP_CONF_DIR` and `HADOOP_HOME`: they name a folder, not an endpoint,
+  so `_HADOOP_CONFIGURATION` refuses them on an HDFS side.
+- `GOOGLE_CLOUD_UNIVERSE_DOMAIN`: it names no endpoint, but a host's
+  suffix, so `_UNIVERSE_VARIABLE` holds it to the allowed hosts.
+- `AWS_CSM_ENABLED`: it is a switch, which `_MONITORING_SWITCH` refuses.
+- `AWS_DATA_PATH`: it names a folder of botocore's data, which
+  `_custom_endpoints` checks.
+- `S3_ENDPOINT`: no reader on the server reads it, as a probe of Polars,
+  deltalake, and deltalake's OpenDAL S3 store shows.
+- `DUCKDB_S3_ENDPOINT`: httpfs is never loaded on the server.
+- `SF_OCSP_RESPONSE_CACHE_SERVER_URL`: it carries no credential.
+- `TNS_ADMIN`: it names a folder on this machine, not a host.
+- `HF_ENDPOINT`: deltalake 1.6.6 refuses every `hf://` table with
+  `repo_id is empty` before any request, and the `repo_id` storage option
+  that would fill it is not one a tool passes on. Polars sent no request to
+  it in a probe.
+- The endpoint variables of deltalake's other OpenDAL stores, such as
+  `AZBLOB_ENDPOINT`, `OSS_ENDPOINT`, and `HF_ENDPOINT`: in a probe, each of
+  those stores refused its table before any request, or sent none to the
+  variable, at an `opendal+` location with no storage option.
+- PyArrow reads `AWS_ENDPOINT_URL` only in `FileSystem.from_uri`, which
+  Veridelta never calls. Its S3 file system sent no request to
+  `AWS_ENDPOINT_URL`, `AWS_ENDPOINT_URL_S3`, or a profile's `endpoint_url`
+  in a probe.
+
+A name joins only with a probe, and before the reader that takes it ships."""
+
+_PLAIN_WITHOUT_SCHEME: Final = frozenset(
+    {"CLOUD_STORAGE_EMULATOR_ENDPOINT", "CLOUD_STORAGE_TESTBENCH_ENDPOINT"}
+)
+"""The variables of `_ENVIRONMENT_ENDPOINTS` whose reader takes a value with no scheme as plain HTTP.
+
+PyArrow sent a request over HTTP to `127.0.0.1:port` from either one in a
+probe, so such a value must start with `https://`."""
+
+_EMULATOR_SWITCH: Final = "AZURE_STORAGE_USE_EMULATOR"
+"""The environment variable that sends Polars and deltalake to Azurite, over plain HTTP.
+
+It replaces even a checked `azure_storage_endpoint`, as probes of Polars
+1.39.3, Polars 2.1.0, and deltalake show. `AZURITE_BLOB_STORAGE_URL` needs no
+entry, since it does nothing without the switch."""
+
+_SWITCH_OFF: Final = frozenset({"", "0", "false", "off", "no"})
+"""The values of a switch, such as `_EMULATOR_SWITCH`, that leave it off, compared after `.strip().lower()`."""
+
+_CERTIFICATE_SWITCHES: Final[Mapping[str, str]] = {
+    "AWS_ALLOW_INVALID_CERTIFICATES": "s3",
+    "ALLOW_INVALID_CERTIFICATES": "s3",
+    "AZURE_ALLOW_INVALID_CERTIFICATES": "azure",
+    "GOOGLE_ALLOW_INVALID_CERTIFICATES": "gcs",
+}
+"""The environment variables that turn off a reader's check of an endpoint's certificate, in upper case, each with its store.
+
+deltalake 1.6.6 reads each, so a proxy, or anyone else on the route, reads
+the credentials and the rows over HTTPS too. A probe through a proxy that
+`HTTPS_PROXY` named, which answered with a certificate nothing trusts,
+decrypted a request signed with the side's keys at each store. deltalake
+reads the unprefixed name on an S3 side only, since it reads every variable
+there with no prefix, and its Azure and Google Cloud Storage stores read only
+`AZURE_` and `GOOGLE_` names. Polars 1.39.3 and 2.1.0 took none of them,
+in a probe of the S3 and Azure switches on each, and of the unprefixed and
+Google switches on 2.1.0. Nor did PyArrow's S3 file system, under an Iceberg
+side. So `_DELTA_LAKE_ONLY` holds the unprefixed name, which an unrelated
+tool may set, and each prefixed name applies to every side of its store."""
+
+_SERVICE_ACCOUNT_FILES: Final = frozenset(
+    {"GOOGLE_SERVICE_ACCOUNT", "GOOGLE_SERVICE_ACCOUNT_PATH", "SERVICE_ACCOUNT"}
+)
+"""The environment variables that name a Google service account key file, in upper case.
+
+object_store takes a `gcs_base_url` from such a key, as from the JSON of
+`_KEY_JSON_VARIABLE`, and sends every request of a Google Cloud Storage side
+there. deltalake 1.6.6 read the base URL from a key that either `GOOGLE_`
+variable named, or that `GOOGLE_SERVICE_ACCOUNT_KEY` held, and sent a list
+request to it over HTTP, as a probe showed. It reads no key that
+`GOOGLE_APPLICATION_CREDENTIALS` names this way. Polars 1.39.3 and 2.1.0
+read the base URL of such a key too, on a side with `skip_signature`, as a
+probe showed. Their object_store also reads `SERVICE_ACCOUNT`, with no
+prefix, as the key file's path: a probe received a `gs://` file's requests
+at such a key's base URL over HTTP. deltalake sent nothing to that one in a
+probe, and a Delta Lake side is checked for it all the same. Otherwise they sign in through Google's own library, which
+reads no base URL. PyArrow, under an Iceberg side, sent nothing to it in a
+probe, and an Iceberg side is checked for it all the same, as for every
+object store's variables."""
+
+_DELTA_LAKE_ONLY: Final = frozenset(
+    {
+        "ENDPOINT",
+        "ENDPOINT_URL",
+        "AWS_S3_ENDPOINT",
+        "ALLOW_INVALID_CERTIFICATES",
+        "REGION",
+        "DEFAULT_REGION",
+    }
+)
+"""The variables, in upper case, that only deltalake reads, so only a Delta Lake side is checked for them.
+
+An unrelated tool may set such a name, and Polars 1.39.3 and 2.1.0 and
+PyArrow under an Iceberg side took none of them in a probe. So a Polars
+side or an Iceberg side reads as before with any of them set."""
+
+_ENVIRONMENT_REGIONS: Final = frozenset(
+    {"AWS_REGION", "AWS_DEFAULT_REGION", "REGION", "DEFAULT_REGION"}
+)
+"""The environment variables a reader writes into an S3 host, in upper case.
+
+Each is held to `_REGION`, as a region storage option is, since a value
+such as `x@127.0.0.1:9000/` makes the host's authority another machine.
+Polars 1.39.3 and 2.1.0 build `https://s3.{region}.amazonaws.com` from
+`AWS_REGION` or `AWS_DEFAULT_REGION`, and a probe received their TLS
+handshakes at such a value's address. deltalake 1.6.6 did the same from
+all four names, in any case, since it reads every variable with no prefix
+as an S3 option. Polars 2.1.0 also reads the AWS profile's `region`, which
+`_refuse_environment_endpoints` checks. PyArrow, under an Iceberg side,
+refused a region that is no DNS name before any request. `S3_REGION` and
+`AWS_S3_REGION` moved no reader in a probe, and DuckDB's httpfs, which
+reads `S3_REGION`, is never loaded on the server."""
+
+_ACCOUNT_VARIABLE: Final = "AZURE_STORAGE_ACCOUNT_NAME"
+"""The environment variable a reader writes into an Azure host, as in `{account}.blob.core.windows.net`.
+
+It is held to the rule an `azure_storage_account_name` storage option
+meets: an account given with --allow-host. Polars 1.39.3 and 2.1.0 and
+deltalake 1.6.6 read it, after `AZURE_`, in any case, for a side such as
+`az://lake/a.parquet`. A probe received their TLS handshakes at the address
+of `x@127.0.0.1:9000/`. No reader moved for `AZURE_STORAGE_ACCOUNT`,
+`AZURE_ACCOUNT_NAME`, `ACCOUNT_NAME`, or `AZBLOB_ACCOUNT_NAME`."""
+
+_UNIVERSE_VARIABLE: Final = "GOOGLE_CLOUD_UNIVERSE_DOMAIN"
+"""The environment variable a reader writes into a Google host, as in `storage.{universe}` or `bigquery.{universe}`.
+
+PyArrow's Google Cloud Storage file system, which an Iceberg side reads
+through, connects to `storage.` and the universe over HTTPS. It sends there
+the bearer token it signs with the service account key that
+`GOOGLE_APPLICATION_CREDENTIALS` names, with no check against the key's own
+universe, and reads the table's metadata and rows from that host. A probe
+saw `CONNECT storage.leak-probe.example:443` at a proxy for a key that names
+no universe, and a TLS handshake at the address `x@127.0.0.1:port/` names.
+The BigQuery client makes `https://bigquery.` and the universe its API
+endpoint, as a probe of a client built with the universe set showed. It
+sends each query there with a bearer token. So `_UNIVERSE_HOSTS` names, for
+each store, the host that must be given with --allow-host. PyArrow and the
+BigQuery client read the name in upper case only."""
+
+_UNIVERSE_HOSTS: Final[Mapping[str, str]] = {"gcs": "storage", "bigquery": "bigquery"}
+"""For each store a reader takes the universe for, the label it puts before the universe to form its host."""
+
+_MONITORING_SWITCH: Final = "AWS_CSM_ENABLED"
+"""The environment variable that turns on the AWS SDK's client-side monitoring.
+
+PyArrow's S3 file system, which an Iceberg side reads through, runs the AWS
+SDK for C++. With the switch on, it sends an event for each request to
+`AWS_CSM_HOST` and `AWS_CSM_PORT` in clear, over UDP. Each event carries the
+access key id and the session token the side signs with, such as a
+configuration's `${NAME}` values. A probe received both at `127.0.0.1` for
+`true` in any case, and nothing for `1` or `yes`. The host is not checked,
+since the channel is unencrypted whatever the host, so the switch is refused
+on every S3 side, as a certificate switch is. The profile's `csm_enabled`
+does the same, which `_profile_monitors` reads. Polars and deltalake have no
+such monitoring."""
+
+_MOTHERDUCK_TOKEN_NAMES: Final = frozenset(name.casefold() for name in MOTHERDUCK_TOKEN_VARIABLES)
+"""The MotherDuck token variables, in casefold, which name a credential rather than a setting."""
+
+_HADOOP_CONFIGURATION: Final = frozenset({"HADOOP_CONF_DIR", "HADOOP_HOME"})
+"""The environment variables that name the folder of Hadoop's configuration, in upper case.
+
+deltalake 1.6.6 reads an `hdfs://` or `viewfs://` table through hdfs-native,
+which reads `hdfs-site.xml` and `core-site.xml` from `HADOOP_CONF_DIR`, or
+else from `etc/hadoop` under `HADOOP_HOME`. Either file can map the table's
+host to a namenode at any address, as a nameservice or a mount table. A
+probe accepted its RPC, which names the user, at such an address. An empty
+value names the working folder, the server's first root, so a variable set
+at all is refused on an HDFS side. Reading the files instead would mean
+parsing Hadoop's configuration as hdfs-native does."""
+
+_ANY_STORE: Final = frozenset({"s3", "azure", "gcs"})
+"""The stores whose variables apply to a location on another machine of no known store."""
+
+_STORE_SCHEMES: Final[Mapping[str, frozenset[str]]] = {
+    **dict.fromkeys(("s3", "s3a", "s3n"), frozenset({"s3"})),
+    **dict.fromkeys(("az", "azure", "abfs", "abfss", "adl", "wasb", "wasbs"), frozenset({"azure"})),
+    **dict.fromkeys(("gs", "gcs"), frozenset({"gcs"})),
+    **dict.fromkeys(("http", "https"), frozenset[str]()),
+    **dict.fromkeys(("hdfs", "viewfs"), frozenset({"hdfs"})),
+    "uc": _ANY_STORE | {"unity"},
+}
+"""The stores a location's scheme, in lowercase, reaches.
+
+deltalake reads an `hdfs` or `viewfs` table through hdfs-native, which reads
+no object store's variables. It reads a `uc` table through Unity Catalog,
+whose answer names the table's location in an object store.
+
+An `http` or `https` location reaches none. Polars reads one with its own
+HTTP client, at the host the location names, and deltalake knows neither
+scheme. In a probe of Polars 1.39.3 and 2.1.0 and deltalake 1.6.6, no read
+of such a location sent a request to a store that every variable in
+`_ENVIRONMENT_ENDPOINTS` and a profile's `endpoint_url` named, even at a host
+such as `acct.blob.core.windows.net` or `lake.s3.amazonaws.com`."""
+
+_STORE_NAMES: Final[Mapping[str, str]] = {
+    "s3": "S3",
+    "azure": "Azure",
+    "gcs": "Google Cloud Storage",
+    "bigquery": "BigQuery",
+    "motherduck": "MotherDuck",
+    "unity": "Unity Catalog",
+    "hdfs": "HDFS",
+}
+"""How a refusal names each store.
+
+A side that reads Unity Catalog, then an object store, is named by Unity Catalog."""
+
+_ANY_STORE_NAME: Final = "a location the server cannot tie to one object store"
+"""How a refusal names the stores of `_ANY_STORE`, which the side's location does not tell."""
+
+_PROFILE_SUBJECT: Final = (
+    "the {setting} of the AWS profile the server's environment selects, in "
+    "AWS_CONFIG_FILE or ~/.aws/config, which Polars reads"
+)
+"""How a refusal names a setting of the AWS profile, such as its endpoint_url, without the profile's name."""
+
+
+def _store(config: SourceRef) -> frozenset[str]:
+    """Name the stores whose environment variables a side's reader takes an endpoint from.
+
+    A BigQuery side reads BigQuery, and a MotherDuck side MotherDuck. An
+    Iceberg table names every object store, wherever its metadata lies, since
+    the metadata, not the table's own location, names the files a scan opens.
+    A location's scheme names its store, matched in ASCII, as
+    `_STORE_SCHEMES` says: an `http` or `https` location names none, an
+    `hdfs` or `viewfs` one HDFS, and a `uc` one Unity Catalog and every
+    object store. Any other location on another machine, such as
+    `opendal+s3`, names every object store, since the server cannot tell
+    which a reader takes it to.
+    A database, a Snowflake, a Databricks, or a local side names none.
+    """
+    if isinstance(config, BigQueryConfig):
+        return frozenset({"bigquery"})
+    if isinstance(config, DuckDBConfig):
+        return frozenset({"motherduck"}) if config.is_motherduck else frozenset()
+    if isinstance(config, IcebergConfig):
+        return _ANY_STORE
+    if isinstance(config, SourceConfig):
+        location = config.path
+    elif isinstance(config, DeltaLakeConfig):
+        location = config.table_uri
+    else:
+        return frozenset()
+    scheme = _URI_SCHEME.match(location)
+    # The pattern matches ASCII only, so lowering it folds no other letter.
+    known = None if scheme is None else _STORE_SCHEMES.get(scheme.group()[:-1].lower())
+    if known is not None:
+        return known
+    return _ANY_STORE if _location_destinations(config) else frozenset()
+
+
+def _profile() -> Mapping[str, object]:
+    """Return the settings of the AWS profile the environment selects, as Polars reads them, or none.
+
+    Polars reads its `endpoint_url` and its `region` through boto3, so with
+    boto3 missing it reads none. A `[services]` section is not read, since no
+    reader reads one. A profile that is missing or a file that does not
+    parse fails Polars the same way, and it reads nothing.
+    """
+    if importlib.util.find_spec("boto3") is None:
+        return {}
+    import botocore.exceptions  # pyright: ignore[reportMissingTypeStubs] - botocore ships no types
+    import botocore.session  # pyright: ignore[reportMissingTypeStubs] - as above
+
+    try:
+        return cast(
+            "Mapping[str, object]",
+            botocore.session.Session().get_scoped_config(),
+        )
+    except botocore.exceptions.BotoCoreError:
+        return {}
+
+
+def _custom_endpoints() -> bool:
+    """Say whether botocore reads its `endpoints.json` from a folder other than its own.
+
+    Polars 2.x, with boto3 installed, resolves an S3 side's host from that
+    file when the configuration names no endpoint. botocore reads it from the
+    folders `AWS_DATA_PATH` or the profile's `data_path` names, and from
+    `~/.aws/models`, ahead of its own. A probe saw Polars send a side's signed
+    requests to the host such a file named. With boto3 missing, Polars reads
+    no such file. A profile that is missing fails Polars before any request,
+    so it reads as none, as in `_profile`. A file botocore cannot parse lies
+    outside its own folder, so it counts.
+    """
+    if importlib.util.find_spec("boto3") is None:
+        return False
+    import botocore.exceptions  # pyright: ignore[reportMissingTypeStubs] - botocore ships no types
+    import botocore.session  # pyright: ignore[reportMissingTypeStubs] - as above
+
+    # botocore ships no types, so its loader is read as Any.
+    session = cast("Any", botocore.session.Session())
+    try:
+        loader = session.get_component("data_loader")
+        path = cast("str", loader.load_data_with_path("endpoints")[1])
+    except botocore.exceptions.BotoCoreError:
+        return False
+    except ValueError:
+        return True
+    return path != os.path.join(cast("str", loader.BUILTIN_DATA_PATH), "endpoints")
+
+
+def _regular_file(path: str, refusal: str) -> bytes | None:
+    """Return the bytes of the file at `path`, or None when it is missing or cannot be read.
+
+    Any file but a regular one is refused with `refusal`: a named pipe gives
+    its text once, to the first process that reads it, so the server cannot
+    check what a reader would take from it.
+
+    Raises:
+        ConfigError: If `path` names a file other than a regular one.
+    """
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise ConfigError(refusal)
+        # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe swapped in after the
+        # check without waiting for a writer, which then reads as an empty file.
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+        with open(os.open(path, flags), "rb") as file:
+            return file.read()
+    except OSError:
+        return None
+
+
+def _profile_monitors(environ: Mapping[str, str], opening: str) -> bool:
+    """Say whether a profile of the AWS config file sets `csm_enabled` to anything but off.
+
+    The AWS SDK for C++ under PyArrow reads the file `AWS_CONFIG_FILE` names,
+    or `~/.aws/config`, without boto3, and takes `csm_enabled` from the
+    profile `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` selects, as a probe showed.
+    Every profile and key is read here, in any case, which is simpler and
+    only stricter. A file that is missing, or the null device, sets nothing.
+
+    Raises:
+        ConfigError: If the file is not a regular file.
+    """
+    path = os.path.expanduser(environ.get("AWS_CONFIG_FILE") or os.path.join("~", ".aws", "config"))
+    if path == os.devnull:
+        return False
+    text = _regular_file(
+        path,
+        f"{opening} is not a regular file, such as a named pipe, so the server cannot check "
+        "whether it turns on client-side monitoring. Ask the person who started the server to "
+        "name a regular file.",
+    )
+    lines = (line.partition("=") for line in (text or b"").decode(errors="replace").splitlines())
+    return any(
+        sign and key.strip().lower() == "csm_enabled" and value.strip().lower() not in _SWITCH_OFF
+        for key, sign, value in lines
+    )
+
+
+def _refuse_environment_endpoints(
+    settings: Settings, side: str, config: SourceRef, environ: Mapping[str, str]
+) -> None:
+    """Refuse a side whose reader would take an endpoint from the server's environment that is not allowed.
+
+    A reader of a side's store takes an endpoint from the variables in
+    `_ENVIRONMENT_ENDPOINTS`, and Polars from the AWS profile's
+    `endpoint_url`, and deltalake and Polars from the `gcs_base_url` of a
+    service account key, whether or not the configuration names its own.
+    Each is held to the rules a storage option's endpoint meets: no path, a
+    host given with --allow-host, and a scheme of `https://` only. A region in
+    `_ENVIRONMENT_REGIONS` or the profile's `region` must match `_REGION`,
+    and the account `_ACCOUNT_VARIABLE` names must be given with
+    --allow-host, as their storage options must. So must the host that
+    `_UNIVERSE_HOSTS` forms from the universe `_UNIVERSE_VARIABLE` names.
+    The Azure emulator switch, a switch in `_CERTIFICATE_SWITCHES`, the
+    monitoring switch `_MONITORING_SWITCH` or
+    a profile's `csm_enabled`, botocore's endpoints from a folder other than
+    its own, and a MotherDuck setting other than the token and the options a
+    tool passes on are refused outright. So is a variable in
+    `_HADOOP_CONFIGURATION` on an HDFS side, even an empty one. A variable in
+    `_DELTA_LAKE_ONLY` is checked on a Delta Lake side only. A name is
+    matched in any case, as deltalake reads one. The message names the
+    variable as it is set, and never its value, a file's path, or the
+    profile's name.
+
+    Raises:
+        ConfigError: If such an endpoint, a region, an account, a universe, a
+            switch, a Hadoop folder, or such a setting or file applies to
+            the side.
+    """
+    families = _store(config)
+    if not families:
+        return
+    named = families - _ANY_STORE or families
+    store = _ANY_STORE_NAME if named == _ANY_STORE else _STORE_NAMES[min(named)]
+    delta = isinstance(config, DeltaLakeConfig)
+    for name in sorted(environ):
+        value = environ[name]
+        if "hdfs" in families and name.upper() in _HADOOP_CONFIGURATION:
+            raise ConfigError(
+                f"The {side} side reads {store}, and the server's environment variable {name} "
+                "names a folder of Hadoop configuration. Its hdfs-site.xml or core-site.xml can "
+                "send this side's reader to a namenode not given with --allow-host, even when "
+                "the variable is empty. Ask the person who started the server to leave it out "
+                "of the server's environment."
+            )
+        if value and (delta or name.upper() not in _DELTA_LAKE_ONLY):
+            _refuse_environment_variable(settings, side, families, store, name, value)
+    if "s3" not in families:
+        return
+    config_file = (
+        f"The {side} side reads {store}, and the AWS config file the server's environment "
+        "names, in AWS_CONFIG_FILE or ~/.aws/config,"
+    )
+    if _profile_monitors(environ, config_file):
         raise ConfigError(
-            f"{named} names a host this server may not connect to. A tool connects only to "
-            "the hosts the person who started the server names with --allow-host, so read "
-            "data under the roots instead, or ask them to add the host."
+            f"{config_file} sets csm_enabled in a profile, which turns on the AWS SDK's "
+            "client-side monitoring. PyArrow then sends each request's access key id and session "
+            "token in clear, over UDP, to a host not given with --allow-host. Ask the person who "
+            "started the server to remove the setting."
+        )
+    if _custom_endpoints():
+        raise ConfigError(
+            f"The {side} side reads {store}, and botocore reads its endpoints.json from a folder "
+            "other than its own, which AWS_DATA_PATH, the AWS profile's data_path, or "
+            "~/.aws/models names. Polars takes an S3 host from that file, so it could send this "
+            "side's signed requests to a host not given with --allow-host. Ask the person who "
+            "started the server to remove the file or the setting."
+        )
+    profile = _profile()
+    opening = f"The {side} side reads {store}, and {_PROFILE_SUBJECT}"
+    if endpoint := profile.get("endpoint_url"):
+        _refuse_endpoint(settings, opening.format(setting="endpoint_url"), str(endpoint))
+    if (region := profile.get("region")) and _REGION.fullmatch(str(region)) is None:
+        raise ConfigError(_region_refusal(opening.format(setting="region")))
+
+
+def _refuse_environment_variable(
+    settings: Settings, side: str, families: frozenset[str], store: str, name: str, value: str
+) -> None:
+    """Refuse one variable of the server's environment that sends a side's reader elsewhere.
+
+    Raises:
+        ConfigError: If the variable is the emulator switch, a certificate
+            switch, or the monitoring switch, turned on, an endpoint that is
+            not allowed, a region outside `_REGION`, an account or a universe
+            that is not allowed, a service account key whose `gcs_base_url`
+            is not allowed, or a MotherDuck setting.
+    """
+    upper = name.upper()
+    opening = f"The {side} side reads {store}, and the server's environment variable {name}"
+    _refuse_host_name(settings, families, opening, upper, value)
+    if value.strip().lower() not in _SWITCH_OFF:
+        _refuse_switch(side, families, opening, name)
+    if _ENVIRONMENT_ENDPOINTS.get(upper) in families:
+        _refuse_endpoint(
+            settings, opening, value, plain_without_scheme=upper in _PLAIN_WITHOUT_SCHEME
+        )
+    elif "gcs" in families and (upper in _SERVICE_ACCOUNT_FILES or upper == _KEY_JSON_VARIABLE):
+        base_url = _service_account_base_url(opening, upper in _SERVICE_ACCOUNT_FILES, value)
+        if base_url is not None:
+            _refuse_endpoint(
+                settings,
+                f"{opening} gives a service account key whose gcs_base_url",
+                base_url,
+            )
+    elif "motherduck" in families and _motherduck_setting(name):
+        raise ConfigError(
+            f"The {side} side reads MotherDuck, and the server's environment variable {name} "
+            "is a MotherDuck setting a tool does not pass on, since some, such as "
+            "motherduck_host, choose the host the extension connects to. Ask the person who "
+            "started the server to leave it out of the server's environment."
+        )
+
+
+def _refuse_switch(side: str, families: frozenset[str], opening: str, name: str) -> None:
+    """Refuse a variable of the server's environment, turned on, that is a switch a reader of the side's store takes.
+
+    `opening` names the side, its store, and the variable.
+
+    Raises:
+        ConfigError: If the variable is the emulator switch, a certificate
+            switch, or the monitoring switch of the side's store.
+    """
+    upper = name.upper()
+    if "azure" in families and upper == _EMULATOR_SWITCH:
+        raise ConfigError(
+            f"The {side} side reads Azure, and the server's environment variable {name} "
+            "sends a reader to the Azurite emulator over plain HTTP, in place of any "
+            "endpoint the configuration names. Ask the person who started the server to "
+            "leave it out of the server's environment."
+        )
+    if _CERTIFICATE_SWITCHES.get(upper) in families:
+        raise ConfigError(
+            f"{opening} turns off a reader's check of the certificate an endpoint presents, "
+            "so a proxy, or anyone else on the route, could read the credentials and the "
+            "rows. Ask the person who started the server to leave it out of the server's "
+            "environment."
+        )
+    if "s3" in families and upper == _MONITORING_SWITCH:
+        raise ConfigError(
+            f"{opening} turns on the AWS SDK's client-side monitoring. PyArrow then sends each "
+            "request's access key id and session token in clear, over UDP, to a host not "
+            "given with --allow-host. Ask the person who started the server to leave it out "
+            "of the server's environment."
+        )
+
+
+def _refuse_host_name(
+    settings: Settings, families: frozenset[str], opening: str, upper: str, value: str
+) -> None:
+    """Refuse a region, an account, or a universe from the server's environment that a reader writes into its host.
+
+    A region must match `_REGION`, and an account must be given with
+    --allow-host, as their storage options must. A universe's host, the
+    side's label in `_UNIVERSE_HOSTS` and the universe, must be given with
+    --allow-host too.
+    `opening` names the side, its store, and the variable, and `upper` is the
+    variable's name in upper case.
+
+    Raises:
+        ConfigError: If the variable is a region of the side's store outside
+            `_REGION`, or an account or a universe of it that is not allowed.
+    """
+    if "s3" in families and upper in _ENVIRONMENT_REGIONS and _REGION.fullmatch(value) is None:
+        raise ConfigError(_region_refusal(opening))
+    if (
+        "azure" in families
+        and upper == _ACCOUNT_VARIABLE
+        and not _allowed_host(settings, _endpoint_host(value))
+    ):
+        raise ConfigError(
+            f"{opening} names a storage account that is not given with --allow-host, or is not "
+            "written as DNS labels with at most a port. A reader sends this side's requests and "
+            "credentials to that account's host. Ask the person who started the server to add "
+            "the account's name with --allow-host, or to leave the variable out of the "
+            "server's environment."
+        )
+    if upper != _UNIVERSE_VARIABLE:
+        return
+    for family, label in _UNIVERSE_HOSTS.items():
+        if family in families and not _allowed_host(settings, f"{label}.{value}"):
+            raise ConfigError(
+                f"{opening} names a universe whose host, {label}. and the universe, is not "
+                "given with --allow-host, or is not written as DNS labels. A reader sends this "
+                "side's requests and a bearer token to that host. Ask the person who started the "
+                "server to add the host with --allow-host, or to leave the variable out of the "
+                "server's environment."
+            )
+
+
+def _region_refusal(opening: str) -> str:
+    """Say why a region from the server's environment is refused, after `opening`, which names where it comes from."""
+    return (
+        f"{opening} is not a region of letters, digits, and hyphens, such as us-east-1. A "
+        "reader writes it into the host it connects to, so it could send this side's requests "
+        "and credentials to a host not given with --allow-host. Ask the person who started the "
+        "server to correct it, or to leave it out of the server's environment."
+    )
+
+
+def _service_account_base_url(opening: str, named: bool, value: str) -> str | None:
+    """Return the `gcs_base_url` of the Google service account key a variable holds, or the file it names.
+
+    With `named`, the value is the key file's path. A file that does not
+    exist or cannot be opened, or a key that is not a JSON object with a text
+    `gcs_base_url`, gives None, since object_store then fails before any
+    request. A byte outside UTF-8 does not: object_store's parser checks
+    UTF-8 only in the fields it reads, so it still takes the `gcs_base_url`
+    of a key with such a byte in a field it ignores. The file is decoded with
+    `surrogateescape`, so the server reads that `gcs_base_url` too. Any file
+    but a regular one is refused: a named pipe gives its text once, to the
+    first process that reads it, so the server cannot check what a reader
+    would take from it.
+
+    Raises:
+        ConfigError: If the variable names a file other than a regular one.
+    """
+    if named:
+        key_file = _regular_file(
+            value,
+            f"{opening} names a key file that is not a regular file, such as a named pipe, so "
+            "the server cannot check the gcs_base_url a reader would take from it. Ask the "
+            "person who started the server to name a regular file, or to leave it out of the "
+            "server's environment.",
+        )
+        value = (key_file or b"").decode("utf-8", errors="surrogateescape")
+    try:
+        key = json.loads(value)
+    except ValueError:
+        return None
+    base_url = cast("dict[str, object]", key).get("gcs_base_url") if isinstance(key, dict) else None
+    return base_url if isinstance(base_url, str) and base_url else None
+
+
+def _motherduck_setting(name: str) -> bool:
+    """Say whether a variable is a MotherDuck setting other than the token and the options a tool passes on.
+
+    MotherDuck's extension reads its settings from the environment in any case.
+    """
+    lowered = name.lower()
+    return (
+        lowered.startswith("motherduck_")
+        and name.casefold() not in _MOTHERDUCK_TOKEN_NAMES
+        and lowered.removeprefix("motherduck_") not in _MOTHERDUCK_OPTIONS
+    )
+
+
+def _refuse_endpoint(
+    settings: Settings, opening: str, value: str, *, plain_without_scheme: bool = False
+) -> None:
+    """Refuse an endpoint from the server's environment that a storage option could not name.
+
+    The checks run in the order `_refuse_hosts` runs them for a storage
+    option: the path, the host, then the scheme. `opening` names the side,
+    its store, and where the endpoint comes from, and the message never
+    quotes the value. With `plain_without_scheme`, a value with no scheme is
+    refused too, since its reader takes one as plain HTTP.
+
+    Raises:
+        ConfigError: If the endpoint holds a path, names a host that is not
+            allowed, or has a scheme other than `https://`, or none where
+            `plain_without_scheme` holds.
+    """
+    if _holds_path(value):
+        raise ConfigError(
+            f"{opening} holds a path, a query, or a fragment after its host, which a reader "
+            "puts before the bucket or the container, so it could read one this server did "
+            "not check. Ask the person who started the server to write it as "
+            "https://host:port, or to leave it out of the server's environment."
+        )
+    if not _allowed_host(settings, _endpoint_host(value)):
+        raise ConfigError(
+            f"{opening} names an endpoint whose host is not given with --allow-host, or is not "
+            "written as DNS labels or an IP address with at most a port. A reader sends this "
+            "side's requests and credentials there. Ask the person who started the server to "
+            "add the host with --allow-host, or to leave the setting out of the server's "
+            "environment."
+        )
+    if _plain_scheme(value):
+        raise ConfigError(
+            f"{opening} names its endpoint by a scheme other than https, so a reader would send "
+            "the credentials and the rows unencrypted, on this machine too. Ask the person who "
+            "started the server to write it as https://host:port, in lowercase, or to leave it "
+            "out of the server's environment."
+        )
+    if plain_without_scheme and not _scheme_length(value):
+        raise ConfigError(
+            f"{opening} names its endpoint with no scheme, which its reader takes as plain "
+            "HTTP, so it would send the credentials and the rows unencrypted, on this machine "
+            "too. Ask the person who started the server to write it as https://host:port, in "
+            "lowercase, or to leave it out of the server's environment."
         )
 
 
