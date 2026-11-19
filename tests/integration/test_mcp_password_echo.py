@@ -10,8 +10,12 @@ through the MCP client, with each wrong password of `password_corpus.CORPUS`,
 against a fake server on this machine that answers as the real one refuses a
 sign-in. Each HTTP service is driven twice: once as it refuses a sign-in, and
 once as a service that writes its whole request back in the refusal, as an
-echo or debug endpoint on an allowed host would. No answer may hold any piece
-of the password, in any form. A control has the Postgres fake write the
+echo or debug endpoint on an allowed host would. A third ClickHouse fake
+writes the password back with some characters encoded and others raw. No
+answer may hold any piece of the password, in any form. A ClickHouse reader
+is refused each password of the corpus before it connects, since ConnectorX
+would send it encoded, so it is also driven with every character it takes,
+and ClickHouse receives that password as written. A control has the Postgres fake write the
 password back in each escaped form, and shows the check finds each one.
 Another shows why Trino's reader takes no user or password from the
 environment: it sends both as basic auth, and repeats a service's whole
@@ -38,6 +42,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from socketserver import BaseRequestHandler, ThreadingTCPServer
 from typing import Any, Final
+from urllib.parse import quote
 
 import anyio
 import pytest
@@ -47,10 +52,16 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 from mcp import Client
 
-from tests.integration.password_corpus import CORPUS, escaped_forms, holds_piece
+from tests.integration.password_corpus import (
+    CLICKHOUSE_CORPUS,
+    CORPUS,
+    escaped_forms,
+    holds_piece,
+)
 from veridelta import mcp_server
 from veridelta.connectors import warehouse
-from veridelta.connectors.database import connectorx_url
+from veridelta.connectors.database import DatabaseConnector, connectorx_url
+from veridelta.exceptions import ConnectorError
 from veridelta.mcp_server import Settings, build_server
 from veridelta.models import DatabaseConfig
 
@@ -324,6 +335,32 @@ def _echoed(text: str) -> Callable[[bytes], str]:
     return lambda request: f"{text} The request was:\n{request.decode('utf-8', 'replace')}"
 
 
+def _sent_key(request: bytes) -> str:
+    """Return the `x-clickhouse-key` header a request holds, or nothing."""
+    for line in request.decode("utf-8", "replace").splitlines():
+        name, _, value = line.partition(":")
+        if name.casefold() == "x-clickhouse-key":
+            return value.strip()
+    return ""
+
+
+def _partly_encoded(text: str) -> Callable[[bytes], str]:
+    """Refuse with `text`, then the key the reader sent, with only `+` encoded, and with all but `+`.
+
+    An encoder can encode some characters and keep others, so a service can
+    write a password back in a mix of the two that is neither the raw text nor
+    its whole percent-encoding.
+    """
+
+    def refusal(request: bytes) -> str:
+        key = _sent_key(request)
+        only_plus = key.replace("+", "%2b")
+        all_but_plus = "+".join(quote(piece, safe="") for piece in key.split("+"))
+        return f"{text} The key was {only_plus} or {all_but_plus}."
+
+    return refusal
+
+
 _CLICKHOUSE_REFUSAL: Final = (
     "Code: 516. DB::Exception: u: Authentication failed: password is incorrect, or "
     "there is no user with such name. (AUTHENTICATION_FAILED)"
@@ -350,6 +387,9 @@ _READERS: Final[dict[str, _Reader]] = {
     "clickhouse": _Reader(_Http, _fixed(_CLICKHOUSE_REFUSAL), "clickhouse://u@127.0.0.1:{port}/x"),
     "clickhouse-echo": _Reader(
         _Http, _echoed(_CLICKHOUSE_REFUSAL), "clickhouse://u@127.0.0.1:{port}/x"
+    ),
+    "clickhouse-partly-encoded": _Reader(
+        _Http, _partly_encoded(_CLICKHOUSE_REFUSAL), "clickhouse://u@127.0.0.1:{port}/x"
     ),
     "oracle": _Reader(None, _fixed(""), "oracle://u@127.0.0.1:{port}/svc"),
     # The driver sends a password only to the account's host under snowflakecomputing.com,
@@ -386,10 +426,26 @@ class _Case:
     variable: str
 
 
+def _sends(case: _Case) -> bool:
+    """Say whether a case's reader sends its fake anything.
+
+    A ClickHouse reader is refused every password of `CORPUS` before it connects.
+    """
+    refused = case.reader.startswith("clickhouse") and case.password_id in dict(CORPUS)
+    return case.reader not in _SENDS_NOTHING and not refused
+
+
 def _cases() -> list[_Case]:
-    """Pair each reader with each password it is driven with, under its own variable."""
+    """Pair each reader with each password it is driven with, under its own variable.
+
+    A ClickHouse reader is driven with `CLICKHOUSE_CORPUS` too.
+    """
     pairs = [
-        (reader, password_id, password) for reader in _READERS for password_id, password in CORPUS
+        (reader, password_id, password)
+        for reader in _READERS
+        for password_id, password in (
+            (*CORPUS, *CLICKHOUSE_CORPUS) if reader.startswith("clickhouse") else CORPUS
+        )
     ]
     return [
         _Case(reader, password_id, password, f"V_PW_{number}")
@@ -576,10 +632,14 @@ def test_no_reader_repeats_any_piece_of_a_password(
         where = f"{case.reader}, {case.password_id}, {tool}"
         found = holds_piece(answer, case.password)
         assert found is None, f"{where}: the answer holds {found}: {answer}"
-        assert bool(recording.received) is (case.reader not in _SENDS_NOTHING), where
-        if case.reader.endswith("-echo"):
+        assert bool(recording.received) is _sends(case), where
+        if case.reader.startswith("clickhouse") and not _sends(case):
+            assert "A ClickHouse password can hold only" in answer, f"{where}: {answer}"
+        elif case.reader.endswith("-echo"):
             # The refusal came back with the request in it, the password's header masked.
             assert "x-clickhouse-key: ***" in answer.casefold(), f"{where}: {answer}"
+        elif case.reader.endswith("-partly-encoded"):
+            assert "The key was *** or ***." in answer, f"{where}: {answer}"
 
 
 def test_the_corpus_drives_every_password_reader() -> None:
@@ -591,6 +651,42 @@ def test_the_corpus_drives_every_password_reader() -> None:
     }
 
     assert readers == mcp_server._PASSWORD_READERS  # pyright: ignore[reportPrivateUsage]  # the list is private to the server
+
+
+def test_clickhouse_receives_a_password_with_symbols_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, no_reader_credentials: None
+) -> None:
+    """Ensure ClickHouse receives a password whole, from `veridelta run` and `veridelta mcp` alike.
+
+    ConnectorX sends a ClickHouse password as its uri holds it, without
+    decoding it. The password goes to the connector in the `password`
+    setting, and percent-encoded in the uri, and to the server from its
+    environment. Each request the fake receives holds the password exactly.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "b.csv").write_text("id\n1\n", encoding="utf-8")
+    password = dict(CLICKHOUSE_CORPUS)["clickhouse-classes"]
+    monkeypatch.setenv("V_PW_SENT", password)
+    reader = _READERS["clickhouse"]
+    with _fake(reader, None) as (port, recording):
+        uri = f"clickhouse://u@127.0.0.1:{port}/x"
+        for config in (
+            DatabaseConfig(uri=uri, password=password, table="t"),
+            DatabaseConfig(uri=uri.replace("u@", f"u:{quote(password, safe='')}@"), table="t"),
+        ):
+            with pytest.raises(ConnectorError, match="Authentication failed"):
+                DatabaseConnector(config).connect()
+        (tmp_path / "sent.yaml").write_text(
+            reader.configuration(port, "V_PW_SENT"), encoding="utf-8"
+        )
+        (answer,) = _run_all(
+            [("sent.yaml", "describe_schema", {"side": "source"})], _settings(tmp_path, {})
+        )
+
+    keys = {_sent_key(request) for request in recording.received}
+    assert keys == {password}
+    assert "Authentication failed" in answer
+    assert holds_piece(answer, password) is None
 
 
 def _echoing(form: str) -> Callable[[bytes], str]:

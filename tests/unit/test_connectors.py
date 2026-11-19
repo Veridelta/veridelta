@@ -643,6 +643,9 @@ class TestConnectorLifecycleDefaults:
 _DATABASE_SECRET = "p@ss:w/rd %+&?#"
 """A password holding every character a URI treats specially."""
 
+_CLICKHOUSE_SECRET = "p+ss!w%rd$&'()*,"
+"""A password holding each character a ClickHouse password takes that percent-encoding changes."""
+
 _POSIX_NAMES = pytest.mark.skipif(
     sys.platform == "win32", reason="Windows allows no `:` or `?` in a file name."
 )
@@ -747,7 +750,7 @@ class TestDatabaseConnector:
         read = self._clickhouse_read(mocker, empty, held=3)
         config = DatabaseConfig(
             uri="clickhouse://analyst@ch.internal:8123/sales",
-            password=_DATABASE_SECRET,
+            password=_CLICKHOUSE_SECRET,
             query="SELECT id, amount FROM payments;",
         )
 
@@ -761,8 +764,8 @@ class TestDatabaseConnector:
         )
         assert "Decimal with precision above 18" in message
         assert "toString()" in message
-        assert _DATABASE_SECRET not in message
-        assert quote(_DATABASE_SECRET, safe="") not in message
+        assert _CLICKHOUSE_SECRET not in message
+        assert quote(_CLICKHOUSE_SECRET, safe="") not in message
         assert read.call_args_list[-1].args[0] == (
             "SELECT count() AS held FROM (SELECT id, amount FROM payments)"
         )
@@ -831,6 +834,78 @@ class TestDatabaseConnector:
             "postgresql://analyst:p%40ss%3Aw%2Frd%20%25%2B%26%3F%23@db.internal:5432/sales"
             "?sslmode=require",
         )
+
+    @pytest.mark.parametrize(
+        ("uri", "password", "sent"),
+        [
+            pytest.param(
+                "clickhouse://analyst@ch.internal:8123/sales?protocol=https",
+                "Qz+Xj!Vk%Wq$&'()*,._~-%41",
+                "clickhouse://analyst:Qz+Xj!Vk%Wq$&'()*,._~-%41@ch.internal:8123/sales"
+                "?protocol=https",
+                id="password-field",
+            ),
+            pytest.param(
+                "clickhouse://analyst:Qz%2BXj%21Vk%25Wq@ch.internal:8123/sales",
+                None,
+                "clickhouse://analyst:Qz+Xj!Vk%Wq@ch.internal:8123/sales",
+                id="uri-encoded",
+            ),
+            pytest.param(
+                "ClickHouse+x://analyst:Qz+Xj!Vk%Wq@ch.internal/sales",
+                None,
+                "clickhouse+x://analyst:Qz+Xj!Vk%Wq@ch.internal/sales",
+                id="uri-raw",
+            ),
+            pytest.param(
+                "clickhouse://analyst@ch.internal/sales",
+                None,
+                "clickhouse://analyst@ch.internal/sales",
+                id="no-password",
+            ),
+        ],
+    )
+    def test_it_writes_a_clickhouse_password_unencoded(
+        self, mocker: MockerFixture, uri: str, password: str | None, sent: str
+    ) -> None:
+        """Ensure ConnectorX gets a ClickHouse password unencoded, since it sends it as the uri holds it.
+
+        ConnectorX sends a ClickHouse password without decoding it, so an
+        encoded `+` reaches ClickHouse as `%2B`, which ClickHouse refuses.
+        """
+        read = _read_database(mocker, return_value=pl.DataFrame({"n": [1]}))
+
+        DatabaseConnector(DatabaseConfig(uri=uri, password=password, query="SELECT 1")).connect()
+
+        assert read.call_args.args[1] == sent
+
+    @pytest.mark.parametrize(
+        ("uri", "password"),
+        [
+            pytest.param("clickhouse://analyst@ch.internal/sales", "Qzp@ss/w+rd=%", id="field"),
+            pytest.param("clickhouse://analyst@ch.internal/sales", "Qzx Vkw", id="space"),
+            pytest.param("clickhouse://analyst@ch.internal/sales", "Qzxé1234", id="not-ascii"),
+            pytest.param("clickhouse://analyst:Qzx%3DVkw@ch.internal/sales", None, id="uri"),
+            pytest.param("clickhouse://analyst:Qzx=Vkw@ch.internal/sales", None, id="uri-raw"),
+        ],
+    )
+    def test_it_refuses_a_clickhouse_password_connectorx_would_encode(
+        self, mocker: MockerFixture, uri: str, password: str | None
+    ) -> None:
+        """Ensure a ClickHouse password ConnectorX would send encoded is refused before any read.
+
+        The message names neither the password nor the character, since both
+        are part of the password.
+        """
+        read = _read_database(mocker)
+        connector = DatabaseConnector(DatabaseConfig(uri=uri, password=password, table="t"))
+
+        with pytest.raises(ConfigError, match="A ClickHouse password can hold only") as info:
+            connector.connect()
+
+        read.assert_not_called()
+        assert "Qzx" not in str(info.value)
+        assert "Qzp" not in str(info.value)
 
     def test_it_explains_a_missing_extra_before_reading(self, mocker: MockerFixture) -> None:
         """Ensure a missing ConnectorX names the extra and never reaches Polars."""

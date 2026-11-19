@@ -14,6 +14,7 @@ import getpass
 import glob
 import html
 import importlib.util
+import itertools
 import json
 import logging
 import ntpath
@@ -7057,6 +7058,37 @@ class TestEnvironmentReferences:
         assert pattern is not None
         assert pattern.sub("***", "Hunter2%FFSecretPass") == "***"
 
+    @pytest.mark.parametrize("encoded", list(itertools.product((False, True), repeat=3)))
+    def test_it_masks_a_token_with_some_characters_encoded(
+        self, encoded: tuple[bool, bool, bool]
+    ) -> None:
+        """Ensure a token is masked with each of `+`, `/`, and `=` raw or encoded, in every mix.
+
+        An encoder can encode some characters and keep others, as ConnectorX
+        keeps a `+` and encodes a `/` or a `=`, so the whole encoding and the
+        raw text are not the only forms a reader sends.
+        """
+        token = "Qz+Xj/Vk=Wq+Zx/Jv=Kw"
+        pattern = mcp_server._mask_pattern(frozenset({token}))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+        text = token
+        for character, encode in zip("+/=", encoded, strict=True):
+            if encode:
+                text = text.replace(character, quote(character, safe="").lower(), 1)
+                text = text.replace(character, quote(character, safe=""))
+
+        assert pattern is not None
+        assert pattern.sub("***", f"key: {text}.") == "key: ***."
+
+    def test_it_masks_a_password_with_some_characters_encoded(self) -> None:
+        """Ensure a password is masked with each character but a letter or a digit raw or encoded."""
+        password = "p@ss é+%~-"
+        pattern = mcp_server._mask_pattern(frozenset({password}))  # pyright: ignore[reportPrivateUsage]  # the mask is private to the server
+
+        assert pattern is not None
+        assert pattern.sub("***", "p%40ss %C3%A9+%25~%2D") == "***"
+        assert pattern.sub("***", "p@ss%20é%2b%~-") == "***"
+        assert pattern.sub("***", "p@ss é+%~") == "p@ss é+%~"
+
     def test_it_takes_an_empty_credential(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -7363,8 +7395,13 @@ class TestEnvironmentReferences:
     def test_it_takes_a_password_from_the_environment_for_each_probed_reader(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, uri: str
     ) -> None:
-        """Ensure a `${NAME}` password of any characters loads for each reader a test probes."""
-        monkeypatch.setenv("V_PASSWORD", "Hunter2'Secret\\Pass{word}")
+        """Ensure a `${NAME}` password of any characters loads for each reader a test probes.
+
+        ClickHouse takes only the characters ConnectorX sends as written.
+        """
+        clickhouse = uri.startswith("clickhouse")
+        password = "Hunter2'Secret*Pass(word)" if clickhouse else "Hunter2'Secret\\Pass{word}"
+        monkeypatch.setenv("V_PASSWORD", password)
         _with_source(
             tmp_path,
             f"  type: database\n  uri: {uri}\n  query: select 1 as id\n"

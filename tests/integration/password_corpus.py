@@ -92,6 +92,35 @@ CORPUS: Final[tuple[tuple[str, str], ...]] = (
 `long` runs to 300 characters, so a reader that cuts a password would leave a
 piece of it."""
 
+_CLICKHOUSE_SEPARATORS: Final = (
+    "!",
+    "$",
+    "%",
+    "%41",
+    "&",
+    "'",
+    "(",
+    ")",
+    "*",
+    "+",
+    ",",
+    ".",
+    "_",
+    "~",
+    "-",
+)
+"""Every character but a letter or a digit that a ClickHouse password can hold, and an escape."""
+
+CLICKHOUSE_CORPUS: Final[tuple[tuple[str, str], ...]] = (
+    ("clickhouse-classes", _joined(_CLICKHOUSE_SEPARATORS)),
+    ("clickhouse-long", _joined(_CLICKHOUSE_SEPARATORS, 300)),
+)
+"""Each wrong password a ClickHouse reader is driven with too, by id.
+
+The connector refuses a ClickHouse password with any other character before it
+connects, since ConnectorX would send it percent-encoded, so every password of
+`CORPUS` reaches no ClickHouse fake."""
+
 _JSON_ESCAPES: Final = re.compile(r'(?:\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))+')
 """A run of JSON escapes, decoded together so a surrogate pair reads as one character."""
 
