@@ -6,11 +6,13 @@
 Real Polars, real deltalake, and PyArrow under PyIceberg read a side whose
 configuration names no endpoint, while the server's environment names a store
 on this machine over plain HTTP, through a variable, an AWS profile, a
-Google service account key, or the Azure emulator switch. A region or an
-Azure account such as `x@127.0.0.1:port/` moves a reader's HTTPS host to the
-store too. The store counts every request it receives, and every TLS
-handshake. Each case expects the tool to refuse the side, naming the
-variable, before anything reaches the store. A control turns the rule off
+Google service account key, or the Azure emulator switch. A region, an
+Azure account, or a Google universe such as `x@127.0.0.1:port/` moves a
+reader's HTTPS host to the store too, and so does botocore's endpoints.json
+from `AWS_DATA_PATH`. The AWS SDK's client-side monitoring sends its events
+to the store's port over UDP. The store counts every request it receives,
+every TLS handshake, and every datagram. Each case expects the tool to
+refuse the side, naming the variable, before anything reaches the store. A control turns the rule off
 and shows the reader does reach the store, for the cases proven on every
 release CI runs.
 """
@@ -23,6 +25,7 @@ import socket
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +33,7 @@ from typing import Final, cast
 from urllib.parse import unquote_plus
 
 import anyio
+import polars as pl
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -41,6 +45,7 @@ from veridelta.mcp_server import Settings, build_server
 pytestmark = [pytest.mark.integration]
 
 _KEY_ID: Final = "AKIAQ7ZX3LEDGER9READ"
+_SESSION_TOKEN: Final = "IQoJb3JpZ2luX2VjEXAMPLESESSIONTOKEN"
 _SECRET_KEY: Final = "wJal+rXUtn/FEMI.K7MDENG=bPxRfiCYx"
 _ACCOUNT_KEY: Final = "a2V5a2V5a2V5a2V5"
 _CLIENT_SECRET: Final = "Mk18Q~ab.cd_ef-gh+ij/kl=Zq9x7Pw"
@@ -95,13 +100,47 @@ _TLS_HANDSHAKE: Final = b"\x16"
 
 
 class _CountingServer(ThreadingHTTPServer):
-    """A store on this machine that keeps every request it receives, and counts every TLS handshake."""
+    """A store on this machine that keeps every request and datagram it receives, and counts every TLS handshake."""
 
     def __init__(self) -> None:
-        """Listen on a free local port."""
+        """Listen on a free local port, over TCP and over UDP.
+
+        The AWS SDK's client-side monitoring sends its events over UDP, to
+        the same port number, so a case names one port for both.
+
+        Raises:
+            OSError: If the port is taken for UDP.
+        """
         super().__init__(("127.0.0.1", 0), _Counter)
         self.requests: list[_Request] = []
         self.handshakes = 0
+        self.datagrams: list[bytes] = []
+        self._closed = threading.Event()
+        self._monitor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self._monitor.bind(("127.0.0.1", self.server_port))
+        except OSError:
+            self._monitor.close()
+            super().server_close()
+            raise
+        self._monitor.settimeout(0.05)
+        self._receiver = threading.Thread(target=self._receive, daemon=True)
+        self._receiver.start()
+
+    def _receive(self) -> None:
+        """Keep every datagram until the store closes."""
+        while not self._closed.is_set():
+            try:
+                self.datagrams.append(self._monitor.recv(65535))
+            except TimeoutError:
+                continue
+
+    def server_close(self) -> None:
+        """Stop listening over TCP and over UDP."""
+        super().server_close()
+        self._closed.set()
+        self._receiver.join()
+        self._monitor.close()
 
     def verify_request(
         self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
@@ -126,13 +165,18 @@ class _CountingServer(ThreadingHTTPServer):
 
 @dataclass(frozen=True)
 class _Case:
-    """A side, the environment that sends its reader to the store, and the name a refusal gives."""
+    """A side, the environment that sends its reader to the store, and the name a refusal gives.
+
+    With `deadline`, the child stops after that many seconds, since its
+    reader retries a failed TLS handshake for minutes.
+    """
 
     source: str
     environment: Callable[[Path, str], dict[str, str]]
     named: str
     hosts: tuple[str, ...] = ("lake",)
     delta: bool = False
+    deadline: float | None = None
 
 
 def _s3(name: str) -> Callable[[Path, str], dict[str, str]]:
@@ -350,7 +394,75 @@ def _here_with_gcs_files(folder: Path, endpoint: str) -> dict[str, str]:
     return _gcs_emulator("CLOUD_STORAGE_TESTBENCH_ENDPOINT")(folder, endpoint)
 
 
+def _monitoring(_: Path, endpoint: str) -> dict[str, str]:
+    """Turn the AWS SDK's client-side monitoring on, with the store's port as its host and port."""
+    return {
+        "AWS_CSM_ENABLED": "true",
+        "AWS_CSM_HOST": "127.0.0.1",
+        "AWS_CSM_PORT": endpoint.rpartition(":")[2],
+        "KEY_ID": _KEY_ID,
+        "KEY_SECRET": _SECRET_KEY,
+        "SESSION_TOKEN": _SESSION_TOKEN,
+    }
+
+
+def _monitoring_profile(folder: Path, endpoint: str) -> dict[str, str]:
+    """Turn client-side monitoring on in the AWS profile, with the store's port as its host and port."""
+    config = folder / "aws-config"
+    config.write_text(
+        "[default]\ncsm_enabled = true\ncsm_host = 127.0.0.1\n"
+        f"csm_port = {endpoint.rpartition(':')[2]}\n",
+        encoding="utf-8",
+    )
+    return {
+        "AWS_CONFIG_FILE": str(config),
+        "KEY_ID": _KEY_ID,
+        "KEY_SECRET": _SECRET_KEY,
+        "SESSION_TOKEN": _SESSION_TOKEN,
+    }
+
+
+def _data_path(folder: Path, endpoint: str) -> dict[str, str]:
+    """Copy botocore's endpoints.json with S3's host in us-east-1 at the store, into the folder `AWS_DATA_PATH` names."""
+    import botocore.loaders  # pyright: ignore[reportMissingTypeStubs] - botocore ships no types
+
+    loader = botocore.loaders.Loader(
+        extra_search_paths=[botocore.loaders.Loader.BUILTIN_DATA_PATH],
+        include_default_search_paths=False,
+    )
+    data = loader.load_data("endpoints")
+    for partition in data["partitions"]:
+        if partition["partition"] == "aws":
+            partition["services"]["s3"]["endpoints"]["us-east-1"] = {
+                "hostname": endpoint.removeprefix("http://")
+            }
+    models = folder / "models"
+    models.mkdir()
+    (models / "endpoints.json").write_text(json.dumps(data), encoding="utf-8")
+    return {
+        "AWS_DATA_PATH": str(models),
+        "AWS_ACCESS_KEY_ID": _KEY_ID,
+        "AWS_SECRET_ACCESS_KEY": _SECRET_KEY,
+    }
+
+
+def _universe(folder: Path, endpoint: str) -> dict[str, str]:
+    """Give PyArrow a service account key, and a universe that moves its Google Cloud Storage host to the store."""
+    return {
+        "GOOGLE_CLOUD_UNIVERSE_DOMAIN": _moved(endpoint),
+        "GOOGLE_APPLICATION_CREDENTIALS": _service_account(folder),
+    }
+
+
 _S3_FILE: Final = "  path: s3://lake/a.parquet\n"
+_ICEBERG_S3: Final = (
+    "  type: iceberg\n  table_uri: s3://lake/t/metadata/v1.metadata.json\n"
+    "  storage_options:\n"
+    "    s3.access-key-id: ${KEY_ID}\n    s3.secret-access-key: ${KEY_SECRET}\n"
+    "    s3.session-token: ${SESSION_TOKEN}\n    s3.region: us-east-1\n"
+    "    s3.endpoint: https://127.0.0.1:CLOSED\n"
+)
+"""An Iceberg side in S3 whose configuration gives its credentials, with an endpoint where nothing listens."""
 _STORAGE_OPTIONS: Final = "  options:\n    storage_options:\n"
 
 _CASES: dict[str, _Case] = {
@@ -456,6 +568,27 @@ _CASES: dict[str, _Case] = {
         "variable azure_storage_account_name names a storage account",
         delta=True,
     ),
+    "iceberg-monitoring": _Case(
+        _ICEBERG_S3,
+        _monitoring,
+        "variable aws_csm_enabled turns on the aws sdk's client-side monitoring",
+        hosts=("lake", "127.0.0.1"),
+    ),
+    "iceberg-monitoring-profile": _Case(
+        _ICEBERG_S3,
+        _monitoring_profile,
+        "sets csm_enabled in a profile",
+        hosts=("lake", "127.0.0.1"),
+    ),
+    "aws-data-path": _Case(
+        _S3_FILE, _data_path, "botocore reads its endpoints.json from a folder other than its own"
+    ),
+    "iceberg-universe": _Case(
+        "  type: iceberg\n  table_uri: gs://lake/t/metadata/v1.metadata.json\n",
+        _universe,
+        "variable google_cloud_universe_domain names a universe",
+        deadline=15,
+    ),
 }
 """Each reader, the environment that names the store, and the name its refusal gives, by case."""
 
@@ -476,6 +609,10 @@ _CONTROLLED: Final = (
     "delta-region-unprefixed",
     "azure-account",
     "delta-azure-account",
+    "iceberg-monitoring",
+    "iceberg-monitoring-profile",
+    "iceberg-universe",
+    *(("aws-data-path",) if int(pl.__version__.split(".")[0]) >= 2 else ()),
 )
 """The cases whose reader reaches the store without the rule on every release CI runs.
 
@@ -484,7 +621,11 @@ Delta Lake and Iceberg cases read through deltalake and PyArrow, whatever
 the Polars release. A Delta Lake case answers once the store refuses its
 listing, since the store runs in another process and the walk of the log is
 skipped. Polars 1.39.3 reads no region from the AWS profile, so that case
-has no control."""
+has no control. Polars 1.39.3 resolves no host from botocore's
+endpoints.json, so the data path case has a control on Polars 2.x only."""
+
+_MONITORED_CASES: Final = ("iceberg-monitoring", "iceberg-monitoring-profile")
+"""The cases whose reader sends the store the configuration's session token over UDP."""
 
 _GOOGLE_CASES: Final = ("iceberg-gcs-emulator", "iceberg-here-gcs-files")
 """The cases whose reader sends the store a bearer token it signs with the service account key."""
@@ -505,10 +646,19 @@ def _closed_port() -> int:
 def store() -> Iterator[_CountingServer]:
     """Run the counting store on a free local port until the test ends.
 
+    A port taken for UDP is passed over for the next free one.
+
     Yields:
         _CountingServer: The store, whose `requests` lists what it received.
     """
-    server = _CountingServer()
+    for _ in range(9):
+        try:
+            server = _CountingServer()
+            break
+        except OSError:
+            continue
+    else:
+        server = _CountingServer()
     thread = threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True)
     thread.start()
     try:
@@ -563,6 +713,11 @@ def _answer(name: str, folder: str, endpoint: str, closed: int, control: bool) -
         del os.environ[variable]
     if control:
         setattr(mcp_server, "_refuse_environment_endpoints", lambda *_: None)  # noqa: B010 - the child patches as monkeypatch would
+    if case.deadline is not None:
+        # A daemon, so the child that answers in time exits at once.
+        stop = threading.Timer(case.deadline, os._exit, (0,))
+        stop.daemon = True
+        stop.start()
     if case.delta:
         # deltalake's storage handler lists nothing from a store on this machine and never
         # returns, so the walk of the log is skipped, should the rule let the side through.
@@ -591,10 +746,15 @@ def _in_a_child(
 
     Polars starts a thread on its first read from a cloud store, which reads
     the environment for as long as the process runs, so each case reads in a
-    process of its own.
+    process of its own. A child that stops at its case's deadline answers
+    that it did, which names no variable.
     """
     with ProcessPoolExecutor(1, mp_context=multiprocessing.get_context("spawn")) as pool:
-        return pool.submit(_answer, name, str(folder), endpoint, _closed_port(), control).result()
+        future = pool.submit(_answer, name, str(folder), endpoint, _closed_port(), control)
+        try:
+            return future.result()
+        except BrokenProcessPool:
+            return True, "The child stopped at its deadline."
 
 
 @pytest.mark.parametrize("name", list(_CASES))
@@ -611,6 +771,7 @@ def test_no_reader_reaches_an_endpoint_from_the_environment(
     assert str(store.server_port) not in text
     assert store.requests == []
     assert store.handshakes == 0
+    assert store.datagrams == []
 
 
 @pytest.mark.parametrize("name", _CONTROLLED)
@@ -621,14 +782,18 @@ def test_each_reader_reaches_the_store_without_the_rule(
 
     The Azure sign-in posts the configuration's client secret there in
     clear, PyArrow sends Google Cloud Storage a bearer token, and deltalake
-    signs its S3 requests with the environment's keys. A reader that a region
-    or an account moves opens a TLS handshake there.
+    signs its S3 requests with the environment's keys. A reader that a region,
+    an account, a universe, or botocore's endpoints.json moves opens a TLS
+    handshake there. PyArrow's S3 file system sends the configuration's
+    session token there over UDP.
     """
     endpoint = f"http://127.0.0.1:{store.server_port}"
 
     _in_a_child(name, tmp_path, endpoint, control=True)
 
-    assert store.requests or store.handshakes
+    assert store.requests or store.handshakes or store.datagrams
+    if name in _MONITORED_CASES:
+        assert any(_SESSION_TOKEN.encode() in datagram for datagram in store.datagrams)
     if name == "azure-authority":
         assert any(
             request.method == "POST" and _CLIENT_SECRET in unquote_plus(request.body)

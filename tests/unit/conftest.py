@@ -3,6 +3,7 @@
 
 """Keep the machine the unit suite runs on out of what its tests see."""
 
+import importlib.util
 import os
 from pathlib import Path
 
@@ -22,7 +23,8 @@ def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     value from the machine the suite runs on, such as a dummy a shell exports
     or a local MinIO in `~/.aws/config`, would change what a test that builds
     it sees. A name counts in any spelling. AWS_CONFIG_FILE names a file that
-    does not exist, so no profile is read.
+    does not exist, so no profile is read, and botocore reads no
+    `~/.aws/models`.
     """
     left_out = {
         *mcp_server._ENVIRONMENT_SLOTS,
@@ -36,6 +38,9 @@ def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
         *mcp_server._SERVICE_ACCOUNT_FILES,
         *mcp_server._ENVIRONMENT_REGIONS,
         mcp_server._ACCOUNT_VARIABLE,
+        mcp_server._UNIVERSE_VARIABLE,
+        mcp_server._MONITORING_SWITCH,
+        "AWS_DATA_PATH",
     }
     for name in list(os.environ):
         if (
@@ -47,3 +52,9 @@ def _no_reader_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
     monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
+    if importlib.util.find_spec("botocore") is not None:
+        import botocore.loaders  # pyright: ignore[reportMissingTypeStubs] - botocore ships no types
+
+        monkeypatch.setattr(
+            botocore.loaders.Loader, "CUSTOMER_DATA_PATH", str(tmp_path / "no-aws-models")
+        )

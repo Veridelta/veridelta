@@ -2266,8 +2266,11 @@ Some names are left out, each for its reason:
   `GCE_METADATA_HOST`, `GCE_METADATA_IP`, and `GCE_METADATA_ROOT`: a reader
   sends these only the environment's own credentials, and gets credentials
   back. The platform sets them to plain-HTTP link-local addresses.
-- `GOOGLE_CLOUD_UNIVERSE_DOMAIN`: always reached over HTTPS, and checked
-  against the credentials' universe.
+- `GOOGLE_CLOUD_UNIVERSE_DOMAIN`: it names no endpoint, but a host's
+  suffix, so `_UNIVERSE_VARIABLE` holds it to the allowed hosts.
+- `AWS_CSM_ENABLED`: it is a switch, which `_MONITORING_SWITCH` refuses.
+- `AWS_DATA_PATH`: it names a folder of botocore's data, which
+  `_custom_endpoints` checks.
 - `S3_ENDPOINT`: no reader on the server reads it, as a probe of Polars,
   deltalake, and deltalake's OpenDAL S3 store shows.
 - `DUCKDB_S3_ENDPOINT`: httpfs is never loaded on the server.
@@ -2384,6 +2387,33 @@ deltalake 1.6.6 read it, after `AZURE_`, in any case, for a side such as
 of `x@127.0.0.1:9000/`. No reader moved for `AZURE_STORAGE_ACCOUNT`,
 `AZURE_ACCOUNT_NAME`, `ACCOUNT_NAME`, or `AZBLOB_ACCOUNT_NAME`."""
 
+_UNIVERSE_VARIABLE: Final = "GOOGLE_CLOUD_UNIVERSE_DOMAIN"
+"""The environment variable a reader writes into a Google Cloud Storage host, as in `storage.{universe}`.
+
+PyArrow's Google Cloud Storage file system, which an Iceberg side reads
+through, connects to `storage.` and the universe over HTTPS. It sends there
+the bearer token it signs with the service account key that
+`GOOGLE_APPLICATION_CREDENTIALS` names, with no check against the key's own
+universe, and reads the table's metadata and rows from that host. A probe
+saw `CONNECT storage.leak-probe.example:443` at a proxy for a key that names
+no universe, and a TLS handshake at the address `x@127.0.0.1:port/` names. So
+`storage.` and the universe must be given with --allow-host, on every side of
+Google Cloud Storage. PyArrow reads the name in upper case only."""
+
+_MONITORING_SWITCH: Final = "AWS_CSM_ENABLED"
+"""The environment variable that turns on the AWS SDK's client-side monitoring.
+
+PyArrow's S3 file system, which an Iceberg side reads through, runs the AWS
+SDK for C++. With the switch on, it sends an event for each request to
+`AWS_CSM_HOST` and `AWS_CSM_PORT` in clear, over UDP. Each event carries the
+access key id and the session token the side signs with, such as a
+configuration's `${NAME}` values. A probe received both at `127.0.0.1` for
+`true` in any case, and nothing for `1` or `yes`. The host is not checked,
+since the channel is unencrypted whatever the host, so the switch is refused
+on every S3 side, as a certificate switch is. The profile's `csm_enabled`
+does the same, which `_profile_monitors` reads. Polars and deltalake have no
+such monitoring."""
+
 _MOTHERDUCK_TOKEN_NAMES: Final = frozenset(name.casefold() for name in MOTHERDUCK_TOKEN_VARIABLES)
 """The MotherDuck token variables, in casefold, which name a credential rather than a setting."""
 
@@ -2478,6 +2508,85 @@ def _profile() -> Mapping[str, object]:
         return {}
 
 
+def _custom_endpoints() -> bool:
+    """Say whether botocore reads its `endpoints.json` from a folder other than its own.
+
+    Polars 2.x, with boto3 installed, resolves an S3 side's host from that
+    file when the configuration names no endpoint. botocore reads it from the
+    folders `AWS_DATA_PATH` or the profile's `data_path` names, and from
+    `~/.aws/models`, ahead of its own. A probe saw Polars send a side's signed
+    requests to the host such a file named. With boto3 missing, Polars reads
+    no such file. A profile that is missing fails Polars before any request,
+    so it reads as none, as in `_profile`. A file botocore cannot parse lies
+    outside its own folder, so it counts.
+    """
+    if importlib.util.find_spec("boto3") is None:
+        return False
+    import botocore.exceptions  # pyright: ignore[reportMissingTypeStubs] - botocore ships no types
+    import botocore.session  # pyright: ignore[reportMissingTypeStubs] - as above
+
+    # botocore ships no types, so its loader is read as Any.
+    session = cast("Any", botocore.session.Session())
+    try:
+        loader = session.get_component("data_loader")
+        path = cast("str", loader.load_data_with_path("endpoints")[1])
+    except botocore.exceptions.BotoCoreError:
+        return False
+    except ValueError:
+        return True
+    return path != os.path.join(cast("str", loader.BUILTIN_DATA_PATH), "endpoints")
+
+
+def _regular_file(path: str, refusal: str) -> bytes | None:
+    """Return the bytes of the file at `path`, or None when it is missing or cannot be read.
+
+    Any file but a regular one is refused with `refusal`: a named pipe gives
+    its text once, to the first process that reads it, so the server cannot
+    check what a reader would take from it.
+
+    Raises:
+        ConfigError: If `path` names a file other than a regular one.
+    """
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise ConfigError(refusal)
+        # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe swapped in after the
+        # check without waiting for a writer, which then reads as an empty file.
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+        with open(os.open(path, flags), "rb") as file:
+            return file.read()
+    except OSError:
+        return None
+
+
+def _profile_monitors(environ: Mapping[str, str], opening: str) -> bool:
+    """Say whether a profile of the AWS config file sets `csm_enabled` to anything but off.
+
+    The AWS SDK for C++ under PyArrow reads the file `AWS_CONFIG_FILE` names,
+    or `~/.aws/config`, without boto3, and takes `csm_enabled` from the
+    profile `AWS_PROFILE` or `AWS_DEFAULT_PROFILE` selects, as a probe showed.
+    Every profile and key is read here, in any case, which is simpler and
+    only stricter. A file that is missing, or the null device, sets nothing.
+
+    Raises:
+        ConfigError: If the file is not a regular file.
+    """
+    path = os.path.expanduser(environ.get("AWS_CONFIG_FILE") or os.path.join("~", ".aws", "config"))
+    if path == os.devnull:
+        return False
+    text = _regular_file(
+        path,
+        f"{opening} is not a regular file, such as a named pipe, so the server cannot check "
+        "whether it turns on client-side monitoring. Ask the person who started the server to "
+        "name a regular file.",
+    )
+    lines = (line.partition("=") for line in (text or b"").decode(errors="replace").splitlines())
+    return any(
+        sign and key.strip().lower() == "csm_enabled" and value.strip().lower() not in _SWITCH_OFF
+        for key, sign, value in lines
+    )
+
+
 def _refuse_environment_endpoints(
     settings: Settings, side: str, config: SourceRef, environ: Mapping[str, str]
 ) -> None:
@@ -2491,17 +2600,19 @@ def _refuse_environment_endpoints(
     --allow-host, and a scheme of `https://` only. A region in
     `_ENVIRONMENT_REGIONS` or the profile's `region` must match `_REGION`,
     and the account `_ACCOUNT_VARIABLE` names must be given with
-    --allow-host, as their storage options must. The Azure emulator switch,
-    a switch in `_CERTIFICATE_SWITCHES`, and a MotherDuck setting other than
-    the token and the options a tool passes on are refused outright. A
-    variable in `_DELTA_LAKE_ONLY` is checked on a Delta Lake side only. A
-    name is matched in any case, as deltalake reads one. The message names
-    the variable as it is set, and never its value, a key file's path, or
-    the profile's name.
+    --allow-host, as their storage options must. So must `storage.` and the
+    universe `_UNIVERSE_VARIABLE` names. The Azure emulator switch, a switch
+    in `_CERTIFICATE_SWITCHES`, the monitoring switch `_MONITORING_SWITCH` or
+    a profile's `csm_enabled`, botocore's endpoints from a folder other than
+    its own, and a MotherDuck setting other than the token and the options a
+    tool passes on are refused outright. A variable in `_DELTA_LAKE_ONLY` is
+    checked on a Delta Lake side only. A name is matched in any case, as
+    deltalake reads one. The message names the variable as it is set, and
+    never its value, a file's path, or the profile's name.
 
     Raises:
-        ConfigError: If such an endpoint, a region, an account, a switch, or
-            such a setting applies to the side.
+        ConfigError: If such an endpoint, a region, an account, a universe, a
+            switch, or such a setting or file applies to the side.
     """
     families = _store(config)
     if not families:
@@ -2514,6 +2625,25 @@ def _refuse_environment_endpoints(
             _refuse_environment_variable(settings, side, families, store, name, value)
     if "s3" not in families:
         return
+    config_file = (
+        f"The {side} side reads {store}, and the AWS config file the server's environment "
+        "names, in AWS_CONFIG_FILE or ~/.aws/config,"
+    )
+    if _profile_monitors(environ, config_file):
+        raise ConfigError(
+            f"{config_file} sets csm_enabled in a profile, which turns on the AWS SDK's "
+            "client-side monitoring. PyArrow then sends each request's access key id and session "
+            "token in clear, over UDP, to a host not given with --allow-host. Ask the person who "
+            "started the server to remove the setting."
+        )
+    if _custom_endpoints():
+        raise ConfigError(
+            f"The {side} side reads {store}, and botocore reads its endpoints.json from a folder "
+            "other than its own, which AWS_DATA_PATH, the AWS profile's data_path, or "
+            "~/.aws/models names. Polars takes an S3 host from that file, so it could send this "
+            "side's signed requests to a host not given with --allow-host. Ask the person who "
+            "started the server to remove the file or the setting."
+        )
     profile = _profile()
     opening = f"The {side} side reads {store}, and {_PROFILE_SUBJECT}"
     if endpoint := profile.get("endpoint_url"):
@@ -2528,32 +2658,18 @@ def _refuse_environment_variable(
     """Refuse one variable of the server's environment that sends a side's reader elsewhere.
 
     Raises:
-        ConfigError: If the variable is the emulator switch or a certificate
-            switch, turned on, an endpoint that is not allowed, a region
-            outside `_REGION`, an account that is not allowed, a service
-            account key whose `gcs_base_url` is not allowed, or a MotherDuck
-            setting.
+        ConfigError: If the variable is the emulator switch, a certificate
+            switch, or the monitoring switch, turned on, an endpoint that is
+            not allowed, a region outside `_REGION`, an account or a universe
+            that is not allowed, a service account key whose `gcs_base_url`
+            is not allowed, or a MotherDuck setting.
     """
     upper = name.upper()
     opening = f"The {side} side reads {store}, and the server's environment variable {name}"
     _refuse_host_name(settings, families, opening, upper, value)
-    if "azure" in families and upper == _EMULATOR_SWITCH:
-        if value.strip().lower() not in _SWITCH_OFF:
-            raise ConfigError(
-                f"The {side} side reads Azure, and the server's environment variable {name} "
-                "sends a reader to the Azurite emulator over plain HTTP, in place of any "
-                "endpoint the configuration names. Ask the person who started the server to "
-                "leave it out of the server's environment."
-            )
-    elif _CERTIFICATE_SWITCHES.get(upper) in families:
-        if value.strip().lower() not in _SWITCH_OFF:
-            raise ConfigError(
-                f"{opening} turns off a reader's check of the certificate an endpoint presents, "
-                "so a proxy, or anyone else on the route, could read the credentials and the "
-                "rows. Ask the person who started the server to leave it out of the server's "
-                "environment."
-            )
-    elif _ENVIRONMENT_ENDPOINTS.get(upper) in families:
+    if value.strip().lower() not in _SWITCH_OFF:
+        _refuse_switch(side, families, opening, name)
+    if _ENVIRONMENT_ENDPOINTS.get(upper) in families:
         _refuse_endpoint(
             settings, opening, value, plain_without_scheme=upper in _PLAIN_WITHOUT_SCHEME
         )
@@ -2574,19 +2690,53 @@ def _refuse_environment_variable(
         )
 
 
+def _refuse_switch(side: str, families: frozenset[str], opening: str, name: str) -> None:
+    """Refuse a variable of the server's environment, turned on, that is a switch a reader of the side's store takes.
+
+    `opening` names the side, its store, and the variable.
+
+    Raises:
+        ConfigError: If the variable is the emulator switch, a certificate
+            switch, or the monitoring switch of the side's store.
+    """
+    upper = name.upper()
+    if "azure" in families and upper == _EMULATOR_SWITCH:
+        raise ConfigError(
+            f"The {side} side reads Azure, and the server's environment variable {name} "
+            "sends a reader to the Azurite emulator over plain HTTP, in place of any "
+            "endpoint the configuration names. Ask the person who started the server to "
+            "leave it out of the server's environment."
+        )
+    if _CERTIFICATE_SWITCHES.get(upper) in families:
+        raise ConfigError(
+            f"{opening} turns off a reader's check of the certificate an endpoint presents, "
+            "so a proxy, or anyone else on the route, could read the credentials and the "
+            "rows. Ask the person who started the server to leave it out of the server's "
+            "environment."
+        )
+    if "s3" in families and upper == _MONITORING_SWITCH:
+        raise ConfigError(
+            f"{opening} turns on the AWS SDK's client-side monitoring. PyArrow then sends each "
+            "request's access key id and session token in clear, over UDP, to a host not "
+            "given with --allow-host. Ask the person who started the server to leave it out "
+            "of the server's environment."
+        )
+
+
 def _refuse_host_name(
     settings: Settings, families: frozenset[str], opening: str, upper: str, value: str
 ) -> None:
-    """Refuse a region or an account from the server's environment that a reader writes into its host.
+    """Refuse a region, an account, or a universe from the server's environment that a reader writes into its host.
 
     A region must match `_REGION`, and an account must be given with
-    --allow-host, as their storage options must. `opening` names the side,
-    its store, and the variable, and `upper` is the variable's name in upper
-    case.
+    --allow-host, as their storage options must. A universe's storage host,
+    `storage.` and the universe, must be given with --allow-host too.
+    `opening` names the side, its store, and the variable, and `upper` is the
+    variable's name in upper case.
 
     Raises:
         ConfigError: If the variable is a region of the side's store outside
-            `_REGION`, or an account of it that is not allowed.
+            `_REGION`, or an account or a universe of it that is not allowed.
     """
     if "s3" in families and upper in _ENVIRONMENT_REGIONS and _REGION.fullmatch(value) is None:
         raise ConfigError(_region_refusal(opening))
@@ -2601,6 +2751,18 @@ def _refuse_host_name(
             "credentials to that account's host. Ask the person who started the server to add "
             "the account's name with --allow-host, or to leave the variable out of the "
             "server's environment."
+        )
+    if (
+        "gcs" in families
+        and upper == _UNIVERSE_VARIABLE
+        and not _allowed_host(settings, f"storage.{value}")
+    ):
+        raise ConfigError(
+            f"{opening} names a universe whose storage host, storage. and the universe, is not "
+            "given with --allow-host, or is not written as DNS labels. PyArrow sends this side's "
+            "requests and a bearer token to that host. Ask the person who started the server to "
+            "add the host with --allow-host, or to leave the variable out of the server's "
+            "environment."
         )
 
 
@@ -2628,20 +2790,16 @@ def _service_account_base_url(opening: str, named: bool, value: str) -> str | No
         ConfigError: If the variable names a file other than a regular one.
     """
     if named:
+        key_file = _regular_file(
+            value,
+            f"{opening} names a key file that is not a regular file, such as a named pipe, so "
+            "the server cannot check the gcs_base_url a reader would take from it. Ask the "
+            "person who started the server to name a regular file, or to leave it out of the "
+            "server's environment.",
+        )
         try:
-            if not stat.S_ISREG(os.stat(value).st_mode):
-                raise ConfigError(
-                    f"{opening} names a key file that is not a regular file, such as a named "
-                    "pipe, so the server cannot check the gcs_base_url a reader would take from "
-                    "it. Ask the person who started the server to name a regular file, or to "
-                    "leave it out of the server's environment."
-                )
-            # Only Windows has O_BINARY, and O_NONBLOCK opens a named pipe swapped in after the
-            # check without waiting for a writer, which then reads as no key.
-            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
-            with open(os.open(value, flags), "rb") as file:
-                value = file.read().decode("utf-8")
-        except (OSError, UnicodeDecodeError):
+            value = (key_file or b"").decode("utf-8")
+        except UnicodeDecodeError:
             return None
     try:
         key = json.loads(value)
