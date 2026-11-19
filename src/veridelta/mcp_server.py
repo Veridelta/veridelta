@@ -2428,8 +2428,8 @@ no universe, and a TLS handshake at the address `x@127.0.0.1:port/` names.
 The BigQuery client makes `https://bigquery.` and the universe its API
 endpoint, as a probe of a client built with the universe set showed. It
 sends each query there with a bearer token. So `_UNIVERSE_HOSTS` names, for
-each store, the host that must be given with --allow-host. PyArrow reads the
-name in upper case only, and the BigQuery client as it is set."""
+each store, the host that must be given with --allow-host. PyArrow and the
+BigQuery client read the name in upper case only."""
 
 _UNIVERSE_HOSTS: Final[Mapping[str, str]] = {"gcs": "storage", "bigquery": "bigquery"}
 """For each store a reader takes the universe for, the label it puts before the universe to form its host."""
@@ -2659,8 +2659,9 @@ def _refuse_environment_endpoints(
     `_ENVIRONMENT_REGIONS` or the profile's `region` must match `_REGION`,
     and the account `_ACCOUNT_VARIABLE` names must be given with
     --allow-host, as their storage options must. So must the host that
-    `_UNIVERSE_HOSTS` forms from the universe `_UNIVERSE_VARIABLE` names. The Azure emulator switch, a switch
-    in `_CERTIFICATE_SWITCHES`, the monitoring switch `_MONITORING_SWITCH` or
+    `_UNIVERSE_HOSTS` forms from the universe `_UNIVERSE_VARIABLE` names.
+    The Azure emulator switch, a switch in `_CERTIFICATE_SWITCHES`, the
+    monitoring switch `_MONITORING_SWITCH` or
     a profile's `csm_enabled`, botocore's endpoints from a folder other than
     its own, and a MotherDuck setting other than the token and the options a
     tool passes on are refused outright. So is a variable in
