@@ -8565,6 +8565,34 @@ _URL_LOGIN_VALUES = [
         "Q7pa%2Bss",
         id="scheme-relative-endpoint",
     ),
+    pytest.param(
+        "AWS_ENDPOINT_URL_STS",
+        '"//svc-reader:Q7pa%2Bss@sts.internal:9000"',
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="quoted-scheme-relative-endpoint",
+    ),
+    pytest.param(
+        "AWS_ENDPOINT_URL_STS",
+        "https:svc-reader:Q7pa%2Bss@sts.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="endpoint-with-a-scheme-and-no-slash",
+    ),
+    pytest.param(
+        "aws_endpoint_url",
+        "http:/svc-reader:Q7pa%2Bss@minio.internal:9000",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="endpoint-with-one-slash",
+    ),
+    pytest.param(
+        "AWS_ENDPOINT",
+        "'http:\\\\svc-reader:Q7pa%2Bss@minio.internal:9000'",
+        "svc-reader:Q7pa%2Bss",
+        "Q7pa%2Bss",
+        id="quoted-endpoint-with-backslashes",
+    ),
 ]
 """A variable that holds a URL login, with the login and its password as written."""
 
@@ -8686,6 +8714,39 @@ class TestEnvironmentUrlLogins:
         }
         assert "ConnectorError: access denied for svc-reader" in _text(failed)
 
+    @pytest.mark.parametrize(
+        "name", ["AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL", "aws_endpoint_url_s3"]
+    )
+    def test_it_masks_the_password_of_an_endpoint_with_no_scheme(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture, name: str
+    ) -> None:
+        """Ensure the password of an endpoint written as user:pass@host is masked where botocore writes it back.
+
+        botocore reads the user as a scheme, finds no host, and writes the
+        endpoint back whole as an invalid one, so the password is masked with
+        the host after it, and the user comes back as written.
+        """
+        value = "svc-reader:Q7pa%2Bss@sts.internal:9000"
+        monkeypatch.setenv(name, value)
+        (tmp_path / "a.csv").write_text("id\n1\n", encoding="utf-8")
+        _with_source(tmp_path, "  path: a.csv\n")
+        mocker.patch.object(
+            DiffEngine,
+            "read_schema",
+            side_effect=ConnectorError(f"Invalid endpoint: {value}", quotes_data=True),
+        )
+
+        shown = _text(
+            _call(
+                Settings((tmp_path,), allow_row_values=True),
+                {"path": "veridelta.yaml", "side": "source"},
+                tool="describe_schema",
+            )
+        )
+
+        assert "Invalid endpoint: svc-reader:***" in shown
+        assert "Q7pa" not in shown
+
     def test_it_records_nothing_without_a_url_login(self) -> None:
         """Ensure a URL with no login, an email address, and a login outside a proxy go unrecorded.
 
@@ -8702,6 +8763,8 @@ class TestEnvironmentUrlLogins:
             "http_proxy": "//proxy.internal:3128",
             "AWS_ENDPOINT_URL_STS": "//sts.internal/",
             "VD_NO_AUTHORITY": "///a/b",
+            "AWS_ENDPOINT_URL_S3": '"https://minio.internal:9000"',
+            "AWS_ENDPOINT": "minio.internal:9000",
         }
 
         assert mcp_server._environment_values(environ) == set()
@@ -8759,12 +8822,19 @@ class TestEnvironmentUrlLogins:
             *_ODD_LOGINS,
         ],
     )
-    def test_no_recorded_form_holds_a_scheme(self, name: str, value: str) -> None:
-        """Ensure no recorded form holds `://`, which `without_queries` finds a URL by.
+    def test_no_recorded_form_can_hide_part_of_a_url_mark(self, name: str, value: str) -> None:
+        """Ensure no recorded form holds or borders a `://`, or holds a `?`.
 
-        A mask that hid a `://` would keep each URL's query in the answer.
+        `without_queries` finds a URL by its `://` and its query by the `?`
+        after it. A mask that hid part of either would keep the query in the
+        answer: a form that ends with `:` or `:/` can cover the start of a
+        `://`, and one that starts with `/` its end.
         """
-        assert not any("://" in form for form in mcp_server._url_login_values(name, value))
+        for form in mcp_server._url_login_values(name, value):
+            assert "://" not in form, form
+            assert "?" not in form, form
+            assert not form.endswith((":", ":/")), form
+            assert not form.startswith("/"), form
 
     @pytest.mark.parametrize(
         ("name", "value"),
@@ -8778,16 +8848,35 @@ class TestEnvironmentUrlLogins:
             pytest.param(
                 "ALL_PROXY", "proxyuser9:ps%3A%2F%2Fstore@127.0.0.1:3128", id="bare-proxy"
             ),
+            pytest.param(
+                "HTTPS_PROXY", "http://proxyuser9:tps:@127.0.0.1:3128", id="ends-in-a-colon"
+            ),
+            pytest.param(
+                "HTTPS_PROXY",
+                "http://proxyuser9:tps%3A%2F@127.0.0.1:3128",
+                id="ends-in-a-colon-and-a-slash",
+            ),
+            pytest.param(
+                "HTTPS_PROXY",
+                "http://proxyuser9:%2F%2Fstore@127.0.0.1:3128",
+                id="starts-with-a-slash",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL",
+                "http://proxyuser9:%3Fsv%3D@127.0.0.1:9000",
+                id="holds-a-question-mark",
+            ),
         ],
     )
     def test_it_will_not_start_on_a_password_that_decodes_to_a_scheme(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, value: str
     ) -> None:
-        """Ensure a URL password that holds `://` once decoded stops the server, naming only the variable.
+        """Ensure a URL password whose mask could hide part of a `://` or a `?` stops the server.
 
-        The mask of the decoded password would hide the `://` of a URL in an
-        answer, such as `https://store.blob.core.windows.net/...?sig=...`,
-        so `without_queries` would find no URL there and keep its query.
+        The mask of the decoded password would hide all or part of the `://`
+        of a URL in an answer, such as `https://store.blob.core.windows.net/...?sig=...`,
+        or its `?`, so `without_queries` would find no URL or no query there
+        and keep the query. The refusal names only the variable.
         """
         monkeypatch.setenv(name, value)
 
@@ -8795,9 +8884,33 @@ class TestEnvironmentUrlLogins:
             build_server(Settings((tmp_path,)))
 
         message = str(error.value)
-        assert f"the environment variable {name} holds a URL whose password holds '://'" in message
-        for part in ("proxyuser9", "store", "127.0.0.1"):
+        assert f"the environment variable {name} holds a URL login that the server" in message
+        for part in ("proxyuser9", "store", "127.0.0.1", "tps", "sv%3D"):
             assert part not in message
+
+    @pytest.mark.parametrize(
+        "proxy",
+        [
+            "http://proxyuser9:tps:@proxy.internal:3128",
+            "http://proxyuser9:%2F%2Fstore@proxy.internal:3128",
+            "http://proxyuser9:et%3FX-Amz@proxy.internal:3128",
+        ],
+    )
+    def test_each_such_password_would_keep_a_query_without_the_refusal(
+        self, monkeypatch: pytest.MonkeyPatch, proxy: str
+    ) -> None:
+        """Ensure each refused password does hide part of a URL's mark once masked, so the refusal is needed."""
+        text = "Error performing GET https://store.example/bkt/a.parquet?X-Amz-Signature=abc"
+        monkeypatch.setattr(mcp_server, "_hides_a_url_mark", lambda _: False)
+        recorded = mcp_server._environment_values({"HTTPS_PROXY": proxy})
+        token = mcp_server._RECORDED.set(recorded)
+        try:
+            shown = base.without_queries(mcp_server._mask(text))
+        finally:
+            mcp_server._RECORDED.reset(token)
+
+        assert "signature=abc" in shown.casefold()
+        assert "signature=abc" not in base.without_queries(text).casefold()
 
     @pytest.mark.parametrize(
         ("name", "value"),
@@ -8835,6 +8948,19 @@ class TestEnvironmentUrlLogins:
                 "PIP_EXTRA_INDEX_URL",
                 "https://a.internal https://ci:Tok3nGo99@b.internal/simple",
                 id="url-with-no-path-then-a-login",
+            ),
+            pytest.param(
+                "HTTPS_PROXY", '"http://proxy.internal:3128"', id="quoted-proxy-with-no-login"
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL",
+                '"http://proxyuser9:Pr0xyPass9@minio.internal:9000"',
+                id="quoted-endpoint-with-a-login",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "proxyuser9:Pr0xyPass9@sts.internal",
+                id="endpoint-with-no-scheme",
             ),
         ],
     )
@@ -8929,6 +9055,34 @@ class TestEnvironmentUrlLogins:
             ),
             pytest.param(
                 "VD_SOME_URL", "https://proxyuser9:Pr0x y/Pass9@127.0.0.1", id="space-before-a-cut"
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "http://proxyuser9:Pr0x/yPa ss9@127.0.0.1:9000",
+                id="space-after-a-cut-in-an-endpoint",
+            ),
+            pytest.param(
+                "aws_endpoint_url",
+                " //proxyuser9:Pr0x/yPa ss9@127.0.0.1 ",
+                id="space-after-a-cut-in-a-scheme-relative-endpoint",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                '"//proxyuser9:Pr0x/yPass9@127.0.0.1"',
+                id="quoted-scheme-relative-endpoint",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL_STS",
+                "https:proxyuser9:Pr0x/yPass9@127.0.0.1",
+                id="endpoint-with-no-slash",
+            ),
+            pytest.param(
+                "AWS_ENDPOINT_URL",
+                "proxyuser9:Pr0x/yPass9@127.0.0.1",
+                id="endpoint-with-no-scheme",
+            ),
+            pytest.param(
+                "HTTPS_PROXY", '"http://proxyuser9:Pr0xyPass9@127.0.0.1:3128"', id="quoted-proxy"
             ),
         ],
     )

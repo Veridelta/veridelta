@@ -2446,7 +2446,31 @@ A variable can hold a list of URLs, such as `GOPROXY`, whose entries a `,` joins
 URLs among other text."""
 
 _SPACE: Final = re.compile(r"\s")
-"""Whitespace, where a URL in a variable that is no proxy ends once its authority has."""
+"""Whitespace, where a URL in a variable that is no proxy or endpoint ends once its authority has."""
+
+_ENDPOINT_PREFIX: Final = "aws_endpoint"
+"""The start of each name, in any case, that botocore or object_store reads one endpoint URL from.
+
+That covers `AWS_ENDPOINT`, `AWS_ENDPOINT_URL`, and each `AWS_ENDPOINT_URL_` and a service, such
+as `AWS_ENDPOINT_URL_STS`, which botocore reads as Polars signs in through an AWS profile."""
+
+_AROUND_AN_ENDPOINT: Final = " \t\n\r\x0b\x0c\"'"
+"""The whitespace and the quotes around an endpoint, as Docker's `--env-file` keeps them."""
+
+_ENDPOINT_START: Final = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?[/\\]*")
+"""What comes before an endpoint's login: an optional scheme with its `:`, then any `/` or backslash.
+
+botocore writes an endpoint back whole when it is no valid URL, such as `"//user:pass@host"`
+in quotes, `https:user:pass@host`, or `user:pass@host`, so its login counts after any of these.
+In `user:pass@host`, the user reads as a scheme, so the login recorded is `pass@host`, which
+hides the password in that echo, and the user is not masked alone."""
+
+
+def _endpoint_authority(value: str) -> str:
+    """Return an endpoint from where its login can start, past quotes, whitespace, and `_ENDPOINT_START`."""
+    written = value.strip(_AROUND_AN_ENDPOINT)
+    start = _ENDPOINT_START.match(written)
+    return written[start.end() if start else 0 :]
 
 
 def _url_login_values(name: str, value: str) -> set[str]:
@@ -2462,19 +2486,24 @@ def _url_login_values(name: str, value: str) -> set[str]:
     here, since any variable can hold a URL; `_cut_url_login` refuses a login a client cuts.
     A value that starts with `//`, in any variable, is a scheme-relative URL, whose login
     follows the `//`. A proxy variable's value that starts with neither `//` nor a
-    `_SCHEME` is read as a login with no scheme, as clients read it.
+    `_SCHEME` is read as a login with no scheme, as clients read it. An endpoint variable's
+    value is one URL, whose login starts after `_endpoint_authority`.
     """
     written = value.strip()
-    relative = written.startswith("//")
-    bare = not relative and name.lower().endswith(_PROXY_SUFFIX) and not _SCHEME.match(written)
-    leading = _LOGIN_AT_START.match(written, 2 if relative else 0) if relative or bare else None
-    logins = [] if leading is None else [(leading[1], leading[2])]
-    if not bare:
-        logins += [(found[1], found[2]) for found in _LOGIN_IN_URL.finditer(value)]
+    found: list[re.Match[str] | None]
+    if name.lower().startswith(_ENDPOINT_PREFIX):
+        found = [_LOGIN_AT_START.match(_endpoint_authority(written))]
+    elif written.startswith("//"):
+        found = [_LOGIN_AT_START.match(written, 2), *_LOGIN_IN_URL.finditer(value)]
+    elif name.lower().endswith(_PROXY_SUFFIX) and not _SCHEME.match(written):
+        found = [_LOGIN_AT_START.match(written)]
+    else:
+        found = list(_LOGIN_IN_URL.finditer(value))
     values: set[str] = set()
-    for login, host in logins:
-        if not login:
+    for match in found:
+        if match is None or not match[1]:
             continue
+        login, host = match[1], match[2]
         user, _, password = login.partition(":")
         raw = (
             unquote_to_bytes(user.encode(errors="surrogateescape"))
@@ -2518,14 +2547,20 @@ def _cut_url_login(name: str, value: str) -> bool:
     starts one too. Once its authority has ended, such a URL ends at whitespace, so an
     email in the text after it is no cut login. A proxy variable's value is one URL, read
     from its first character when `_URL_START` does not match there, so the `/` of a
-    later `://` counts as a cut.
+    later `://` counts as a cut, and so does the first `/` of a quoted proxy. An endpoint
+    variable's value is one URL too, read after `_endpoint_authority`. A proxy or an
+    endpoint does not end at whitespace, so an `@` anywhere after its cut counts.
     """
     written = value.strip()
-    proxy = name.lower().endswith(_PROXY_SUFFIX)
-    if proxy:
+    lowered = name.lower()
+    whole = True
+    if lowered.startswith(_ENDPOINT_PREFIX):
+        urls = [_endpoint_authority(written)]
+    elif lowered.endswith(_PROXY_SUFFIX):
         first = _URL_START.match(written)
         urls = [written[0 if first is None else first.end() :]]
     else:
+        whole = False
         pieces = _NEXT_URL.split(written)
         urls = [piece[piece.find("://") + 3 :] for piece in pieces if "://" in piece]
         if written.startswith("//"):
@@ -2535,9 +2570,21 @@ def _cut_url_login(name: str, value: str) -> bool:
         if cut is None:
             continue
         rest = url[cut.end() :]
-        if "@" in (rest if proxy else _SPACE.split(rest, maxsplit=1)[0]):
+        if "@" in (rest if whole else _SPACE.split(rest, maxsplit=1)[0]):
             return True
     return False
+
+
+def _hides_a_url_mark(form: str) -> bool:
+    """Say whether a mask over `form` could hide part of a URL's `://` or its `?`.
+
+    `_mask` runs before `without_queries`, which finds a URL by its `://` and its query by
+    the `?` after it. A form covers part of a `://` when it holds one, ends with `:` or `:/`,
+    or starts with `/`, as a password decoded as `tps:` or `//store` does next to the text
+    of a URL. It covers a `?` when it holds one. Either way the URL's query stays in the
+    answer.
+    """
+    return "://" in form or "?" in form or form.endswith((":", ":/")) or form.startswith("/")
 
 
 _LONGEST_TOKEN_FILE: Final = 64 * 1024
@@ -2810,16 +2857,16 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
     on its own too. Its JSON is never refused, since object_store's errors for
     it quote none of its text. Each URL login in any variable is recorded by
     `_url_login_values`. A URL login is refused, in any variable, only where
-    a client cuts it, by `_cut_url_login`, or where its password, decoded,
-    holds a `://`. Such a mask would hide the `://` that `without_queries`
-    finds a URL by, so each URL's query, a SAS token's `sig` included, would
-    stay in the answer.
+    a client cuts it, by `_cut_url_login`, or where a form recorded of it
+    meets `_hides_a_url_mark`. Such a mask could hide part of the `://` or
+    the `?` that `without_queries` finds a URL's query by, so each URL's
+    query, a SAS token's `sig` included, would stay in the answer.
 
     Raises:
         ConfigError: If a variable's value lacks its slot's shape, or a URL in
             it holds an `@` after an unencoded `/`, `?`, `#`, or backslash, or
-            a password that holds `://` once decoded. The message names the
-            variable as it is set, never the value.
+            a login with a form that meets `_hides_a_url_mark`. The message
+            names the variable as it is set, never the value.
     """
     values: set[str] = set()
     for name, value in environ.items():
@@ -2834,13 +2881,14 @@ def _environment_values(environ: Mapping[str, str]) -> set[str]:
                 "and an '@' in its path or query, such as '/' as %2F and '@' as %40."
             )
         logins = _url_login_values(name, value)
-        if any("://" in form for form in logins):
+        if any(map(_hides_a_url_mark, logins)):
             raise ConfigError(
-                f"On veridelta mcp, the environment variable {name} holds a URL whose password "
-                "holds '://' once decoded. The server masks such a password in every answer, "
-                "and the mask would hide the '://' it finds a URL by, so a URL's query would "
-                "stay in the answer. Choose another password, or leave the variable out of the "
-                "environment the host starts the server with."
+                f"On veridelta mcp, the environment variable {name} holds a URL login that the "
+                "server would mask in a form that holds '://' or '?', starts with '/', or ends "
+                "with ':' or ':/', such as a password that does once decoded. Such a mask could "
+                "hide part of the '://' or the '?' the server finds a URL's query by, so the "
+                "query would stay in the answer. Choose another password, or leave the variable "
+                "out of the environment the host starts the server with."
             )
         values.update(logins)
         read_as = _name_as_read(name)
