@@ -630,6 +630,16 @@ class TestReleaseWorkflow:
         assert triggers["push"]["branches"] == ["main"]
         assert triggers["push"]["tags"] == ["v[0-9]+.[0-9]+.[0-9]+"]
 
+    def test_it_runs_on_main_only_when_the_version_file_changes(self) -> None:
+        """Ensure a merge that cannot change the version starts no release run.
+
+        The version lives in pyproject.toml, so a merge that leaves it alone
+        would only find the version on PyPI. GitHub checks no paths on a tag
+        push, so the filter never stops a version tag from publishing.
+        """
+        assert _release_triggers()["push"]["paths"] == ["pyproject.toml"]
+        assert '"pyproject.toml"' in _release_script("tag")
+
     def test_runs_on_one_ref_take_turns(self) -> None:
         """Ensure two merges never race to make one tag, and no run stops partway.
 
