@@ -117,5 +117,6 @@ Each of these choices has a record in `decisions/`, with what it was chosen over
 - [The MCP server holds the endpoints its readers take from its environment to the allowed hosts](decisions/mcp-holds-environment-endpoints-to-the-allowed-hosts.md)
 - [The MCP server refuses a credential too short to mask, and masks each URL login in its environment](decisions/mcp-masks-url-logins-and-refuses-short-logins.md)
 - [The MCP server refuses a Delta Lake table in WebHDFS](decisions/mcp-refuses-a-delta-table-in-webhdfs.md)
+- [Releases ship every two weeks, and a patch ships at once only for an urgent fix](decisions/release-every-two-weeks.md)
 
 Write a record with the `defend-decision` skill, in `.claude/skills/`, when a choice is non-obvious, likely to be questioned again, or made by an agent. A small choice needs none, and an old one is not backfilled.
