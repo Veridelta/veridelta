@@ -6,8 +6,8 @@ name: Publish to PyPI
 # creates the GitHub Release, marked Latest when it is the newest version. The
 # build runs in a job that cannot publish, and the job that can runs no code
 # from the release. A
-# merge that lands while that run waits leaves the tag where it is and starts
-# nothing. A run that was rejected or cancelled is started again by hand, on the
+# merge that changes pyproject.toml while that run waits leaves the tag where
+# it is and starts nothing. A run that was rejected or cancelled is started again by hand, on the
 # tag. A version tag pushed by hand publishes the same way. PyPI's trusted
 # publisher is bound to this file's name and to that environment, so rename
 # neither without updating PyPI first.
@@ -15,6 +15,11 @@ name: Publish to PyPI
 on:
   push:
     branches: ["main"]
+    # Only a push that changes pyproject.toml, where the version lives, can
+    # release, so other merges start no run that would only find the version on
+    # PyPI. GitHub checks no paths on a tag push, so every version tag still
+    # starts a run. If the tagging job fails, run the workflow by hand on main.
+    paths: ["pyproject.toml"]
     tags:
       # Only a full version tag (e.g., v0.10.0) publishes. GitHub's filter
       # treats `+` as "one or more", so a floating action tag such as `v1`
