@@ -1,3 +1,79 @@
+## v0.43.0 (2026-11-25)
+
+The HTML report reads as one page. It states the threshold the verdict was held to, draws
+the rows as a bar with their counts, and merges the column-level drift and rules applied
+tables into one columns table. `DiffSummary`, and so `veridelta run --json`, carries
+`threshold`.
+
+`veridelta mcp` holds an agent to the data and the hosts its operator allows. It connects to
+no host a configuration names unless the server is started with `--allow-host` for it,
+refuses an endpoint over plain HTTP or with a path, and lists each file a Delta Lake or
+Iceberg scan reads before it reads one. It takes a `${NAME}` only as the whole value of a
+credential setting, masks the credentials its readers take from its environment, and holds
+the endpoints, regions, and accounts in that environment to the allowed hosts. It refuses a
+Delta Lake table in WebHDFS.
+
+A DuckDB file's connection reads other files only from the file's own folder, loads no
+extension by itself, and keeps no persistent secret. An Iceberg `table_uri` names the
+table's metadata, never a catalog identifier. A SQLite `uri` must start with `sqlite://`. A
+ClickHouse password is decoded before it is sent, so one with symbols signs in, and one
+ClickHouse would refuse is refused before Veridelta connects.
+
+A run replaces a link at an artifact's name instead of writing through it, the CLI quotes
+column names a terminal or a CI runner would act on, and a YAML alias that repeats more than
+1,000,000 characters is refused. The package requires PyIceberg 0.12.0 and ConnectorX 0.4.6,
+and the lockfile covers Python 3.11.5 to 3.14 and moves tornado and soupsieve past their
+CVEs. The upgrading page lists the fifteen changes to make.
+
+### Feat
+
+- **mcp**: take a ${NAME} only as the whole value of a credential setting (#506)
+- **report**: say the threshold, draw the rows, and merge the column tables (#466)
+
+### Fix
+
+- **clickhouse**: sign in with a password that holds symbols, and mask its partly encoded forms (#519)
+- **mcp**: refuse a Delta Lake table in WebHDFS on the MCP server (#520)
+- **mcp**: mask URL logins and refuse credentials too short to mask (#516)
+- **mcp**: hold the endpoints readers take from the server's environment to the allowed hosts (#518)
+- **mcp**: take a database credential from the environment only for a probed reader (#517)
+- **mcp**: mask the credentials deltalake's OpenDAL stores and Unity Catalog reader read (#515)
+- **mcp**: mask the credentials readers take from the server's environment (#511)
+- **mcp**: refuse a bucket, container, or --allow-host with a capital letter (#510)
+- **deps**: limit the lockfile to Python 3.11.5 to 3.14 and leave out Emscripten (#509)
+- fit the MCP host refusals to the kind of setting (#508)
+- **mcp**: refuse a storage endpoint with a path (#507)
+- **deps**: require PyIceberg 0.12.0, which the checked Iceberg FileIO follows (#505)
+- **mcp**: refuse a remote path with a dot segment (#504)
+- **mcp**: read Spark's Azure Iceberg files, refuse Azure options that end the server, and leave URL queries out of messages (#503)
+- **mcp**: load a local Delta Lake table from a bounded copy of its checked log (#498)
+- **duckdb**: open no other file on Windows from the MCP server, and keep no persistent secret (#501)
+- **duckdb**: confirm the file DuckDB opens, and set where it spills (#500)
+- **mcp**: refuse a storage endpoint over plain HTTP (#499)
+- **deps**: require ConnectorX 0.4.6, whose scheme rewrite the checks follow (#497)
+- **mcp**: mask Delta Lake and Iceberg reader messages like other readers' (#496)
+- **duckdb**: refuse ~name as a DuckDB database and expand ~/ before DuckDB (#494)
+- **mcp**: refuse a Delta Lake log that names a sidecar, and keep empty text partitions (#495)
+- **mcp**: refuse a local URI whose path starts with two slashes (#492)
+- **mcp**: check an Iceberg version hint and each reader's path before reading (#489)
+- **mcp**: refuse settings whose host the server cannot check (#485)
+- **mcp**: check the SQLite path the connector opens (#480)
+- **deps**: lock only for Python 3.11.5 and later, dropping soupsieve 2.10 (#490)
+- **cli**: quote column names a terminal or a CI runner would act on (#486)
+- **config**: refuse YAML aliases that repeat more than 1,000,000 characters (#487)
+- **telemetry**: refuse an OTLP endpoint with an '@' past its host (#484)
+- **mcp**: check every file a glob path matches against the roots (#482)
+- **iceberg**: stop a table or a config from naming a class for PyIceberg to load (#481)
+- **provenance**: refuse a found bare repository and fsmonitor in git calls (#488)
+- **mcp**: keep data values out of a failed call's message (#483)
+- **ci**: pin the license hook repository to a commit (#479)
+- **ci**: keep the uv cache out of untrusted builds and secret jobs (#478)
+- **sql**: keep Spark from substituting variables in Databricks literals (#477)
+- **telemetry**: keep the OTLP endpoint's query out of a send error (#476)
+- **duckdb**: hold every DuckDB file to its own folder (#475)
+- **results**: replace a link at an artifact name instead of writing through it (#474)
+- **deps**: move tornado to 6.6.1 and soupsieve to 4.1.1 for their CVEs (#470)
+
 ## v0.42.2 (2026-11-05)
 
 A ClickHouse read no longer comes back empty when ClickHouse holds rows. ConnectorX returns
